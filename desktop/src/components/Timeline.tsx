@@ -1,0 +1,83 @@
+import { useMemo } from "react";
+import type { Segment, SegmentAction } from "../types/api";
+
+interface Props {
+  segments: Segment[];
+  duration: number;
+  currentTime: number;
+  onSeek: (time: number) => void;
+  onSelectSegment: (seg: Segment) => void;
+  selectedSegmentId: string | null;
+}
+
+const ACTION_COLORS: Record<SegmentAction, string> = {
+  keep: "timeline-keep",
+  cut: "timeline-cut",
+  shorten: "timeline-shorten",
+  highlight: "timeline-highlight",
+};
+
+export function Timeline({ segments, duration, currentTime, onSeek, onSelectSegment, selectedSegmentId }: Props) {
+  const playheadPct = duration > 0 ? (currentTime / duration) * 100 : 0;
+
+  const segBars = useMemo(() => {
+    if (!duration || duration === 0) return [];
+    return segments.map(seg => {
+      const action = seg.is_teacher_modified && seg.teacher_action ? seg.teacher_action : seg.action;
+      const left = (seg.start_time / duration) * 100;
+      const width = Math.max(((seg.end_time - seg.start_time) / duration) * 100, 0.3);
+      return { seg, action, left, width };
+    });
+  }, [segments, duration]);
+
+  return (
+    <div className="w-full space-y-1">
+      {/* ── Timeline Bar ── */}
+      <div
+        className="relative h-10 bg-surface-overlay rounded-lg overflow-hidden cursor-pointer"
+        onClick={(e) => {
+          const rect = e.currentTarget.getBoundingClientRect();
+          const pct = (e.clientX - rect.left) / rect.width;
+          onSeek(pct * duration);
+        }}
+      >
+        {/* Segment bars */}
+        {segBars.map(({ seg, action, left, width }) => (
+          <div
+            key={seg.id}
+            className={`absolute top-0 h-full timeline-bar ${ACTION_COLORS[action]} ${
+              selectedSegmentId === seg.id ? "ring-2 ring-white ring-inset" : ""
+            }`}
+            style={{ left: `${left}%`, width: `${width}%` }}
+            title={`${seg.topic_label || "Segment"} (${action})`}
+            onClick={(e) => { e.stopPropagation(); onSelectSegment(seg); }}
+          />
+        ))}
+
+        {/* Playhead */}
+        <div
+          className="absolute top-0 w-0.5 h-full bg-white z-10 pointer-events-none"
+          style={{ left: `${playheadPct}%` }}
+        />
+      </div>
+
+      {/* ── Time Labels ── */}
+      <div className="flex justify-between text-xs text-gray-500 px-1">
+        <span>{formatTime(currentTime)}</span>
+        <div className="flex gap-4">
+          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-action-keep inline-block" /> Keep</span>
+          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-action-cut inline-block" /> Cut</span>
+          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-action-shorten inline-block" /> Shorten</span>
+          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-action-highlight inline-block" /> Highlight</span>
+        </div>
+        <span>{formatTime(duration)}</span>
+      </div>
+    </div>
+  );
+}
+
+function formatTime(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}

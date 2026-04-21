@@ -1,0 +1,90 @@
+version: "3.9"
+
+services:
+  # ── FastAPI Backend ──
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aive-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/app:/app
+      - ./scripts:/scripts:ro
+      - video_storage:/data/videos
+      - ./uploads:/data/uploads
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  # ── PostgreSQL Database ──
+  db:
+    image: postgres:16-alpine
+    container_name: aive-db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aive}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aive_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-aive_db}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aive}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Qdrant Vector Database ──
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: aive-qdrant
+    ports:
+      - "6333:6333"   # REST API
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+  # ── Redis (task queue / caching) ──
+  redis:
+    image: redis:7-alpine
+    container_name: aive-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  # ── n8n (workflow automation — outer orchestration layer) ──
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: aive-n8n
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD:-admin}
+      - WEBHOOK_URL=http://localhost:5678/
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  qdrant_data:
+  redis_data:
+  video_storage:
+  n8n_data:

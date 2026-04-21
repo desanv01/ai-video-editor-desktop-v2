@@ -1,0 +1,40 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Scrollbar (dark theme) ─── */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #1e1e2e; }
+::-webkit-scrollbar-thumb { background: #45455a; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #5a5a74; }
+
+/* ─── Selection ─── */
+::selection { background: #7c3aed40; }
+
+/* ─── Base ─── */
+body {
+  margin: 0;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+/* ─── Segment action pills ─── */
+.action-pill {
+  @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium uppercase tracking-wide;
+}
+.action-keep    { @apply bg-action-keep-light text-action-keep-dark; }
+.action-cut     { @apply bg-action-cut-light text-action-cut-dark; }
+.action-shorten { @apply bg-action-shorten-light text-action-shorten-dark; }
+.action-highlight { @apply bg-action-highlight-light text-action-highlight-dark; }
+
+/* ─── Timeline segment bars ─── */
+.timeline-bar { @apply h-8 cursor-pointer transition-all duration-150 hover:brightness-110; }
+.timeline-keep      { @apply bg-action-keep; }
+.timeline-cut       { @apply bg-action-cut opacity-50; }
+.timeline-shorten   { @apply bg-action-shorten; }
+.timeline-highlight { @apply bg-action-highlight; }
+
+/* ─── Transcript sync highlight ─── */
+.transcript-active {
+  @apply bg-accent/20 border-l-2 border-accent;
+}

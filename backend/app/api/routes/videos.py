@@ -1,0 +1,726 @@
+"""
+API Routes — Video upload, processing, teacher review, rendering.
+"""
+
+import os
+import uuid
+import shutil
+from datetime import datetime
+from typing import List
+
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+
+from db.database import get_db
+from db.models import (
+    Video, VideoStatus, Transcript, Segment, EditPlan, Scene,
+    CourseMaterial, SegmentAction,
+)
+from models.schemas import (
+    VideoUploadResponse, VideoResponse, VideoDetailResponse,
+    SegmentResponse, SegmentUpdateRequest, BulkSegmentUpdateRequest,
+    EditPlanResponse, EditPlanApproveRequest,
+    CourseMaterialUploadResponse, CourseMaterialResponse,
+    ProcessingStatus, AppSettingsResponse, DomainTermsUpdateRequest,
+)
+from agents.orchestrator import run_processing_pipeline, run_render_pipeline
+from agents.edit_planner import revalidate_edit_plan
+from services.ffmpeg import ffmpeg_service
+from services.renderer import generate_quality_report
+from services.text_extraction import text_extractor
+from services.progress import get_progress as get_pipeline_progress
+from rag.vector_store import rag_service
+from config import settings
+
+
+router = APIRouter()
+
+
+# ═══════════════════════════════════════════
+#  VIDEO ENDPOINTS
+# ═══════════════════════════════════════════
+
+@router.post("/videos/upload", response_model=VideoUploadResponse, tags=["Videos"])
+async def upload_video(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+):
+    """Upload a video file and start processing pipeline."""
+    # Validate file type
+    allowed_types = {"video/mp4", "video/mpeg", "video/quicktime", "video/x-msvideo", "video/webm"}
+    if file.content_type not in allowed_types:
+        raise HTTPException(400, f"Invalid file type: {file.content_type}. Allowed: {allowed_types}")
+
+    # Save file
+    video_id = uuid.uuid4()
+    ext = os.path.splitext(file.filename)[1] or ".mp4"
+    filename = f"{video_id}{ext}"
+    file_path = os.path.join(settings.UPLOAD_PATH, filename)
+
+    os.makedirs(settings.UPLOAD_PATH, exist_ok=True)
+    with open(file_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    file_size = os.path.getsize(file_path)
+    if file_size > settings.MAX_VIDEO_SIZE_MB * 1024 * 1024:
+        os.remove(file_path)
+        raise HTTPException(413, f"File too large. Maximum: {settings.MAX_VIDEO_SIZE_MB}MB")
+
+    # Get video metadata
+    try:
+        metadata = await ffmpeg_service.get_video_metadata(file_path)
+    except Exception:
+        metadata = {}
+
+    # Create database record
+    video = Video(
+        id=video_id,
+        filename=filename,
+        original_filename=file.filename,
+        file_path=file_path,
+        file_size_bytes=file_size,
+        duration_seconds=metadata.get("duration"),
+        resolution=f"{metadata.get('width', 0)}x{metadata.get('height', 0)}",
+        fps=metadata.get("fps"),
+        status=VideoStatus.UPLOADED,
+    )
+    db.add(video)
+    await db.commit()
+
+    # Start background processing
+    background_tasks.add_task(_process_video_bg, str(video_id))
+
+    return VideoUploadResponse(
+        id=video_id,
+        filename=file.filename,
+        status=VideoStatus.PROCESSING,
+        duration_seconds=metadata.get("duration"),
+        resolution=f"{metadata.get('width', 0)}x{metadata.get('height', 0)}" if metadata else None,
+        file_size_mb=round(file_size / 1024 / 1024, 1),
+        message=f"Video uploaded ({file_size / 1024 / 1024:.1f}MB). Processing started.",
+    )
+
+
+@router.get("/videos", response_model=List[VideoResponse], tags=["Videos"])
+async def list_videos(db: AsyncSession = Depends(get_db)):
+    """List all uploaded videos."""
+    result = await db.execute(
+        select(Video).order_by(Video.created_at.desc())
+    )
+    return result.scalars().all()
+
+
+@router.get("/videos/{video_id}", response_model=VideoDetailResponse, tags=["Videos"])
+async def get_video(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Get full video details including transcript, segments, and edit plan."""
+    result = await db.execute(
+        select(Video)
+        .options(
+            selectinload(Video.transcript),
+            selectinload(Video.segments),
+            selectinload(Video.edit_plan),
+            selectinload(Video.scenes),
+        )
+        .where(Video.id == video_id)
+    )
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(404, "Video not found")
+    return video
+
+
+@router.get("/videos/{video_id}/status", tags=["Videos"])
+async def get_processing_status(video_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Get processing status — used by the desktop app for polling.
+
+    Returns both the durable DB status and the live pipeline progress
+    (which step is currently running, timing per step, percentage).
+
+    The desktop app should poll this every 2-3 seconds during processing.
+    """
+    video = await db.get(Video, video_id)
+    if not video:
+        raise HTTPException(404, "Video not found")
+
+    # Get live pipeline progress (in-memory, detailed)
+    progress = get_pipeline_progress(str(video_id))
+
+    return {
+        "video_id": str(video.id),
+        "status": video.status.value,
+        "error_message": video.error_message,
+        # Live pipeline progress
+        "current_step": progress.get("current_step", video.status.value),
+        "current_step_label": progress.get("current_step_label", video.status.value),
+        "progress_percent": progress.get("progress_percent", 0),
+        "steps_completed": progress.get("steps_completed", []),
+        "steps_timing": progress.get("steps_timing", {}),
+        "total_elapsed_seconds": progress.get("total_elapsed_seconds", 0),
+    }
+
+
+# ═══════════════════════════════════════════
+#  SEGMENT / REVIEW ENDPOINTS
+# ═══════════════════════════════════════════
+
+@router.get("/videos/{video_id}/segments", response_model=List[SegmentResponse], tags=["Review"])
+async def get_segments(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Get all segments with their analysis and edit decisions."""
+    result = await db.execute(
+        select(Segment)
+        .where(Segment.video_id == video_id)
+        .order_by(Segment.segment_index)
+    )
+    return result.scalars().all()
+
+
+@router.put("/videos/{video_id}/segments/{segment_id}", tags=["Review"])
+async def update_segment(
+    video_id: str,
+    segment_id: str,
+    update: SegmentUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Teacher overrides a segment's action."""
+    segment = await db.get(Segment, segment_id)
+    if not segment or str(segment.video_id) != video_id:
+        raise HTTPException(404, "Segment not found")
+
+    segment.teacher_action = update.teacher_action
+    segment.teacher_note = update.teacher_note
+    segment.is_teacher_modified = True
+    await db.commit()
+
+    return {"status": "updated", "segment_id": segment_id}
+
+
+@router.put("/videos/{video_id}/segments/bulk", tags=["Review"])
+async def bulk_update_segments(
+    video_id: str,
+    request: BulkSegmentUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Teacher bulk-updates multiple segments at once."""
+    updated = 0
+    for upd in request.updates:
+        segment = await db.get(Segment, upd["segment_id"])
+        if segment and str(segment.video_id) == video_id:
+            segment.teacher_action = SegmentAction(upd["teacher_action"])
+            segment.teacher_note = upd.get("teacher_note")
+            segment.is_teacher_modified = True
+            updated += 1
+
+    await db.commit()
+    return {"status": "updated", "segments_updated": updated}
+
+
+# ═══════════════════════════════════════════
+#  EDIT PLAN / APPROVAL ENDPOINTS
+# ═══════════════════════════════════════════
+
+@router.get("/videos/{video_id}/plan", response_model=EditPlanResponse, tags=["Edit Plan"])
+async def get_edit_plan(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Get the current edit plan."""
+    result = await db.execute(
+        select(EditPlan).where(EditPlan.video_id == video_id)
+    )
+    plan = result.scalar_one_or_none()
+    if not plan:
+        raise HTTPException(404, "Edit plan not found")
+    return plan
+
+
+@router.post("/videos/{video_id}/plan/approve", tags=["Edit Plan"])
+async def approve_edit_plan(
+    video_id: str,
+    request: EditPlanApproveRequest,
+    db: AsyncSession = Depends(get_db),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+):
+    """Teacher approves the edit plan → triggers rendering."""
+    result = await db.execute(
+        select(EditPlan).where(EditPlan.video_id == video_id)
+    )
+    plan = result.scalar_one_or_none()
+    if not plan:
+        raise HTTPException(404, "Edit plan not found")
+
+    plan.is_approved = True
+    plan.approved_at = datetime.utcnow()
+    plan.teacher_notes = request.teacher_notes
+    await db.commit()
+
+    # Start rendering in background
+    background_tasks.add_task(_render_video_bg, video_id)
+
+    return {
+        "status": "approved",
+        "message": "Edit plan approved. Rendering started.",
+        "video_id": video_id,
+    }
+
+
+@router.post("/videos/{video_id}/plan/revalidate", tags=["Edit Plan"])
+async def revalidate_plan(
+    video_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Re-validate the edit plan after teacher modifications.
+
+    Call this after the teacher changes segment actions to get:
+    - Coherence warnings (e.g., "cutting this breaks the logical flow")
+    - Consequence alerts (e.g., "this removes the only quicksort example")
+
+    The desktop app should call this after every teacher modification
+    and display the warnings/alerts in the UI.
+    """
+    result = await revalidate_edit_plan(video_id, db)
+    return result
+
+
+@router.get("/videos/{video_id}/chapters", tags=["Edit Plan"])
+async def get_chapters(video_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Get auto-generated chapter markers for the video.
+
+    Chapters are generated from topic transitions in kept/highlighted segments.
+    Format compatible with YouTube chapter markers.
+    """
+    result = await db.execute(
+        select(Segment)
+        .where(Segment.video_id == video_id)
+        .order_by(Segment.segment_index)
+    )
+    segments = list(result.scalars().all())
+
+    if not segments:
+        raise HTTPException(404, "No segments found")
+
+    # Generate chapters from non-cut segments
+    chapters = []
+    current_topic = None
+    for seg in segments:
+        action = seg.teacher_action if seg.is_teacher_modified else seg.action
+        if action == SegmentAction.CUT:
+            continue
+
+        topic = seg.topic_label or "Unknown"
+        if topic != current_topic and (seg.importance_score or 0) >= 0.3:
+            minutes = int(seg.start_time // 60)
+            seconds = int(seg.start_time % 60)
+            chapters.append({
+                "timestamp": seg.start_time,
+                "formatted": f"{minutes:02d}:{seconds:02d}",
+                "label": topic,
+                "segment_index": seg.segment_index,
+            })
+            current_topic = topic
+
+    return {
+        "video_id": video_id,
+        "chapters_count": len(chapters),
+        "chapters": chapters,
+        "youtube_format": "\n".join(
+            f"{ch['formatted']} {ch['label']}" for ch in chapters
+        ),
+    }
+
+
+# ═══════════════════════════════════════════
+#  QUALITY REPORT
+# ═══════════════════════════════════════════
+
+@router.get("/videos/{video_id}/report", tags=["Reports"])
+async def get_quality_report(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Get quality metrics report for a processed video."""
+    report = await generate_quality_report(video_id, db)
+    if "error" in report:
+        raise HTTPException(404, report["error"])
+    return report
+
+
+# ═══════════════════════════════════════════
+#  COURSE MATERIALS
+# ═══════════════════════════════════════════
+
+@router.post("/materials/upload", response_model=CourseMaterialUploadResponse, tags=["Course Materials"])
+async def upload_course_material(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Upload course material (PDF, PPTX, DOCX, TXT, MD) for the RAG knowledge base.
+
+    The file is:
+      1. Saved to disk
+      2. Text extracted (PDF/PPTX/DOCX/TXT/MD)
+      3. Chunked into overlapping segments (page-aware)
+      4. Embedded and stored in Qdrant for semantic search
+
+    Agent 2 uses this knowledge base during content analysis to determine
+    which parts of a lecture are covering important curriculum topics.
+    """
+    # Validate extension
+    allowed_extensions = {".pdf", ".pptx", ".docx", ".txt", ".md", ".csv"}
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in allowed_extensions:
+        raise HTTPException(400, f"Unsupported file type: {ext}. Allowed: {allowed_extensions}")
+
+    # Save file
+    material_id = uuid.uuid4()
+    save_path = os.path.join(settings.UPLOAD_PATH, f"material_{material_id}{ext}")
+    os.makedirs(settings.UPLOAD_PATH, exist_ok=True)
+
+    with open(save_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    # Extract text
+    try:
+        extraction = await text_extractor.extract(save_path)
+        content = extraction["text"]
+        pages = extraction.get("pages", [])
+        meta = extraction.get("metadata", {})
+    except Exception as e:
+        raise HTTPException(422, f"Failed to extract text from {file.filename}: {str(e)}")
+
+    if not content.strip():
+        raise HTTPException(422, f"No text content found in {file.filename}. Is the file empty or image-only?")
+
+    # Create DB record
+    material = CourseMaterial(
+        id=material_id,
+        filename=file.filename,
+        file_path=save_path,
+        file_type=ext.lstrip("."),
+        content_text=content[:50000],  # Store first 50K chars in DB for quick access
+    )
+    db.add(material)
+
+    # Chunk and embed into Qdrant
+    await rag_service.ensure_collection()
+    chunk_count = await rag_service.ingest_course_material(
+        source_id=str(material_id),
+        filename=file.filename,
+        pages=pages,
+    )
+
+    material.chunk_count = chunk_count
+    material.is_embedded = chunk_count > 0
+    await db.commit()
+
+    return CourseMaterialUploadResponse(
+        id=material_id,
+        filename=file.filename,
+        file_type=ext.lstrip("."),
+        chunk_count=chunk_count,
+        message=f"Extracted {meta.get('word_count', 0)} words from {meta.get('page_count', '?')} pages, stored {chunk_count} chunks.",
+    )
+
+
+@router.get("/materials", response_model=List[CourseMaterialResponse], tags=["Course Materials"])
+async def list_course_materials(db: AsyncSession = Depends(get_db)):
+    """List all uploaded course materials."""
+    result = await db.execute(
+        select(CourseMaterial).order_by(CourseMaterial.created_at.desc())
+    )
+    return result.scalars().all()
+
+
+@router.delete("/materials/{material_id}", tags=["Course Materials"])
+async def delete_course_material(material_id: str, db: AsyncSession = Depends(get_db)):
+    """Delete a course material and its embeddings."""
+    material = await db.get(CourseMaterial, material_id)
+    if not material:
+        raise HTTPException(404, "Material not found")
+
+    # Remove embeddings from Qdrant
+    await rag_service.delete_by_source(str(material_id))
+
+    # Remove file
+    if material.file_path and os.path.exists(material.file_path):
+        os.remove(material.file_path)
+
+    await db.delete(material)
+    await db.commit()
+    return {"status": "deleted", "material_id": material_id}
+
+
+# ═══════════════════════════════════════════
+#  SETTINGS (for desktop app)
+# ═══════════════════════════════════════════
+
+@router.get("/settings", response_model=AppSettingsResponse, tags=["Settings"])
+async def get_settings():
+    """Get current application settings (for desktop app display)."""
+    return AppSettingsResponse(
+        asr_provider=settings.ASR_PROVIDER,
+        agent2_model=settings.AGENT2_MODEL,
+        agent3_model=settings.AGENT3_MODEL,
+        agent5_model=settings.AGENT5_MODEL,
+        embedding_model=settings.EMBEDDING_MODEL,
+        domain_terms=settings.domain_terms_list,
+    )
+
+
+@router.put("/settings/domain-terms", tags=["Settings"])
+async def update_domain_terms(request: DomainTermsUpdateRequest):
+    """
+    Update domain-specific terms for ASR context biasing.
+    These terms improve Voxtral's accuracy on specialized vocabulary.
+    Note: In production, this would persist to a config store.
+    For the FYP, we update the in-memory settings.
+    """
+    import json as json_mod
+    settings.DOMAIN_TERMS = json_mod.dumps(request.terms)
+    return {
+        "status": "updated",
+        "terms_count": len(request.terms),
+        "terms": request.terms,
+    }
+
+
+# ═══════════════════════════════════════════
+#  FILE DOWNLOAD (for desktop app)
+# ═══════════════════════════════════════════
+
+@router.get("/videos/{video_id}/stream", tags=["Videos"])
+async def stream_original_video(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Stream the original uploaded video (for the review editor's video player)."""
+    from fastapi.responses import FileResponse
+
+    video = await db.get(Video, video_id)
+    if not video:
+        raise HTTPException(404, "Video not found")
+    if not video.file_path or not os.path.exists(video.file_path):
+        raise HTTPException(404, "Original video file not found")
+
+    return FileResponse(
+        path=video.file_path,
+        media_type="video/mp4",
+        filename=video.original_filename,
+    )
+
+
+@router.get("/videos/{video_id}/download", tags=["Videos"])
+async def download_rendered_video(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Get download path for the rendered video."""
+    from fastapi.responses import FileResponse
+
+    video = await db.get(Video, video_id)
+    if not video:
+        raise HTTPException(404, "Video not found")
+    if not video.processed_video_path or not os.path.exists(video.processed_video_path):
+        raise HTTPException(404, "Rendered video not available yet")
+
+    return FileResponse(
+        path=video.processed_video_path,
+        media_type="video/mp4",
+        filename=f"{video.original_filename.rsplit('.', 1)[0]}_edited.mp4",
+    )
+
+
+@router.get("/videos/{video_id}/subtitles", tags=["Videos"])
+async def download_subtitles(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Download SRT subtitle file for the rendered video."""
+    from fastapi.responses import FileResponse
+
+    srt_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_subtitles.srt")
+    if not os.path.exists(srt_path):
+        raise HTTPException(404, "Subtitle file not available yet")
+
+    return FileResponse(
+        path=srt_path,
+        media_type="application/x-subrip",
+        filename=f"{video_id}_subtitles.srt",
+    )
+
+
+@router.get("/videos/{video_id}/subtitles/vtt", tags=["Export"])
+async def download_subtitles_vtt(video_id: str):
+    """Download WebVTT subtitle file (for web/HTML5 playback)."""
+    from fastapi.responses import FileResponse
+
+    vtt_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_subtitles.vtt")
+    if not os.path.exists(vtt_path):
+        raise HTTPException(404, "VTT file not available yet")
+
+    return FileResponse(
+        path=vtt_path,
+        media_type="text/vtt",
+        filename=f"{video_id}_subtitles.vtt",
+    )
+
+
+@router.get("/videos/{video_id}/chapters/download", tags=["Export"])
+async def download_chapters(video_id: str):
+    """Download YouTube-compatible chapter markers file."""
+    from fastapi.responses import FileResponse
+
+    path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_chapters.txt")
+    if not os.path.exists(path):
+        raise HTTPException(404, "Chapters file not available yet")
+
+    return FileResponse(
+        path=path,
+        media_type="text/plain",
+        filename=f"{video_id}_chapters.txt",
+    )
+
+
+@router.get("/videos/{video_id}/plan/export", tags=["Export"])
+async def download_plan_export(video_id: str):
+    """Download the full edit plan as JSON (for thesis documentation / reproducibility)."""
+    from fastapi.responses import FileResponse
+
+    path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_edit_plan.json")
+    if not os.path.exists(path):
+        raise HTTPException(404, "Plan export not available yet — render the video first")
+
+    return FileResponse(
+        path=path,
+        media_type="application/json",
+        filename=f"{video_id}_edit_plan.json",
+    )
+
+
+@router.get("/videos/{video_id}/exports", tags=["Export"])
+async def list_exports(video_id: str, db: AsyncSession = Depends(get_db)):
+    """List all available export files for a video."""
+    video = await db.get(Video, video_id)
+    if not video:
+        raise HTTPException(404, "Video not found")
+
+    base = settings.VIDEO_STORAGE_PATH
+    files = {
+        "edited_video": {
+            "path": f"/api/v1/videos/{video_id}/download",
+            "available": bool(video.processed_video_path and os.path.exists(video.processed_video_path)),
+        },
+        "subtitles_srt": {
+            "path": f"/api/v1/videos/{video_id}/subtitles",
+            "available": os.path.exists(os.path.join(base, f"{video_id}_subtitles.srt")),
+        },
+        "subtitles_vtt": {
+            "path": f"/api/v1/videos/{video_id}/subtitles/vtt",
+            "available": os.path.exists(os.path.join(base, f"{video_id}_subtitles.vtt")),
+        },
+        "chapters": {
+            "path": f"/api/v1/videos/{video_id}/chapters/download",
+            "available": os.path.exists(os.path.join(base, f"{video_id}_chapters.txt")),
+        },
+        "edit_plan_json": {
+            "path": f"/api/v1/videos/{video_id}/plan/export",
+            "available": os.path.exists(os.path.join(base, f"{video_id}_edit_plan.json")),
+        },
+    }
+
+    return {
+        "video_id": video_id,
+        "status": video.status.value,
+        "exports": files,
+    }
+
+
+# ═══════════════════════════════════════════
+#  BACKGROUND TASK HELPERS
+# ═══════════════════════════════════════════
+
+async def _process_video_bg(video_id: str):
+    """
+    Background task: run the full processing pipeline.
+
+    This is triggered by the upload endpoint and runs the entire
+    LangGraph pipeline (Phases 1-5) asynchronously.
+    The desktop app polls /status to track progress.
+    """
+    import traceback as tb
+    import logging
+    logger = logging.getLogger("pipeline")
+
+    from db.database import async_session
+    from services.progress import init_progress, fail_step
+
+    logger.info(f"🎬 Starting pipeline for video {video_id}")
+
+    async with async_session() as db:
+        try:
+            # Mark as processing
+            video = await db.get(Video, video_id)
+            if not video:
+                logger.error(f"Video {video_id} not found in DB")
+                return
+
+            video.status = VideoStatus.PROCESSING
+            await db.commit()
+
+            # Ensure Qdrant collection exists
+            await rag_service.ensure_collection()
+
+            # Run the full pipeline
+            result = await run_processing_pipeline(video_id, db)
+            await db.commit()
+
+            status = result.get("status", "unknown")
+            if status == "awaiting_review":
+                logger.info(f"✅ Pipeline complete for {video_id} — awaiting teacher review")
+            elif status == "failed":
+                logger.error(f"❌ Pipeline failed for {video_id}: {result.get('error', 'unknown')}")
+            else:
+                logger.info(f"Pipeline ended with status: {status}")
+
+        except Exception as e:
+            error_msg = f"Pipeline crashed: {str(e)}"
+            logger.error(f"❌ {error_msg}\n{tb.format_exc()}")
+            fail_step(video_id, "pipeline", str(e))
+
+            try:
+                video = await db.get(Video, video_id)
+                if video:
+                    video.status = VideoStatus.FAILED
+                    video.error_message = error_msg
+                    await db.commit()
+            except Exception:
+                logger.error("Failed to update video status after crash")
+
+
+async def _render_video_bg(video_id: str):
+    """
+    Background task: render final video after teacher approval.
+
+    Triggered by the plan approval endpoint.
+    """
+    import traceback as tb
+    import logging
+    logger = logging.getLogger("pipeline")
+
+    from db.database import async_session
+
+    logger.info(f"🎬 Starting render for video {video_id}")
+
+    async with async_session() as db:
+        try:
+            result = await run_render_pipeline(video_id, db)
+            await db.commit()
+
+            if result.get("status") == "completed":
+                logger.info(f"✅ Render complete for {video_id}")
+            else:
+                logger.warning(f"Render ended with status: {result.get('status')}")
+
+        except Exception as e:
+            error_msg = f"Render crashed: {str(e)}"
+            logger.error(f"❌ {error_msg}\n{tb.format_exc()}")
+
+            try:
+                video = await db.get(Video, video_id)
+                if video:
+                    video.status = VideoStatus.FAILED
+                    video.error_message = error_msg
+                    await db.commit()
+            except Exception:
+                logger.error("Failed to update video status after render crash")
