@@ -78,8 +78,16 @@ class TextExtractor:
         doc = fitz.open(file_path)
         pages = []
         all_text = []
+        page_count = len(doc)
+        title = ""
 
-        for page_num in range(len(doc)):
+        try:
+            metadata = doc.metadata
+            title = metadata.get("title", "") if metadata else ""
+        except Exception:
+            pass
+
+        for page_num in range(page_count):
             page = doc[page_num]
             text = page.get_text("text").strip()
 
@@ -92,18 +100,11 @@ class TextExtractor:
 
         doc.close()
 
-        title = ""
-        try:
-            metadata = doc.metadata
-            title = metadata.get("title", "") if metadata else ""
-        except Exception:
-            pass
-
         return {
             "text": "\n\n".join(all_text),
             "pages": pages,
             "metadata": {
-                "page_count": len(doc),
+                "page_count": page_count,
                 "pages_with_text": len(pages),
                 "title": title,
             },

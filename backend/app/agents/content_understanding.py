@@ -155,14 +155,8 @@ async def run_content_understanding_agent(video_id: str, db: AsyncSession) -> di
             logger.info(f"  Batch {batch_start//batch_size + 1}: analyzed {len(analyzed)} segments")
         except Exception as e:
             logger.warning(f"  Batch {batch_start//batch_size + 1} failed: {e}")
-            for i in range(len(batch)):
-                all_analyzed.append({
-                    "segment_index": batch_start + i,
-                    "topic_label": "Unknown",
-                    "summary": f"Analysis failed: {str(e)[:50]}",
-                    "importance_score": 0.5,
-                    "segment_type": "core_content",
-                })
+            for i, chunk in enumerate(batch):
+                all_analyzed.append(_fallback_content_analysis(batch_start + i, chunk))
 
     # ── Step 3: Create Segment records in DB ──
     type_map = {
@@ -253,3 +247,46 @@ def _generate_chapters(segments: List[Segment]) -> List[dict]:
             current_topic = topic
 
     return chapters
+
+
+def _fallback_content_analysis(segment_index: int, chunk: dict) -> dict:
+    """Conservative local analysis when the LLM/RAG call is unavailable."""
+    text = (chunk.get("text") or "").strip()
+    words = text.split()
+    lower = text.lower()
+
+    filler_markers = [
+        "um", "uh", "erm", "ah", "okay", "okay so", "you know",
+        "sekejap", "kejap", "macam", "aa", "aaa",
+    ]
+    filler_hits = sum(lower.count(marker) for marker in filler_markers)
+    word_count = len(words)
+
+    if word_count < 8:
+        importance = 0.15
+        segment_type = "pause"
+        topic = "Pause or filler"
+    elif filler_hits >= max(5, word_count // 12):
+        importance = 0.25
+        segment_type = "filler"
+        topic = "Delivery filler"
+    elif any(term in lower for term in ("introduction", "intro", "recap", "summary", "kesimpulan")):
+        importance = 0.45
+        segment_type = "intro_outro"
+        topic = "Intro or recap"
+    elif "?" in text or any(term in lower for term in ("question", "soalan", "jawapan")):
+        importance = 0.55
+        segment_type = "qa"
+        topic = "Question discussion"
+    else:
+        importance = 0.65
+        segment_type = "core_content"
+        topic = "Lecture content"
+
+    return {
+        "segment_index": segment_index,
+        "topic_label": topic,
+        "summary": text[:180] if text else "No meaningful speech detected.",
+        "importance_score": importance,
+        "segment_type": segment_type,
+    }

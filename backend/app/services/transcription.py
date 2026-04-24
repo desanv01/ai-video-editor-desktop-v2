@@ -37,6 +37,11 @@ WHISPER_MAX_FILE_SIZE = 23 * 1024 * 1024
 # Chunk duration for splitting long audio
 CHUNK_DURATION_SEC = 10 * 60  # 20 minutes with 30s overlap
 CHUNK_OVERLAP_SEC = 20
+MIXED_LANGUAGE_TRANSCRIPTION_PROMPT = (
+    "This lecture may contain mixed English and Bahasa Melayu/Malay. "
+    "Transcribe exactly what is spoken, preserving the original language for each phrase. "
+    "Do not translate, summarize, or normalize the speech into a single language."
+)
 
 
 class TranscriptionService:
@@ -159,9 +164,11 @@ class TranscriptionService:
 
         # Context biasing for domain-specific terms (Voxtral feature)
         # Passed as part of the prompt field
+        prompt_parts = [MIXED_LANGUAGE_TRANSCRIPTION_PROMPT]
         if domain_terms:
             bias_text = ", ".join(domain_terms[:100])
-            kwargs["prompt"] = f"Domain terms: {bias_text}"
+            prompt_parts.append(f"Domain terms: {bias_text}")
+        kwargs["prompt"] = "\n".join(prompt_parts)
 
         # NOTE: Cannot use language + timestamp_granularities together.
         # If user explicitly wants language forced (no timestamps), uncomment:
@@ -258,6 +265,7 @@ class TranscriptionService:
             "file": open(audio_path, "rb"),
             "response_format": "verbose_json",
             "timestamp_granularities": ["word", "segment"],
+            "prompt": MIXED_LANGUAGE_TRANSCRIPTION_PROMPT,
         }
         if language:
             kwargs["language"] = language
@@ -291,7 +299,7 @@ class TranscriptionService:
             "language": getattr(response, "language", "en"),
             "duration": getattr(response, "duration", 0),
             "words": words,
-            "segments": segments,
+            "segments": segments or self._segments_from_text(response.text, getattr(response, "duration", 0)),
             "speakers": [],
         }
 
@@ -364,7 +372,7 @@ class TranscriptionService:
 
             return {
                 "text": " ".join(all_text),
-                "language": "en",  # Chunked mode doesn't reliably detect language
+                "language": "mixed",  # Chunked mode does not reliably detect one language.
                 "duration": total_duration,
                 "words": all_words,
                 "segments": all_segments,
@@ -481,6 +489,19 @@ class TranscriptionService:
             deduped.append(w)
 
         return deduped
+
+    @staticmethod
+    def _segments_from_text(text: str, duration: float) -> List[dict]:
+        """Fallback for ASR responses that include text but omit segment timestamps."""
+        clean_text = (text or "").strip()
+        if not clean_text:
+            return []
+        return [{
+            "text": clean_text,
+            "start": 0.0,
+            "end": float(duration or 0.0),
+            "speaker": None,
+        }]
 
     # ═══════════════════════════════════════════
     #  UTILITIES

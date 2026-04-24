@@ -46,9 +46,8 @@ router = APIRouter()
 async def upload_video(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
-    """Upload a video file and start processing pipeline."""
+    """Upload a video file and wait for the user to start processing."""
     # Validate file type
     allowed_types = {"video/mp4", "video/mpeg", "video/quicktime", "video/x-msvideo", "video/webm"}
     if file.content_type not in allowed_types:
@@ -90,18 +89,60 @@ async def upload_video(
     db.add(video)
     await db.commit()
 
-    # Start background processing
-    background_tasks.add_task(_process_video_bg, str(video_id))
-
     return VideoUploadResponse(
         id=video_id,
         filename=file.filename,
-        status=VideoStatus.PROCESSING,
+        status=VideoStatus.UPLOADED,
         duration_seconds=metadata.get("duration"),
         resolution=f"{metadata.get('width', 0)}x{metadata.get('height', 0)}" if metadata else None,
         file_size_mb=round(file_size / 1024 / 1024, 1),
-        message=f"Video uploaded ({file_size / 1024 / 1024:.1f}MB). Processing started.",
+        message=f"Video uploaded ({file_size / 1024 / 1024:.1f}MB). Add course materials, then start processing.",
     )
+
+
+@router.post("/videos/{video_id}/process", tags=["Videos"])
+async def start_video_processing(
+    video_id: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """Start the processing pipeline after video/material uploads are complete."""
+    video = await db.get(Video, video_id)
+    if not video:
+        raise HTTPException(404, "Video not found")
+
+    in_progress = {
+        VideoStatus.PROCESSING,
+        VideoStatus.TRANSCRIBING,
+        VideoStatus.ANALYZING,
+        VideoStatus.PLANNING,
+        VideoStatus.RENDERING,
+    }
+    if video.status in in_progress:
+        return {
+            "status": video.status.value,
+            "video_id": video_id,
+            "message": "Processing is already running.",
+        }
+
+    if video.status in {VideoStatus.AWAITING_REVIEW, VideoStatus.COMPLETED}:
+        return {
+            "status": video.status.value,
+            "video_id": video_id,
+            "message": "This video has already been processed.",
+        }
+
+    video.status = VideoStatus.PROCESSING
+    video.error_message = None
+    await db.commit()
+
+    background_tasks.add_task(_process_video_bg, str(video_id))
+
+    return {
+        "status": VideoStatus.PROCESSING.value,
+        "video_id": video_id,
+        "message": "Processing started.",
+    }
 
 
 @router.get("/videos", response_model=List[VideoResponse], tags=["Videos"])

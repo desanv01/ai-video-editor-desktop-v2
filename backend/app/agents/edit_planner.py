@@ -214,6 +214,8 @@ async def run_edit_planner_agent(video_id: str, db: AsyncSession) -> dict:
             silence_removed += seg.pause_duration_total or 0
 
     # ── Step 4: Coherence post-check ──
+    counts, total_fillers_removed, silence_removed = _ensure_actionable_plan(segments, counts)
+
     coherence_warnings = _check_coherence(segments)
     all_warnings.extend(coherence_warnings)
 
@@ -505,6 +507,32 @@ def _fallback_single(seg: Segment) -> dict:
     has_slide = seg.has_slide_change or False
     has_repetition = seg.has_repetition or False
     seg_type = seg.segment_type
+    text_word_count = len((seg.text or "").split())
+
+    # Cut obvious non-content even if upstream analysis was unavailable.
+    if text_word_count < 8 or (seg.duration or 0) <= 2:
+        return {
+            "segment_index": seg.segment_index,
+            "action": "cut",
+            "confidence": 0.85,
+            "reason": "Very little transcribed content",
+        }
+
+    if pause_ratio > 0.55 and importance < 0.6:
+        return {
+            "segment_index": seg.segment_index,
+            "action": "cut",
+            "confidence": 0.8,
+            "reason": f"Mostly silence ({pause_ratio*100:.0f}% pause)",
+        }
+
+    if pause_ratio > 0.25 and importance < 0.75:
+        return {
+            "segment_index": seg.segment_index,
+            "action": "shorten",
+            "confidence": 0.72,
+            "reason": f"Contains removable pauses ({pause_ratio*100:.0f}% pause)",
+        }
 
     # Highlight: very important core content
     if importance >= 0.85 and seg_type in (SegmentType.CORE_CONTENT, SegmentType.EXAMPLE):
@@ -551,15 +579,6 @@ def _fallback_single(seg: Segment) -> dict:
             "reason": f"Low importance ({importance:.2f}), type={seg_type.value if seg_type else 'unknown'}",
         }
 
-    # Cut: mostly silence
-    if pause_ratio > 0.5:
-        return {
-            "segment_index": seg.segment_index,
-            "action": "cut",
-            "confidence": 0.75,
-            "reason": f"Mostly silence ({pause_ratio*100:.0f}% pause)",
-        }
-
     # Cut: repetition with low importance
     if has_repetition and importance < 0.5:
         return {
@@ -581,6 +600,61 @@ def _fallback_single(seg: Segment) -> dict:
 # ═══════════════════════════════════════════
 #  CHAPTER MARKERS
 # ═══════════════════════════════════════════
+
+def _ensure_actionable_plan(segments: List[Segment], counts: dict) -> tuple[dict, int, float]:
+    """
+    Apply clear mechanical edits if the model kept every segment.
+
+    This avoids a no-op render for lectures with obvious silence/filler sections
+    while preserving high-importance educational content.
+    """
+    if counts.get("cut", 0) or counts.get("shorten", 0):
+        total_fillers_removed = sum(s.filler_count or 0 for s in segments if s.action == SegmentAction.CUT)
+        silence_removed = sum(
+            s.pause_duration_total or 0
+            for s in segments
+            if s.action in (SegmentAction.CUT, SegmentAction.SHORTEN)
+        )
+        return counts, total_fillers_removed, round(silence_removed, 2)
+
+    updated = False
+    for seg in segments:
+        fallback = _fallback_single(seg)
+        fallback_action = fallback["action"]
+        if fallback_action not in ("cut", "shorten"):
+            continue
+
+        importance = seg.importance_score or 0.5
+        if importance >= 0.75:
+            continue
+
+        seg.action = SegmentAction(fallback_action)
+        seg.action_confidence = max(float(seg.action_confidence or 0), fallback["confidence"])
+        seg.action_reason = f"{seg.action_reason or 'Kept by model'}; fallback edit: {fallback['reason']}"
+        updated = True
+
+    if not updated:
+        return counts, 0, 0.0
+
+    recalculated = {"keep": 0, "cut": 0, "shorten": 0, "highlight": 0}
+    for seg in segments:
+        recalculated[(seg.action or SegmentAction.KEEP).value] += 1
+
+    total_fillers_removed = sum(s.filler_count or 0 for s in segments if s.action == SegmentAction.CUT)
+    silence_removed = sum(
+        s.pause_duration_total or 0
+        for s in segments
+        if s.action in (SegmentAction.CUT, SegmentAction.SHORTEN)
+    )
+
+    if recalculated["cut"] or recalculated["shorten"]:
+        logger.info(
+            "Applied fallback mechanical edits after model kept all segments: "
+            f"{recalculated['cut']} cut, {recalculated['shorten']} shorten"
+        )
+
+    return recalculated, total_fillers_removed, round(silence_removed, 2)
+
 
 def _generate_chapters(segments: List[Segment]) -> List[dict]:
     """

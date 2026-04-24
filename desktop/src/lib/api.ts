@@ -45,6 +45,10 @@ export async function uploadVideo(file: File): Promise<VideoUploadResponse> {
   return res.json();
 }
 
+export async function startVideoProcessing(id: string): Promise<{ status: string; message: string }> {
+  return request(`/videos/${id}/process`, { method: "POST" });
+}
+
 export async function listVideos(): Promise<Video[]> {
   return request("/videos");
 }
@@ -127,7 +131,10 @@ export async function uploadMaterial(file: File): Promise<{ id: string; chunk_co
   form.append("file", file);
 
   const res = await fetch(`${BASE_URL}/materials/upload`, { method: "POST", body: form });
-  if (!res.ok) throw new Error(`Material upload failed: ${res.status}`);
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Material upload failed: ${res.status}${body ? ` - ${body.slice(0, 300)}` : ""}`);
+  }
   return res.json();
 }
 

@@ -1,5 +1,5 @@
-import { useState, useCallback } from "react";
-import { Upload, FileVideo, BookOpen, X, Loader2 } from "lucide-react";
+import { useState, useCallback, useEffect } from "react";
+import { Upload, FileVideo, BookOpen, X, Loader2, Play } from "lucide-react";
 import * as api from "../lib/api";
 
 interface Props {
@@ -11,11 +11,13 @@ export function UploadPanel({ onUpload }: Props) {
   const [dragOver, setDragOver] = useState(false);
   const [materials, setMaterials] = useState<{ id: string; filename: string; chunk_count: number }[]>([]);
   const [materialUploading, setMaterialUploading] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [uploadedVideo, setUploadedVideo] = useState<{ id: string; filename: string } | null>(null);
 
   // Load existing materials on mount
-  useState(() => {
+  useEffect(() => {
     api.listMaterials().then(setMaterials).catch(() => {});
-  });
+  }, []);
 
   const handleFile = useCallback(async (file: File) => {
     if (!file.type.startsWith("video/")) {
@@ -26,7 +28,7 @@ export function UploadPanel({ onUpload }: Props) {
     setUploading(true);
     try {
       const result = await api.uploadVideo(file);
-      onUpload(result.id, file.name);
+      setUploadedVideo({ id: result.id, filename: file.name });
     } catch (e) {
       alert(`Upload failed: ${e}`);
     } finally {
@@ -62,6 +64,20 @@ export function UploadPanel({ onUpload }: Props) {
     setMaterials(prev => prev.filter(m => m.id !== id));
   };
 
+  const handleStartProcessing = async () => {
+    if (!uploadedVideo) return;
+
+    setStarting(true);
+    try {
+      await api.startVideoProcessing(uploadedVideo.id);
+      onUpload(uploadedVideo.id, uploadedVideo.filename);
+    } catch (e) {
+      alert(`Processing failed to start: ${e}`);
+    } finally {
+      setStarting(false);
+    }
+  };
+
   return (
     <div className="h-full flex items-center justify-center p-8">
       <div className="max-w-2xl w-full space-y-8">
@@ -87,6 +103,12 @@ export function UploadPanel({ onUpload }: Props) {
             <div className="flex flex-col items-center gap-3">
               <Loader2 className="w-12 h-12 text-accent animate-spin" />
               <p className="text-lg">Uploading video...</p>
+            </div>
+          ) : uploadedVideo ? (
+            <div className="flex flex-col items-center gap-3">
+              <FileVideo className="w-12 h-12 text-accent" />
+              <p className="text-lg font-medium">{uploadedVideo.filename}</p>
+              <p className="text-sm text-gray-400">Video uploaded. Add notes below, or click here to replace it.</p>
             </div>
           ) : (
             <div className="flex flex-col items-center gap-3">
@@ -135,6 +157,22 @@ export function UploadPanel({ onUpload }: Props) {
               ))}
             </div>
           )}
+        </div>
+
+        <div className="flex items-center justify-between gap-4">
+          <p className="text-xs text-gray-500">
+            {materials.length > 0
+              ? `${materials.length} material${materials.length === 1 ? "" : "s"} ready for RAG.`
+              : "You can proceed without notes, but RAG context will be limited."}
+          </p>
+          <button
+            onClick={handleStartProcessing}
+            disabled={!uploadedVideo || uploading || materialUploading || starting}
+            className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {starting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+            Start Processing
+          </button>
         </div>
       </div>
     </div>
