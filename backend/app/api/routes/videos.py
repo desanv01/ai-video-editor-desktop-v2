@@ -5,6 +5,7 @@ API Routes — Video upload, processing, teacher review, rendering.
 import os
 import uuid
 import shutil
+import logging
 from datetime import datetime
 from typing import List
 
@@ -36,6 +37,7 @@ from config import settings
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════
@@ -393,6 +395,7 @@ async def get_quality_report(video_id: str, db: AsyncSession = Depends(get_db)):
 async def upload_course_material(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     """
     Upload course material (PDF, PPTX, DOCX, TXT, MD) for the RAG knowledge base.
@@ -441,25 +444,23 @@ async def upload_course_material(
         content_text=content[:50000],  # Store first 50K chars in DB for quick access
     )
     db.add(material)
-
-    # Chunk and embed into Qdrant
-    await rag_service.ensure_collection()
-    chunk_count = await rag_service.ingest_course_material(
-        source_id=str(material_id),
-        filename=file.filename,
-        pages=pages,
-    )
-
-    material.chunk_count = chunk_count
-    material.is_embedded = chunk_count > 0
     await db.commit()
+
+    # Embedding can take a while or fail if the vector/LLM services are still warming up.
+    # Keep the upload responsive and surface embedding issues in backend logs.
+    background_tasks.add_task(
+        _embed_material_bg,
+        str(material_id),
+        file.filename,
+        pages,
+    )
 
     return CourseMaterialUploadResponse(
         id=material_id,
         filename=file.filename,
         file_type=ext.lstrip("."),
-        chunk_count=chunk_count,
-        message=f"Extracted {meta.get('word_count', 0)} words from {meta.get('page_count', '?')} pages, stored {chunk_count} chunks.",
+        chunk_count=0,
+        message=f"Extracted {meta.get('word_count', 0)} words from {meta.get('page_count', '?')} pages. Embedding queued.",
     )
 
 
@@ -670,6 +671,45 @@ async def list_exports(video_id: str, db: AsyncSession = Depends(get_db)):
 # ═══════════════════════════════════════════
 #  BACKGROUND TASK HELPERS
 # ═══════════════════════════════════════════
+
+async def _embed_material_bg(material_id: str, filename: str, pages: list[dict]):
+    """Embed an uploaded material after the HTTP upload response returns."""
+    from db.database import async_session
+
+    logger.info(f"Embedding queued material {material_id} ({filename})")
+
+    async with async_session() as db:
+        try:
+            material = await db.get(CourseMaterial, material_id)
+            if not material:
+                logger.warning(f"Material {material_id} missing before embedding")
+                return
+
+            await rag_service.ensure_collection()
+            chunk_count = await rag_service.ingest_course_material(
+                source_id=material_id,
+                filename=filename,
+                pages=pages,
+            )
+
+            material.chunk_count = chunk_count
+            material.is_embedded = chunk_count > 0
+            await db.commit()
+
+            logger.info(
+                f"Embedded material {material_id} ({filename}): {chunk_count} chunks"
+            )
+
+        except Exception as e:
+            logger.error(f"Material embedding failed for {material_id} ({filename}): {e}", exc_info=True)
+            try:
+                material = await db.get(CourseMaterial, material_id)
+                if material:
+                    material.is_embedded = False
+                    await db.commit()
+            except Exception:
+                logger.error(f"Failed to mark material {material_id} embedding failure", exc_info=True)
+
 
 async def _process_video_bg(video_id: str):
     """

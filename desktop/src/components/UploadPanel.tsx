@@ -13,6 +13,7 @@ export function UploadPanel({ onUpload }: Props) {
   const [materialUploading, setMaterialUploading] = useState(false);
   const [starting, setStarting] = useState(false);
   const [uploadedVideo, setUploadedVideo] = useState<{ id: string; filename: string } | null>(null);
+  const embeddedMaterials = materials.filter(m => m.chunk_count > 0).length;
 
   // Load existing materials on mount
   useEffect(() => {
@@ -20,6 +21,8 @@ export function UploadPanel({ onUpload }: Props) {
   }, []);
 
   const handleFile = useCallback(async (file: File) => {
+    if (uploading || starting) return;
+
     if (!file.type.startsWith("video/")) {
       alert("Please upload a video file (MP4, MOV, AVI, WebM)");
       return;
@@ -34,7 +37,7 @@ export function UploadPanel({ onUpload }: Props) {
     } finally {
       setUploading(false);
     }
-  }, [onUpload]);
+  }, [uploading, starting]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -44,6 +47,8 @@ export function UploadPanel({ onUpload }: Props) {
   }, [handleFile]);
 
   const handleMaterialUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (materialUploading) return;
+
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -89,6 +94,7 @@ export function UploadPanel({ onUpload }: Props) {
           onDragLeave={() => setDragOver(false)}
           onDrop={handleDrop}
           onClick={() => {
+            if (uploading || starting) return;
             const input = document.createElement("input");
             input.type = "file";
             input.accept = "video/*";
@@ -162,7 +168,7 @@ export function UploadPanel({ onUpload }: Props) {
         <div className="flex items-center justify-between gap-4">
           <p className="text-xs text-gray-500">
             {materials.length > 0
-              ? `${materials.length} material${materials.length === 1 ? "" : "s"} ready for RAG.`
+              ? `${embeddedMaterials}/${materials.length} material${materials.length === 1 ? "" : "s"} embedded for RAG.`
               : "You can proceed without notes, but RAG context will be limited."}
           </p>
           <button

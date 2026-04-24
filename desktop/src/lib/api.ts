@@ -12,6 +12,9 @@ import type {
 } from "../types/api";
 
 let BASE_URL = "http://localhost:8000/api/v1";
+const DEFAULT_TIMEOUT_MS = 30_000;
+const VIDEO_UPLOAD_TIMEOUT_MS = 10 * 60_000;
+const MATERIAL_UPLOAD_TIMEOUT_MS = 90_000;
 
 export function setBaseUrl(url: string) {
   BASE_URL = url.replace(/\/+$/, "") + "/api/v1";
@@ -19,10 +22,10 @@ export function setBaseUrl(url: string) {
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${BASE_URL}${path}`;
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     headers: { "Content-Type": "application/json", ...options?.headers },
     ...options,
-  });
+  }, DEFAULT_TIMEOUT_MS);
 
   if (!res.ok) {
     const body = await res.text();
@@ -30,6 +33,27 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   }
 
   return res.json();
+}
+
+async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)} seconds`);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+async function errorFromResponse(prefix: string, res: Response): Promise<Error> {
+  const body = await res.text();
+  return new Error(`${prefix}: ${res.status}${body ? ` - ${body.slice(0, 300)}` : ""}`);
 }
 
 // ═══════════════════════════════════════════
@@ -40,8 +64,12 @@ export async function uploadVideo(file: File): Promise<VideoUploadResponse> {
   const form = new FormData();
   form.append("file", file);
 
-  const res = await fetch(`${BASE_URL}/videos/upload`, { method: "POST", body: form });
-  if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
+  const res = await fetchWithTimeout(
+    `${BASE_URL}/videos/upload`,
+    { method: "POST", body: form },
+    VIDEO_UPLOAD_TIMEOUT_MS,
+  );
+  if (!res.ok) throw await errorFromResponse("Upload failed", res);
   return res.json();
 }
 
@@ -130,11 +158,12 @@ export async function uploadMaterial(file: File): Promise<{ id: string; chunk_co
   const form = new FormData();
   form.append("file", file);
 
-  const res = await fetch(`${BASE_URL}/materials/upload`, { method: "POST", body: form });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Material upload failed: ${res.status}${body ? ` - ${body.slice(0, 300)}` : ""}`);
-  }
+  const res = await fetchWithTimeout(
+    `${BASE_URL}/materials/upload`,
+    { method: "POST", body: form },
+    MATERIAL_UPLOAD_TIMEOUT_MS,
+  );
+  if (!res.ok) throw await errorFromResponse("Material upload failed", res);
   return res.json();
 }
 
