@@ -20,19 +20,20 @@ _registry: Optional[ProviderRegistry] = None
 def build_provider_registry(settings) -> ProviderRegistry:
     registry = ProviderRegistry()
 
-    registry.register(
-        ExistingPipelineTranscriptionProvider(
-            provider_id=settings.ASR_PROVIDER.lower(),
-            label=f"{settings.ASR_PROVIDER.title()} Transcription",
-            provider_name=settings.ASR_PROVIDER.lower(),
-            default_model=(
-                settings.VOXTRAL_MODEL
-                if settings.ASR_PROVIDER.lower() == "voxtral"
-                else settings.WHISPER_MODEL
+    default_asr_provider = settings.ASR_PROVIDER.lower()
+    for provider_id, label, provider_name, model in (
+        ("voxtral", "Voxtral Transcription", "mistral", settings.VOXTRAL_MODEL),
+        ("whisper", "Whisper Transcription", "openai", settings.WHISPER_MODEL),
+    ):
+        registry.register(
+            ExistingPipelineTranscriptionProvider(
+                provider_id=provider_id,
+                label=label,
+                provider_name=provider_name,
+                default_model=model,
             ),
-        ),
-        set_default=True,
-    )
+            set_default=provider_id == default_asr_provider,
+        )
 
     registry.register(
         OpenAICompatibleChatProvider(

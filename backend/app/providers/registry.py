@@ -16,10 +16,16 @@ class ProviderRegistry:
         self._defaults: dict[ProviderKind, str] = {}
         self._processing_modes = processing_modes or ProcessingModeConfig()
 
-    def register(self, provider: AIProvider, *, set_default: bool = False) -> AIProvider:
+    def register(
+        self,
+        provider: AIProvider,
+        *,
+        set_default: bool = False,
+        replace: bool = False,
+    ) -> AIProvider:
         metadata = provider.metadata
         providers = self._providers[metadata.kind]
-        if metadata.provider_id in providers:
+        if metadata.provider_id in providers and not replace:
             raise ValueError(
                 f"Provider already registered for {metadata.kind.value}: "
                 f"{metadata.provider_id}"

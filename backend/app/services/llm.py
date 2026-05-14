@@ -18,8 +18,11 @@ from providers import (
 class LLMService:
     """Handles existing LLM calls while delegating to typed AI providers."""
 
-    def __init__(self):
-        self.registry = get_provider_registry()
+    def _provider_for_kind(self, kind: ProviderKind):
+        registry = get_provider_registry()
+        mode_config = registry.processing_mode_for(kind)
+        provider_id = mode_config.api_provider_id or registry.default_provider_id(kind)
+        return registry.get(kind, provider_id)
 
     async def chat(
         self,
@@ -41,7 +44,7 @@ class LLMService:
         Returns:
             The assistant's response text.
         """
-        provider = self.registry.get(ProviderKind.CHAT)
+        provider = self._provider_for_kind(ProviderKind.CHAT)
         if not isinstance(provider, ChatProvider):
             raise TypeError("Default chat provider does not implement ChatProvider")
 
@@ -97,7 +100,7 @@ class LLMService:
         Returns:
             List of embedding vectors
         """
-        provider = self.registry.get(ProviderKind.EMBEDDING)
+        provider = self._provider_for_kind(ProviderKind.EMBEDDING)
         if not isinstance(provider, EmbeddingProvider):
             raise TypeError("Default embedding provider does not implement EmbeddingProvider")
 
