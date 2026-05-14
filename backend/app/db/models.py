@@ -219,3 +219,30 @@ class CourseMaterial(Base):
     is_embedded = Column(Boolean, default=False)
 
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AppAISettings(Base):
+    """Singleton app settings for AI provider routing and local model choices."""
+    __tablename__ = "app_ai_settings"
+
+    id = Column(String(50), primary_key=True, default="default")
+    preferred_processing_mode = Column(String(20), nullable=False, default="hybrid")
+    fallback_enabled = Column(Boolean, nullable=False, default=True)
+
+    # Per-capability settings keyed by ProviderKind.value.
+    # Example:
+    # {"chat": {"mode": "api", "api_provider_id": "deepseek-chat", ...}}
+    capabilities_json = Column(JSON, nullable=False, default=dict)
+
+    # API keys are never returned through API responses. Values stored here are
+    # encrypted payloads plus redaction metadata or environment variable refs.
+    api_keys_json = Column(JSON, nullable=False, default=dict)
+
+    # Local model/runtime paths keyed by capability or runtime role.
+    local_model_paths_json = Column(JSON, nullable=False, default=dict)
+
+    # Domain terms are persisted here instead of mutating process memory only.
+    domain_terms_json = Column(JSON, nullable=False, default=list)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

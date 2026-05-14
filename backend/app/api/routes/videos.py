@@ -24,7 +24,8 @@ from models.schemas import (
     SegmentResponse, SegmentUpdateRequest, BulkSegmentUpdateRequest,
     EditPlanResponse, EditPlanApproveRequest,
     CourseMaterialUploadResponse, CourseMaterialResponse,
-    ProcessingStatus, AppSettingsResponse, DomainTermsUpdateRequest,
+    ProcessingStatus, AppSettingsResponse, AppSettingsUpdateRequest,
+    DomainTermsUpdateRequest,
 )
 from agents.orchestrator import run_processing_pipeline, run_render_pipeline
 from agents.edit_planner import revalidate_edit_plan
@@ -32,6 +33,11 @@ from services.ffmpeg import ffmpeg_service
 from services.renderer import generate_quality_report
 from services.text_extraction import text_extractor
 from services.progress import get_progress as get_pipeline_progress
+from services.app_settings import (
+    get_or_create_ai_settings,
+    settings_response,
+    update_ai_settings,
+)
 from rag.vector_store import rag_service
 from config import settings
 
@@ -497,32 +503,47 @@ async def delete_course_material(material_id: str, db: AsyncSession = Depends(ge
 # ═══════════════════════════════════════════
 
 @router.get("/settings", response_model=AppSettingsResponse, tags=["Settings"])
-async def get_settings():
-    """Get current application settings (for desktop app display)."""
-    return AppSettingsResponse(
-        asr_provider=settings.ASR_PROVIDER,
-        agent2_model=settings.AGENT2_MODEL,
-        agent3_model=settings.AGENT3_MODEL,
-        agent5_model=settings.AGENT5_MODEL,
-        embedding_model=settings.EMBEDDING_MODEL,
-        domain_terms=settings.domain_terms_list,
-    )
+async def get_settings(db: AsyncSession = Depends(get_db)):
+    """Get current application settings with API keys redacted."""
+    record = await get_or_create_ai_settings(db)
+    return settings_response(record)
+
+
+@router.get("/settings/ai", response_model=AppSettingsResponse, tags=["Settings"])
+async def get_ai_settings(db: AsyncSession = Depends(get_db)):
+    """Get AI provider settings for the desktop settings UI."""
+    record = await get_or_create_ai_settings(db)
+    return settings_response(record)
+
+
+@router.put("/settings/ai", response_model=AppSettingsResponse, tags=["Settings"])
+async def update_settings(
+    request: AppSettingsUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Persist AI provider settings, local paths, fallback behavior, and API keys."""
+    return await update_ai_settings(db, request)
 
 
 @router.put("/settings/domain-terms", tags=["Settings"])
-async def update_domain_terms(request: DomainTermsUpdateRequest):
+async def update_domain_terms(
+    request: DomainTermsUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+):
     """
     Update domain-specific terms for ASR context biasing.
     These terms improve Voxtral's accuracy on specialized vocabulary.
     Note: In production, this would persist to a config store.
     For the FYP, we update the in-memory settings.
     """
-    import json as json_mod
-    settings.DOMAIN_TERMS = json_mod.dumps(request.terms)
+    response = await update_ai_settings(
+        db,
+        AppSettingsUpdateRequest(domain_terms=request.terms),
+    )
     return {
         "status": "updated",
         "terms_count": len(request.terms),
-        "terms": request.terms,
+        "terms": response.domain_terms,
     }
 
 

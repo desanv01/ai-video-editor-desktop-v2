@@ -4,7 +4,7 @@ Updated for v2: speaker diarization, ASR provider tracking, domain terms.
 """
 
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
 from datetime import datetime
 from uuid import UUID
 from db.models import VideoStatus, SegmentAction, SegmentType
@@ -229,6 +229,53 @@ class AppSettingsResponse(BaseModel):
     agent5_model: str
     embedding_model: str
     domain_terms: List[str]
+    preferred_processing_mode: str = "hybrid"
+    fallback_enabled: bool = True
+    capabilities: Dict[str, "AICapabilitySettings"] = Field(default_factory=dict)
+    api_keys: Dict[str, "APIKeyStatus"] = Field(default_factory=dict)
+    local_model_paths: Dict[str, Optional[str]] = Field(default_factory=dict)
+
+
+class AICapabilitySettings(BaseModel):
+    mode: str
+    api_provider_id: Optional[str] = None
+    local_provider_id: Optional[str] = None
+    fallback_enabled: bool = True
+    hybrid_fallback_order: List[str] = Field(default_factory=list)
+
+
+class APIKeyStatus(BaseModel):
+    provider: str
+    source: str = "env"
+    env_var: Optional[str] = None
+    has_key: bool = False
+    display_value: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class APIKeyUpdate(BaseModel):
+    api_key: Optional[str] = Field(default=None, max_length=4096)
+    clear: bool = False
+    use_env: bool = False
+    env_var: Optional[str] = Field(default=None, max_length=100)
+
+
+class AICapabilitySettingsUpdate(BaseModel):
+    mode: Optional[str] = None
+    api_provider_id: Optional[str] = Field(default=None, max_length=100)
+    local_provider_id: Optional[str] = Field(default=None, max_length=100)
+    fallback_enabled: Optional[bool] = None
+    hybrid_fallback_order: Optional[List[str]] = None
+
+
+class AppSettingsUpdateRequest(BaseModel):
+    preferred_processing_mode: Optional[str] = None
+    fallback_enabled: Optional[bool] = None
+    capabilities: Optional[Dict[str, AICapabilitySettingsUpdate]] = None
+    api_keys: Optional[Dict[str, APIKeyUpdate]] = None
+    local_model_paths: Optional[Dict[str, Optional[str]]] = None
+    domain_terms: Optional[List[str]] = Field(default=None, max_length=100)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class DomainTermsUpdateRequest(BaseModel):
@@ -238,3 +285,4 @@ class DomainTermsUpdateRequest(BaseModel):
 
 # Resolve forward references
 VideoDetailResponse.model_rebuild()
+AppSettingsResponse.model_rebuild()

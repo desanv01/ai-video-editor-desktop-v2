@@ -8,7 +8,7 @@
 import type {
   Video, VideoUploadResponse, Segment, EditPlan,
   ProcessingStatus, QualityReport, Chapter,
-  RevalidationResult, SegmentAction,
+  RevalidationResult, SegmentAction, BackendAISettings,
 } from "../types/api";
 
 let BASE_URL = "http://localhost:8000/api/v1";
@@ -179,8 +179,19 @@ export async function deleteMaterial(id: string): Promise<void> {
 //  SETTINGS
 // ═══════════════════════════════════════════
 
-export async function getSettings(): Promise<Record<string, unknown>> {
+export async function getSettings(): Promise<BackendAISettings> {
   return request("/settings");
+}
+
+export async function getAISettings(): Promise<BackendAISettings> {
+  return request("/settings/ai");
+}
+
+export async function updateAISettings(settings: Partial<BackendAISettings>): Promise<BackendAISettings> {
+  return request("/settings/ai", {
+    method: "PUT",
+    body: JSON.stringify(settings),
+  });
 }
 
 export async function updateDomainTerms(terms: string[]): Promise<void> {

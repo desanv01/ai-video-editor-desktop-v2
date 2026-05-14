@@ -156,6 +156,40 @@ export interface RevalidationResult {
 
 // ── App Settings ──
 
+export type AIProcessingMode = "api" | "local" | "hybrid";
+export type AIProviderKind = "transcription" | "chat" | "embedding" | "vision" | "local_runtime";
+
+export interface AICapabilitySettings {
+  mode: AIProcessingMode;
+  api_provider_id: string | null;
+  local_provider_id: string | null;
+  fallback_enabled: boolean;
+  hybrid_fallback_order: AIProcessingMode[];
+}
+
+export interface APIKeyStatus {
+  provider: string;
+  source: "env" | "encrypted_db";
+  env_var: string | null;
+  has_key: boolean;
+  display_value: string | null;
+  updated_at: string | null;
+}
+
+export interface BackendAISettings {
+  asr_provider: string;
+  agent2_model: string;
+  agent3_model: string;
+  agent5_model: string;
+  embedding_model: string;
+  domain_terms: string[];
+  preferred_processing_mode: AIProcessingMode;
+  fallback_enabled: boolean;
+  capabilities: Record<AIProviderKind, AICapabilitySettings>;
+  api_keys: Record<string, APIKeyStatus>;
+  local_model_paths: Record<AIProviderKind, string | null>;
+}
+
 export interface AppSettings {
   backend_url: string;
   asr_provider: string;

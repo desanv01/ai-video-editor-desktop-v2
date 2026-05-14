@@ -1,6 +1,10 @@
 """AI provider interfaces and registry helpers."""
 
-from providers.defaults import build_provider_registry, get_provider_registry
+from providers.defaults import (
+    build_provider_registry,
+    get_provider_registry,
+    reset_provider_registry,
+)
 from providers.interfaces import (
     ChatProvider,
     ChatRequest,
@@ -33,6 +37,7 @@ from providers.registry import ProviderRegistry
 __all__ = [
     "build_provider_registry",
     "get_provider_registry",
+    "reset_provider_registry",
     "ProviderRegistry",
     "ProviderKind",
     "ProviderMetadata",

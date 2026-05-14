@@ -71,3 +71,8 @@ def get_provider_registry() -> ProviderRegistry:
 
         _registry = build_provider_registry(settings)
     return _registry
+
+
+def reset_provider_registry() -> None:
+    global _registry
+    _registry = None

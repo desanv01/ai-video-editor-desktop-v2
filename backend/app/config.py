@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     AI_EMBEDDING_MODE: str = "api"
     AI_VISION_MODE: str = "api"
     AI_LOCAL_RUNTIME_MODE: str = "local"
+    APP_SETTINGS_SECRET_KEY: str = ""           # Fernet key for DB-persisted API keys
+    LOCAL_TRANSCRIPTION_MODEL_PATH: str = ""
+    LOCAL_CHAT_MODEL_PATH: str = ""
+    LOCAL_EMBEDDING_MODEL_PATH: str = ""
+    LOCAL_VISION_MODEL_PATH: str = ""
+    LOCAL_RUNTIME_PATH: str = ""
 
     # ── Embedding Configuration ──
     EMBEDDING_MODEL: str = "text-embedding-3-small"  # OpenAI (swap to BGE-M3 endpoint when available)
