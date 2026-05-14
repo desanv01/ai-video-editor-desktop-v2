@@ -1,0 +1,50 @@
+"""AI provider interfaces and registry helpers."""
+
+from providers.defaults import build_provider_registry, get_provider_registry
+from providers.interfaces import (
+    ChatProvider,
+    ChatRequest,
+    ChatResponse,
+    EmbeddingProvider,
+    EmbeddingRequest,
+    EmbeddingResponse,
+    LocalModelRuntimeProvider,
+    LocalRuntimeRequest,
+    LocalRuntimeResponse,
+    ProviderHealth,
+    ProviderHealthStatus,
+    ProviderKind,
+    ProviderMetadata,
+    TranscriptionProvider,
+    TranscriptionRequest,
+    TranscriptionResponse,
+    VisionProvider,
+    VisionRequest,
+    VisionResponse,
+)
+from providers.registry import ProviderRegistry
+
+__all__ = [
+    "build_provider_registry",
+    "get_provider_registry",
+    "ProviderRegistry",
+    "ProviderKind",
+    "ProviderMetadata",
+    "ProviderHealth",
+    "ProviderHealthStatus",
+    "ChatProvider",
+    "ChatRequest",
+    "ChatResponse",
+    "EmbeddingProvider",
+    "EmbeddingRequest",
+    "EmbeddingResponse",
+    "TranscriptionProvider",
+    "TranscriptionRequest",
+    "TranscriptionResponse",
+    "VisionProvider",
+    "VisionRequest",
+    "VisionResponse",
+    "LocalModelRuntimeProvider",
+    "LocalRuntimeRequest",
+    "LocalRuntimeResponse",
+]
