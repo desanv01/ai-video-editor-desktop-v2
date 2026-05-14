@@ -1,0 +1,395 @@
+import sys
+import types
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
+
+
+APP_DIR = Path(__file__).resolve().parents[1] / "app"
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+
+if "openai" not in sys.modules:
+    openai_stub = types.ModuleType("openai")
+
+    class AsyncOpenAI:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    openai_stub.AsyncOpenAI = AsyncOpenAI
+    sys.modules["openai"] = openai_stub
+
+if "config" not in sys.modules:
+    config_stub = types.ModuleType("config")
+    config_stub.settings = SimpleNamespace(
+        ASR_PROVIDER="voxtral",
+        VOXTRAL_MODEL="voxtral-mini-latest",
+        WHISPER_MODEL="whisper-1",
+        MISTRAL_API_KEY="",
+        MISTRAL_BASE_URL="https://api.mistral.ai/v1",
+        OPENAI_API_KEY="",
+        DEEPSEEK_API_KEY="",
+        DEEPSEEK_BASE_URL="https://api.deepseek.com",
+        AGENT2_MODEL="deepseek-chat",
+        EMBEDDING_MODEL="text-embedding-3-small",
+        EMBEDDING_DIMENSIONS=1536,
+        domain_terms_list=[],
+    )
+    sys.modules["config"] = config_stub
+
+from providers.defaults import build_provider_registry
+from providers.interfaces import (
+    ChatProvider,
+    ChatRequest,
+    ChatResponse,
+    EmbeddingProvider,
+    EmbeddingRequest,
+    EmbeddingResponse,
+    ProviderKind,
+    ProviderMetadata,
+    TranscriptionProvider,
+    TranscriptionRequest,
+    TranscriptionResponse,
+)
+from providers.processing_modes import (
+    CapabilityModeConfig,
+    ProcessingMode,
+    ProcessingModeConfig,
+    build_processing_mode_config,
+    parse_processing_mode,
+)
+from providers.registry import ProviderRegistry
+from services.llm import LLMService
+from services.transcription import TranscriptionService
+
+
+def settings_stub(**overrides):
+    defaults = {
+        "ASR_PROVIDER": "voxtral",
+        "VOXTRAL_MODEL": "voxtral-mini-latest",
+        "WHISPER_MODEL": "whisper-1",
+        "DEEPSEEK_API_KEY": "",
+        "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+        "AGENT2_MODEL": "deepseek-chat",
+        "OPENAI_API_KEY": "",
+        "EMBEDDING_MODEL": "text-embedding-3-small",
+        "EMBEDDING_DIMENSIONS": 1536,
+        "AI_PROCESSING_MODE": "hybrid",
+        "AI_PROVIDER_FALLBACK_ENABLED": True,
+        "AI_TRANSCRIPTION_MODE": "api",
+        "AI_CHAT_MODE": "api",
+        "AI_EMBEDDING_MODE": "api",
+        "AI_VISION_MODE": "api",
+        "AI_LOCAL_RUNTIME_MODE": "local",
+    }
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+class FakeChatProvider(ChatProvider):
+    def __init__(self, provider_id="fake-chat", text="ok"):
+        self.requests = []
+        self._text = text
+        self._metadata = ProviderMetadata(
+            provider_id=provider_id,
+            kind=ProviderKind.CHAT,
+            label="Fake Chat",
+            provider_name="fake",
+            default_model="fake-chat-model",
+        )
+
+    @property
+    def metadata(self):
+        return self._metadata
+
+    async def chat(self, request: ChatRequest) -> ChatResponse:
+        self.requests.append(request)
+        return ChatResponse(
+            text=self._text,
+            provider_id=self.metadata.provider_id,
+            model=request.model or self.metadata.default_model,
+        )
+
+
+class FakeEmbeddingProvider(EmbeddingProvider):
+    def __init__(self, provider_id="fake-embedding"):
+        self.requests = []
+        self._metadata = ProviderMetadata(
+            provider_id=provider_id,
+            kind=ProviderKind.EMBEDDING,
+            label="Fake Embeddings",
+            provider_name="fake",
+            default_model="fake-embedding-model",
+        )
+
+    @property
+    def metadata(self):
+        return self._metadata
+
+    async def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
+        self.requests.append(request)
+        return EmbeddingResponse(
+            embeddings=[[float(i), float(len(text))] for i, text in enumerate(request.texts)],
+            provider_id=self.metadata.provider_id,
+            model=request.model or self.metadata.default_model,
+            dimensions=2,
+        )
+
+
+class FakeTranscriptionProvider(TranscriptionProvider):
+    def __init__(self, provider_id, transcript=None, error=None):
+        self.calls = []
+        self.error = error
+        self.transcript = transcript or {
+            "text": f"{provider_id} transcript",
+            "duration": 4.0,
+            "segments": [],
+            "words": [],
+            "speakers": [],
+            "provider": provider_id,
+        }
+        self._metadata = ProviderMetadata(
+            provider_id=provider_id,
+            kind=ProviderKind.TRANSCRIPTION,
+            label=provider_id.title(),
+            provider_name="fake",
+            default_model=f"{provider_id}-model",
+        )
+
+    @property
+    def metadata(self):
+        return self._metadata
+
+    async def transcribe(self, request: TranscriptionRequest) -> TranscriptionResponse:
+        self.calls.append(request)
+        if self.error:
+            raise self.error
+        return TranscriptionResponse(
+            transcript=dict(self.transcript),
+            provider_id=self.metadata.provider_id,
+            model=self.metadata.default_model,
+        )
+
+
+class ProviderRegistryTests(unittest.TestCase):
+    def test_register_get_default_replace_and_describe(self):
+        registry = ProviderRegistry()
+        first = FakeChatProvider("first-chat")
+        second = FakeChatProvider("second-chat")
+
+        registry.register(first)
+        registry.register(second, set_default=True)
+
+        self.assertIs(registry.get(ProviderKind.CHAT, "first-chat"), first)
+        self.assertIs(registry.get(ProviderKind.CHAT), second)
+        self.assertEqual(registry.default_provider_id(ProviderKind.CHAT), "second-chat")
+
+        with self.assertRaisesRegex(ValueError, "already registered"):
+            registry.register(FakeChatProvider("first-chat"))
+
+        replacement = FakeChatProvider("first-chat", text="replacement")
+        registry.register(replacement, replace=True, set_default=True)
+
+        self.assertIs(registry.get(ProviderKind.CHAT, "first-chat"), replacement)
+        self.assertIs(registry.get(ProviderKind.CHAT), replacement)
+
+        description = registry.describe()
+        chat_entries = {
+            entry["provider_id"]: entry for entry in description[ProviderKind.CHAT.value]
+        }
+        self.assertTrue(chat_entries["first-chat"]["is_default"])
+        self.assertEqual(chat_entries["second-chat"]["configured_processing_mode"], "api")
+
+    def test_missing_provider_errors_are_actionable(self):
+        registry = ProviderRegistry()
+
+        with self.assertRaisesRegex(KeyError, "No default provider registered"):
+            registry.get(ProviderKind.CHAT)
+
+        with self.assertRaisesRegex(KeyError, "Provider not registered"):
+            registry.set_default(ProviderKind.CHAT, "missing")
+
+
+class ProcessingModeTests(unittest.TestCase):
+    def test_build_processing_mode_config_selects_defaults_by_capability(self):
+        registry = ProviderRegistry()
+        registry.register(FakeTranscriptionProvider("voxtral"), set_default=True)
+        registry.register(FakeChatProvider("deepseek-chat"), set_default=True)
+        registry.register(FakeEmbeddingProvider("openai-embeddings"), set_default=True)
+
+        config = build_processing_mode_config(settings_stub(), registry)
+
+        transcription = config.for_kind(ProviderKind.TRANSCRIPTION)
+        chat = config.for_kind(ProviderKind.CHAT)
+        local_runtime = config.for_kind(ProviderKind.LOCAL_RUNTIME)
+
+        self.assertEqual(config.default_mode, ProcessingMode.HYBRID)
+        self.assertEqual(transcription.mode, ProcessingMode.API)
+        self.assertEqual(transcription.api_provider_id, "voxtral")
+        self.assertEqual(transcription.mode_order(), (ProcessingMode.API,))
+        self.assertEqual(chat.api_provider_id, "deepseek-chat")
+        self.assertEqual(local_runtime.mode, ProcessingMode.LOCAL)
+        self.assertIsNone(local_runtime.api_provider_id)
+
+    def test_hybrid_mode_uses_capability_specific_fallback_order(self):
+        config = ProcessingModeConfig(
+            fallback_enabled=False,
+            capabilities={
+                ProviderKind.TRANSCRIPTION: CapabilityModeConfig(
+                    kind=ProviderKind.TRANSCRIPTION,
+                    mode=ProcessingMode.HYBRID,
+                    api_provider_id="voxtral",
+                    local_provider_id="whisper-cpp",
+                    fallback_enabled=False,
+                )
+            },
+        )
+
+        transcription = config.for_kind(ProviderKind.TRANSCRIPTION)
+
+        self.assertFalse(transcription.fallback_enabled)
+        self.assertEqual(
+            transcription.mode_order(),
+            (ProcessingMode.LOCAL, ProcessingMode.API),
+        )
+        self.assertEqual(
+            config.describe()["capabilities"]["transcription"]["mode_order"],
+            ["local", "api"],
+        )
+
+    def test_parse_processing_mode_normalizes_and_rejects_unknown_values(self):
+        self.assertEqual(parse_processing_mode(" HYBRID ", field_name="mode"), ProcessingMode.HYBRID)
+
+        with self.assertRaisesRegex(ValueError, "mode must be one of"):
+            parse_processing_mode("remote", field_name="mode")
+
+
+class DefaultRegistryTests(unittest.TestCase):
+    def test_default_registry_preserves_existing_pipeline_provider_ids(self):
+        registry = build_provider_registry(settings_stub(ASR_PROVIDER="whisper"))
+
+        self.assertEqual(
+            registry.default_provider_id(ProviderKind.TRANSCRIPTION),
+            "whisper",
+        )
+        self.assertEqual(registry.default_provider_id(ProviderKind.CHAT), "deepseek-chat")
+        self.assertEqual(
+            registry.default_provider_id(ProviderKind.EMBEDDING),
+            "openai-embeddings",
+        )
+        self.assertEqual(
+            registry.default_provider_id(ProviderKind.VISION),
+            "vision-unconfigured",
+        )
+        self.assertEqual(
+            registry.default_provider_id(ProviderKind.LOCAL_RUNTIME),
+            "local-runtime-unconfigured",
+        )
+
+        transcription_ids = {
+            provider.metadata.provider_id
+            for provider in registry.list(ProviderKind.TRANSCRIPTION)
+        }
+        self.assertEqual(transcription_ids, {"voxtral", "whisper"})
+
+
+class TranscriptionFallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_voxtral_failure_falls_back_to_whisper_when_enabled(self):
+        service = object.__new__(TranscriptionService)
+        voxtral = FakeTranscriptionProvider("voxtral", error=RuntimeError("api down"))
+        whisper = FakeTranscriptionProvider(
+            "whisper",
+            transcript={
+                "text": "fallback transcript",
+                "duration": 2.0,
+                "segments": [{"text": "fallback transcript", "start": 0, "end": 2}],
+                "words": [],
+                "speakers": [],
+                "provider": "whisper",
+            },
+        )
+        registry = Mock()
+        registry.processing_mode_for.return_value = SimpleNamespace(fallback_enabled=True)
+
+        service._selected_transcription_provider_id = Mock(return_value="voxtral")
+        service._get_audio_duration = AsyncMock(return_value=2.0)
+        service._get_transcription_provider = Mock(
+            side_effect=lambda provider_id: {
+                "voxtral": voxtral,
+                "whisper": whisper,
+            }[provider_id]
+        )
+        service._registry = Mock(return_value=registry)
+
+        result = await service.transcribe("lecture.wav", language="en", domain_terms=["bridge"])
+
+        self.assertEqual(result["text"], "fallback transcript")
+        self.assertEqual(result["provider"], "whisper_fallback")
+        self.assertEqual(len(voxtral.calls), 1)
+        self.assertEqual(len(whisper.calls), 1)
+        self.assertEqual(whisper.calls[0].metadata["duration"], 2.0)
+        self.assertEqual(whisper.calls[0].domain_terms, ["bridge"])
+
+    async def test_voxtral_failure_raises_when_fallback_disabled(self):
+        service = object.__new__(TranscriptionService)
+        voxtral = FakeTranscriptionProvider("voxtral", error=RuntimeError("api down"))
+        registry = Mock()
+        registry.processing_mode_for.return_value = SimpleNamespace(fallback_enabled=False)
+
+        service._selected_transcription_provider_id = Mock(return_value="voxtral")
+        service._get_audio_duration = AsyncMock(return_value=2.0)
+        service._get_transcription_provider = Mock(return_value=voxtral)
+        service._registry = Mock(return_value=registry)
+
+        with self.assertRaisesRegex(RuntimeError, "api down"):
+            await service.transcribe("lecture.wav")
+
+        requested_providers = [
+            call.args[0] for call in service._get_transcription_provider.call_args_list
+        ]
+        self.assertEqual(requested_providers, ["voxtral"])
+
+
+class PipelineCompatibilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_llm_chat_and_embedding_service_use_provider_registry(self):
+        registry = ProviderRegistry()
+        chat_provider = FakeChatProvider("deepseek-chat", text='{"ok": true}')
+        embedding_provider = FakeEmbeddingProvider("openai-embeddings")
+        registry.register(chat_provider, set_default=True)
+        registry.register(embedding_provider, set_default=True)
+
+        with patch("services.llm.get_provider_registry", return_value=registry):
+            service = LLMService()
+            chat_text = await service.chat(
+                [{"role": "user", "content": "Plan edits"}],
+                model="deepseek-chat",
+                temperature=0.1,
+                response_format={"type": "json_object"},
+            )
+            embeddings = await service.embed(["lecture section", "summary"])
+
+        self.assertEqual(chat_text, '{"ok": true}')
+        self.assertEqual(chat_provider.requests[0].response_format, {"type": "json_object"})
+        self.assertEqual(chat_provider.requests[0].messages[0]["content"], "Plan edits")
+        self.assertEqual(embeddings, [[0.0, 15.0], [1.0, 7.0]])
+        self.assertEqual(embedding_provider.requests[0].texts, ["lecture section", "summary"])
+
+    async def test_llm_chat_json_keeps_existing_markdown_json_parsing(self):
+        registry = ProviderRegistry()
+        registry.register(
+            FakeChatProvider("deepseek-chat", text='```json\n{"decision": "keep"}\n```'),
+            set_default=True,
+        )
+
+        with patch("services.llm.get_provider_registry", return_value=registry):
+            result = await LLMService().chat_json(
+                [{"role": "user", "content": "Return JSON"}]
+            )
+
+        self.assertEqual(result, {"decision": "keep"})
+
+
+if __name__ == "__main__":
+    unittest.main()
