@@ -24,6 +24,7 @@ import os
 import asyncio
 import json
 import logging
+import re
 from typing import List, Optional
 from openai import AsyncOpenAI
 from config import settings
@@ -48,11 +49,21 @@ WHISPER_MAX_FILE_SIZE = 23 * 1024 * 1024
 # Chunk duration for splitting long audio
 CHUNK_DURATION_SEC = 10 * 60  # 20 minutes with 30s overlap
 CHUNK_OVERLAP_SEC = 20
-MIXED_LANGUAGE_TRANSCRIPTION_PROMPT = (
-    "This lecture may contain mixed English and Bahasa Melayu/Malay. "
-    "Transcribe exactly what is spoken, preserving the original language for each phrase. "
-    "Do not translate, summarize, or normalize the speech into a single language."
+DEFAULT_ASR_CONTEXT_NOTE = (
+    "English software engineering lecture with occasional Malay phrases. "
+    "Preserve English technical terms such as object design, design pattern, "
+    "bridge pattern, template method, class diagram, inheritance, delegation, "
+    "abstraction, and implementation."
 )
+
+PROMPT_LEAK_MARKERS = (
+    "transcribe exactly",
+    "preserving the original language",
+    "do not translate",
+    "normalize the speech into a single language",
+)
+
+WORD_CLEAN_RE = re.compile(r"[^a-z0-9]+")
 
 
 class ExistingAPITranscriptionProvider(TranscriptionProvider):
@@ -310,7 +321,7 @@ class TranscriptionService:
 
         # Context biasing for domain-specific terms (Voxtral feature)
         # Passed as part of the prompt field
-        prompt_parts = [MIXED_LANGUAGE_TRANSCRIPTION_PROMPT]
+        prompt_parts = [settings.ASR_CONTEXT_PROMPT or DEFAULT_ASR_CONTEXT_NOTE]
         if domain_terms:
             bias_text = ", ".join(domain_terms[:100])
             prompt_parts.append(f"Domain terms: {bias_text}")
@@ -324,7 +335,7 @@ class TranscriptionService:
 
         try:
             response = await self._mistral.audio.transcriptions.create(**kwargs)
-            return self._parse_voxtral_response(response)
+            return self._clean_transcription_result(self._parse_voxtral_response(response))
         finally:
             # Close file handle
             kwargs["file"].close()
@@ -411,10 +422,14 @@ class TranscriptionService:
             "file": open(audio_path, "rb"),
             "response_format": "verbose_json",
             "timestamp_granularities": ["word", "segment"],
-            "prompt": MIXED_LANGUAGE_TRANSCRIPTION_PROMPT,
         }
         if language:
             kwargs["language"] = language
+
+        prompt_parts = [settings.ASR_CONTEXT_PROMPT or DEFAULT_ASR_CONTEXT_NOTE]
+        if settings.domain_terms_list:
+            prompt_parts.append(", ".join(settings.domain_terms_list[:100]))
+        kwargs["prompt"] = "\n".join(part for part in prompt_parts if part)
 
         try:
             response = await self._openai.audio.transcriptions.create(**kwargs)
@@ -440,14 +455,113 @@ class TranscriptionService:
                 for s in response.segments
             ]
 
-        return {
+        return self._clean_transcription_result({
             "text": response.text,
             "language": getattr(response, "language", "en"),
             "duration": getattr(response, "duration", 0),
             "words": words,
             "segments": segments or self._segments_from_text(response.text, getattr(response, "duration", 0)),
             "speakers": [],
-        }
+        })
+
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    #  HALLUCINATION / PROMPT LEAK CLEANUP
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+    def _clean_transcription_result(self, result: dict) -> dict:
+        """
+        Remove ASR prompt echoes/hallucinated instruction loops.
+
+        Whisper's prompt field is context, not an instruction channel. Older
+        runs used an instruction-style prompt, and during long silences the
+        model echoed it into the transcript. This guard keeps future sidecar
+        files and edit plans from treating that as lecture content.
+        """
+        segments = result.get("segments") or []
+        words = result.get("words") or []
+
+        cleaned_segments = []
+        leak_seen = False
+        for seg in segments:
+            if leak_seen:
+                continue
+
+            original_text = (seg.get("text") or "").strip()
+            cleaned_text, leaked = self._strip_prompt_leak(original_text)
+
+            if cleaned_text and len(cleaned_text.split()) >= 3:
+                cleaned = dict(seg)
+                cleaned["text"] = cleaned_text
+                if leaked:
+                    original_len = max(len(original_text), 1)
+                    keep_ratio = min(0.95, max(0.05, len(cleaned_text) / original_len))
+                    start = float(cleaned.get("start", 0) or 0)
+                    end = float(cleaned.get("end", start) or start)
+                    cleaned["end"] = start + ((end - start) * keep_ratio)
+                cleaned_segments.append(cleaned)
+
+            if leaked:
+                leak_seen = True
+
+        cleaned_words = self._strip_prompt_words(words)
+
+        if leak_seen:
+            logger.warning("ASR prompt leakage detected and removed from transcript")
+
+        if cleaned_segments:
+            result["segments"] = cleaned_segments
+            result["text"] = " ".join(s["text"] for s in cleaned_segments).strip()
+
+            last_clean_end = max(float(s.get("end", 0) or 0) for s in cleaned_segments)
+            if last_clean_end:
+                result["duration"] = min(float(result.get("duration", 0) or last_clean_end), last_clean_end)
+        else:
+            cleaned_text, leaked = self._strip_prompt_leak(result.get("text", "") or "")
+            result["text"] = cleaned_text
+            if leaked:
+                result["segments"] = self._segments_from_text(cleaned_text, result.get("duration", 0))
+
+        result["words"] = cleaned_words
+        return result
+
+    @staticmethod
+    def _strip_prompt_leak(text: str) -> tuple[str, bool]:
+        lower = text.lower()
+        marker_positions = [
+            lower.find(marker)
+            for marker in PROMPT_LEAK_MARKERS
+            if lower.find(marker) >= 0
+        ]
+        if not marker_positions:
+            return text.strip(), False
+
+        first_marker = min(marker_positions)
+        return text[:first_marker].strip(" ,.;:-"), True
+
+    @staticmethod
+    def _strip_prompt_words(words: List[dict]) -> List[dict]:
+        if not words:
+            return []
+
+        normalized = [
+            WORD_CLEAN_RE.sub("", (w.get("word") or w.get("text") or "").lower())
+            for w in words
+        ]
+
+        cutoff = len(words)
+        for i, token in enumerate(normalized):
+            window = normalized[i:i + 12]
+            if token == "transcribe" and "exactly" in window and "spoken" in window:
+                cutoff = i
+                break
+            if token == "preserving" and "original" in window and "language" in window:
+                cutoff = i
+                break
+            if token == "normalize" and "speech" in window and "language" in window:
+                cutoff = i
+                break
+
+        return words[:cutoff]
 
     # ═══════════════════════════════════════════
     #  AUDIO CHUNKING (shared by both providers)

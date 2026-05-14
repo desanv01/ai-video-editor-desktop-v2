@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     VOXTRAL_MODEL: str = "voxtral-mini-latest" # Voxtral transcription model (Mistral API)
     MISTRAL_BASE_URL: str = "https://api.mistral.ai/v1"
     WHISPER_MODEL: str = "whisper-1"            # OpenAI Whisper (fallback)
+    ASR_LANGUAGE: str = "en"                    # Force mostly-English lecture transcription by default
+    ASR_CONTEXT_PROMPT: str = (
+        "English software engineering lecture with occasional Malay phrases. "
+        "Object design reuse patterns, design patterns, bridge pattern, template method, "
+        "class diagram, inheritance, delegation, abstraction, implementation."
+    )
 
     # ── LLM Configuration (per-agent) ──
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
@@ -65,6 +71,8 @@ class Settings(BaseSettings):
     FRAME_SAMPLE_INTERVAL: float = 1.0
     SILENCE_THRESHOLD_DB: int = -40
     SILENCE_MIN_DURATION: float = 1.5
+    MIN_EDIT_REDUCTION_PERCENT: float = 18.0
+    MAX_AUTO_CUT_IMPORTANCE: float = 0.62
     CHUNK_SIZE_TOKENS: int = 300
     CHUNK_OVERLAP_TOKENS: int = 50
 

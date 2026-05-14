@@ -57,6 +57,7 @@ async def run_transcription_agent(video_id: str, db: AsyncSession) -> dict:
         # ── Step 2: Transcribe with Voxtral (primary) or Whisper (fallback) ──
         result = await transcription_service.transcribe(
             audio_path=audio_path,
+            language=settings.ASR_LANGUAGE or None,
             domain_terms=settings.domain_terms_list if settings.domain_terms_list else None,
         )
 
