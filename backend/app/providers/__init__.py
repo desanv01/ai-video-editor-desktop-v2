@@ -22,6 +22,12 @@ from providers.interfaces import (
     VisionRequest,
     VisionResponse,
 )
+from providers.processing_modes import (
+    CapabilityModeConfig,
+    ProcessingMode,
+    ProcessingModeConfig,
+    build_processing_mode_config,
+)
 from providers.registry import ProviderRegistry
 
 __all__ = [
@@ -32,6 +38,10 @@ __all__ = [
     "ProviderMetadata",
     "ProviderHealth",
     "ProviderHealthStatus",
+    "ProcessingMode",
+    "ProcessingModeConfig",
+    "CapabilityModeConfig",
+    "build_processing_mode_config",
     "ChatProvider",
     "ChatRequest",
     "ChatResponse",

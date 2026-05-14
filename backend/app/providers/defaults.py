@@ -11,6 +11,7 @@ from providers.placeholders import (
     UnconfiguredLocalRuntimeProvider,
     UnconfiguredVisionProvider,
 )
+from providers.processing_modes import build_processing_mode_config
 from providers.registry import ProviderRegistry
 
 _registry: Optional[ProviderRegistry] = None
@@ -58,6 +59,7 @@ def build_provider_registry(settings) -> ProviderRegistry:
 
     registry.register(UnconfiguredVisionProvider(), set_default=True)
     registry.register(UnconfiguredLocalRuntimeProvider(), set_default=True)
+    registry.set_processing_modes(build_processing_mode_config(settings, registry))
 
     return registry
 

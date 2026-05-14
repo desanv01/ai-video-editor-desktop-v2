@@ -3,16 +3,18 @@
 from typing import Optional
 
 from providers.interfaces import AIProvider, ProviderKind
+from providers.processing_modes import ProcessingModeConfig
 
 
 class ProviderRegistry:
     """In-memory registry of AI providers grouped by capability kind."""
 
-    def __init__(self):
+    def __init__(self, processing_modes: Optional[ProcessingModeConfig] = None):
         self._providers: dict[ProviderKind, dict[str, AIProvider]] = {
             kind: {} for kind in ProviderKind
         }
         self._defaults: dict[ProviderKind, str] = {}
+        self._processing_modes = processing_modes or ProcessingModeConfig()
 
     def register(self, provider: AIProvider, *, set_default: bool = False) -> AIProvider:
         metadata = provider.metadata
@@ -62,10 +64,24 @@ class ProviderRegistry:
             raise KeyError(f"Provider not registered for {kind.value}: {provider_id}")
         self._defaults[kind] = provider_id
 
+    @property
+    def processing_modes(self) -> ProcessingModeConfig:
+        return self._processing_modes
+
+    def set_processing_modes(self, processing_modes: ProcessingModeConfig) -> None:
+        self._processing_modes = processing_modes
+
+    def processing_mode_for(self, kind: ProviderKind):
+        return self._processing_modes.for_kind(kind)
+
+    def describe_processing_modes(self) -> dict:
+        return self._processing_modes.describe()
+
     def describe(self) -> dict[str, list[dict]]:
         """Return serializable registry metadata for diagnostics/settings UI."""
         description: dict[str, list[dict]] = {}
         for kind, providers in self._providers.items():
+            mode_config = self._processing_modes.for_kind(kind)
             description[kind.value] = [
                 {
                     "provider_id": provider.metadata.provider_id,
@@ -74,6 +90,7 @@ class ProviderRegistry:
                     "default_model": provider.metadata.default_model,
                     "is_local": provider.metadata.is_local,
                     "is_default": self._defaults.get(kind) == provider.metadata.provider_id,
+                    "configured_processing_mode": mode_config.mode.value,
                     "capabilities": [
                         {
                             "name": capability.name,

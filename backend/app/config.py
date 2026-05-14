@@ -41,6 +41,15 @@ class Settings(BaseSettings):
     AGENT3_MODEL: str = "deepseek-chat"         # Fluency Detection — lightweight (swap to qwen3-8b when available)
     AGENT5_MODEL: str = "deepseek-chat"         # Edit Planner — strong JSON + reasoning
 
+    # AI Provider Mode Configuration
+    AI_PROCESSING_MODE: str = "hybrid"          # "api", "local", or "hybrid"
+    AI_PROVIDER_FALLBACK_ENABLED: bool = True
+    AI_TRANSCRIPTION_MODE: str = "api"          # Current pipeline remains API-backed
+    AI_CHAT_MODE: str = "api"
+    AI_EMBEDDING_MODE: str = "api"
+    AI_VISION_MODE: str = "api"
+    AI_LOCAL_RUNTIME_MODE: str = "local"
+
     # ── Embedding Configuration ──
     EMBEDDING_MODEL: str = "text-embedding-3-small"  # OpenAI (swap to BGE-M3 endpoint when available)
     EMBEDDING_DIMENSIONS: int = 1536
