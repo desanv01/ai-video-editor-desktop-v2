@@ -27,6 +27,17 @@ import logging
 from typing import List, Optional
 from openai import AsyncOpenAI
 from config import settings
+from providers.defaults import get_provider_registry
+from providers.interfaces import (
+    ProviderCapability,
+    ProviderHealth,
+    ProviderHealthStatus,
+    ProviderKind,
+    ProviderMetadata,
+    TranscriptionProvider,
+    TranscriptionRequest,
+    TranscriptionResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +55,76 @@ MIXED_LANGUAGE_TRANSCRIPTION_PROMPT = (
 )
 
 
+class ExistingAPITranscriptionProvider(TranscriptionProvider):
+    """Provider adapter for the existing Voxtral/Whisper transcription pipelines."""
+
+    def __init__(
+        self,
+        *,
+        provider_id: str,
+        label: str,
+        provider_name: str,
+        default_model: str,
+        api_key: str,
+        service: "TranscriptionService",
+    ):
+        self._provider_id = provider_id
+        self._api_key = api_key
+        self._service = service
+        self._metadata = ProviderMetadata(
+            provider_id=provider_id,
+            kind=ProviderKind.TRANSCRIPTION,
+            label=label,
+            provider_name=provider_name,
+            default_model=default_model,
+            capabilities=(
+                ProviderCapability("audio_transcription", "Speech-to-text transcription."),
+                ProviderCapability("timestamps", "Word and segment timestamps when available."),
+            ),
+        )
+
+    @property
+    def metadata(self) -> ProviderMetadata:
+        return self._metadata
+
+    async def health(self) -> ProviderHealth:
+        if not self._api_key:
+            return ProviderHealth(
+                status=ProviderHealthStatus.NOT_CONFIGURED,
+                message=f"{self.metadata.label} API key is not configured.",
+            )
+        return await super().health()
+
+    async def transcribe(self, request: TranscriptionRequest) -> TranscriptionResponse:
+        duration = request.metadata.get("duration")
+        if duration is None:
+            duration = await self._service._get_audio_duration(request.audio_path)
+
+        if self._provider_id == "voxtral":
+            transcript = await self._service._transcribe_voxtral_pipeline(
+                request.audio_path,
+                float(duration),
+                request.language,
+                request.domain_terms,
+            )
+        elif self._provider_id == "whisper":
+            transcript = await self._service._transcribe_whisper_pipeline(
+                request.audio_path,
+                float(duration),
+                request.language,
+            )
+        else:
+            raise RuntimeError(f"Unsupported transcription provider: {self._provider_id}")
+
+        transcript = dict(transcript)
+        transcript["provider"] = self.metadata.provider_id
+        return TranscriptionResponse(
+            transcript=transcript,
+            provider_id=self.metadata.provider_id,
+            model=self.metadata.default_model,
+        )
+
+
 class TranscriptionService:
     """Unified ASR service: Voxtral primary, Whisper fallback."""
 
@@ -57,6 +138,59 @@ class TranscriptionService:
         self._openai = AsyncOpenAI(
             api_key=settings.OPENAI_API_KEY,
         )
+        self._registered_registry = None
+        self._registry()
+
+    def _registry(self):
+        registry = get_provider_registry()
+        if registry is not self._registered_registry:
+            self._register_transcription_providers(registry)
+            self._registered_registry = registry
+        return registry
+
+    def _register_transcription_providers(self, registry) -> None:
+        default_provider = settings.ASR_PROVIDER.lower()
+        registry.register(
+            ExistingAPITranscriptionProvider(
+                provider_id="voxtral",
+                label="Voxtral Transcription",
+                provider_name="mistral",
+                default_model=settings.VOXTRAL_MODEL,
+                api_key=settings.MISTRAL_API_KEY,
+                service=self,
+            ),
+            set_default=default_provider == "voxtral",
+            replace=True,
+        )
+        registry.register(
+            ExistingAPITranscriptionProvider(
+                provider_id="whisper",
+                label="Whisper Transcription",
+                provider_name="openai",
+                default_model=settings.WHISPER_MODEL,
+                api_key=settings.OPENAI_API_KEY,
+                service=self,
+            ),
+            set_default=default_provider == "whisper",
+            replace=True,
+        )
+
+    def _selected_transcription_provider_id(self) -> str:
+        registry = self._registry()
+        mode_config = registry.processing_mode_for(ProviderKind.TRANSCRIPTION)
+        return (
+            mode_config.api_provider_id
+            or registry.default_provider_id(ProviderKind.TRANSCRIPTION)
+            or settings.ASR_PROVIDER.lower()
+        )
+
+    def _get_transcription_provider(self, provider_id: str) -> TranscriptionProvider:
+        provider = self._registry().get(ProviderKind.TRANSCRIPTION, provider_id)
+        if not isinstance(provider, TranscriptionProvider):
+            raise TypeError(
+                f"Provider {provider_id} does not implement TranscriptionProvider"
+            )
+        return provider
 
     # ═══════════════════════════════════════════
     #  PUBLIC API
@@ -87,18 +221,24 @@ class TranscriptionService:
             "provider": "voxtral" | "whisper" | "whisper_fallback",
         }
         """
-        provider = settings.ASR_PROVIDER.lower()
+        provider_id = self._selected_transcription_provider_id()
         terms = domain_terms or settings.domain_terms_list
 
         # Get audio duration to decide if chunking is needed
         duration = await self._get_audio_duration(audio_path)
+        request = TranscriptionRequest(
+            audio_path=audio_path,
+            language=language,
+            domain_terms=terms,
+            metadata={"duration": duration},
+        )
 
-        if provider == "voxtral":
+        if provider_id == "voxtral":
             try:
-                result = await self._transcribe_voxtral_pipeline(
-                    audio_path, duration, language, terms
+                response = await self._get_transcription_provider(provider_id).transcribe(
+                    request
                 )
-                result["provider"] = "voxtral"
+                result = response.transcript
                 logger.info(
                     f"Voxtral transcription complete: {result.get('duration', 0):.0f}s, "
                     f"{len(result.get('segments', []))} segments, "
@@ -106,18 +246,24 @@ class TranscriptionService:
                 )
                 return result
             except Exception as e:
+                fallback_enabled = self._registry().processing_mode_for(
+                    ProviderKind.TRANSCRIPTION
+                ).fallback_enabled
+                if not fallback_enabled:
+                    raise
+
                 logger.warning(f"Voxtral failed, falling back to Whisper: {e}")
-                result = await self._transcribe_whisper_pipeline(
-                    audio_path, duration, language
+                response = await self._get_transcription_provider("whisper").transcribe(
+                    request
                 )
+                result = response.transcript
                 result["provider"] = "whisper_fallback"
                 return result
         else:
-            result = await self._transcribe_whisper_pipeline(
-                audio_path, duration, language
+            response = await self._get_transcription_provider(provider_id).transcribe(
+                request
             )
-            result["provider"] = "whisper"
-            return result
+            return response.transcript
 
     # ═══════════════════════════════════════════
     #  VOXTRAL (Mistral API)

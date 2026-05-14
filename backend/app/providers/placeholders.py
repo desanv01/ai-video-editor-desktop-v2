@@ -41,12 +41,7 @@ class ExistingPipelineTranscriptionProvider(
     RegistryPlaceholderProvider,
     TranscriptionProvider,
 ):
-    """Registry entry for the current transcription pipeline.
-
-    The existing TranscriptionService still owns chunking and Voxtral/Whisper
-    fallback for Phase 1 Chat 1. A later routing task can move those calls
-    behind this provider without changing the public contract.
-    """
+    """Startup placeholder replaced by the transcription service at runtime."""
 
     def __init__(
         self,
