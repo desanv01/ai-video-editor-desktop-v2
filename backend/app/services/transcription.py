@@ -39,6 +39,11 @@ from providers.interfaces import (
     TranscriptionRequest,
     TranscriptionResponse,
 )
+from providers.processing_modes import ProcessingMode
+from providers.whisper_cpp import (
+    WhisperCppTranscriptionProvider,
+    resolve_whisper_cpp_model_selection,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -185,10 +190,24 @@ class TranscriptionService:
             set_default=default_provider == "whisper",
             replace=True,
         )
+        whisper_cpp_selection = resolve_whisper_cpp_model_selection(settings)
+        registry.register(
+            WhisperCppTranscriptionProvider(
+                binary_path=whisper_cpp_selection.binary_path,
+                model_path=whisper_cpp_selection.model_path,
+                model_id=whisper_cpp_selection.model_id,
+                work_dir=settings.TEMP_PATH,
+            ),
+            set_default=default_provider == "whisper-cpp",
+            replace=True,
+        )
 
     def _selected_transcription_provider_id(self) -> str:
         registry = self._registry()
         mode_config = registry.processing_mode_for(ProviderKind.TRANSCRIPTION)
+        if mode_config.mode == ProcessingMode.LOCAL:
+            return mode_config.local_provider_id or "whisper-cpp"
+
         return (
             mode_config.api_provider_id
             or registry.default_provider_id(ProviderKind.TRANSCRIPTION)
@@ -241,7 +260,10 @@ class TranscriptionService:
             audio_path=audio_path,
             language=language,
             domain_terms=terms,
-            metadata={"duration": duration},
+            metadata={
+                "duration": duration,
+                "threads": getattr(settings, "WHISPER_CPP_THREADS", 0),
+            },
         )
 
         if provider_id == "voxtral":

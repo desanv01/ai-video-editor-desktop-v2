@@ -107,6 +107,22 @@ def _setting_mode(settings, field_name: str, default: ProcessingMode) -> Process
     )
 
 
+def _provider_id_for_kind(registry, kind: ProviderKind, *, is_local: bool) -> Optional[str]:
+    if not registry:
+        return None
+
+    default_id = registry.default_provider_id(kind)
+    if default_id:
+        default_provider = registry.get(kind, default_id)
+        if default_provider.metadata.is_local == is_local:
+            return default_id
+
+    for provider in registry.list(kind):
+        if provider.metadata.is_local == is_local:
+            return provider.metadata.provider_id
+    return None
+
+
 def build_processing_mode_config(settings, registry=None) -> ProcessingModeConfig:
     default_mode = _setting_mode(settings, "AI_PROCESSING_MODE", ProcessingMode.HYBRID)
     fallback_enabled = bool(getattr(settings, "AI_PROVIDER_FALLBACK_ENABLED", True))
@@ -129,13 +145,13 @@ def build_processing_mode_config(settings, registry=None) -> ProcessingModeConfi
             kind=kind,
             mode=mode,
             api_provider_id=(
-                registry.default_provider_id(kind)
+                _provider_id_for_kind(registry, kind, is_local=False)
                 if registry and mode in (ProcessingMode.API, ProcessingMode.HYBRID)
                 else None
             ),
             local_provider_id=(
-                registry.default_provider_id(kind)
-                if registry and mode == ProcessingMode.LOCAL
+                _provider_id_for_kind(registry, kind, is_local=True)
+                if registry and mode in (ProcessingMode.LOCAL, ProcessingMode.HYBRID)
                 else None
             ),
             fallback_enabled=fallback_enabled,

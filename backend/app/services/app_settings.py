@@ -79,7 +79,7 @@ def _default_capabilities() -> dict[str, dict[str, Any]]:
         ProviderKind.TRANSCRIPTION.value: {
             "mode": settings.AI_TRANSCRIPTION_MODE,
             "api_provider_id": settings.ASR_PROVIDER.lower(),
-            "local_provider_id": None,
+            "local_provider_id": "whisper-cpp",
             "fallback_enabled": settings.AI_PROVIDER_FALLBACK_ENABLED,
             "hybrid_fallback_order": [
                 mode.value for mode in DEFAULT_HYBRID_FALLBACK_ORDER[ProviderKind.TRANSCRIPTION]
@@ -137,7 +137,11 @@ def _default_api_keys() -> dict[str, dict[str, Any]]:
 
 def _default_local_model_paths() -> dict[str, Optional[str]]:
     return {
-        ProviderKind.TRANSCRIPTION.value: settings.LOCAL_TRANSCRIPTION_MODEL_PATH or None,
+        ProviderKind.TRANSCRIPTION.value: (
+            settings.WHISPER_CPP_MODEL_PATH
+            or settings.LOCAL_TRANSCRIPTION_MODEL_PATH
+            or None
+        ),
         ProviderKind.CHAT.value: settings.LOCAL_CHAT_MODEL_PATH or None,
         ProviderKind.EMBEDDING.value: settings.LOCAL_EMBEDDING_MODEL_PATH or None,
         ProviderKind.VISION.value: settings.LOCAL_VISION_MODEL_PATH or None,
@@ -226,6 +230,7 @@ def apply_settings_record(record: AppAISettings) -> None:
 
     local_paths = record.local_model_paths_json or {}
     settings.LOCAL_TRANSCRIPTION_MODEL_PATH = local_paths.get(ProviderKind.TRANSCRIPTION.value) or ""
+    settings.WHISPER_CPP_MODEL_PATH = settings.LOCAL_TRANSCRIPTION_MODEL_PATH
     settings.LOCAL_CHAT_MODEL_PATH = local_paths.get(ProviderKind.CHAT.value) or ""
     settings.LOCAL_EMBEDDING_MODEL_PATH = local_paths.get(ProviderKind.EMBEDDING.value) or ""
     settings.LOCAL_VISION_MODEL_PATH = local_paths.get(ProviderKind.VISION.value) or ""

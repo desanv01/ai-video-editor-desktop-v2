@@ -13,6 +13,10 @@ from providers.placeholders import (
 )
 from providers.processing_modes import build_processing_mode_config
 from providers.registry import ProviderRegistry
+from providers.whisper_cpp import (
+    WhisperCppTranscriptionProvider,
+    resolve_whisper_cpp_model_selection,
+)
 
 _registry: Optional[ProviderRegistry] = None
 
@@ -34,6 +38,17 @@ def build_provider_registry(settings) -> ProviderRegistry:
             ),
             set_default=provider_id == default_asr_provider,
         )
+
+    whisper_cpp_selection = resolve_whisper_cpp_model_selection(settings)
+    registry.register(
+        WhisperCppTranscriptionProvider(
+            binary_path=whisper_cpp_selection.binary_path,
+            model_path=whisper_cpp_selection.model_path,
+            model_id=whisper_cpp_selection.model_id,
+            work_dir=getattr(settings, "TEMP_PATH", None),
+        ),
+        set_default=default_asr_provider == "whisper-cpp",
+    )
 
     registry.register(
         OpenAICompatibleChatProvider(

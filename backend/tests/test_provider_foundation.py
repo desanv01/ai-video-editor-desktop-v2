@@ -35,6 +35,13 @@ if "config" not in sys.modules:
         AGENT2_MODEL="deepseek-chat",
         EMBEDDING_MODEL="text-embedding-3-small",
         EMBEDDING_DIMENSIONS=1536,
+        TEMP_PATH="/tmp",
+        LOCAL_TRANSCRIPTION_MODEL_PATH="",
+        LOCAL_TRANSCRIPTION_MODEL_ID="small.en",
+        WHISPER_CPP_BINARY_PATH="whisper-cli",
+        WHISPER_CPP_MODEL_PATH="",
+        WHISPER_CPP_MODEL_ID="small.en",
+        WHISPER_CPP_THREADS=0,
         domain_terms_list=[],
     )
     sys.modules["config"] = config_stub
@@ -61,6 +68,12 @@ from providers.processing_modes import (
     parse_processing_mode,
 )
 from providers.registry import ProviderRegistry
+from providers.whisper_cpp import (
+    WHISPER_CPP_PROVIDER_ID,
+    WhisperCppRunResult,
+    WhisperCppTranscriptionProvider,
+    resolve_whisper_cpp_model_selection,
+)
 from services.llm import LLMService
 from services.transcription import TranscriptionService
 
@@ -76,6 +89,13 @@ def settings_stub(**overrides):
         "OPENAI_API_KEY": "",
         "EMBEDDING_MODEL": "text-embedding-3-small",
         "EMBEDDING_DIMENSIONS": 1536,
+        "TEMP_PATH": "/tmp",
+        "LOCAL_TRANSCRIPTION_MODEL_PATH": "",
+        "LOCAL_TRANSCRIPTION_MODEL_ID": "small.en",
+        "WHISPER_CPP_BINARY_PATH": "whisper-cli",
+        "WHISPER_CPP_MODEL_PATH": "",
+        "WHISPER_CPP_MODEL_ID": "small.en",
+        "WHISPER_CPP_THREADS": 0,
         "AI_PROCESSING_MODE": "hybrid",
         "AI_PROVIDER_FALLBACK_ENABLED": True,
         "AI_TRANSCRIPTION_MODE": "api",
@@ -292,7 +312,91 @@ class DefaultRegistryTests(unittest.TestCase):
             provider.metadata.provider_id
             for provider in registry.list(ProviderKind.TRANSCRIPTION)
         }
-        self.assertEqual(transcription_ids, {"voxtral", "whisper"})
+        self.assertEqual(transcription_ids, {"voxtral", "whisper", "whisper-cpp"})
+
+    def test_default_registry_exposes_local_transcription_provider_for_hybrid_mode(self):
+        registry = build_provider_registry(settings_stub(AI_TRANSCRIPTION_MODE="hybrid"))
+
+        transcription_mode = registry.processing_mode_for(ProviderKind.TRANSCRIPTION)
+
+        self.assertEqual(transcription_mode.api_provider_id, "voxtral")
+        self.assertEqual(transcription_mode.local_provider_id, "whisper-cpp")
+        self.assertEqual(
+            registry.get(ProviderKind.TRANSCRIPTION, "whisper-cpp").metadata.is_local,
+            True,
+        )
+
+
+class WhisperCppProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_health_reports_not_configured_without_binary_or_model(self):
+        provider = WhisperCppTranscriptionProvider(
+            binary_path="missing-whisper-cli",
+            model_path="C:/missing/ggml-small.en.bin",
+            model_id="small.en",
+        )
+
+        health = await provider.health()
+
+        self.assertEqual(health.status.value, "not_configured")
+        self.assertIn("issues", health.details)
+
+    async def test_transcribe_parses_whisper_cpp_json_without_real_model_download(self):
+        async def fake_runner(command, output_json_path):
+            return WhisperCppRunResult(stdout=json_payload, stderr="")
+
+        json_payload = """
+        {
+          "result": {"language": "en"},
+          "transcription": [
+            {
+              "text": " Hello class",
+              "offsets": {"from": 0, "to": 1200}
+            },
+            {
+              "text": " today we study bridges",
+              "timestamps": {"from": "00:00:01.200", "to": "00:00:03.000"}
+            }
+          ]
+        }
+        """
+
+        provider = WhisperCppTranscriptionProvider(
+            binary_path="whisper-cli",
+            model_path="ggml-small.en.bin",
+            model_id="small.en",
+            work_dir=str(Path.cwd()),
+            runner=fake_runner,
+            validate_runtime=False,
+        )
+
+        response = await provider.transcribe(
+            TranscriptionRequest(audio_path="lecture.wav", language="en")
+        )
+
+        transcript = response.transcript
+        self.assertEqual(response.provider_id, WHISPER_CPP_PROVIDER_ID)
+        self.assertEqual(transcript["provider"], WHISPER_CPP_PROVIDER_ID)
+        self.assertEqual(transcript["text"], "Hello class today we study bridges")
+        self.assertEqual(transcript["language"], "en")
+        self.assertEqual(transcript["duration"], 3.0)
+        self.assertEqual(len(transcript["segments"]), 2)
+        self.assertEqual(transcript["segments"][1]["start"], 1.2)
+        self.assertGreater(len(transcript["words"]), 0)
+
+    def test_model_selection_prefers_whisper_cpp_specific_model_path(self):
+        selection = resolve_whisper_cpp_model_selection(
+            settings_stub(
+                LOCAL_TRANSCRIPTION_MODEL_PATH="C:/models/local.bin",
+                WHISPER_CPP_MODEL_PATH="C:/models/whisper-cpp.bin",
+                WHISPER_CPP_MODEL_ID="large-v3",
+                WHISPER_CPP_BINARY_PATH="C:/tools/whisper-cli.exe",
+            )
+        )
+
+        self.assertEqual(selection.model_id, "large-v3")
+        self.assertEqual(selection.tier, "accurate")
+        self.assertEqual(selection.model_path, "C:/models/whisper-cpp.bin")
+        self.assertEqual(selection.binary_path, "C:/tools/whisper-cli.exe")
 
 
 class TranscriptionFallbackTests(unittest.IsolatedAsyncioTestCase):
