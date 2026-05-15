@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useSegments, usePlaybackSync } from "../hooks/useApi";
 import { Timeline } from "./Timeline";
 import { TranscriptPanel } from "./TranscriptPanel";
@@ -15,8 +15,8 @@ interface Props {
 }
 
 export function ReviewEditor({ videoId }: Props) {
-  const { segments, loading, reload, updateAction, acceptAllHighConfidence } = useSegments(videoId);
-  const { currentTime, setCurrentTime, isPlaying, videoRef, seekTo, togglePlay } = usePlaybackSync();
+  const { segments, loading, updateAction, acceptAllHighConfidence } = useSegments(videoId);
+  const { currentTime, setCurrentTime, videoRef, seekTo, togglePlay } = usePlaybackSync();
   const [selectedSegment, setSelectedSegment] = useState<Segment | null>(null);
   const [rightPanel, setRightPanel] = useState<RightPanel>("stats");
   const [plan, setPlan] = useState<EditPlan | null>(null);

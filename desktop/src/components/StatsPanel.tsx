@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
 import { Clock, Scissors, MessageSquareOff, Volume2, CheckCircle2, Download } from "lucide-react";
 import * as api from "../lib/api";
-import type { EditPlan, QualityReport, Chapter } from "../types/api";
+import type { EditPlan, Chapter } from "../types/api";
 
 interface Props {
   videoId: string;
