@@ -214,6 +214,50 @@ class TranscriptionService:
             or settings.ASR_PROVIDER.lower()
         )
 
+    def _transcription_provider_route(self) -> list[str]:
+        mode_config = self._registry().processing_mode_for(ProviderKind.TRANSCRIPTION)
+        provider_ids: list[str] = []
+
+        for mode in mode_config.mode_order():
+            if mode == ProcessingMode.LOCAL:
+                provider_ids.append(mode_config.local_provider_id or "whisper-cpp")
+            elif mode == ProcessingMode.API:
+                provider_ids.extend(
+                    self._api_transcription_provider_ids(mode_config.api_provider_id)
+                )
+
+        return self._dedupe_provider_ids(provider_ids)
+
+    def _api_transcription_provider_ids(
+        self,
+        preferred_provider_id: Optional[str],
+    ) -> list[str]:
+        primary = (
+            preferred_provider_id
+            or self._registry().default_provider_id(ProviderKind.TRANSCRIPTION)
+            or settings.ASR_PROVIDER
+            or "voxtral"
+        ).strip().lower()
+        if primary == "whisper-cpp":
+            primary = settings.ASR_PROVIDER.lower() if settings.ASR_PROVIDER else "voxtral"
+            if primary == "whisper-cpp":
+                primary = "voxtral"
+
+        provider_ids = [primary]
+        provider_ids.extend(provider_id for provider_id in ("whisper", "voxtral") if provider_id != primary)
+        return self._dedupe_provider_ids(provider_ids)
+
+    @staticmethod
+    def _dedupe_provider_ids(provider_ids: list[str]) -> list[str]:
+        route: list[str] = []
+        seen: set[str] = set()
+        for provider_id in provider_ids:
+            normalized = (provider_id or "").strip().lower()
+            if normalized and normalized not in seen:
+                route.append(normalized)
+                seen.add(normalized)
+        return route
+
     def _get_transcription_provider(self, provider_id: str) -> TranscriptionProvider:
         provider = self._registry().get(ProviderKind.TRANSCRIPTION, provider_id)
         if not isinstance(provider, TranscriptionProvider):
@@ -251,7 +295,11 @@ class TranscriptionService:
             "provider": "voxtral" | "whisper" | "whisper_fallback",
         }
         """
-        provider_id = self._selected_transcription_provider_id()
+        mode_config = self._registry().processing_mode_for(ProviderKind.TRANSCRIPTION)
+        provider_route = self._transcription_provider_route()
+        if not provider_route:
+            raise RuntimeError("No transcription providers are configured for the selected mode")
+
         terms = domain_terms or settings.domain_terms_list
 
         # Get audio duration to decide if chunking is needed
@@ -266,37 +314,67 @@ class TranscriptionService:
             },
         )
 
-        if provider_id == "voxtral":
+        attempted_providers: list[str] = []
+        failures: list[tuple[str, Exception]] = []
+
+        for provider_id in provider_route:
+            attempted_providers.append(provider_id)
             try:
                 response = await self._get_transcription_provider(provider_id).transcribe(
                     request
                 )
-                result = response.transcript
+                result = dict(response.transcript)
+                fallback_from = failures[-1][0] if failures else None
+                result["provider"] = self._provider_result_label(
+                    response.provider_id,
+                    fallback_from,
+                )
+                result["transcription_mode"] = mode_config.mode.value
+                result["transcription_route"] = {
+                    "mode": mode_config.mode.value,
+                    "fallback_enabled": mode_config.fallback_enabled,
+                    "attempted_providers": attempted_providers,
+                    "selected_provider": response.provider_id,
+                    "fallback_from": fallback_from,
+                }
                 logger.info(
-                    f"Voxtral transcription complete: {result.get('duration', 0):.0f}s, "
-                    f"{len(result.get('segments', []))} segments, "
-                    f"{len(result.get('speakers', []))} speakers"
+                    "%s transcription complete via %s: %.0fs, %s segments, %s speakers",
+                    mode_config.mode.value.title(),
+                    response.provider_id,
+                    result.get("duration", 0),
+                    len(result.get("segments", [])),
+                    len(result.get("speakers", [])),
                 )
                 return result
             except Exception as e:
-                fallback_enabled = self._registry().processing_mode_for(
-                    ProviderKind.TRANSCRIPTION
-                ).fallback_enabled
-                if not fallback_enabled:
+                failures.append((provider_id, e))
+                if not mode_config.fallback_enabled:
                     raise
 
-                logger.warning(f"Voxtral failed, falling back to Whisper: {e}")
-                response = await self._get_transcription_provider("whisper").transcribe(
-                    request
+                if provider_id == provider_route[-1]:
+                    break
+
+                next_provider = provider_route[len(attempted_providers)]
+                logger.warning(
+                    "Transcription provider %s failed, falling back to %s: %s",
+                    provider_id,
+                    next_provider,
+                    e,
                 )
-                result = response.transcript
-                result["provider"] = "whisper_fallback"
-                return result
-        else:
-            response = await self._get_transcription_provider(provider_id).transcribe(
-                request
-            )
-            return response.transcript
+
+        failure_summary = "; ".join(
+            f"{provider_id}: {error}" for provider_id, error in failures
+        )
+        raise RuntimeError(
+            f"Transcription failed after trying {', '.join(attempted_providers)}: "
+            f"{failure_summary}"
+        )
+
+    @staticmethod
+    def _provider_result_label(provider_id: str, fallback_from: Optional[str]) -> str:
+        if provider_id == "whisper" and fallback_from == "voxtral":
+            return "whisper_fallback"
+        return provider_id
 
     # ═══════════════════════════════════════════
     #  VOXTRAL (Mistral API)

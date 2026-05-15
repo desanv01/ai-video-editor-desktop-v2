@@ -168,7 +168,7 @@ class FakeEmbeddingProvider(EmbeddingProvider):
 
 
 class FakeTranscriptionProvider(TranscriptionProvider):
-    def __init__(self, provider_id, transcript=None, error=None):
+    def __init__(self, provider_id, transcript=None, error=None, is_local=False):
         self.calls = []
         self.error = error
         self.transcript = transcript or {
@@ -185,6 +185,7 @@ class FakeTranscriptionProvider(TranscriptionProvider):
             label=provider_id.title(),
             provider_name="fake",
             default_model=f"{provider_id}-model",
+            is_local=is_local,
         )
 
     @property
@@ -500,8 +501,20 @@ class LocalTranscriptionModelServiceTests(unittest.TestCase):
 
 
 class TranscriptionFallbackTests(unittest.IsolatedAsyncioTestCase):
-    async def test_voxtral_failure_falls_back_to_whisper_when_enabled(self):
+    def _service_with_route(self, mode_config, providers):
         service = object.__new__(TranscriptionService)
+        registry = Mock()
+        registry.processing_mode_for.return_value = mode_config
+        registry.default_provider_id.return_value = mode_config.api_provider_id
+
+        service._get_audio_duration = AsyncMock(return_value=2.0)
+        service._get_transcription_provider = Mock(
+            side_effect=lambda provider_id: providers[provider_id]
+        )
+        service._registry = Mock(return_value=registry)
+        return service
+
+    async def test_voxtral_failure_falls_back_to_whisper_when_enabled(self):
         voxtral = FakeTranscriptionProvider("voxtral", error=RuntimeError("api down"))
         whisper = FakeTranscriptionProvider(
             "whisper",
@@ -514,38 +527,41 @@ class TranscriptionFallbackTests(unittest.IsolatedAsyncioTestCase):
                 "provider": "whisper",
             },
         )
-        registry = Mock()
-        registry.processing_mode_for.return_value = SimpleNamespace(fallback_enabled=True)
-
-        service._selected_transcription_provider_id = Mock(return_value="voxtral")
-        service._get_audio_duration = AsyncMock(return_value=2.0)
-        service._get_transcription_provider = Mock(
-            side_effect=lambda provider_id: {
-                "voxtral": voxtral,
-                "whisper": whisper,
-            }[provider_id]
+        mode_config = CapabilityModeConfig(
+            kind=ProviderKind.TRANSCRIPTION,
+            mode=ProcessingMode.API,
+            api_provider_id="voxtral",
+            fallback_enabled=True,
         )
-        service._registry = Mock(return_value=registry)
+        service = self._service_with_route(
+            mode_config,
+            {"voxtral": voxtral, "whisper": whisper},
+        )
 
         result = await service.transcribe("lecture.wav", language="en", domain_terms=["bridge"])
 
         self.assertEqual(result["text"], "fallback transcript")
         self.assertEqual(result["provider"], "whisper_fallback")
+        self.assertEqual(result["transcription_mode"], "api")
+        self.assertEqual(result["transcription_route"]["attempted_providers"], ["voxtral", "whisper"])
+        self.assertEqual(result["transcription_route"]["fallback_from"], "voxtral")
         self.assertEqual(len(voxtral.calls), 1)
         self.assertEqual(len(whisper.calls), 1)
         self.assertEqual(whisper.calls[0].metadata["duration"], 2.0)
         self.assertEqual(whisper.calls[0].domain_terms, ["bridge"])
 
     async def test_voxtral_failure_raises_when_fallback_disabled(self):
-        service = object.__new__(TranscriptionService)
         voxtral = FakeTranscriptionProvider("voxtral", error=RuntimeError("api down"))
-        registry = Mock()
-        registry.processing_mode_for.return_value = SimpleNamespace(fallback_enabled=False)
-
-        service._selected_transcription_provider_id = Mock(return_value="voxtral")
-        service._get_audio_duration = AsyncMock(return_value=2.0)
-        service._get_transcription_provider = Mock(return_value=voxtral)
-        service._registry = Mock(return_value=registry)
+        mode_config = CapabilityModeConfig(
+            kind=ProviderKind.TRANSCRIPTION,
+            mode=ProcessingMode.API,
+            api_provider_id="voxtral",
+            fallback_enabled=False,
+        )
+        service = self._service_with_route(
+            mode_config,
+            {"voxtral": voxtral, "whisper": FakeTranscriptionProvider("whisper")},
+        )
 
         with self.assertRaisesRegex(RuntimeError, "api down"):
             await service.transcribe("lecture.wav")
@@ -554,6 +570,79 @@ class TranscriptionFallbackTests(unittest.IsolatedAsyncioTestCase):
             call.args[0] for call in service._get_transcription_provider.call_args_list
         ]
         self.assertEqual(requested_providers, ["voxtral"])
+
+    async def test_hybrid_mode_tries_local_before_api(self):
+        local = FakeTranscriptionProvider(
+            "whisper-cpp",
+            transcript={
+                "text": "local transcript",
+                "duration": 2.0,
+                "segments": [{"text": "local transcript", "start": 0, "end": 2}],
+                "words": [],
+                "speakers": [],
+                "provider": "whisper-cpp",
+            },
+            is_local=True,
+        )
+        voxtral = FakeTranscriptionProvider("voxtral")
+        mode_config = CapabilityModeConfig(
+            kind=ProviderKind.TRANSCRIPTION,
+            mode=ProcessingMode.HYBRID,
+            api_provider_id="voxtral",
+            local_provider_id="whisper-cpp",
+            fallback_enabled=True,
+        )
+        service = self._service_with_route(
+            mode_config,
+            {"whisper-cpp": local, "voxtral": voxtral},
+        )
+
+        result = await service.transcribe("lecture.wav")
+
+        self.assertEqual(result["text"], "local transcript")
+        self.assertEqual(result["provider"], "whisper-cpp")
+        self.assertEqual(result["transcription_route"]["attempted_providers"], ["whisper-cpp"])
+        self.assertEqual(len(local.calls), 1)
+        self.assertEqual(len(voxtral.calls), 0)
+
+    async def test_hybrid_mode_falls_back_to_api_when_local_fails(self):
+        local = FakeTranscriptionProvider(
+            "whisper-cpp",
+            error=RuntimeError("local model missing"),
+            is_local=True,
+        )
+        voxtral = FakeTranscriptionProvider(
+            "voxtral",
+            transcript={
+                "text": "api transcript",
+                "duration": 2.0,
+                "segments": [{"text": "api transcript", "start": 0, "end": 2}],
+                "words": [],
+                "speakers": [],
+                "provider": "voxtral",
+            },
+        )
+        mode_config = CapabilityModeConfig(
+            kind=ProviderKind.TRANSCRIPTION,
+            mode=ProcessingMode.HYBRID,
+            api_provider_id="voxtral",
+            local_provider_id="whisper-cpp",
+            fallback_enabled=True,
+        )
+        service = self._service_with_route(
+            mode_config,
+            {"whisper-cpp": local, "voxtral": voxtral},
+        )
+
+        result = await service.transcribe("lecture.wav")
+
+        self.assertEqual(result["text"], "api transcript")
+        self.assertEqual(result["provider"], "voxtral")
+        self.assertEqual(
+            result["transcription_route"]["attempted_providers"],
+            ["whisper-cpp", "voxtral"],
+        )
+        self.assertEqual(result["transcription_route"]["fallback_from"], "whisper-cpp")
 
 
 class PipelineCompatibilityTests(unittest.IsolatedAsyncioTestCase):
