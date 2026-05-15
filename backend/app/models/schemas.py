@@ -7,15 +7,69 @@ from pydantic import BaseModel, Field
 from typing import Any, Dict, Optional, List
 from datetime import datetime
 from uuid import UUID
-from db.models import VideoStatus, SegmentAction, SegmentType
+from db.models import (
+    ProjectAssetKind,
+    ProjectAssetRole,
+    ProjectAssetStatus,
+    ProjectSourceMode,
+    ProjectStatus,
+    VideoStatus,
+    SegmentAction,
+    SegmentType,
+)
 
 
 # ═══════════════════════════════════════════
-#  VIDEO
+#  PROJECT / VIDEO COMPATIBILITY
 # ═══════════════════════════════════════════
+
+class ProjectAssetResponse(BaseModel):
+    id: UUID
+    project_id: UUID
+    kind: ProjectAssetKind
+    role: ProjectAssetRole
+    status: ProjectAssetStatus
+    is_primary: bool = False
+    filename: str
+    original_filename: str
+    file_path: str
+    file_size_bytes: Optional[int] = None
+    mime_type: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    sync_offset_seconds: float = 0.0
+    metadata_json: Dict[str, Any] = Field(default_factory=dict)
+    error_message: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ProjectResponse(BaseModel):
+    id: UUID
+    title: str
+    description: Optional[str] = None
+    status: ProjectStatus
+    source_mode: ProjectSourceMode
+    project_type: Optional[str] = "lecture"
+    metadata_json: Dict[str, Any] = Field(default_factory=dict)
+    error_message: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ProjectDetailResponse(ProjectResponse):
+    assets: List[ProjectAssetResponse] = Field(default_factory=list)
+
 
 class VideoUploadResponse(BaseModel):
     id: UUID
+    project_id: Optional[UUID] = None
+    project_asset_id: Optional[UUID] = None
     filename: str
     status: VideoStatus
     duration_seconds: Optional[float] = None
@@ -29,6 +83,8 @@ class VideoUploadResponse(BaseModel):
 
 class VideoResponse(BaseModel):
     id: UUID
+    project_id: Optional[UUID] = None
+    project_asset_id: Optional[UUID] = None
     original_filename: str
     duration_seconds: Optional[float] = None
     resolution: Optional[str] = None
@@ -42,6 +98,8 @@ class VideoResponse(BaseModel):
 
 
 class VideoDetailResponse(VideoResponse):
+    project: Optional[ProjectResponse] = None
+    project_asset: Optional[ProjectAssetResponse] = None
     transcript: Optional["TranscriptResponse"] = None
     segments: Optional[List["SegmentResponse"]] = None
     edit_plan: Optional["EditPlanResponse"] = None

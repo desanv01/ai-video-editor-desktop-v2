@@ -17,7 +17,9 @@ from sqlalchemy.orm import selectinload
 from db.database import get_db
 from db.models import (
     Video, VideoStatus, Transcript, Segment, EditPlan, Scene,
-    CourseMaterial, SegmentAction,
+    CourseMaterial, SegmentAction, Project, ProjectAsset,
+    ProjectAssetKind, ProjectAssetRole, ProjectAssetStatus,
+    ProjectSourceMode, ProjectStatus,
 )
 from models.schemas import (
     VideoUploadResponse, VideoResponse, VideoDetailResponse,
@@ -83,8 +85,41 @@ async def upload_video(
         metadata = {}
 
     # Create database record
+    project = Project(
+        title=os.path.splitext(file.filename)[0] or file.filename,
+        status=ProjectStatus.READY,
+        source_mode=ProjectSourceMode.SINGLE_VIDEO,
+        project_type="lecture",
+        metadata_json={"created_from": "legacy_video_upload"},
+    )
+    db.add(project)
+    await db.flush()
+
+    asset = ProjectAsset(
+        project_id=project.id,
+        kind=ProjectAssetKind.MIXED_VIDEO,
+        role=ProjectAssetRole.PRIMARY,
+        status=ProjectAssetStatus.READY,
+        is_primary=True,
+        filename=filename,
+        original_filename=file.filename,
+        file_path=file_path,
+        file_size_bytes=file_size,
+        mime_type=file.content_type,
+        duration_seconds=metadata.get("duration"),
+        metadata_json={
+            "legacy_video_id": str(video_id),
+            "resolution": f"{metadata.get('width', 0)}x{metadata.get('height', 0)}" if metadata else None,
+            "fps": metadata.get("fps"),
+        },
+    )
+    db.add(asset)
+    await db.flush()
+
     video = Video(
         id=video_id,
+        project_id=project.id,
+        project_asset_id=asset.id,
         filename=filename,
         original_filename=file.filename,
         file_path=file_path,
@@ -99,6 +134,8 @@ async def upload_video(
 
     return VideoUploadResponse(
         id=video_id,
+        project_id=project.id,
+        project_asset_id=asset.id,
         filename=file.filename,
         status=VideoStatus.UPLOADED,
         duration_seconds=metadata.get("duration"),
@@ -169,6 +206,8 @@ async def get_video(video_id: str, db: AsyncSession = Depends(get_db)):
         select(Video)
         .options(
             selectinload(Video.transcript),
+            selectinload(Video.project),
+            selectinload(Video.project_asset),
             selectinload(Video.segments),
             selectinload(Video.edit_plan),
             selectinload(Video.scenes),
