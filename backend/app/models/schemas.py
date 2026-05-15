@@ -253,6 +253,28 @@ class APIKeyStatus(BaseModel):
     updated_at: Optional[str] = None
 
 
+class LocalTranscriptionModelCatalogItem(BaseModel):
+    model_id: str
+    provider_id: str = "whisper-cpp"
+    tier: str
+    label: str
+    expected_filename: str
+    description: str
+    size: str
+    size_mb: int
+    speed: str
+    quality: str
+    active: bool = False
+    downloaded: bool = False
+    file_path: Optional[str] = None
+
+
+class LocalTranscriptionModelCatalogResponse(BaseModel):
+    provider_id: str = "whisper-cpp"
+    active_model_id: str
+    models: List[LocalTranscriptionModelCatalogItem]
+
+
 class APIKeyUpdate(BaseModel):
     api_key: Optional[str] = Field(default=None, max_length=4096)
     clear: bool = False
