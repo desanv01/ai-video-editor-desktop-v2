@@ -259,6 +259,7 @@ class LocalTranscriptionModelCatalogItem(BaseModel):
     tier: str
     label: str
     expected_filename: str
+    download_url: str
     description: str
     size: str
     size_mb: int
@@ -266,6 +267,11 @@ class LocalTranscriptionModelCatalogItem(BaseModel):
     quality: str
     active: bool = False
     downloaded: bool = False
+    managed: bool = True
+    status: str = "not_downloaded"
+    can_download: bool = True
+    can_remove: bool = False
+    download_progress_percent: Optional[float] = None
     file_path: Optional[str] = None
 
 
@@ -273,6 +279,33 @@ class LocalTranscriptionModelCatalogResponse(BaseModel):
     provider_id: str = "whisper-cpp"
     active_model_id: str
     models: List[LocalTranscriptionModelCatalogItem]
+
+
+class LocalTranscriptionModelDownloadRequest(BaseModel):
+    make_active: bool = True
+
+
+class LocalTranscriptionModelDownloadResponse(BaseModel):
+    job_id: str
+    provider_id: str = "whisper-cpp"
+    model_id: str
+    status: str
+    file_path: str
+    download_url: str
+    total_bytes: Optional[int] = None
+    bytes_downloaded: int = 0
+    progress_percent: float = 0.0
+    message: str
+    error: Optional[str] = None
+    active: bool = False
+
+
+class LocalTranscriptionModelRemoveResponse(BaseModel):
+    provider_id: str = "whisper-cpp"
+    model_id: str
+    removed: bool
+    file_path: Optional[str] = None
+    message: str
 
 
 class APIKeyUpdate(BaseModel):

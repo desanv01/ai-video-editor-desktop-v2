@@ -9,6 +9,8 @@ import type {
   Video, VideoUploadResponse, Segment, EditPlan,
   ProcessingStatus, QualityReport, Chapter,
   RevalidationResult, SegmentAction, BackendAISettings,
+  LocalTranscriptionModelCatalog, LocalTranscriptionModelDownload,
+  LocalTranscriptionModelRemoveResult,
 } from "../types/api";
 
 let BASE_URL = "http://localhost:8000/api/v1";
@@ -198,6 +200,33 @@ export async function updateDomainTerms(terms: string[]): Promise<void> {
   await request("/settings/domain-terms", {
     method: "PUT",
     body: JSON.stringify({ terms }),
+  });
+}
+export async function getLocalTranscriptionModels(): Promise<LocalTranscriptionModelCatalog> {
+  return request("/settings/models/local-transcription");
+}
+
+export async function downloadLocalTranscriptionModel(
+  modelId: string,
+  makeActive = true,
+): Promise<LocalTranscriptionModelDownload> {
+  return request(`/settings/models/local-transcription/${modelId}/download`, {
+    method: "POST",
+    body: JSON.stringify({ make_active: makeActive }),
+  });
+}
+
+export async function getLocalTranscriptionModelDownload(
+  modelId: string,
+): Promise<LocalTranscriptionModelDownload> {
+  return request(`/settings/models/local-transcription/${modelId}/download`);
+}
+
+export async function removeLocalTranscriptionModel(
+  modelId: string,
+): Promise<LocalTranscriptionModelRemoveResult> {
+  return request(`/settings/models/local-transcription/${modelId}`, {
+    method: "DELETE",
   });
 }
 
