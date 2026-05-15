@@ -2,7 +2,8 @@ import { useState, useEffect } from "react";
 import { UploadPanel } from "./components/UploadPanel";
 import { ProcessingView } from "./components/ProcessingView";
 import { ReviewEditor } from "./components/ReviewEditor";
-import { Clapperboard } from "lucide-react";
+import { TranscriptionSettingsPanel } from "./components/TranscriptionSettingsPanel";
+import { Clapperboard, Settings } from "lucide-react";
 import type { AppSettings } from "./types/api";
 import { setBaseUrl } from "./lib/api";
 
@@ -12,6 +13,7 @@ export default function App() {
   const [view, setView] = useState<View>("upload");
   const [videoId, setVideoId] = useState<string | null>(null);
   const [videoFilename, setVideoFilename] = useState<string>("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Load backend URL from Tauri settings on mount
   useEffect(() => {
@@ -54,6 +56,14 @@ export default function App() {
           {videoFilename && (
             <span className="bg-surface-overlay px-2 py-1 rounded">{videoFilename}</span>
           )}
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 transition-colors hover:bg-surface-overlay hover:text-gray-200"
+          >
+            <Settings className="w-3.5 h-3.5" />
+            Transcription
+          </button>
           {videoId && (
             <button
               onClick={handleBackToUpload}
@@ -80,6 +90,11 @@ export default function App() {
           <ReviewEditor videoId={videoId} />
         )}
       </main>
+
+      <TranscriptionSettingsPanel
+        isOpen={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
     </div>
   );
 }

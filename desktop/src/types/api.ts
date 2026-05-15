@@ -189,6 +189,17 @@ export interface BackendAISettings {
   api_keys: Record<string, APIKeyStatus>;
   local_model_paths: Record<AIProviderKind, string | null>;
 }
+
+export type AICapabilitySettingsUpdate = Partial<AICapabilitySettings>;
+
+export interface BackendAISettingsUpdate {
+  preferred_processing_mode?: AIProcessingMode;
+  fallback_enabled?: boolean;
+  capabilities?: Partial<Record<AIProviderKind, AICapabilitySettingsUpdate>>;
+  local_model_paths?: Partial<Record<AIProviderKind, string | null>>;
+  domain_terms?: string[];
+}
+
 export type LocalTranscriptionModelStatus =
   | "not_downloaded" | "queued" | "downloading" | "downloaded" | "completed" | "failed";
 
