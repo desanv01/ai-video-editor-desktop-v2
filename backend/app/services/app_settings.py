@@ -78,8 +78,8 @@ def _default_capabilities() -> dict[str, dict[str, Any]]:
     return {
         ProviderKind.TRANSCRIPTION.value: {
             "mode": settings.AI_TRANSCRIPTION_MODE,
-            "api_provider_id": settings.ASR_PROVIDER.lower(),
-            "local_provider_id": "whisper-cpp",
+            "api_provider_id": settings.AI_TRANSCRIPTION_API_PROVIDER_ID or settings.ASR_PROVIDER.lower(),
+            "local_provider_id": settings.AI_TRANSCRIPTION_LOCAL_PROVIDER_ID or "whisper-cpp",
             "fallback_enabled": settings.AI_PROVIDER_FALLBACK_ENABLED,
             "hybrid_fallback_order": [
                 mode.value for mode in DEFAULT_HYBRID_FALLBACK_ORDER[ProviderKind.TRANSCRIPTION]
@@ -227,6 +227,19 @@ def apply_settings_record(record: AppAISettings) -> None:
     transcription_provider = (capabilities.get(ProviderKind.TRANSCRIPTION.value) or {}).get("api_provider_id")
     if transcription_provider:
         settings.ASR_PROVIDER = transcription_provider
+        settings.AI_TRANSCRIPTION_API_PROVIDER_ID = transcription_provider
+
+    transcription_capability = capabilities.get(ProviderKind.TRANSCRIPTION.value) or {}
+    settings.AI_TRANSCRIPTION_LOCAL_PROVIDER_ID = (
+        transcription_capability.get("local_provider_id") or "whisper-cpp"
+    )
+    if "fallback_enabled" in transcription_capability:
+        settings.AI_TRANSCRIPTION_FALLBACK_ENABLED = bool(
+            transcription_capability.get("fallback_enabled")
+        )
+    fallback_order = transcription_capability.get("hybrid_fallback_order") or []
+    if fallback_order:
+        settings.AI_TRANSCRIPTION_HYBRID_FALLBACK_ORDER = ",".join(fallback_order)
 
     local_paths = record.local_model_paths_json or {}
     settings.LOCAL_TRANSCRIPTION_MODEL_PATH = local_paths.get(ProviderKind.TRANSCRIPTION.value) or ""

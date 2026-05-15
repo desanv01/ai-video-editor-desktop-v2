@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     AI_PROCESSING_MODE: str = "hybrid"          # "api", "local", or "hybrid"
     AI_PROVIDER_FALLBACK_ENABLED: bool = True
     AI_TRANSCRIPTION_MODE: str = "api"          # Current pipeline remains API-backed
+    AI_TRANSCRIPTION_API_PROVIDER_ID: str = ""
+    AI_TRANSCRIPTION_LOCAL_PROVIDER_ID: str = "whisper-cpp"
+    AI_TRANSCRIPTION_HYBRID_FALLBACK_ORDER: str = "local,api"
+    AI_TRANSCRIPTION_FALLBACK_ENABLED: bool | None = None
     AI_CHAT_MODE: str = "api"
     AI_EMBEDDING_MODE: str = "api"
     AI_VISION_MODE: str = "api"
