@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from db.database import Base
 from db.models import (  # noqa: F401 — import to register with Base.metadata
-    Video, Transcript, Segment, Scene, EditPlan, CourseMaterial,
+    Project, ProjectAsset, Video, Transcript, Segment, Scene, EditPlan, CourseMaterial,
 )
 from config import settings
 

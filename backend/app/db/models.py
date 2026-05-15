@@ -16,6 +16,10 @@ import enum
 
 # ── Enums ──
 
+def enum_values(enum_class):
+    return [item.value for item in enum_class]
+
+
 class VideoStatus(str, enum.Enum):
     UPLOADED = "uploaded"
     PROCESSING = "processing"
@@ -26,6 +30,58 @@ class VideoStatus(str, enum.Enum):
     RENDERING = "rendering"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class ProjectStatus(str, enum.Enum):
+    DRAFT = "draft"
+    IMPORTING = "importing"
+    READY = "ready"
+    PROCESSING = "processing"
+    AWAITING_REVIEW = "awaiting_review"
+    COMPLETED = "completed"
+    ARCHIVED = "archived"
+    FAILED = "failed"
+
+
+class ProjectSourceMode(str, enum.Enum):
+    SINGLE_VIDEO = "single_video"
+    MULTI_SOURCE = "multi_source"
+
+
+class ProjectAssetKind(str, enum.Enum):
+    MIXED_VIDEO = "mixed_video"
+    SCREEN_VIDEO = "screen_video"
+    CAMERA_VIDEO = "camera_video"
+    AUDIO = "audio"
+    SLIDE_DECK = "slide_deck"
+    PDF_NOTES = "pdf_notes"
+    TEXT_NOTES = "text_notes"
+    IMAGE = "image"
+    B_ROLL = "b_roll"
+    TRANSCRIPT = "transcript"
+    COURSE_MATERIAL = "course_material"
+    OTHER = "other"
+
+
+class ProjectAssetRole(str, enum.Enum):
+    PRIMARY = "primary"
+    SCREEN = "screen"
+    CAMERA = "camera"
+    AUDIO = "audio"
+    SLIDES = "slides"
+    NOTES = "notes"
+    SUPPORTING_MATERIAL = "supporting_material"
+    B_ROLL = "b_roll"
+    TRANSCRIPT = "transcript"
+    OTHER = "other"
+
+
+class ProjectAssetStatus(str, enum.Enum):
+    UPLOADED = "uploaded"
+    READY = "ready"
+    PROCESSING = "processing"
+    FAILED = "failed"
+    ARCHIVED = "archived"
 
 
 class SegmentAction(str, enum.Enum):
@@ -48,10 +104,62 @@ class SegmentType(str, enum.Enum):
 
 # ── Models ──
 
+class Project(Base):
+    """Top-level editing workspace for single-video and future multi-source flows."""
+    __tablename__ = "projects"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    title = Column(String(255), nullable=False)
+    description = Column(Text)
+    status = Column(Enum(ProjectStatus, values_callable=enum_values, native_enum=False), default=ProjectStatus.DRAFT, nullable=False)
+    source_mode = Column(Enum(ProjectSourceMode, values_callable=enum_values, native_enum=False), default=ProjectSourceMode.SINGLE_VIDEO, nullable=False)
+    project_type = Column(String(50), default="lecture")
+    metadata_json = Column(JSON, default=dict)
+    error_message = Column(Text)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    assets = relationship("ProjectAsset", back_populates="project", cascade="all, delete-orphan", order_by="ProjectAsset.created_at")
+    videos = relationship("Video", back_populates="project")
+
+
+class ProjectAsset(Base):
+    """A project-owned source file or material that can feed editing and analysis."""
+    __tablename__ = "project_assets"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+
+    kind = Column(Enum(ProjectAssetKind, values_callable=enum_values, native_enum=False), nullable=False)
+    role = Column(Enum(ProjectAssetRole, values_callable=enum_values, native_enum=False), default=ProjectAssetRole.OTHER, nullable=False)
+    status = Column(Enum(ProjectAssetStatus, values_callable=enum_values, native_enum=False), default=ProjectAssetStatus.UPLOADED, nullable=False)
+    is_primary = Column(Boolean, default=False, nullable=False)
+
+    filename = Column(String(255), nullable=False)
+    original_filename = Column(String(255), nullable=False)
+    file_path = Column(String(500), nullable=False)
+    file_size_bytes = Column(Integer)
+    mime_type = Column(String(100))
+    duration_seconds = Column(Float)
+
+    sync_offset_seconds = Column(Float, default=0.0, nullable=False)
+    metadata_json = Column(JSON, default=dict)
+    error_message = Column(Text)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    project = relationship("Project", back_populates="assets")
+    legacy_video = relationship("Video", back_populates="project_asset", foreign_keys="Video.project_asset_id", uselist=False)
+
+
 class Video(Base):
     __tablename__ = "videos"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="SET NULL"))
+    project_asset_id = Column(UUID(as_uuid=True), ForeignKey("project_assets.id", ondelete="SET NULL"), unique=True)
     filename = Column(String(255), nullable=False)
     original_filename = Column(String(255), nullable=False)
     file_path = Column(String(500), nullable=False)
@@ -70,6 +178,8 @@ class Video(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
+    project = relationship("Project", back_populates="videos")
+    project_asset = relationship("ProjectAsset", back_populates="legacy_video", foreign_keys=[project_asset_id], uselist=False)
     transcript = relationship("Transcript", back_populates="video", uselist=False, cascade="all, delete-orphan")
     segments = relationship("Segment", back_populates="video", cascade="all, delete-orphan", order_by="Segment.start_time")
     edit_plan = relationship("EditPlan", back_populates="video", uselist=False, cascade="all, delete-orphan")
