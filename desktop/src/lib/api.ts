@@ -9,6 +9,7 @@ import type {
   Video, VideoUploadResponse, Segment, EditPlan,
   ProcessingStatus, QualityReport, Chapter,
   RevalidationResult, SegmentAction, BackendAISettings,
+  BackendAISettingsUpdate,
   LocalTranscriptionModelCatalog, LocalTranscriptionModelDownload,
   LocalTranscriptionModelRemoveResult,
 } from "../types/api";
@@ -189,7 +190,7 @@ export async function getAISettings(): Promise<BackendAISettings> {
   return request("/settings/ai");
 }
 
-export async function updateAISettings(settings: Partial<BackendAISettings>): Promise<BackendAISettings> {
+export async function updateAISettings(settings: BackendAISettingsUpdate): Promise<BackendAISettings> {
   return request("/settings/ai", {
     method: "PUT",
     body: JSON.stringify(settings),
