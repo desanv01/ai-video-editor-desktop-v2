@@ -1,4 +1,5 @@
 import sys
+import shutil
 import types
 import unittest
 from pathlib import Path
@@ -36,6 +37,7 @@ if "config" not in sys.modules:
         EMBEDDING_MODEL="text-embedding-3-small",
         EMBEDDING_DIMENSIONS=1536,
         TEMP_PATH="/tmp",
+        LOCAL_MODEL_STORAGE_PATH="/tmp/models",
         LOCAL_TRANSCRIPTION_MODEL_PATH="",
         LOCAL_TRANSCRIPTION_MODEL_ID="small",
         LOCAL_TRANSCRIPTION_MODELS_DIR="",
@@ -77,6 +79,7 @@ from providers.whisper_cpp import (
     build_whisper_cpp_model_catalog,
     resolve_whisper_cpp_model_selection,
 )
+from services.local_transcription_models import LocalTranscriptionModelService
 from services.llm import LLMService
 from services.transcription import TranscriptionService
 
@@ -93,6 +96,7 @@ def settings_stub(**overrides):
         "EMBEDDING_MODEL": "text-embedding-3-small",
         "EMBEDDING_DIMENSIONS": 1536,
         "TEMP_PATH": "/tmp",
+        "LOCAL_MODEL_STORAGE_PATH": "/tmp/models",
         "LOCAL_TRANSCRIPTION_MODEL_PATH": "",
         "LOCAL_TRANSCRIPTION_MODEL_ID": "small",
         "LOCAL_TRANSCRIPTION_MODELS_DIR": "",
@@ -419,6 +423,7 @@ class WhisperCppProviderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(list(entries), ["small", "medium", "large-v3"])
         self.assertEqual(entries["small"].size_label, "466 MB")
+        self.assertTrue(entries["small"].download_url.endswith("/ggml-small.bin"))
         self.assertEqual(entries["small"].speed, "fast")
         self.assertEqual(entries["small"].quality, "good")
         self.assertTrue(entries["medium"].active)
@@ -432,6 +437,66 @@ class WhisperCppProviderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(selection.model_id, "small")
         self.assertEqual(selection.tier, "fast")
+
+
+class LocalTranscriptionModelServiceTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp_root = Path(__file__).resolve().parent / ".tmp_local_models"
+        if self.tmp_root.exists():
+            shutil.rmtree(self.tmp_root)
+        self.tmp_root.mkdir(parents=True)
+
+    def tearDown(self):
+        if self.tmp_root.exists():
+            shutil.rmtree(self.tmp_root)
+
+    def test_existing_model_download_request_returns_completed_job_and_activates(self):
+        local_settings = settings_stub(LOCAL_MODEL_STORAGE_PATH=str(self.tmp_root))
+        model_dir = self.tmp_root / "whisper-cpp"
+        model_dir.mkdir()
+        model_path = model_dir / "ggml-small.bin"
+        model_path.write_bytes(b"model")
+
+        service = LocalTranscriptionModelService()
+        with patch("services.local_transcription_models.settings", local_settings):
+            job = service.start_download("small", activate_on_complete=True)
+
+        self.assertEqual(job.status, "completed")
+        self.assertEqual(job.progress_percent, 100.0)
+        self.assertEqual(local_settings.WHISPER_CPP_MODEL_ID, "small")
+        self.assertEqual(local_settings.WHISPER_CPP_MODEL_PATH, str(model_path))
+
+    def test_remove_model_deletes_managed_file(self):
+        local_settings = settings_stub(LOCAL_MODEL_STORAGE_PATH=str(self.tmp_root))
+        model_dir = self.tmp_root / "whisper-cpp"
+        model_dir.mkdir()
+        model_path = model_dir / "ggml-medium.bin"
+        model_path.write_bytes(b"model")
+
+        service = LocalTranscriptionModelService()
+        with patch("services.local_transcription_models.settings", local_settings):
+            result = service.remove_model("medium")
+
+        self.assertTrue(result.removed)
+        self.assertFalse(model_path.exists())
+
+    def test_remove_model_refuses_arbitrary_configured_file_path(self):
+        outside_dir = self.tmp_root / "outside"
+        outside_dir.mkdir()
+        outside_path = outside_dir / "ggml-small.bin"
+        outside_path.write_bytes(b"model")
+        local_settings = settings_stub(
+            LOCAL_MODEL_STORAGE_PATH=str(self.tmp_root / "managed"),
+            WHISPER_CPP_MODEL_ID="small",
+            WHISPER_CPP_MODEL_PATH=str(outside_path),
+        )
+
+        service = LocalTranscriptionModelService()
+        with patch("services.local_transcription_models.settings", local_settings):
+            with self.assertRaisesRegex(RuntimeError, "Refusing to remove"):
+                service.remove_model("small")
+
+        self.assertTrue(outside_path.exists())
 
 
 class TranscriptionFallbackTests(unittest.IsolatedAsyncioTestCase):

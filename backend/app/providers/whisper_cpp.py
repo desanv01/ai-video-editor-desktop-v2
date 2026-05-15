@@ -34,6 +34,7 @@ class WhisperCppModelOption:
     tier: str
     label: str
     expected_filename: str
+    download_url: str
     description: str
     size_label: str
     size_mb: int
@@ -48,6 +49,7 @@ class WhisperCppModelCatalogEntry:
     tier: str
     label: str
     expected_filename: str
+    download_url: str
     description: str
     size_label: str
     size_mb: int
@@ -75,6 +77,7 @@ class WhisperCppRunResult:
 WhisperCppRunner = Callable[[list[str], str], Awaitable[WhisperCppRunResult]]
 
 WHISPER_CPP_PROVIDER_ID = "whisper-cpp"
+WHISPER_CPP_MODEL_REPO_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
 
 WHISPER_CPP_MODEL_OPTIONS: tuple[WhisperCppModelOption, ...] = (
     WhisperCppModelOption(
@@ -82,6 +85,7 @@ WHISPER_CPP_MODEL_OPTIONS: tuple[WhisperCppModelOption, ...] = (
         tier="fast",
         label="Whisper small",
         expected_filename="ggml-small.bin",
+        download_url=f"{WHISPER_CPP_MODEL_REPO_URL}/ggml-small.bin",
         description="Fast local transcription for rough lecture drafts and quick review cycles.",
         size_label="466 MB",
         size_mb=466,
@@ -94,6 +98,7 @@ WHISPER_CPP_MODEL_OPTIONS: tuple[WhisperCppModelOption, ...] = (
         tier="balanced",
         label="Whisper medium",
         expected_filename="ggml-medium.bin",
+        download_url=f"{WHISPER_CPP_MODEL_REPO_URL}/ggml-medium.bin",
         description="Balanced local model for day-to-day lecture transcription.",
         size_label="1.5 GB",
         size_mb=1500,
@@ -106,6 +111,7 @@ WHISPER_CPP_MODEL_OPTIONS: tuple[WhisperCppModelOption, ...] = (
         tier="accurate",
         label="Whisper large-v3",
         expected_filename="ggml-large-v3.bin",
+        download_url=f"{WHISPER_CPP_MODEL_REPO_URL}/ggml-large-v3.bin",
         description="Highest-quality local option for final transcripts when runtime speed is less important.",
         size_label="3.1 GB",
         size_mb=3100,
@@ -178,6 +184,7 @@ def build_whisper_cpp_model_catalog(settings) -> list[WhisperCppModelCatalogEntr
                 tier=option.tier,
                 label=option.label,
                 expected_filename=option.expected_filename,
+                download_url=option.download_url,
                 description=option.description,
                 size_label=option.size_label,
                 size_mb=option.size_mb,
@@ -202,6 +209,7 @@ def _model_search_dirs(settings, configured_model_path: str) -> list[str]:
     dirs = [
         getattr(settings, "WHISPER_CPP_MODELS_DIR", ""),
         getattr(settings, "LOCAL_TRANSCRIPTION_MODELS_DIR", ""),
+        managed_whisper_cpp_models_dir(settings),
     ]
     if configured_model_path:
         dirs.append(os.path.dirname(configured_model_path))
@@ -216,6 +224,21 @@ def _model_search_dirs(settings, configured_model_path: str) -> list[str]:
             normalized_dirs.append(normalized)
             seen.add(normalized)
     return normalized_dirs
+
+
+def managed_whisper_cpp_models_dir(settings) -> str:
+    configured = (
+        getattr(settings, "WHISPER_CPP_MODELS_DIR", "")
+        or getattr(settings, "LOCAL_TRANSCRIPTION_MODELS_DIR", "")
+    )
+    if configured:
+        return configured
+    root = getattr(settings, "LOCAL_MODEL_STORAGE_PATH", "") or "/data/models"
+    return os.path.join(root, "whisper-cpp")
+
+
+def managed_whisper_cpp_model_path(settings, option: WhisperCppModelOption) -> str:
+    return os.path.join(managed_whisper_cpp_models_dir(settings), option.expected_filename)
 
 
 def _candidate_model_paths(

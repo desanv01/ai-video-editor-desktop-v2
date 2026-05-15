@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     AI_VISION_MODE: str = "api"
     AI_LOCAL_RUNTIME_MODE: str = "local"
     APP_SETTINGS_SECRET_KEY: str = ""           # Fernet key for DB-persisted API keys
+    LOCAL_MODEL_STORAGE_PATH: str = "/data/models"
     LOCAL_TRANSCRIPTION_MODEL_PATH: str = ""
     LOCAL_TRANSCRIPTION_MODEL_ID: str = "small"
     LOCAL_TRANSCRIPTION_MODELS_DIR: str = ""

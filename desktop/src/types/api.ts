@@ -189,6 +189,59 @@ export interface BackendAISettings {
   api_keys: Record<string, APIKeyStatus>;
   local_model_paths: Record<AIProviderKind, string | null>;
 }
+export type LocalTranscriptionModelStatus =
+  | "not_downloaded" | "queued" | "downloading" | "downloaded" | "completed" | "failed";
+
+export interface LocalTranscriptionModel {
+  model_id: string;
+  provider_id: "whisper-cpp";
+  tier: "fast" | "balanced" | "accurate" | string;
+  label: string;
+  expected_filename: string;
+  download_url: string;
+  description: string;
+  size: string;
+  size_mb: number;
+  speed: string;
+  quality: string;
+  active: boolean;
+  downloaded: boolean;
+  managed: boolean;
+  status: LocalTranscriptionModelStatus;
+  can_download: boolean;
+  can_remove: boolean;
+  download_progress_percent: number | null;
+  file_path: string | null;
+}
+
+export interface LocalTranscriptionModelCatalog {
+  provider_id: "whisper-cpp";
+  active_model_id: string;
+  models: LocalTranscriptionModel[];
+}
+
+export interface LocalTranscriptionModelDownload {
+  job_id: string;
+  provider_id: "whisper-cpp";
+  model_id: string;
+  status: "queued" | "downloading" | "completed" | "failed" | string;
+  file_path: string;
+  download_url: string;
+  total_bytes: number | null;
+  bytes_downloaded: number;
+  progress_percent: number;
+  message: string;
+  error: string | null;
+  active: boolean;
+}
+
+export interface LocalTranscriptionModelRemoveResult {
+  provider_id: "whisper-cpp";
+  model_id: string;
+  removed: boolean;
+  file_path: string | null;
+  message: string;
+}
 
 export interface AppSettings {
   backend_url: string;
