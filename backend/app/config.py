@@ -57,14 +57,16 @@ class Settings(BaseSettings):
     AI_LOCAL_RUNTIME_MODE: str = "local"
     APP_SETTINGS_SECRET_KEY: str = ""           # Fernet key for DB-persisted API keys
     LOCAL_TRANSCRIPTION_MODEL_PATH: str = ""
-    LOCAL_TRANSCRIPTION_MODEL_ID: str = "small.en"
+    LOCAL_TRANSCRIPTION_MODEL_ID: str = "small"
+    LOCAL_TRANSCRIPTION_MODELS_DIR: str = ""
     LOCAL_CHAT_MODEL_PATH: str = ""
     LOCAL_EMBEDDING_MODEL_PATH: str = ""
     LOCAL_VISION_MODEL_PATH: str = ""
     LOCAL_RUNTIME_PATH: str = ""
     WHISPER_CPP_BINARY_PATH: str = "whisper-cli"
     WHISPER_CPP_MODEL_PATH: str = ""
-    WHISPER_CPP_MODEL_ID: str = "small.en"
+    WHISPER_CPP_MODEL_ID: str = "small"
+    WHISPER_CPP_MODELS_DIR: str = ""
     WHISPER_CPP_THREADS: int = 0
 
     # ── Embedding Configuration ──

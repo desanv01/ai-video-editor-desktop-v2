@@ -35,6 +35,27 @@ class WhisperCppModelOption:
     label: str
     expected_filename: str
     description: str
+    size_label: str
+    size_mb: int
+    speed: str
+    quality: str
+    aliases: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class WhisperCppModelCatalogEntry:
+    model_id: str
+    tier: str
+    label: str
+    expected_filename: str
+    description: str
+    size_label: str
+    size_mb: int
+    speed: str
+    quality: str
+    active: bool
+    downloaded: bool
+    file_path: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -57,44 +78,74 @@ WHISPER_CPP_PROVIDER_ID = "whisper-cpp"
 
 WHISPER_CPP_MODEL_OPTIONS: tuple[WhisperCppModelOption, ...] = (
     WhisperCppModelOption(
-        model_id="base.en",
+        model_id="small",
         tier="fast",
-        label="Fast local Whisper",
-        expected_filename="ggml-base.en.bin",
-        description="Small English model for quick local drafts.",
+        label="Whisper small",
+        expected_filename="ggml-small.bin",
+        description="Fast local transcription for rough lecture drafts and quick review cycles.",
+        size_label="466 MB",
+        size_mb=466,
+        speed="fast",
+        quality="good",
+        aliases=("small.en",),
     ),
     WhisperCppModelOption(
-        model_id="small.en",
+        model_id="medium",
         tier="balanced",
-        label="Balanced local Whisper",
-        expected_filename="ggml-small.en.bin",
-        description="Balanced speed and quality for lecture drafts.",
+        label="Whisper medium",
+        expected_filename="ggml-medium.bin",
+        description="Balanced local model for day-to-day lecture transcription.",
+        size_label="1.5 GB",
+        size_mb=1500,
+        speed="balanced",
+        quality="better",
+        aliases=("medium.en",),
     ),
     WhisperCppModelOption(
         model_id="large-v3",
         tier="accurate",
-        label="Accurate local Whisper",
+        label="Whisper large-v3",
         expected_filename="ggml-large-v3.bin",
-        description="Highest-quality local option once a model is downloaded.",
+        description="Highest-quality local option for final transcripts when runtime speed is less important.",
+        size_label="3.1 GB",
+        size_mb=3100,
+        speed="slow",
+        quality="best",
     ),
 )
+
+
+def normalize_whisper_cpp_model_id(model_id: str) -> str:
+    normalized = (model_id or "").strip().lower()
+    for option in WHISPER_CPP_MODEL_OPTIONS:
+        aliases = {alias.lower() for alias in option.aliases}
+        if normalized == option.model_id or normalized in aliases:
+            return option.model_id
+    return "small"
+
+
+def get_whisper_cpp_model_option(model_id: str) -> WhisperCppModelOption:
+    normalized = normalize_whisper_cpp_model_id(model_id)
+    return next(
+        (candidate for candidate in WHISPER_CPP_MODEL_OPTIONS if candidate.model_id == normalized),
+        WHISPER_CPP_MODEL_OPTIONS[0],
+    )
 
 
 def resolve_whisper_cpp_model_selection(settings) -> WhisperCppModelSelection:
     model_id = (
         getattr(settings, "WHISPER_CPP_MODEL_ID", "")
         or getattr(settings, "LOCAL_TRANSCRIPTION_MODEL_ID", "")
-        or "small.en"
+        or "small"
     )
-    option = next(
-        (candidate for candidate in WHISPER_CPP_MODEL_OPTIONS if candidate.model_id == model_id),
-        WHISPER_CPP_MODEL_OPTIONS[1],
-    )
+    option = get_whisper_cpp_model_option(model_id)
     model_path = (
         getattr(settings, "WHISPER_CPP_MODEL_PATH", "")
         or getattr(settings, "LOCAL_TRANSCRIPTION_MODEL_PATH", "")
         or ""
     )
+    if not model_path:
+        model_path = _first_existing_model_path(settings, option)
     binary_path = getattr(settings, "WHISPER_CPP_BINARY_PATH", "") or "whisper-cli"
     return WhisperCppModelSelection(
         model_id=option.model_id,
@@ -102,6 +153,91 @@ def resolve_whisper_cpp_model_selection(settings) -> WhisperCppModelSelection:
         model_path=model_path,
         binary_path=binary_path,
     )
+
+
+def build_whisper_cpp_model_catalog(settings) -> list[WhisperCppModelCatalogEntry]:
+    selection = resolve_whisper_cpp_model_selection(settings)
+    configured_model_path = (
+        getattr(settings, "WHISPER_CPP_MODEL_PATH", "")
+        or getattr(settings, "LOCAL_TRANSCRIPTION_MODEL_PATH", "")
+        or ""
+    )
+    search_dirs = _model_search_dirs(settings, configured_model_path)
+
+    catalog: list[WhisperCppModelCatalogEntry] = []
+    for option in WHISPER_CPP_MODEL_OPTIONS:
+        active = option.model_id == selection.model_id
+        candidate_paths = _candidate_model_paths(option, configured_model_path, search_dirs)
+        if active and configured_model_path:
+            candidate_paths.insert(0, os.path.abspath(configured_model_path))
+        existing_path = next((path for path in candidate_paths if os.path.isfile(path)), None)
+        file_path = existing_path or (configured_model_path if active and configured_model_path else None)
+        catalog.append(
+            WhisperCppModelCatalogEntry(
+                model_id=option.model_id,
+                tier=option.tier,
+                label=option.label,
+                expected_filename=option.expected_filename,
+                description=option.description,
+                size_label=option.size_label,
+                size_mb=option.size_mb,
+                speed=option.speed,
+                quality=option.quality,
+                active=active,
+                downloaded=existing_path is not None,
+                file_path=file_path,
+            )
+        )
+    return catalog
+
+
+def _first_existing_model_path(settings, option: WhisperCppModelOption) -> str:
+    for path in _candidate_model_paths(option, "", _model_search_dirs(settings, "")):
+        if os.path.isfile(path):
+            return path
+    return ""
+
+
+def _model_search_dirs(settings, configured_model_path: str) -> list[str]:
+    dirs = [
+        getattr(settings, "WHISPER_CPP_MODELS_DIR", ""),
+        getattr(settings, "LOCAL_TRANSCRIPTION_MODELS_DIR", ""),
+    ]
+    if configured_model_path:
+        dirs.append(os.path.dirname(configured_model_path))
+
+    seen: set[str] = set()
+    normalized_dirs: list[str] = []
+    for path in dirs:
+        if not path:
+            continue
+        normalized = os.path.abspath(path)
+        if normalized not in seen:
+            normalized_dirs.append(normalized)
+            seen.add(normalized)
+    return normalized_dirs
+
+
+def _candidate_model_paths(
+    option: WhisperCppModelOption,
+    configured_model_path: str,
+    search_dirs: list[str],
+) -> list[str]:
+    paths = []
+    if configured_model_path:
+        configured_name = os.path.basename(configured_model_path)
+        if configured_name == option.expected_filename:
+            paths.append(configured_model_path)
+    paths.extend(os.path.join(directory, option.expected_filename) for directory in search_dirs)
+
+    seen: set[str] = set()
+    unique_paths: list[str] = []
+    for path in paths:
+        normalized = os.path.abspath(path)
+        if normalized not in seen:
+            unique_paths.append(normalized)
+            seen.add(normalized)
+    return unique_paths
 
 
 class WhisperCppTranscriptionProvider(TranscriptionProvider):
@@ -112,14 +248,14 @@ class WhisperCppTranscriptionProvider(TranscriptionProvider):
         *,
         binary_path: str = "whisper-cli",
         model_path: str = "",
-        model_id: str = "small.en",
+        model_id: str = "small",
         work_dir: Optional[str] = None,
         runner: Optional[WhisperCppRunner] = None,
         validate_runtime: bool = True,
     ):
         self._binary_path = binary_path or "whisper-cli"
         self._model_path = model_path or ""
-        self._model_id = model_id or "small.en"
+        self._model_id = normalize_whisper_cpp_model_id(model_id or "small")
         self._work_dir = work_dir
         self._runner = runner or self._run_command
         self._validate_runtime = validate_runtime

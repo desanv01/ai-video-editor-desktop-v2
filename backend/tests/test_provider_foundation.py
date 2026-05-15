@@ -37,10 +37,12 @@ if "config" not in sys.modules:
         EMBEDDING_DIMENSIONS=1536,
         TEMP_PATH="/tmp",
         LOCAL_TRANSCRIPTION_MODEL_PATH="",
-        LOCAL_TRANSCRIPTION_MODEL_ID="small.en",
+        LOCAL_TRANSCRIPTION_MODEL_ID="small",
+        LOCAL_TRANSCRIPTION_MODELS_DIR="",
         WHISPER_CPP_BINARY_PATH="whisper-cli",
         WHISPER_CPP_MODEL_PATH="",
-        WHISPER_CPP_MODEL_ID="small.en",
+        WHISPER_CPP_MODEL_ID="small",
+        WHISPER_CPP_MODELS_DIR="",
         WHISPER_CPP_THREADS=0,
         domain_terms_list=[],
     )
@@ -72,6 +74,7 @@ from providers.whisper_cpp import (
     WHISPER_CPP_PROVIDER_ID,
     WhisperCppRunResult,
     WhisperCppTranscriptionProvider,
+    build_whisper_cpp_model_catalog,
     resolve_whisper_cpp_model_selection,
 )
 from services.llm import LLMService
@@ -91,10 +94,12 @@ def settings_stub(**overrides):
         "EMBEDDING_DIMENSIONS": 1536,
         "TEMP_PATH": "/tmp",
         "LOCAL_TRANSCRIPTION_MODEL_PATH": "",
-        "LOCAL_TRANSCRIPTION_MODEL_ID": "small.en",
+        "LOCAL_TRANSCRIPTION_MODEL_ID": "small",
+        "LOCAL_TRANSCRIPTION_MODELS_DIR": "",
         "WHISPER_CPP_BINARY_PATH": "whisper-cli",
         "WHISPER_CPP_MODEL_PATH": "",
-        "WHISPER_CPP_MODEL_ID": "small.en",
+        "WHISPER_CPP_MODEL_ID": "small",
+        "WHISPER_CPP_MODELS_DIR": "",
         "WHISPER_CPP_THREADS": 0,
         "AI_PROCESSING_MODE": "hybrid",
         "AI_PROVIDER_FALLBACK_ENABLED": True,
@@ -397,6 +402,36 @@ class WhisperCppProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(selection.tier, "accurate")
         self.assertEqual(selection.model_path, "C:/models/whisper-cpp.bin")
         self.assertEqual(selection.binary_path, "C:/tools/whisper-cli.exe")
+
+    def test_model_catalog_reports_size_quality_and_local_status(self):
+        with patch(
+            "providers.whisper_cpp.os.path.isfile",
+            side_effect=lambda path: str(path).endswith("ggml-medium.bin"),
+        ):
+            catalog = build_whisper_cpp_model_catalog(
+                settings_stub(
+                    WHISPER_CPP_MODEL_ID="medium",
+                    WHISPER_CPP_MODELS_DIR="C:/models",
+                )
+            )
+
+        entries = {entry.model_id: entry for entry in catalog}
+
+        self.assertEqual(list(entries), ["small", "medium", "large-v3"])
+        self.assertEqual(entries["small"].size_label, "466 MB")
+        self.assertEqual(entries["small"].speed, "fast")
+        self.assertEqual(entries["small"].quality, "good")
+        self.assertTrue(entries["medium"].active)
+        self.assertTrue(entries["medium"].downloaded)
+        self.assertFalse(entries["large-v3"].downloaded)
+
+    def test_legacy_small_en_model_id_maps_to_catalog_small(self):
+        selection = resolve_whisper_cpp_model_selection(
+            settings_stub(WHISPER_CPP_MODEL_ID="small.en")
+        )
+
+        self.assertEqual(selection.model_id, "small")
+        self.assertEqual(selection.tier, "fast")
 
 
 class TranscriptionFallbackTests(unittest.IsolatedAsyncioTestCase):
