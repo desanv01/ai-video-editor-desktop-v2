@@ -12,6 +12,8 @@ import type {
   BackendAISettingsUpdate,
   LocalTranscriptionModelCatalog, LocalTranscriptionModelDownload,
   LocalTranscriptionModelRemoveResult,
+  Project, ProjectAsset, ProjectAssetUploadResponse,
+  ProjectAssetUploadType, ProjectCreateRequest, ProjectDetail,
 } from "../types/api";
 
 let BASE_URL = "http://localhost:8000/api/v1";
@@ -57,6 +59,53 @@ async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: nu
 async function errorFromResponse(prefix: string, res: Response): Promise<Error> {
   const body = await res.text();
   return new Error(`${prefix}: ${res.status}${body ? ` - ${body.slice(0, 300)}` : ""}`);
+}
+
+export async function createProject(requestBody: ProjectCreateRequest): Promise<ProjectDetail> {
+  return request("/projects", {
+    method: "POST",
+    body: JSON.stringify(requestBody),
+  });
+}
+
+export async function listProjects(): Promise<Project[]> {
+  return request("/projects");
+}
+
+export async function getProject(projectId: string): Promise<ProjectDetail> {
+  return request(`/projects/${projectId}`);
+}
+
+export async function listProjectAssets(projectId: string): Promise<ProjectAsset[]> {
+  return request(`/projects/${projectId}/assets`);
+}
+
+export async function uploadProjectAsset(
+  projectId: string,
+  assetType: ProjectAssetUploadType,
+  file: File,
+  isPrimary = false,
+): Promise<ProjectAssetUploadResponse> {
+  const form = new FormData();
+  form.append("asset_type", assetType);
+  form.append("is_primary", String(isPrimary));
+  form.append("file", file);
+
+  const res = await fetchWithTimeout(
+    `${BASE_URL}/projects/${projectId}/assets/upload`,
+    { method: "POST", body: form },
+    VIDEO_UPLOAD_TIMEOUT_MS,
+  );
+  if (!res.ok) throw await errorFromResponse("Project asset upload failed", res);
+  return res.json();
+}
+
+export async function deleteProjectAsset(projectId: string, assetId: string): Promise<void> {
+  await request(`/projects/${projectId}/assets/${assetId}`, { method: "DELETE" });
+}
+
+export function getProjectAssetDownloadUrl(projectId: string, assetId: string): string {
+  return `${BASE_URL}/projects/${projectId}/assets/${assetId}/download`;
 }
 
 // ═══════════════════════════════════════════

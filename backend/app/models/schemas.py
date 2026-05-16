@@ -66,6 +66,19 @@ class ProjectDetailResponse(ProjectResponse):
     assets: List[ProjectAssetResponse] = Field(default_factory=list)
 
 
+class ProjectCreateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+    description: Optional[str] = None
+    source_mode: ProjectSourceMode = ProjectSourceMode.SINGLE_VIDEO
+    project_type: str = Field(default="lecture", max_length=50)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ProjectAssetUploadResponse(ProjectAssetResponse):
+    file_size_mb: Optional[float] = None
+    message: str = "Asset uploaded successfully."
+
+
 class VideoUploadResponse(BaseModel):
     id: UUID
     project_id: Optional[UUID] = None
