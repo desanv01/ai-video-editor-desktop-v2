@@ -13,6 +13,8 @@ if str(APP_DIR) not in sys.path:
 config_defaults = {
     "DATABASE_URL": "postgresql+asyncpg://user:pass@localhost/test",
     "APP_DEBUG": False,
+    "UPLOAD_PATH": "/tmp/uploads",
+    "MAX_VIDEO_SIZE_MB": 500,
     "ASR_PROVIDER": "voxtral",
     "VOXTRAL_MODEL": "voxtral-mini-latest",
     "WHISPER_MODEL": "whisper-1",
@@ -57,7 +59,18 @@ from db.models import (
     ProjectStatus,
     Video,
 )
-from models.schemas import ProjectAssetResponse, ProjectDetailResponse, VideoUploadResponse
+from api.routes.projects import (
+    _asset_kind_for_upload,
+    _asset_role_for_upload,
+    _validate_asset_upload,
+)
+from models.schemas import (
+    ProjectAssetResponse,
+    ProjectAssetUploadResponse,
+    ProjectCreateRequest,
+    ProjectDetailResponse,
+    VideoUploadResponse,
+)
 
 
 class ProjectModelTests(unittest.TestCase):
@@ -140,6 +153,55 @@ class ProjectModelTests(unittest.TestCase):
         self.assertEqual(project.assets[0].kind, ProjectAssetKind.MIXED_VIDEO)
         self.assertEqual(upload.project_id, project_id)
         self.assertEqual(upload.project_asset_id, asset_id)
+
+    def test_project_create_and_asset_upload_schemas_cover_asset_api(self):
+        project_id = uuid4()
+        asset_id = uuid4()
+
+        request = ProjectCreateRequest(title="Lecture 3", metadata={"course": "CS101"})
+        response = ProjectAssetUploadResponse(
+            id=asset_id,
+            project_id=project_id,
+            kind=ProjectAssetKind.AUDIO,
+            role=ProjectAssetRole.AUDIO,
+            status=ProjectAssetStatus.READY,
+            filename="stored.wav",
+            original_filename="lecture-audio.wav",
+            file_path="/tmp/uploads/stored.wav",
+            created_at="2026-05-15T00:00:00",
+            updated_at="2026-05-15T00:00:00",
+            file_size_mb=1.5,
+        )
+
+        self.assertEqual(request.title, "Lecture 3")
+        self.assertEqual(request.metadata["course"], "CS101")
+        self.assertEqual(response.kind, ProjectAssetKind.AUDIO)
+        self.assertEqual(response.message, "Asset uploaded successfully.")
+
+    def test_asset_upload_type_maps_to_project_asset_kind_and_role(self):
+        self.assertEqual(_asset_kind_for_upload("video", "lecture.mp4"), ProjectAssetKind.MIXED_VIDEO)
+        self.assertEqual(_asset_role_for_upload("video"), ProjectAssetRole.PRIMARY)
+        self.assertEqual(_asset_kind_for_upload("audio", "lecture.wav"), ProjectAssetKind.AUDIO)
+        self.assertEqual(_asset_role_for_upload("audio"), ProjectAssetRole.AUDIO)
+        self.assertEqual(_asset_kind_for_upload("slides", "week-1.pptx"), ProjectAssetKind.SLIDE_DECK)
+        self.assertEqual(_asset_role_for_upload("slides"), ProjectAssetRole.SLIDES)
+        self.assertEqual(_asset_kind_for_upload("notes", "outline.pdf"), ProjectAssetKind.PDF_NOTES)
+        self.assertEqual(_asset_kind_for_upload("notes", "outline.md"), ProjectAssetKind.TEXT_NOTES)
+        self.assertEqual(_asset_role_for_upload("materials"), ProjectAssetRole.SUPPORTING_MATERIAL)
+
+    def test_asset_upload_validation_accepts_expected_groups(self):
+        class Upload:
+            def __init__(self, filename):
+                self.filename = filename
+
+        self.assertEqual(_validate_asset_upload(Upload("lecture.webm"), "video"), ".webm")
+        self.assertEqual(_validate_asset_upload(Upload("voice.flac"), "audio"), ".flac")
+        self.assertEqual(_validate_asset_upload(Upload("deck.pdf"), "slides"), ".pdf")
+        self.assertEqual(_validate_asset_upload(Upload("notes.docx"), "notes"), ".docx")
+        self.assertEqual(_validate_asset_upload(Upload("rubric.xlsx"), "materials"), ".xlsx")
+
+        with self.assertRaisesRegex(Exception, "Unsupported audio file type"):
+            _validate_asset_upload(Upload("voice.mp4"), "audio")
 
 
 if __name__ == "__main__":

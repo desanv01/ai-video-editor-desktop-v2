@@ -12,6 +12,7 @@ from config import settings
 from db.database import async_session, init_db
 from rag.vector_store import rag_service
 from api.routes.models import router as model_router
+from api.routes.projects import router as project_router
 from api.routes.videos import router as video_router
 from services.app_settings import load_and_apply_persisted_ai_settings
 
@@ -67,6 +68,7 @@ app.add_middleware(
 
 # ── Routes ──
 app.include_router(video_router, prefix="/api/v1")
+app.include_router(project_router, prefix="/api/v1")
 app.include_router(model_router, prefix="/api/v1")
 
 # ── Debug routes (only when APP_DEBUG=true) ──

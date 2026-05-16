@@ -10,10 +10,81 @@ export type SegmentType =
   | "core_content" | "example" | "filler" | "pause"
   | "repetition" | "intro_outro" | "qa" | "transition";
 
+export type ProjectStatus =
+  | "draft" | "importing" | "ready" | "processing"
+  | "awaiting_review" | "completed" | "archived" | "failed";
+
+export type ProjectSourceMode = "single_video" | "multi_source";
+
+export type ProjectAssetKind =
+  | "mixed_video" | "screen_video" | "camera_video" | "audio"
+  | "slide_deck" | "pdf_notes" | "text_notes" | "image"
+  | "b_roll" | "transcript" | "course_material" | "other";
+
+export type ProjectAssetRole =
+  | "primary" | "screen" | "camera" | "audio" | "slides"
+  | "notes" | "supporting_material" | "b_roll" | "transcript" | "other";
+
+export type ProjectAssetStatus = "uploaded" | "ready" | "processing" | "failed" | "archived";
+
+export type ProjectAssetUploadType = "video" | "audio" | "slides" | "notes" | "materials";
+
+export interface Project {
+  id: string;
+  title: string;
+  description: string | null;
+  status: ProjectStatus;
+  source_mode: ProjectSourceMode;
+  project_type: string | null;
+  metadata_json: Record<string, unknown>;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectAsset {
+  id: string;
+  project_id: string;
+  kind: ProjectAssetKind;
+  role: ProjectAssetRole;
+  status: ProjectAssetStatus;
+  is_primary: boolean;
+  filename: string;
+  original_filename: string;
+  file_path: string;
+  file_size_bytes: number | null;
+  mime_type: string | null;
+  duration_seconds: number | null;
+  sync_offset_seconds: number;
+  metadata_json: Record<string, unknown>;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectDetail extends Project {
+  assets: ProjectAsset[];
+}
+
+export interface ProjectCreateRequest {
+  title: string;
+  description?: string | null;
+  source_mode?: ProjectSourceMode;
+  project_type?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ProjectAssetUploadResponse extends ProjectAsset {
+  file_size_mb: number | null;
+  message: string;
+}
+
 // ── Video ──
 
 export interface Video {
   id: string;
+  project_id: string | null;
+  project_asset_id: string | null;
   original_filename: string;
   duration_seconds: number | null;
   resolution: string | null;
@@ -25,6 +96,8 @@ export interface Video {
 
 export interface VideoUploadResponse {
   id: string;
+  project_id: string | null;
+  project_asset_id: string | null;
   filename: string;
   status: VideoStatus;
   duration_seconds: number | null;
