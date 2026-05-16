@@ -10,35 +10,42 @@ APP_DIR = Path(__file__).resolve().parents[1] / "app"
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
+config_defaults = {
+    "DATABASE_URL": "postgresql+asyncpg://user:pass@localhost/test",
+    "APP_DEBUG": False,
+    "ASR_PROVIDER": "voxtral",
+    "VOXTRAL_MODEL": "voxtral-mini-latest",
+    "WHISPER_MODEL": "whisper-1",
+    "MISTRAL_API_KEY": "",
+    "MISTRAL_BASE_URL": "https://api.mistral.ai/v1",
+    "OPENAI_API_KEY": "",
+    "DEEPSEEK_API_KEY": "",
+    "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+    "AGENT2_MODEL": "deepseek-chat",
+    "EMBEDDING_MODEL": "text-embedding-3-small",
+    "EMBEDDING_DIMENSIONS": 1536,
+    "TEMP_PATH": "/tmp",
+    "LOCAL_MODEL_STORAGE_PATH": "/tmp/models",
+    "LOCAL_TRANSCRIPTION_MODEL_PATH": "",
+    "LOCAL_TRANSCRIPTION_MODEL_ID": "small",
+    "LOCAL_TRANSCRIPTION_MODELS_DIR": "",
+    "WHISPER_CPP_BINARY_PATH": "whisper-cli",
+    "WHISPER_CPP_MODEL_PATH": "",
+    "WHISPER_CPP_MODEL_ID": "small",
+    "WHISPER_CPP_MODELS_DIR": "",
+    "WHISPER_CPP_THREADS": 0,
+    "domain_terms_list": [],
+}
+
 if "config" not in sys.modules:
     config_stub = types.ModuleType("config")
-    config_stub.settings = SimpleNamespace(
-        DATABASE_URL="postgresql+asyncpg://user:pass@localhost/test",
-        APP_DEBUG=False,
-        ASR_PROVIDER="voxtral",
-        VOXTRAL_MODEL="voxtral-mini-latest",
-        WHISPER_MODEL="whisper-1",
-        MISTRAL_API_KEY="",
-        MISTRAL_BASE_URL="https://api.mistral.ai/v1",
-        OPENAI_API_KEY="",
-        DEEPSEEK_API_KEY="",
-        DEEPSEEK_BASE_URL="https://api.deepseek.com",
-        AGENT2_MODEL="deepseek-chat",
-        EMBEDDING_MODEL="text-embedding-3-small",
-        EMBEDDING_DIMENSIONS=1536,
-        TEMP_PATH="/tmp",
-        LOCAL_MODEL_STORAGE_PATH="/tmp/models",
-        LOCAL_TRANSCRIPTION_MODEL_PATH="",
-        LOCAL_TRANSCRIPTION_MODEL_ID="small",
-        LOCAL_TRANSCRIPTION_MODELS_DIR="",
-        WHISPER_CPP_BINARY_PATH="whisper-cli",
-        WHISPER_CPP_MODEL_PATH="",
-        WHISPER_CPP_MODEL_ID="small",
-        WHISPER_CPP_MODELS_DIR="",
-        WHISPER_CPP_THREADS=0,
-        domain_terms_list=[],
-    )
+    config_stub.settings = SimpleNamespace(**config_defaults)
     sys.modules["config"] = config_stub
+else:
+    settings_stub = sys.modules["config"].settings
+    for key, value in config_defaults.items():
+        if not hasattr(settings_stub, key):
+            setattr(settings_stub, key, value)
 
 from db.models import (
     Project,

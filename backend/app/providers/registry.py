@@ -1,5 +1,7 @@
 """Provider registry for AI capability routing."""
 
+from __future__ import annotations
+
 from typing import Optional
 
 from providers.interfaces import AIProvider, ProviderKind
