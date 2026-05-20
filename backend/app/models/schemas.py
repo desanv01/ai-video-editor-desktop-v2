@@ -8,7 +8,9 @@ from typing import Any, Dict, Optional, List
 from datetime import datetime
 from uuid import UUID
 from db.models import (
+    ProjectAssetSyncRole,
     ProjectAssetKind,
+    ProjectMediaSourceType,
     ProjectAssetRole,
     ProjectAssetStatus,
     ProjectSourceMode,
@@ -28,6 +30,8 @@ class ProjectAssetResponse(BaseModel):
     project_id: UUID
     kind: ProjectAssetKind
     role: ProjectAssetRole
+    source_type: ProjectMediaSourceType = ProjectMediaSourceType.OTHER
+    sync_role: ProjectAssetSyncRole = ProjectAssetSyncRole.NONE
     status: ProjectAssetStatus
     is_primary: bool = False
     filename: str

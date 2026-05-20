@@ -19,6 +19,7 @@ from db.models import (
     Video, VideoStatus, Transcript, Segment, EditPlan, Scene,
     CourseMaterial, SegmentAction, Project, ProjectAsset,
     ProjectAssetKind, ProjectAssetRole, ProjectAssetStatus,
+    ProjectAssetSyncRole, ProjectMediaSourceType,
     ProjectSourceMode, ProjectStatus,
 )
 from models.schemas import (
@@ -99,6 +100,8 @@ async def upload_video(
         project_id=project.id,
         kind=ProjectAssetKind.MIXED_VIDEO,
         role=ProjectAssetRole.PRIMARY,
+        source_type=ProjectMediaSourceType.MIXED_VIDEO,
+        sync_role=ProjectAssetSyncRole.PRIMARY_TIMELINE,
         status=ProjectAssetStatus.READY,
         is_primary=True,
         filename=filename,
@@ -109,6 +112,8 @@ async def upload_video(
         duration_seconds=metadata.get("duration"),
         metadata_json={
             "legacy_video_id": str(video_id),
+            "source_type": ProjectMediaSourceType.MIXED_VIDEO.value,
+            "sync_role": ProjectAssetSyncRole.PRIMARY_TIMELINE.value,
             "resolution": f"{metadata.get('width', 0)}x{metadata.get('height', 0)}" if metadata else None,
             "fps": metadata.get("fps"),
         },

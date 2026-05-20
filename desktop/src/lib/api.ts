@@ -85,10 +85,14 @@ export async function uploadProjectAsset(
   assetType: ProjectAssetUploadType,
   file: File,
   isPrimary = false,
+  metadata?: Record<string, unknown>,
 ): Promise<ProjectAssetUploadResponse> {
   const form = new FormData();
   form.append("asset_type", assetType);
   form.append("is_primary", String(isPrimary));
+  if (metadata) {
+    form.append("metadata", JSON.stringify(metadata));
+  }
   form.append("file", file);
 
   const res = await fetchWithTimeout(

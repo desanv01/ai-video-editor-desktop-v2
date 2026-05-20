@@ -76,6 +76,33 @@ class ProjectAssetRole(str, enum.Enum):
     OTHER = "other"
 
 
+class ProjectMediaSourceType(str, enum.Enum):
+    MIXED_VIDEO = "mixed_video"
+    SCREEN_RECORDING = "screen_recording"
+    CAMERA_RECORDING = "camera_recording"
+    WEBCAM_RECORDING = "webcam_recording"
+    PHONE_CAMERA_RECORDING = "phone_camera_recording"
+    SEPARATE_AUDIO = "separate_audio"
+    SLIDE_DECK = "slide_deck"
+    PDF_NOTES = "pdf_notes"
+    TEXT_NOTES = "text_notes"
+    COURSE_MATERIAL = "course_material"
+    IMAGE = "image"
+    B_ROLL = "b_roll"
+    TRANSCRIPT = "transcript"
+    OTHER = "other"
+
+
+class ProjectAssetSyncRole(str, enum.Enum):
+    PRIMARY_TIMELINE = "primary_timeline"
+    SCREEN_REFERENCE = "screen_reference"
+    CAMERA_OVERLAY = "camera_overlay"
+    AUDIO_MASTER = "audio_master"
+    AUDIO_REFERENCE = "audio_reference"
+    STRUCTURE_REFERENCE = "structure_reference"
+    NONE = "none"
+
+
 class ProjectAssetStatus(str, enum.Enum):
     UPLOADED = "uploaded"
     READY = "ready"
@@ -133,6 +160,8 @@ class ProjectAsset(Base):
 
     kind = Column(Enum(ProjectAssetKind, values_callable=enum_values, native_enum=False), nullable=False)
     role = Column(Enum(ProjectAssetRole, values_callable=enum_values, native_enum=False), default=ProjectAssetRole.OTHER, nullable=False)
+    source_type = Column(Enum(ProjectMediaSourceType, values_callable=enum_values, native_enum=False), default=ProjectMediaSourceType.OTHER, nullable=False)
+    sync_role = Column(Enum(ProjectAssetSyncRole, values_callable=enum_values, native_enum=False), default=ProjectAssetSyncRole.NONE, nullable=False)
     status = Column(Enum(ProjectAssetStatus, values_callable=enum_values, native_enum=False), default=ProjectAssetStatus.UPLOADED, nullable=False)
     is_primary = Column(Boolean, default=False, nullable=False)
 

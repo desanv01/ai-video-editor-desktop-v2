@@ -3,10 +3,11 @@ Project-first API routes for source assets and teaching materials.
 """
 
 import logging
+import json
 import os
 import shutil
 import uuid
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -20,9 +21,11 @@ from db.database import get_db
 from db.models import (
     Project,
     ProjectAsset,
+    ProjectAssetSyncRole,
     ProjectAssetKind,
     ProjectAssetRole,
     ProjectAssetStatus,
+    ProjectMediaSourceType,
     ProjectSourceMode,
     ProjectStatus,
 )
@@ -39,7 +42,17 @@ from services.ffmpeg import ffmpeg_service
 router = APIRouter(prefix="/projects")
 logger = logging.getLogger(__name__)
 
-AssetUploadType = Literal["video", "audio", "slides", "notes", "materials"]
+AssetUploadType = Literal[
+    "video",
+    "screen",
+    "camera",
+    "webcam",
+    "phone_camera",
+    "audio",
+    "slides",
+    "notes",
+    "materials",
+]
 
 VIDEO_EXTENSIONS = {".mp4", ".mpeg", ".mpg", ".mov", ".avi", ".webm", ".mkv"}
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
@@ -61,6 +74,10 @@ MATERIAL_EXTENSIONS = {
 
 ALLOWED_EXTENSIONS_BY_TYPE = {
     "video": VIDEO_EXTENSIONS,
+    "screen": VIDEO_EXTENSIONS,
+    "camera": VIDEO_EXTENSIONS,
+    "webcam": VIDEO_EXTENSIONS,
+    "phone_camera": VIDEO_EXTENSIONS,
     "audio": AUDIO_EXTENSIONS,
     "slides": SLIDE_EXTENSIONS,
     "notes": NOTE_EXTENSIONS,
@@ -76,6 +93,10 @@ def _asset_kind_for_upload(asset_type: AssetUploadType, filename: str | None) ->
     ext = _extension(filename)
     if asset_type == "video":
         return ProjectAssetKind.MIXED_VIDEO
+    if asset_type == "screen":
+        return ProjectAssetKind.SCREEN_VIDEO
+    if asset_type in {"camera", "webcam", "phone_camera"}:
+        return ProjectAssetKind.CAMERA_VIDEO
     if asset_type == "audio":
         return ProjectAssetKind.AUDIO
     if asset_type == "slides":
@@ -88,11 +109,62 @@ def _asset_kind_for_upload(asset_type: AssetUploadType, filename: str | None) ->
 def _asset_role_for_upload(asset_type: AssetUploadType) -> ProjectAssetRole:
     return {
         "video": ProjectAssetRole.PRIMARY,
+        "screen": ProjectAssetRole.SCREEN,
+        "camera": ProjectAssetRole.CAMERA,
+        "webcam": ProjectAssetRole.CAMERA,
+        "phone_camera": ProjectAssetRole.CAMERA,
         "audio": ProjectAssetRole.AUDIO,
         "slides": ProjectAssetRole.SLIDES,
         "notes": ProjectAssetRole.NOTES,
         "materials": ProjectAssetRole.SUPPORTING_MATERIAL,
     }[asset_type]
+
+
+def _source_type_for_upload(asset_type: AssetUploadType, filename: str | None) -> ProjectMediaSourceType:
+    ext = _extension(filename)
+    if asset_type == "video":
+        return ProjectMediaSourceType.MIXED_VIDEO
+    if asset_type == "screen":
+        return ProjectMediaSourceType.SCREEN_RECORDING
+    if asset_type == "camera":
+        return ProjectMediaSourceType.CAMERA_RECORDING
+    if asset_type == "webcam":
+        return ProjectMediaSourceType.WEBCAM_RECORDING
+    if asset_type == "phone_camera":
+        return ProjectMediaSourceType.PHONE_CAMERA_RECORDING
+    if asset_type == "audio":
+        return ProjectMediaSourceType.SEPARATE_AUDIO
+    if asset_type == "slides":
+        return ProjectMediaSourceType.SLIDE_DECK
+    if asset_type == "notes":
+        return ProjectMediaSourceType.PDF_NOTES if ext == ".pdf" else ProjectMediaSourceType.TEXT_NOTES
+    return ProjectMediaSourceType.COURSE_MATERIAL
+
+
+def _sync_role_for_upload(asset_type: AssetUploadType) -> ProjectAssetSyncRole:
+    return {
+        "video": ProjectAssetSyncRole.PRIMARY_TIMELINE,
+        "screen": ProjectAssetSyncRole.SCREEN_REFERENCE,
+        "camera": ProjectAssetSyncRole.CAMERA_OVERLAY,
+        "webcam": ProjectAssetSyncRole.CAMERA_OVERLAY,
+        "phone_camera": ProjectAssetSyncRole.CAMERA_OVERLAY,
+        "audio": ProjectAssetSyncRole.AUDIO_MASTER,
+        "slides": ProjectAssetSyncRole.STRUCTURE_REFERENCE,
+        "notes": ProjectAssetSyncRole.STRUCTURE_REFERENCE,
+        "materials": ProjectAssetSyncRole.STRUCTURE_REFERENCE,
+    }[asset_type]
+
+
+def _parse_metadata_form(metadata: str | None) -> dict[str, Any]:
+    if not metadata:
+        return {}
+    try:
+        parsed = json.loads(metadata)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, f"Invalid metadata JSON: {exc.msg}") from exc
+    if not isinstance(parsed, dict):
+        raise HTTPException(400, "metadata must be a JSON object")
+    return parsed
 
 
 def _validate_asset_upload(file: UploadFile, asset_type: AssetUploadType) -> str:
@@ -114,7 +186,7 @@ def _asset_storage_path(project_id: UUID, asset_id: UUID, ext: str) -> tuple[str
 
 
 async def _media_metadata(file_path: str, asset_type: AssetUploadType) -> dict:
-    if asset_type not in {"video", "audio"}:
+    if asset_type not in {"video", "screen", "camera", "webcam", "phone_camera", "audio"}:
         return {}
     try:
         return await ffmpeg_service.get_video_metadata(file_path)
@@ -129,6 +201,7 @@ async def _upload_project_asset(
     file: UploadFile,
     is_primary: bool,
     db: AsyncSession,
+    metadata: dict[str, Any] | None = None,
 ) -> ProjectAssetUploadResponse:
     project = await db.get(Project, project_id)
     if not project:
@@ -148,9 +221,11 @@ async def _upload_project_asset(
         os.remove(file_path)
         raise HTTPException(413, f"File too large. Maximum: {settings.MAX_VIDEO_SIZE_MB}MB")
 
-    metadata = await _media_metadata(file_path, asset_type)
+    media_metadata = await _media_metadata(file_path, asset_type)
     kind = _asset_kind_for_upload(asset_type, file.filename)
     role = _asset_role_for_upload(asset_type)
+    source_type = _source_type_for_upload(asset_type, file.filename)
+    sync_role = _sync_role_for_upload(asset_type)
 
     if is_primary:
         existing_primary_result = await db.execute(
@@ -162,24 +237,29 @@ async def _upload_project_asset(
         for existing_asset in existing_primary_result.scalars():
             existing_asset.is_primary = False
 
+    user_metadata = metadata or {}
     metadata_json = {
         "upload_type": asset_type,
+        "source_type": source_type.value,
+        "sync_role": sync_role.value,
         "extension": ext,
         "storage_scope": "project_asset",
     }
-    if metadata:
+    if user_metadata:
+        metadata_json["user_metadata"] = user_metadata
+    if media_metadata:
         metadata_json.update(
             {
-                "format": metadata.get("format"),
+                "format": media_metadata.get("format"),
                 "resolution": (
-                    f"{metadata.get('width')}x{metadata.get('height')}"
-                    if metadata.get("width") and metadata.get("height")
+                    f"{media_metadata.get('width')}x{media_metadata.get('height')}"
+                    if media_metadata.get("width") and media_metadata.get("height")
                     else None
                 ),
-                "fps": metadata.get("fps"),
-                "video_codec": metadata.get("video_codec"),
-                "audio_codec": metadata.get("audio_codec"),
-                "audio_sample_rate": metadata.get("audio_sample_rate"),
+                "fps": media_metadata.get("fps"),
+                "video_codec": media_metadata.get("video_codec"),
+                "audio_codec": media_metadata.get("audio_codec"),
+                "audio_sample_rate": media_metadata.get("audio_sample_rate"),
             }
         )
 
@@ -188,6 +268,8 @@ async def _upload_project_asset(
         project_id=project_id,
         kind=kind,
         role=role,
+        source_type=source_type,
+        sync_role=sync_role,
         status=ProjectAssetStatus.READY,
         is_primary=is_primary,
         filename=filename,
@@ -195,7 +277,7 @@ async def _upload_project_asset(
         file_path=file_path,
         file_size_bytes=file_size,
         mime_type=file.content_type,
-        duration_seconds=metadata.get("duration"),
+        duration_seconds=media_metadata.get("duration"),
         metadata_json=metadata_json,
     )
     db.add(asset)
@@ -213,6 +295,8 @@ async def _upload_project_asset(
         project_id=asset.project_id,
         kind=asset.kind,
         role=asset.role,
+        source_type=asset.source_type,
+        sync_role=asset.sync_role,
         status=asset.status,
         is_primary=asset.is_primary,
         filename=asset.filename,
@@ -227,7 +311,7 @@ async def _upload_project_asset(
         created_at=asset.created_at,
         updated_at=asset.updated_at,
         file_size_mb=round(file_size / 1024 / 1024, 1),
-        message=f"{asset_type.title()} asset uploaded to project.",
+        message=f"{source_type.value.replace('_', ' ').title()} asset uploaded to project.",
     )
 
 
@@ -291,63 +375,120 @@ async def upload_project_asset(
     project_id: UUID,
     asset_type: AssetUploadType = Form(...),
     is_primary: bool = Form(False),
+    metadata: str | None = Form(None),
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a project asset using an explicit asset_type form field."""
-    return await _upload_project_asset(project_id, asset_type, file, is_primary, db)
+    return await _upload_project_asset(
+        project_id,
+        asset_type,
+        file,
+        is_primary,
+        db,
+        metadata=_parse_metadata_form(metadata),
+    )
 
 
 @router.post("/{project_id}/assets/video", response_model=ProjectAssetUploadResponse, tags=["Project Assets"])
 async def upload_project_video_asset(
     project_id: UUID,
     is_primary: bool = Form(True),
+    metadata: str | None = Form(None),
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a primary or secondary video source for a project."""
-    return await _upload_project_asset(project_id, "video", file, is_primary, db)
+    return await _upload_project_asset(project_id, "video", file, is_primary, db, metadata=_parse_metadata_form(metadata))
+
+
+@router.post("/{project_id}/assets/screen", response_model=ProjectAssetUploadResponse, tags=["Project Assets"])
+async def upload_project_screen_asset(
+    project_id: UUID,
+    metadata: str | None = Form(None),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a separate screen recording source for a project."""
+    return await _upload_project_asset(project_id, "screen", file, False, db, metadata=_parse_metadata_form(metadata))
+
+
+@router.post("/{project_id}/assets/camera", response_model=ProjectAssetUploadResponse, tags=["Project Assets"])
+async def upload_project_camera_asset(
+    project_id: UUID,
+    metadata: str | None = Form(None),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a separate webcam or camera recording source for a project."""
+    return await _upload_project_asset(project_id, "camera", file, False, db, metadata=_parse_metadata_form(metadata))
+
+
+@router.post("/{project_id}/assets/webcam", response_model=ProjectAssetUploadResponse, tags=["Project Assets"])
+async def upload_project_webcam_asset(
+    project_id: UUID,
+    metadata: str | None = Form(None),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a separate webcam recording source for a project."""
+    return await _upload_project_asset(project_id, "webcam", file, False, db, metadata=_parse_metadata_form(metadata))
+
+
+@router.post("/{project_id}/assets/phone-camera", response_model=ProjectAssetUploadResponse, tags=["Project Assets"])
+async def upload_project_phone_camera_asset(
+    project_id: UUID,
+    metadata: str | None = Form(None),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a phone camera recording source for a project."""
+    return await _upload_project_asset(project_id, "phone_camera", file, False, db, metadata=_parse_metadata_form(metadata))
 
 
 @router.post("/{project_id}/assets/audio", response_model=ProjectAssetUploadResponse, tags=["Project Assets"])
 async def upload_project_audio_asset(
     project_id: UUID,
     is_primary: bool = Form(False),
+    metadata: str | None = Form(None),
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a separate audio recording for a project."""
-    return await _upload_project_asset(project_id, "audio", file, is_primary, db)
+    return await _upload_project_asset(project_id, "audio", file, is_primary, db, metadata=_parse_metadata_form(metadata))
 
 
 @router.post("/{project_id}/assets/slides", response_model=ProjectAssetUploadResponse, tags=["Project Assets"])
 async def upload_project_slide_asset(
     project_id: UUID,
+    metadata: str | None = Form(None),
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a slide deck or slide PDF for a project."""
-    return await _upload_project_asset(project_id, "slides", file, False, db)
+    return await _upload_project_asset(project_id, "slides", file, False, db, metadata=_parse_metadata_form(metadata))
 
 
 @router.post("/{project_id}/assets/notes", response_model=ProjectAssetUploadResponse, tags=["Project Assets"])
 async def upload_project_notes_asset(
     project_id: UUID,
+    metadata: str | None = Form(None),
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload notes such as PDF, DOCX, TXT, or Markdown."""
-    return await _upload_project_asset(project_id, "notes", file, False, db)
+    return await _upload_project_asset(project_id, "notes", file, False, db, metadata=_parse_metadata_form(metadata))
 
 
 @router.post("/{project_id}/assets/materials", response_model=ProjectAssetUploadResponse, tags=["Project Assets"])
 async def upload_project_supporting_material_asset(
     project_id: UUID,
+    metadata: str | None = Form(None),
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload supporting material for later RAG, structure, or evaluation workflows."""
-    return await _upload_project_asset(project_id, "materials", file, False, db)
+    return await _upload_project_asset(project_id, "materials", file, False, db, metadata=_parse_metadata_form(metadata))
 
 
 @router.get("/{project_id}/assets/{asset_id}", response_model=ProjectAssetResponse, tags=["Project Assets"])
