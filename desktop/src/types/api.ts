@@ -94,6 +94,33 @@ export interface ProjectAssetUploadResponse extends ProjectAsset {
   message: string;
 }
 
+export interface ProjectSourceSyncAsset {
+  asset: ProjectAsset;
+  reference_asset_id: string;
+  recommended_offset_seconds: number;
+  current_offset_seconds: number;
+  manual_adjustment_seconds: number;
+  confidence: number;
+  method: string;
+  reason: string;
+  needs_user_review: boolean;
+  waveform_sync_ready: boolean;
+  metadata_anchor: Record<string, unknown> | null;
+}
+
+export interface ProjectSourceSyncPlan {
+  project_id: string;
+  reference_asset_id: string | null;
+  sync_basis: "metadata" | string;
+  assets: ProjectSourceSyncAsset[];
+  warnings: string[];
+}
+
+export interface ProjectAssetSyncUpdateRequest {
+  sync_offset_seconds: number;
+  note?: string | null;
+}
+
 // ── Video ──
 
 export interface Video {

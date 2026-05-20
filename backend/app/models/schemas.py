@@ -67,6 +67,38 @@ class ProjectAssetResponse(BaseModel):
         from_attributes = True
 
 
+class ProjectAssetSyncUpdateRequest(BaseModel):
+    sync_offset_seconds: float = Field(ge=-3600, le=3600)
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+class ProjectSourceSyncAsset(BaseModel):
+    asset: ProjectAssetResponse
+    reference_asset_id: UUID
+    recommended_offset_seconds: float
+    current_offset_seconds: float
+    manual_adjustment_seconds: float
+    confidence: float
+    method: str
+    reason: str
+    needs_user_review: bool = True
+    waveform_sync_ready: bool = True
+    metadata_anchor: Optional[Dict[str, Any]] = None
+
+
+class ProjectSourceSyncPlanResponse(BaseModel):
+    project_id: UUID
+    reference_asset_id: Optional[UUID] = None
+    sync_basis: str = "metadata"
+    assets: List[ProjectSourceSyncAsset] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
+class ProjectSourceSyncApplyRequest(BaseModel):
+    force: bool = False
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
 class ProjectResponse(BaseModel):
     id: UUID
     title: str
