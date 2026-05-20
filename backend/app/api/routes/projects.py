@@ -31,12 +31,23 @@ from db.models import (
 )
 from models.schemas import (
     ProjectAssetResponse,
+    ProjectAssetSyncUpdateRequest,
     ProjectAssetUploadResponse,
     ProjectCreateRequest,
     ProjectDetailResponse,
     ProjectResponse,
+    ProjectSourceSyncApplyRequest,
+    ProjectSourceSyncAsset,
+    ProjectSourceSyncPlanResponse,
 )
 from services.ffmpeg import ffmpeg_service
+from services.source_sync import (
+    SYNC_METADATA_KEY,
+    build_sync_metadata,
+    extract_user_sync_offset,
+    merge_sync_metadata,
+    recommend_sync_offsets,
+)
 
 
 router = APIRouter(prefix="/projects")
@@ -297,8 +308,25 @@ async def _upload_project_asset(
                 "video_codec": media_metadata.get("video_codec"),
                 "audio_codec": media_metadata.get("audio_codec"),
                 "audio_sample_rate": media_metadata.get("audio_sample_rate"),
+                "ffprobe_tags": media_metadata.get("format_tags") or {},
+                "video_stream_tags": media_metadata.get("video_tags") or {},
+                "audio_stream_tags": media_metadata.get("audio_tags") or {},
             }
         )
+
+    user_sync_offset = extract_user_sync_offset(user_metadata)
+    if user_sync_offset is not None:
+        metadata_json[SYNC_METADATA_KEY] = {
+            "method": "user_provided_upload_metadata",
+            "confidence": 1.0,
+            "recommended_offset_seconds": user_sync_offset,
+            "applied_offset_seconds": user_sync_offset,
+            "needs_user_review": False,
+            "user_adjusted": True,
+            "applied_by": "upload_metadata",
+            "waveform_sync_ready": True,
+            "reason": "Offset supplied by the uploader metadata.",
+        }
 
     asset = ProjectAsset(
         id=asset_id,
@@ -315,6 +343,7 @@ async def _upload_project_asset(
         file_size_bytes=file_size,
         mime_type=file.content_type,
         duration_seconds=media_metadata.get("duration"),
+        sync_offset_seconds=user_sync_offset or 0.0,
         metadata_json=metadata_json,
     )
     db.add(asset)
@@ -405,6 +434,106 @@ async def list_project_assets(project_id: UUID, db: AsyncSession = Depends(get_d
         .order_by(ProjectAsset.created_at.desc())
     )
     return result.scalars().all()
+
+
+async def _load_project_with_assets(project_id: UUID, db: AsyncSession) -> Project:
+    result = await db.execute(
+        select(Project)
+        .options(selectinload(Project.assets))
+        .where(Project.id == project_id)
+    )
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(404, "Project not found")
+    return project
+
+
+def _project_source_sync_plan(project: Project) -> ProjectSourceSyncPlanResponse:
+    reference_asset, recommendations = recommend_sync_offsets(project.assets)
+    recommendation_by_asset_id = {item.asset_id: item for item in recommendations}
+    warnings: list[str] = []
+
+    if reference_asset is None:
+        warnings.append("No screen, camera, audio, or primary media assets are available for synchronization.")
+        return ProjectSourceSyncPlanResponse(project_id=project.id, assets=[], warnings=warnings)
+
+    sync_assets: list[ProjectSourceSyncAsset] = []
+    for asset in project.assets:
+        recommendation = recommendation_by_asset_id.get(str(asset.id))
+        if recommendation is None:
+            continue
+
+        current_offset = float(asset.sync_offset_seconds or 0.0)
+        recommended_offset = recommendation.recommended_offset_seconds
+        sync_assets.append(
+            ProjectSourceSyncAsset(
+                asset=ProjectAssetResponse.model_validate(asset),
+                reference_asset_id=reference_asset.id,
+                recommended_offset_seconds=recommended_offset,
+                current_offset_seconds=current_offset,
+                manual_adjustment_seconds=round(current_offset - recommended_offset, 3),
+                confidence=recommendation.confidence,
+                method=recommendation.method,
+                reason=recommendation.reason,
+                needs_user_review=recommendation.needs_user_review,
+                waveform_sync_ready=True,
+                metadata_anchor=recommendation.metadata_anchor,
+            )
+        )
+
+    if len(sync_assets) < 2:
+        warnings.append("Only one syncable source is present; offsets will matter after another source is uploaded.")
+    if any(item.method == "default_zero_offset" for item in sync_assets):
+        warnings.append("Some sources lack comparable recording start metadata and need manual offset review.")
+
+    return ProjectSourceSyncPlanResponse(
+        project_id=project.id,
+        reference_asset_id=reference_asset.id,
+        sync_basis="metadata",
+        assets=sync_assets,
+        warnings=warnings,
+    )
+
+
+@router.get("/{project_id}/source-sync", response_model=ProjectSourceSyncPlanResponse, tags=["Project Source Sync"])
+async def get_project_source_sync_plan(project_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Return metadata-based sync recommendations and current user offsets."""
+    project = await _load_project_with_assets(project_id, db)
+    return _project_source_sync_plan(project)
+
+
+@router.post("/{project_id}/source-sync/apply-metadata", response_model=ProjectSourceSyncPlanResponse, tags=["Project Source Sync"])
+async def apply_project_source_sync_metadata(
+    project_id: UUID,
+    request: ProjectSourceSyncApplyRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Apply metadata-derived offsets to project sources, preserving manual edits unless forced."""
+    project = await _load_project_with_assets(project_id, db)
+    _, recommendations = recommend_sync_offsets(project.assets)
+    recommendation_by_asset_id = {item.asset_id: item for item in recommendations}
+    apply_request = request or ProjectSourceSyncApplyRequest()
+
+    for asset in project.assets:
+        recommendation = recommendation_by_asset_id.get(str(asset.id))
+        if recommendation is None:
+            continue
+
+        stored_sync = (asset.metadata_json or {}).get(SYNC_METADATA_KEY)
+        was_user_adjusted = isinstance(stored_sync, dict) and bool(stored_sync.get("user_adjusted"))
+        if was_user_adjusted and not apply_request.force:
+            continue
+
+        asset.sync_offset_seconds = recommendation.recommended_offset_seconds
+        merge_sync_metadata(
+            asset,
+            build_sync_metadata(recommendation, applied_by="metadata_sync", note=apply_request.note),
+        )
+
+    await db.commit()
+    await db.refresh(project)
+    project = await _load_project_with_assets(project_id, db)
+    return _project_source_sync_plan(project)
 
 
 @router.post("/{project_id}/assets/upload", response_model=ProjectAssetUploadResponse, tags=["Project Assets"])
@@ -538,6 +667,56 @@ async def get_project_asset(
     asset = await db.get(ProjectAsset, asset_id)
     if not asset or asset.project_id != project_id:
         raise HTTPException(404, "Project asset not found")
+    return asset
+
+
+@router.put("/{project_id}/assets/{asset_id}/sync", response_model=ProjectAssetResponse, tags=["Project Source Sync"])
+async def update_project_asset_sync_offset(
+    project_id: UUID,
+    asset_id: UUID,
+    request: ProjectAssetSyncUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Persist a user-adjusted sync offset for one screen, camera, or audio source."""
+    asset = await db.get(ProjectAsset, asset_id)
+    if not asset or asset.project_id != project_id:
+        raise HTTPException(404, "Project asset not found")
+
+    project = await _load_project_with_assets(project_id, db)
+    _, recommendations = recommend_sync_offsets(project.assets)
+    recommendation = next((item for item in recommendations if item.asset_id == str(asset_id)), None)
+
+    asset.sync_offset_seconds = request.sync_offset_seconds
+    metadata_json = dict(asset.metadata_json or {})
+    source_sync_metadata = dict(metadata_json.get(SYNC_METADATA_KEY) or {})
+    source_sync_metadata.update(
+        {
+            "method": "manual_offset",
+            "confidence": 1.0,
+            "applied_offset_seconds": request.sync_offset_seconds,
+            "user_adjusted": True,
+            "applied_by": "user",
+            "waveform_sync_ready": True,
+            "needs_user_review": False,
+        }
+    )
+    if recommendation is not None:
+        source_sync_metadata.update(
+            {
+                "recommended_offset_seconds": recommendation.recommended_offset_seconds,
+                "manual_adjustment_seconds": round(
+                    request.sync_offset_seconds - recommendation.recommended_offset_seconds,
+                    3,
+                ),
+            }
+        )
+    if request.note:
+        source_sync_metadata["note"] = request.note
+    metadata_json[SYNC_METADATA_KEY] = source_sync_metadata
+    asset.metadata_json = metadata_json
+
+    await db.commit()
+    await db.refresh(asset)
     return asset
 
 

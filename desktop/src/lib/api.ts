@@ -13,7 +13,8 @@ import type {
   LocalTranscriptionModelCatalog, LocalTranscriptionModelDownload,
   LocalTranscriptionModelRemoveResult,
   Project, ProjectAsset, ProjectAssetUploadResponse,
-  ProjectAssetUploadType, ProjectCreateRequest, ProjectDetail,
+  ProjectAssetSyncUpdateRequest, ProjectAssetUploadType,
+  ProjectCreateRequest, ProjectDetail, ProjectSourceSyncPlan,
 } from "../types/api";
 
 let BASE_URL = "http://localhost:8000/api/v1";
@@ -78,6 +79,28 @@ export async function getProject(projectId: string): Promise<ProjectDetail> {
 
 export async function listProjectAssets(projectId: string): Promise<ProjectAsset[]> {
   return request(`/projects/${projectId}/assets`);
+}
+
+export async function getProjectSourceSyncPlan(projectId: string): Promise<ProjectSourceSyncPlan> {
+  return request(`/projects/${projectId}/source-sync`);
+}
+
+export async function applyProjectSourceSyncMetadata(projectId: string, force = false): Promise<ProjectSourceSyncPlan> {
+  return request(`/projects/${projectId}/source-sync/apply-metadata`, {
+    method: "POST",
+    body: JSON.stringify({ force }),
+  });
+}
+
+export async function updateProjectAssetSyncOffset(
+  projectId: string,
+  assetId: string,
+  payload: ProjectAssetSyncUpdateRequest,
+): Promise<ProjectAsset> {
+  return request(`/projects/${projectId}/assets/${assetId}/sync`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function uploadProjectAsset(

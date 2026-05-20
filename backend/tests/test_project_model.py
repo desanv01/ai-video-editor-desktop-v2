@@ -1,6 +1,7 @@
 import sys
 import types
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -65,6 +66,7 @@ from api.routes.projects import (
     _asset_kind_for_upload,
     _asset_role_for_upload,
     _parse_metadata_form,
+    _project_source_sync_plan,
     _source_type_for_upload,
     _structure_metadata_for_upload,
     _sync_role_for_upload,
@@ -73,9 +75,16 @@ from api.routes.projects import (
 from models.schemas import (
     ProjectAssetResponse,
     ProjectAssetUploadResponse,
+    ProjectSourceSyncPlanResponse,
     ProjectCreateRequest,
     ProjectDetailResponse,
     VideoUploadResponse,
+)
+from services.source_sync import (
+    SYNC_METADATA_KEY,
+    choose_reference_asset,
+    extract_user_sync_offset,
+    recommend_sync_offsets,
 )
 
 
@@ -300,6 +309,123 @@ class ProjectModelTests(unittest.TestCase):
 
         with self.assertRaisesRegex(Exception, "Invalid metadata JSON"):
             _parse_metadata_form("{bad")
+
+    def test_metadata_based_source_sync_recommends_relative_offsets(self):
+        project_id = uuid4()
+        screen = ProjectAsset(
+            id=uuid4(),
+            project_id=project_id,
+            kind=ProjectAssetKind.SCREEN_VIDEO,
+            role=ProjectAssetRole.SCREEN,
+            source_type=ProjectMediaSourceType.SCREEN_RECORDING,
+            sync_role=ProjectAssetSyncRole.SCREEN_REFERENCE,
+            status=ProjectAssetStatus.READY,
+            is_primary=True,
+            filename="screen.mp4",
+            original_filename="screen.mp4",
+            file_path="/tmp/screen.mp4",
+            sync_offset_seconds=0,
+            metadata_json={"user_metadata": {"recording_started_at": "2026-05-20T10:00:00Z"}},
+        )
+        camera = ProjectAsset(
+            id=uuid4(),
+            project_id=project_id,
+            kind=ProjectAssetKind.CAMERA_VIDEO,
+            role=ProjectAssetRole.CAMERA,
+            source_type=ProjectMediaSourceType.CAMERA_RECORDING,
+            sync_role=ProjectAssetSyncRole.CAMERA_OVERLAY,
+            status=ProjectAssetStatus.READY,
+            filename="camera.mp4",
+            original_filename="camera.mp4",
+            file_path="/tmp/camera.mp4",
+            sync_offset_seconds=2.5,
+            metadata_json={"user_metadata": {"recording_started_at": "2026-05-20T10:00:02.500Z"}},
+        )
+
+        reference, recommendations = recommend_sync_offsets([camera, screen])
+        by_asset = {item.asset_id: item for item in recommendations}
+
+        self.assertEqual(reference.id, screen.id)
+        self.assertEqual(by_asset[str(screen.id)].recommended_offset_seconds, 0)
+        self.assertEqual(by_asset[str(camera.id)].recommended_offset_seconds, 2.5)
+        self.assertEqual(by_asset[str(camera.id)].method, "metadata_timestamp")
+
+    def test_source_sync_plan_marks_manual_adjustment_and_waveform_readiness(self):
+        project_id = uuid4()
+        now = datetime.utcnow()
+        screen = ProjectAsset(
+            id=uuid4(),
+            project_id=project_id,
+            kind=ProjectAssetKind.SCREEN_VIDEO,
+            role=ProjectAssetRole.SCREEN,
+            source_type=ProjectMediaSourceType.SCREEN_RECORDING,
+            sync_role=ProjectAssetSyncRole.SCREEN_REFERENCE,
+            status=ProjectAssetStatus.READY,
+            is_primary=True,
+            filename="screen.mp4",
+            original_filename="screen.mp4",
+            file_path="/tmp/screen.mp4",
+            sync_offset_seconds=0,
+            metadata_json={"user_metadata": {"start_timecode_seconds": 10}},
+            created_at=now,
+            updated_at=now,
+        )
+        audio = ProjectAsset(
+            id=uuid4(),
+            project_id=project_id,
+            kind=ProjectAssetKind.AUDIO,
+            role=ProjectAssetRole.AUDIO,
+            source_type=ProjectMediaSourceType.SEPARATE_AUDIO,
+            sync_role=ProjectAssetSyncRole.AUDIO_MASTER,
+            status=ProjectAssetStatus.READY,
+            filename="audio.wav",
+            original_filename="audio.wav",
+            file_path="/tmp/audio.wav",
+            sync_offset_seconds=1.75,
+            metadata_json={"user_metadata": {"start_timecode_seconds": 11.5}},
+            created_at=now,
+            updated_at=now,
+        )
+        project = Project(
+            id=project_id,
+            title="Multi-source lecture",
+            status=ProjectStatus.READY,
+            source_mode=ProjectSourceMode.MULTI_SOURCE,
+        )
+        project.assets = [screen, audio]
+
+        plan = _project_source_sync_plan(project)
+        audio_item = next(item for item in plan.assets if item.asset.id == audio.id)
+
+        self.assertIsInstance(plan, ProjectSourceSyncPlanResponse)
+        self.assertEqual(plan.reference_asset_id, screen.id)
+        self.assertEqual(audio_item.recommended_offset_seconds, 1.5)
+        self.assertEqual(audio_item.current_offset_seconds, 1.75)
+        self.assertEqual(audio_item.manual_adjustment_seconds, 0.25)
+        self.assertTrue(audio_item.waveform_sync_ready)
+
+    def test_user_supplied_sync_offset_can_seed_upload_metadata(self):
+        metadata = {"sync_offset_seconds": "3.25", "device": "field_recorder"}
+
+        self.assertEqual(extract_user_sync_offset(metadata), 3.25)
+
+        asset = ProjectAsset(
+            id=uuid4(),
+            project_id=uuid4(),
+            kind=ProjectAssetKind.AUDIO,
+            role=ProjectAssetRole.AUDIO,
+            source_type=ProjectMediaSourceType.SEPARATE_AUDIO,
+            sync_role=ProjectAssetSyncRole.AUDIO_MASTER,
+            status=ProjectAssetStatus.READY,
+            filename="audio.wav",
+            original_filename="audio.wav",
+            file_path="/tmp/audio.wav",
+            sync_offset_seconds=3.25,
+            metadata_json={SYNC_METADATA_KEY: {"user_adjusted": True}},
+        )
+
+        self.assertEqual(choose_reference_asset([asset]).id, asset.id)
+        self.assertTrue(asset.metadata_json[SYNC_METADATA_KEY]["user_adjusted"])
 
 
 if __name__ == "__main__":
