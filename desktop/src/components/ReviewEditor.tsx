@@ -2,13 +2,15 @@ import { useState, useEffect, useCallback } from "react";
 import { useSegments, usePlaybackSync } from "../hooks/useApi";
 import { Timeline } from "./Timeline";
 import { TranscriptPanel } from "./TranscriptPanel";
-import { SegmentDetail } from "./SegmentDetail";
-import { StatsPanel } from "./StatsPanel";
+import {
+  GUIDED_WORKFLOW_STEPS,
+  GuidedWorkflowPanel,
+  GuidedWorkflowStepper,
+  type GuidedWorkflowStepId,
+} from "./GuidedWorkflow";
 import * as api from "../lib/api";
-import type { Segment, EditPlan, SegmentAction, RevalidationResult } from "../types/api";
-import { AlertTriangle, BarChart3, FileText, CheckSquare, Loader2 } from "lucide-react";
-
-type RightPanel = "detail" | "stats";
+import type { Chapter, Segment, EditPlan, SegmentAction, RevalidationResult } from "../types/api";
+import { AlertTriangle, CheckSquare, Loader2 } from "lucide-react";
 
 interface Props {
   videoId: string;
@@ -18,21 +20,46 @@ export function ReviewEditor({ videoId }: Props) {
   const { segments, loading, updateAction, acceptAllHighConfidence } = useSegments(videoId);
   const { currentTime, setCurrentTime, videoRef, seekTo, togglePlay } = usePlaybackSync();
   const [selectedSegment, setSelectedSegment] = useState<Segment | null>(null);
-  const [rightPanel, setRightPanel] = useState<RightPanel>("stats");
+  const [activeWorkflowStep, setActiveWorkflowStep] = useState<GuidedWorkflowStepId>("transcribe");
+  const [completedWorkflowSteps, setCompletedWorkflowSteps] = useState<Set<GuidedWorkflowStepId>>(() => new Set());
   const [plan, setPlan] = useState<EditPlan | null>(null);
   const [warnings, setWarnings] = useState<RevalidationResult | null>(null);
+  const [chapters, setChapters] = useState<Chapter[]>([]);
+  const [chaptersLoading, setChaptersLoading] = useState(false);
   const [approving, setApproving] = useState(false);
   const [duration, setDuration] = useState(0);
 
-  // Load edit plan
   useEffect(() => {
     api.getEditPlan(videoId).then(setPlan).catch(() => {});
   }, [videoId]);
 
-  // Video source URL (original uploaded video for preview)
+  const loadChapters = useCallback(async () => {
+    setChaptersLoading(true);
+    try {
+      const result = await api.getChapters(videoId);
+      setChapters(result.chapters);
+    } catch {
+      setChapters([]);
+    } finally {
+      setChaptersLoading(false);
+    }
+  }, [videoId]);
+
+  useEffect(() => {
+    void loadChapters();
+  }, [loadChapters]);
+
+  useEffect(() => {
+    setCompletedWorkflowSteps(prev => {
+      const next = new Set(prev);
+      if (segments.length > 0) next.add("transcribe");
+      if (plan?.is_approved) next.add("export");
+      return next;
+    });
+  }, [segments.length, plan?.is_approved]);
+
   const videoSrc = api.getVideoStreamUrl(videoId);
 
-  // Handle video time updates
   const handleTimeUpdate = useCallback(() => {
     if (videoRef.current) {
       setCurrentTime(videoRef.current.currentTime);
@@ -45,41 +72,38 @@ export function ReviewEditor({ videoId }: Props) {
     }
   }, [videoRef, plan]);
 
-  // Handle segment selection
   const handleSelectSegment = useCallback((seg: Segment) => {
     setSelectedSegment(seg);
-    setRightPanel("detail");
+    setActiveWorkflowStep("clean");
   }, []);
 
-  // Handle teacher action update + revalidation
   const handleUpdateAction = useCallback(async (segId: string, action: SegmentAction, note?: string) => {
     await updateAction(segId, action, note);
-    // Revalidate after every change
     try {
       const result = await api.revalidatePlan(videoId);
       setWarnings(result);
     } catch {
-      // Non-fatal
+      // Revalidation is helpful context, but editing should continue if it fails.
     }
   }, [videoId, updateAction]);
 
-  // Bulk accept high confidence
   const handleAcceptAll = useCallback(async () => {
     const count = await acceptAllHighConfidence(0.85);
     if (count && count > 0) {
+      setCompletedWorkflowSteps(prev => new Set(prev).add("clean"));
       alert(`Auto-accepted ${count} high-confidence segments`);
     } else {
       alert("No segments to auto-accept (all already reviewed or below threshold)");
     }
   }, [acceptAllHighConfidence]);
 
-  // Approve plan
   const handleApprove = useCallback(async () => {
     setApproving(true);
     try {
       await api.approvePlan(videoId);
       const updatedPlan = await api.getEditPlan(videoId);
       setPlan(updatedPlan);
+      setCompletedWorkflowSteps(prev => new Set(prev).add("export"));
     } catch (e) {
       alert(`Approval failed: ${e}`);
     } finally {
@@ -87,7 +111,23 @@ export function ReviewEditor({ videoId }: Props) {
     }
   }, [videoId]);
 
-  // Keyboard shortcuts
+  const handleCompleteWorkflowStep = useCallback((step: GuidedWorkflowStepId) => {
+    setCompletedWorkflowSteps(prev => new Set(prev).add(step));
+  }, []);
+
+  const handleNextWorkflowStep = useCallback(() => {
+    setCompletedWorkflowSteps(prev => new Set(prev).add(activeWorkflowStep));
+    const currentIndex = GUIDED_WORKFLOW_STEPS.findIndex(step => step.id === activeWorkflowStep);
+    const nextStep = GUIDED_WORKFLOW_STEPS[currentIndex + 1];
+    if (nextStep) setActiveWorkflowStep(nextStep.id);
+  }, [activeWorkflowStep]);
+
+  const handlePreviousWorkflowStep = useCallback(() => {
+    const currentIndex = GUIDED_WORKFLOW_STEPS.findIndex(step => step.id === activeWorkflowStep);
+    const previousStep = GUIDED_WORKFLOW_STEPS[currentIndex - 1];
+    if (previousStep) setActiveWorkflowStep(previousStep.id);
+  }, [activeWorkflowStep]);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
@@ -115,9 +155,13 @@ export function ReviewEditor({ videoId }: Props) {
 
   return (
     <div className="h-full flex flex-col">
-      {/* ── Top: Video + Timeline ── */}
+      <GuidedWorkflowStepper
+        activeStep={activeWorkflowStep}
+        completedStepIds={completedWorkflowSteps}
+        onStepChange={setActiveWorkflowStep}
+      />
+
       <div className="shrink-0 border-b border-surface-border">
-        {/* Video Player */}
         <div className="flex gap-0">
           <div className="flex-1 bg-black flex items-center justify-center" style={{ maxHeight: "340px" }}>
             <video
@@ -131,7 +175,6 @@ export function ReviewEditor({ videoId }: Props) {
           </div>
         </div>
 
-        {/* Timeline */}
         <div className="px-4 py-2 bg-surface-raised">
           <Timeline
             segments={segments}
@@ -143,7 +186,6 @@ export function ReviewEditor({ videoId }: Props) {
           />
         </div>
 
-        {/* Toolbar */}
         <div className="flex items-center justify-between px-4 py-1.5 bg-surface-raised border-t border-surface-border text-xs">
           <div className="flex items-center gap-3">
             <button
@@ -153,7 +195,7 @@ export function ReviewEditor({ videoId }: Props) {
               <CheckSquare className="w-3 h-3" /> Accept All High-Confidence
             </button>
             <span className="text-gray-500">
-              {segments.length} segments | Keyboard: Space=play, J/L=±5s
+              {segments.length} segments | Keyboard: Space=play, J/L=+/-5s
             </span>
           </div>
           <div className="flex items-center gap-2">
@@ -167,9 +209,7 @@ export function ReviewEditor({ videoId }: Props) {
         </div>
       </div>
 
-      {/* ── Bottom: Transcript + Detail/Stats ── */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Transcript (left) */}
         <div className="flex-1 border-r border-surface-border overflow-hidden">
           <TranscriptPanel
             segments={segments}
@@ -180,50 +220,28 @@ export function ReviewEditor({ videoId }: Props) {
           />
         </div>
 
-        {/* Right Panel */}
-        <div className="w-80 shrink-0 bg-surface-raised flex flex-col overflow-hidden">
-          {/* Tab switcher */}
-          <div className="flex border-b border-surface-border shrink-0">
-            <button
-              onClick={() => setRightPanel("stats")}
-              className={`flex-1 py-2 text-xs font-medium flex items-center justify-center gap-1.5 transition-all ${
-                rightPanel === "stats" ? "text-accent border-b-2 border-accent" : "text-gray-400 hover:text-gray-200"
-              }`}
-            >
-              <BarChart3 className="w-3 h-3" /> Stats & Export
-            </button>
-            <button
-              onClick={() => setRightPanel("detail")}
-              className={`flex-1 py-2 text-xs font-medium flex items-center justify-center gap-1.5 transition-all ${
-                rightPanel === "detail" ? "text-accent border-b-2 border-accent" : "text-gray-400 hover:text-gray-200"
-              }`}
-            >
-              <FileText className="w-3 h-3" /> Segment Detail
-            </button>
-          </div>
-
-          {/* Panel content */}
-          <div className="flex-1 overflow-hidden">
-            {rightPanel === "stats" && (
-              <StatsPanel
-                videoId={videoId}
-                plan={plan}
-                onApprove={handleApprove}
-                approving={approving}
-              />
-            )}
-            {rightPanel === "detail" && selectedSegment && (
-              <SegmentDetail
-                segment={selectedSegment}
-                onUpdateAction={handleUpdateAction}
-              />
-            )}
-            {rightPanel === "detail" && !selectedSegment && (
-              <div className="h-full flex items-center justify-center text-gray-500 text-sm p-4 text-center">
-                Click a segment in the transcript or timeline to see its details
-              </div>
-            )}
-          </div>
+        <div className="w-[380px] shrink-0 overflow-hidden">
+          <GuidedWorkflowPanel
+            activeStep={activeWorkflowStep}
+            completedStepIds={completedWorkflowSteps}
+            onStepChange={setActiveWorkflowStep}
+            videoId={videoId}
+            segments={segments}
+            selectedSegment={selectedSegment}
+            plan={plan}
+            warnings={warnings}
+            chapters={chapters}
+            chaptersLoading={chaptersLoading}
+            approving={approving}
+            onAcceptAll={handleAcceptAll}
+            onApprove={handleApprove}
+            onRefreshChapters={() => void loadChapters()}
+            onSeekToTime={seekTo}
+            onUpdateAction={handleUpdateAction}
+            onCompleteStep={handleCompleteWorkflowStep}
+            onNextStep={handleNextWorkflowStep}
+            onPreviousStep={handlePreviousWorkflowStep}
+          />
         </div>
       </div>
     </div>
