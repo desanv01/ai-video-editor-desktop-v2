@@ -291,6 +291,13 @@ export interface APIKeyStatus {
   updated_at: string | null;
 }
 
+export interface APIKeyUpdate {
+  api_key?: string | null;
+  clear?: boolean;
+  use_env?: boolean;
+  env_var?: string | null;
+}
+
 export interface BackendAISettings {
   asr_provider: string;
   agent2_model: string;
@@ -311,6 +318,7 @@ export interface BackendAISettingsUpdate {
   preferred_processing_mode?: AIProcessingMode;
   fallback_enabled?: boolean;
   capabilities?: Partial<Record<AIProviderKind, AICapabilitySettingsUpdate>>;
+  api_keys?: Partial<Record<string, APIKeyUpdate>>;
   local_model_paths?: Partial<Record<AIProviderKind, string | null>>;
   domain_terms?: string[];
 }
@@ -374,4 +382,9 @@ export interface AppSettings {
   asr_provider: string;
   domain_terms: string[];
   auto_accept_threshold: number;
+  export_folder?: string | null;
+  appearance_theme?: "dark" | "system" | "light" | string;
+  interface_density?: "comfortable" | "compact" | string;
+  guided_tours_enabled?: boolean;
+  guided_hints_enabled?: boolean;
 }
