@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { UploadPanel } from "./components/UploadPanel";
 import { ProcessingView } from "./components/ProcessingView";
 import { ReviewEditor } from "./components/ReviewEditor";
-import { TranscriptionSettingsPanel } from "./components/TranscriptionSettingsPanel";
+import { MainSettingsPanel } from "./components/MainSettingsPanel";
 import { ProjectDashboard } from "./components/ProjectDashboard";
 import { Clapperboard, FolderOpen, Settings } from "lucide-react";
 import type { AppSettings, Project, Video } from "./types/api";
@@ -82,7 +82,7 @@ export default function App() {
             className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 transition-colors hover:bg-surface-overlay hover:text-gray-200"
           >
             <Settings className="w-3.5 h-3.5" />
-            Transcription
+            Settings
           </button>
           {view !== "dashboard" && (
             <button
@@ -113,7 +113,7 @@ export default function App() {
         )}
       </main>
 
-      <TranscriptionSettingsPanel
+      <MainSettingsPanel
         isOpen={settingsOpen}
         onClose={() => setSettingsOpen(false)}
       />
