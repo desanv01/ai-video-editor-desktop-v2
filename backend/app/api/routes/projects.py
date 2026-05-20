@@ -155,6 +155,42 @@ def _sync_role_for_upload(asset_type: AssetUploadType) -> ProjectAssetSyncRole:
     }[asset_type]
 
 
+def _structure_metadata_for_upload(
+    asset_type: AssetUploadType,
+    source_type: ProjectMediaSourceType,
+    ext: str,
+) -> dict[str, Any]:
+    if asset_type == "slides":
+        return {
+            "teaching_material": True,
+            "structure_reference_role": "slide_sequence",
+            "document_format": ext.lstrip("."),
+            "structure_inference_ready": True,
+            "expected_structure_signals": ["slide_order", "slide_titles", "section_breaks"],
+            "text_extraction_status": "pending",
+        }
+    if asset_type == "notes":
+        role = "pdf_notes" if source_type == ProjectMediaSourceType.PDF_NOTES else "text_notes"
+        return {
+            "teaching_material": True,
+            "structure_reference_role": role,
+            "document_format": ext.lstrip("."),
+            "structure_inference_ready": True,
+            "expected_structure_signals": ["headings", "objectives", "topic_outlines"],
+            "text_extraction_status": "pending",
+        }
+    if asset_type == "materials":
+        return {
+            "teaching_material": True,
+            "structure_reference_role": "supporting_reference",
+            "document_format": ext.lstrip("."),
+            "structure_inference_ready": False,
+            "expected_structure_signals": ["supporting_terms", "examples", "references"],
+            "text_extraction_status": "pending",
+        }
+    return {}
+
+
 def _parse_metadata_form(metadata: str | None) -> dict[str, Any]:
     if not metadata:
         return {}
@@ -245,6 +281,7 @@ async def _upload_project_asset(
         "extension": ext,
         "storage_scope": "project_asset",
     }
+    metadata_json.update(_structure_metadata_for_upload(asset_type, source_type, ext))
     if user_metadata:
         metadata_json["user_metadata"] = user_metadata
     if media_metadata:

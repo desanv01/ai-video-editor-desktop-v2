@@ -3,7 +3,7 @@ Pydantic schemas for API requests and responses.
 Updated for v2: speaker diarization, ASR provider tracking, domain terms.
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 from typing import Any, Dict, Optional, List
 from datetime import datetime
 from uuid import UUID
@@ -45,6 +45,23 @@ class ProjectAssetResponse(BaseModel):
     error_message: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+
+    @computed_field
+    @property
+    def structure_reference_role(self) -> Optional[str]:
+        value = (self.metadata_json or {}).get("structure_reference_role")
+        return str(value) if value is not None else None
+
+    @computed_field
+    @property
+    def document_format(self) -> Optional[str]:
+        value = (self.metadata_json or {}).get("document_format")
+        return str(value) if value is not None else None
+
+    @computed_field
+    @property
+    def structure_inference_ready(self) -> bool:
+        return bool((self.metadata_json or {}).get("structure_inference_ready", False))
 
     class Config:
         from_attributes = True
