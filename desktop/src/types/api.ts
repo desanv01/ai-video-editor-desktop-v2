@@ -25,9 +25,19 @@ export type ProjectAssetRole =
   | "primary" | "screen" | "camera" | "audio" | "slides"
   | "notes" | "supporting_material" | "b_roll" | "transcript" | "other";
 
+export type ProjectMediaSourceType =
+  | "mixed_video" | "screen_recording" | "camera_recording" | "webcam_recording" | "phone_camera_recording"
+  | "separate_audio" | "slide_deck" | "pdf_notes" | "text_notes"
+  | "course_material" | "image" | "b_roll" | "transcript" | "other";
+
+export type ProjectAssetSyncRole =
+  | "primary_timeline" | "screen_reference" | "camera_overlay" | "audio_master"
+  | "audio_reference" | "structure_reference" | "none";
+
 export type ProjectAssetStatus = "uploaded" | "ready" | "processing" | "failed" | "archived";
 
-export type ProjectAssetUploadType = "video" | "audio" | "slides" | "notes" | "materials";
+export type ProjectAssetUploadType =
+  | "video" | "screen" | "camera" | "webcam" | "phone_camera" | "audio" | "slides" | "notes" | "materials";
 
 export interface Project {
   id: string;
@@ -47,6 +57,8 @@ export interface ProjectAsset {
   project_id: string;
   kind: ProjectAssetKind;
   role: ProjectAssetRole;
+  source_type: ProjectMediaSourceType;
+  sync_role: ProjectAssetSyncRole;
   status: ProjectAssetStatus;
   is_primary: boolean;
   filename: string;

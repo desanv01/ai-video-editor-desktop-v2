@@ -54,7 +54,9 @@ from db.models import (
     ProjectAsset,
     ProjectAssetKind,
     ProjectAssetRole,
+    ProjectAssetSyncRole,
     ProjectAssetStatus,
+    ProjectMediaSourceType,
     ProjectSourceMode,
     ProjectStatus,
     Video,
@@ -62,6 +64,9 @@ from db.models import (
 from api.routes.projects import (
     _asset_kind_for_upload,
     _asset_role_for_upload,
+    _parse_metadata_form,
+    _source_type_for_upload,
+    _sync_role_for_upload,
     _validate_asset_upload,
 )
 from models.schemas import (
@@ -86,6 +91,8 @@ class ProjectModelTests(unittest.TestCase):
         self.assertIn("project_id", asset_columns)
         self.assertIn("kind", asset_columns)
         self.assertIn("role", asset_columns)
+        self.assertIn("source_type", asset_columns)
+        self.assertIn("sync_role", asset_columns)
         self.assertIn("sync_offset_seconds", asset_columns)
         self.assertEqual(
             {fk.column.table.name for fk in asset_columns.project_id.foreign_keys},
@@ -108,13 +115,20 @@ class ProjectModelTests(unittest.TestCase):
         self.assertEqual(ProjectSourceMode.SINGLE_VIDEO.value, "single_video")
         self.assertEqual(ProjectAssetKind.MIXED_VIDEO.value, "mixed_video")
         self.assertEqual(ProjectAssetRole.PRIMARY.value, "primary")
+        self.assertEqual(ProjectMediaSourceType.SCREEN_RECORDING.value, "screen_recording")
+        self.assertEqual(ProjectMediaSourceType.WEBCAM_RECORDING.value, "webcam_recording")
+        self.assertEqual(ProjectAssetSyncRole.AUDIO_MASTER.value, "audio_master")
         self.assertEqual(ProjectAssetStatus.READY.value, "ready")
 
         status_type = Project.__table__.c.status.type
         kind_type = ProjectAsset.__table__.c.kind.type
+        source_type = ProjectAsset.__table__.c.source_type.type
+        sync_role_type = ProjectAsset.__table__.c.sync_role.type
 
         self.assertIn("ready", status_type.enums)
         self.assertIn("mixed_video", kind_type.enums)
+        self.assertIn("screen_recording", source_type.enums)
+        self.assertIn("audio_master", sync_role_type.enums)
 
     def test_project_schemas_expose_asset_and_legacy_video_links(self):
         project_id = uuid4()
@@ -125,6 +139,8 @@ class ProjectModelTests(unittest.TestCase):
             project_id=project_id,
             kind=ProjectAssetKind.MIXED_VIDEO,
             role=ProjectAssetRole.PRIMARY,
+            source_type=ProjectMediaSourceType.MIXED_VIDEO,
+            sync_role=ProjectAssetSyncRole.PRIMARY_TIMELINE,
             status=ProjectAssetStatus.READY,
             is_primary=True,
             filename="stored.mp4",
@@ -164,6 +180,8 @@ class ProjectModelTests(unittest.TestCase):
             project_id=project_id,
             kind=ProjectAssetKind.AUDIO,
             role=ProjectAssetRole.AUDIO,
+            source_type=ProjectMediaSourceType.SEPARATE_AUDIO,
+            sync_role=ProjectAssetSyncRole.AUDIO_MASTER,
             status=ProjectAssetStatus.READY,
             filename="stored.wav",
             original_filename="lecture-audio.wav",
@@ -181,8 +199,26 @@ class ProjectModelTests(unittest.TestCase):
     def test_asset_upload_type_maps_to_project_asset_kind_and_role(self):
         self.assertEqual(_asset_kind_for_upload("video", "lecture.mp4"), ProjectAssetKind.MIXED_VIDEO)
         self.assertEqual(_asset_role_for_upload("video"), ProjectAssetRole.PRIMARY)
+        self.assertEqual(_source_type_for_upload("video", "lecture.mp4"), ProjectMediaSourceType.MIXED_VIDEO)
+        self.assertEqual(_sync_role_for_upload("video"), ProjectAssetSyncRole.PRIMARY_TIMELINE)
+        self.assertEqual(_asset_kind_for_upload("screen", "screen.mp4"), ProjectAssetKind.SCREEN_VIDEO)
+        self.assertEqual(_asset_role_for_upload("screen"), ProjectAssetRole.SCREEN)
+        self.assertEqual(_source_type_for_upload("screen", "screen.mp4"), ProjectMediaSourceType.SCREEN_RECORDING)
+        self.assertEqual(_sync_role_for_upload("screen"), ProjectAssetSyncRole.SCREEN_REFERENCE)
+        self.assertEqual(_asset_kind_for_upload("camera", "webcam.mov"), ProjectAssetKind.CAMERA_VIDEO)
+        self.assertEqual(_asset_role_for_upload("camera"), ProjectAssetRole.CAMERA)
+        self.assertEqual(_source_type_for_upload("camera", "webcam.mov"), ProjectMediaSourceType.CAMERA_RECORDING)
+        self.assertEqual(_asset_kind_for_upload("webcam", "webcam.mov"), ProjectAssetKind.CAMERA_VIDEO)
+        self.assertEqual(_asset_role_for_upload("webcam"), ProjectAssetRole.CAMERA)
+        self.assertEqual(_source_type_for_upload("webcam", "webcam.mov"), ProjectMediaSourceType.WEBCAM_RECORDING)
+        self.assertEqual(_sync_role_for_upload("webcam"), ProjectAssetSyncRole.CAMERA_OVERLAY)
+        self.assertEqual(_asset_kind_for_upload("phone_camera", "phone.mov"), ProjectAssetKind.CAMERA_VIDEO)
+        self.assertEqual(_source_type_for_upload("phone_camera", "phone.mov"), ProjectMediaSourceType.PHONE_CAMERA_RECORDING)
+        self.assertEqual(_sync_role_for_upload("phone_camera"), ProjectAssetSyncRole.CAMERA_OVERLAY)
         self.assertEqual(_asset_kind_for_upload("audio", "lecture.wav"), ProjectAssetKind.AUDIO)
         self.assertEqual(_asset_role_for_upload("audio"), ProjectAssetRole.AUDIO)
+        self.assertEqual(_source_type_for_upload("audio", "lecture.wav"), ProjectMediaSourceType.SEPARATE_AUDIO)
+        self.assertEqual(_sync_role_for_upload("audio"), ProjectAssetSyncRole.AUDIO_MASTER)
         self.assertEqual(_asset_kind_for_upload("slides", "week-1.pptx"), ProjectAssetKind.SLIDE_DECK)
         self.assertEqual(_asset_role_for_upload("slides"), ProjectAssetRole.SLIDES)
         self.assertEqual(_asset_kind_for_upload("notes", "outline.pdf"), ProjectAssetKind.PDF_NOTES)
@@ -195,6 +231,10 @@ class ProjectModelTests(unittest.TestCase):
                 self.filename = filename
 
         self.assertEqual(_validate_asset_upload(Upload("lecture.webm"), "video"), ".webm")
+        self.assertEqual(_validate_asset_upload(Upload("screen.mkv"), "screen"), ".mkv")
+        self.assertEqual(_validate_asset_upload(Upload("webcam.mov"), "camera"), ".mov")
+        self.assertEqual(_validate_asset_upload(Upload("webcam.webm"), "webcam"), ".webm")
+        self.assertEqual(_validate_asset_upload(Upload("phone.mp4"), "phone_camera"), ".mp4")
         self.assertEqual(_validate_asset_upload(Upload("voice.flac"), "audio"), ".flac")
         self.assertEqual(_validate_asset_upload(Upload("deck.pdf"), "slides"), ".pdf")
         self.assertEqual(_validate_asset_upload(Upload("notes.docx"), "notes"), ".docx")
@@ -202,6 +242,16 @@ class ProjectModelTests(unittest.TestCase):
 
         with self.assertRaisesRegex(Exception, "Unsupported audio file type"):
             _validate_asset_upload(Upload("voice.mp4"), "audio")
+
+    def test_metadata_form_must_be_json_object(self):
+        self.assertEqual(_parse_metadata_form(None), {})
+        self.assertEqual(_parse_metadata_form('{"device": "webcam"}'), {"device": "webcam"})
+
+        with self.assertRaisesRegex(Exception, "metadata must be a JSON object"):
+            _parse_metadata_form('["not", "object"]')
+
+        with self.assertRaisesRegex(Exception, "Invalid metadata JSON"):
+            _parse_metadata_form("{bad")
 
 
 if __name__ == "__main__":
