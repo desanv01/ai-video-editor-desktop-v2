@@ -1,10 +1,11 @@
 import { useState, useCallback, useEffect } from "react";
 import { Upload, FileVideo, BookOpen, X, Loader2, Play, Presentation, FileText } from "lucide-react";
 import * as api from "../lib/api";
-import type { ProjectAsset, ProjectAssetUploadType } from "../types/api";
+import type { Project, ProjectAsset, ProjectAssetUploadType } from "../types/api";
 
 interface Props {
   onUpload: (videoId: string, filename: string) => void;
+  project?: Project | null;
 }
 
 type UploadedVideo = {
@@ -31,7 +32,7 @@ function structureAssetLabel(asset: ProjectAsset) {
   return role.replace(/_/g, " ");
 }
 
-export function UploadPanel({ onUpload }: Props) {
+export function UploadPanel({ onUpload, project }: Props) {
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [materials, setMaterials] = useState<{ id: string; filename: string; chunk_count: number }[]>([]);
@@ -57,7 +58,9 @@ export function UploadPanel({ onUpload }: Props) {
 
     setUploading(true);
     try {
-      const result = await api.uploadVideo(file);
+      const result = project
+        ? await api.uploadProjectPrimaryVideo(project.id, file)
+        : await api.uploadVideo(file);
       setUploadedVideo({ id: result.id, filename: file.name, projectId: result.project_id });
       setStructureAssets([]);
     } catch (e) {
@@ -65,7 +68,7 @@ export function UploadPanel({ onUpload }: Props) {
     } finally {
       setUploading(false);
     }
-  }, [uploading, starting]);
+  }, [project, uploading, starting]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -184,7 +187,9 @@ export function UploadPanel({ onUpload }: Props) {
           ) : (
             <div className="flex flex-col items-center gap-3">
               <FileVideo className="w-12 h-12 text-gray-400" />
-              <p className="text-lg font-medium">Drop a lecture video here</p>
+              <p className="text-lg font-medium">
+                {project ? "Drop the primary project video here" : "Drop a lecture video here"}
+              </p>
               <p className="text-sm text-gray-400">or click to browse — MP4, MOV, AVI, WebM (max 500MB)</p>
             </div>
           )}
