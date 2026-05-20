@@ -378,6 +378,7 @@ class ProjectModelTests(unittest.TestCase):
             source_type=ProjectMediaSourceType.SEPARATE_AUDIO,
             sync_role=ProjectAssetSyncRole.AUDIO_MASTER,
             status=ProjectAssetStatus.READY,
+            is_primary=False,
             filename="audio.wav",
             original_filename="audio.wav",
             file_path="/tmp/audio.wav",
