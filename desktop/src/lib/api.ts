@@ -127,6 +127,22 @@ export async function uploadProjectAsset(
   return res.json();
 }
 
+export async function uploadProjectPrimaryVideo(
+  projectId: string,
+  file: File,
+): Promise<VideoUploadResponse> {
+  const form = new FormData();
+  form.append("file", file);
+
+  const res = await fetchWithTimeout(
+    `${BASE_URL}/projects/${projectId}/videos/upload`,
+    { method: "POST", body: form },
+    VIDEO_UPLOAD_TIMEOUT_MS,
+  );
+  if (!res.ok) throw await errorFromResponse("Project video upload failed", res);
+  return res.json();
+}
+
 export async function deleteProjectAsset(projectId: string, assetId: string): Promise<void> {
   await request(`/projects/${projectId}/assets/${assetId}`, { method: "DELETE" });
 }

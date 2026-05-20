@@ -28,6 +28,8 @@ from db.models import (
     ProjectMediaSourceType,
     ProjectSourceMode,
     ProjectStatus,
+    Video,
+    VideoStatus,
 )
 from models.schemas import (
     ProjectAssetResponse,
@@ -39,6 +41,7 @@ from models.schemas import (
     ProjectSourceSyncApplyRequest,
     ProjectSourceSyncAsset,
     ProjectSourceSyncPlanResponse,
+    VideoUploadResponse,
 )
 from services.ffmpeg import ffmpeg_service
 from services.source_sync import (
@@ -553,6 +556,114 @@ async def upload_project_asset(
         is_primary,
         db,
         metadata=_parse_metadata_form(metadata),
+    )
+
+
+@router.post("/{project_id}/videos/upload", response_model=VideoUploadResponse, tags=["Project Videos"])
+async def upload_project_primary_video(
+    project_id: UUID,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload the primary mixed video for an existing project and create its legacy-compatible Video."""
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+
+    ext = _validate_asset_upload(file, "video")
+    asset_id = uuid.uuid4()
+    video_id = uuid.uuid4()
+    filename, file_path = _asset_storage_path(project_id, asset_id, ext)
+
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    with open(file_path, "wb") as saved_file:
+        shutil.copyfileobj(file.file, saved_file)
+
+    file_size = os.path.getsize(file_path)
+    max_size_bytes = settings.MAX_VIDEO_SIZE_MB * 1024 * 1024
+    if file_size > max_size_bytes:
+        os.remove(file_path)
+        raise HTTPException(413, f"File too large. Maximum: {settings.MAX_VIDEO_SIZE_MB}MB")
+
+    media_metadata = await _media_metadata(file_path, "video")
+
+    existing_primary_result = await db.execute(
+        select(ProjectAsset).where(
+            ProjectAsset.project_id == project_id,
+            ProjectAsset.is_primary.is_(True),
+        )
+    )
+    for existing_asset in existing_primary_result.scalars():
+        existing_asset.is_primary = False
+
+    asset = ProjectAsset(
+        id=asset_id,
+        project_id=project_id,
+        kind=ProjectAssetKind.MIXED_VIDEO,
+        role=ProjectAssetRole.PRIMARY,
+        source_type=ProjectMediaSourceType.MIXED_VIDEO,
+        sync_role=ProjectAssetSyncRole.PRIMARY_TIMELINE,
+        status=ProjectAssetStatus.READY,
+        is_primary=True,
+        filename=filename,
+        original_filename=file.filename or filename,
+        file_path=file_path,
+        file_size_bytes=file_size,
+        mime_type=file.content_type,
+        duration_seconds=media_metadata.get("duration"),
+        metadata_json={
+            "legacy_video_id": str(video_id),
+            "source_type": ProjectMediaSourceType.MIXED_VIDEO.value,
+            "sync_role": ProjectAssetSyncRole.PRIMARY_TIMELINE.value,
+            "upload_type": "video",
+            "storage_scope": "project_primary_video",
+            "extension": ext,
+            "resolution": (
+                f"{media_metadata.get('width')}x{media_metadata.get('height')}"
+                if media_metadata.get("width") and media_metadata.get("height")
+                else None
+            ),
+            "fps": media_metadata.get("fps"),
+        },
+    )
+    db.add(asset)
+
+    video = Video(
+        id=video_id,
+        project_id=project_id,
+        project_asset_id=asset_id,
+        filename=filename,
+        original_filename=file.filename or filename,
+        file_path=file_path,
+        file_size_bytes=file_size,
+        duration_seconds=media_metadata.get("duration"),
+        resolution=(
+            f"{media_metadata.get('width')}x{media_metadata.get('height')}"
+            if media_metadata.get("width") and media_metadata.get("height")
+            else None
+        ),
+        fps=media_metadata.get("fps"),
+        status=VideoStatus.UPLOADED,
+    )
+    db.add(video)
+
+    if project.status == ProjectStatus.DRAFT:
+        project.status = ProjectStatus.READY
+    if project.source_mode != ProjectSourceMode.MULTI_SOURCE:
+        project.source_mode = ProjectSourceMode.SINGLE_VIDEO
+
+    await db.commit()
+
+    return VideoUploadResponse(
+        id=video_id,
+        project_id=project.id,
+        project_asset_id=asset.id,
+        filename=file.filename or filename,
+        status=VideoStatus.UPLOADED,
+        duration_seconds=media_metadata.get("duration"),
+        resolution=video.resolution,
+        file_size_mb=round(file_size / 1024 / 1024, 1),
+        message=f"Video uploaded to {project.title}. Add course materials, then start processing.",
     )
 
 
