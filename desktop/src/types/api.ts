@@ -72,6 +72,9 @@ export interface ProjectAsset {
   error_message: string | null;
   created_at: string;
   updated_at: string;
+  structure_reference_role?: string | null;
+  document_format?: string | null;
+  structure_inference_ready?: boolean;
 }
 
 export interface ProjectDetail extends Project {

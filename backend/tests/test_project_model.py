@@ -66,6 +66,7 @@ from api.routes.projects import (
     _asset_role_for_upload,
     _parse_metadata_form,
     _source_type_for_upload,
+    _structure_metadata_for_upload,
     _sync_role_for_upload,
     _validate_asset_upload,
 )
@@ -224,6 +225,53 @@ class ProjectModelTests(unittest.TestCase):
         self.assertEqual(_asset_kind_for_upload("notes", "outline.pdf"), ProjectAssetKind.PDF_NOTES)
         self.assertEqual(_asset_kind_for_upload("notes", "outline.md"), ProjectAssetKind.TEXT_NOTES)
         self.assertEqual(_asset_role_for_upload("materials"), ProjectAssetRole.SUPPORTING_MATERIAL)
+        self.assertEqual(_source_type_for_upload("notes", "outline.pdf"), ProjectMediaSourceType.PDF_NOTES)
+        self.assertEqual(_source_type_for_upload("notes", "outline.md"), ProjectMediaSourceType.TEXT_NOTES)
+        self.assertEqual(_sync_role_for_upload("slides"), ProjectAssetSyncRole.STRUCTURE_REFERENCE)
+        self.assertEqual(_sync_role_for_upload("notes"), ProjectAssetSyncRole.STRUCTURE_REFERENCE)
+
+    def test_teaching_material_metadata_marks_structure_references(self):
+        slide_metadata = _structure_metadata_for_upload(
+            "slides",
+            ProjectMediaSourceType.SLIDE_DECK,
+            ".pptx",
+        )
+        pdf_metadata = _structure_metadata_for_upload(
+            "notes",
+            ProjectMediaSourceType.PDF_NOTES,
+            ".pdf",
+        )
+        text_metadata = _structure_metadata_for_upload(
+            "notes",
+            ProjectMediaSourceType.TEXT_NOTES,
+            ".md",
+        )
+
+        self.assertEqual(slide_metadata["structure_reference_role"], "slide_sequence")
+        self.assertEqual(slide_metadata["document_format"], "pptx")
+        self.assertTrue(slide_metadata["structure_inference_ready"])
+        self.assertEqual(pdf_metadata["structure_reference_role"], "pdf_notes")
+        self.assertEqual(text_metadata["structure_reference_role"], "text_notes")
+
+        asset = ProjectAssetResponse(
+            id=uuid4(),
+            project_id=uuid4(),
+            kind=ProjectAssetKind.PDF_NOTES,
+            role=ProjectAssetRole.NOTES,
+            source_type=ProjectMediaSourceType.PDF_NOTES,
+            sync_role=ProjectAssetSyncRole.STRUCTURE_REFERENCE,
+            status=ProjectAssetStatus.READY,
+            filename="stored.pdf",
+            original_filename="outline.pdf",
+            file_path="/tmp/uploads/stored.pdf",
+            metadata_json=pdf_metadata,
+            created_at="2026-05-20T00:00:00",
+            updated_at="2026-05-20T00:00:00",
+        )
+
+        self.assertEqual(asset.structure_reference_role, "pdf_notes")
+        self.assertEqual(asset.document_format, "pdf")
+        self.assertTrue(asset.structure_inference_ready)
 
     def test_asset_upload_validation_accepts_expected_groups(self):
         class Upload:

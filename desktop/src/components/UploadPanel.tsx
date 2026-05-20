@@ -1,9 +1,34 @@
 import { useState, useCallback, useEffect } from "react";
-import { Upload, FileVideo, BookOpen, X, Loader2, Play } from "lucide-react";
+import { Upload, FileVideo, BookOpen, X, Loader2, Play, Presentation, FileText } from "lucide-react";
 import * as api from "../lib/api";
+import type { ProjectAsset, ProjectAssetUploadType } from "../types/api";
 
 interface Props {
   onUpload: (videoId: string, filename: string) => void;
+}
+
+type UploadedVideo = {
+  id: string;
+  filename: string;
+  projectId: string | null;
+};
+
+type StructureUploadOption = {
+  type: ProjectAssetUploadType;
+  label: string;
+  accept: string;
+  icon: "slides" | "notes";
+};
+
+const structureUploadOptions: StructureUploadOption[] = [
+  { type: "slides", label: "Add deck", accept: ".ppt,.pptx,.pdf", icon: "slides" },
+  { type: "notes", label: "Add PDF", accept: ".pdf", icon: "notes" },
+  { type: "notes", label: "Add notes", accept: ".docx,.txt,.md", icon: "notes" },
+];
+
+function structureAssetLabel(asset: ProjectAsset) {
+  const role = asset.structure_reference_role || asset.source_type;
+  return role.replace(/_/g, " ");
 }
 
 export function UploadPanel({ onUpload }: Props) {
@@ -11,8 +36,10 @@ export function UploadPanel({ onUpload }: Props) {
   const [dragOver, setDragOver] = useState(false);
   const [materials, setMaterials] = useState<{ id: string; filename: string; chunk_count: number }[]>([]);
   const [materialUploading, setMaterialUploading] = useState(false);
+  const [structureAssets, setStructureAssets] = useState<ProjectAsset[]>([]);
+  const [structureUploading, setStructureUploading] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
-  const [uploadedVideo, setUploadedVideo] = useState<{ id: string; filename: string } | null>(null);
+  const [uploadedVideo, setUploadedVideo] = useState<UploadedVideo | null>(null);
   const embeddedMaterials = materials.filter(m => m.chunk_count > 0).length;
 
   // Load existing materials on mount
@@ -31,7 +58,8 @@ export function UploadPanel({ onUpload }: Props) {
     setUploading(true);
     try {
       const result = await api.uploadVideo(file);
-      setUploadedVideo({ id: result.id, filename: file.name });
+      setUploadedVideo({ id: result.id, filename: file.name, projectId: result.project_id });
+      setStructureAssets([]);
     } catch (e) {
       alert(`Upload failed: ${e}`);
     } finally {
@@ -62,6 +90,43 @@ export function UploadPanel({ onUpload }: Props) {
       setMaterialUploading(false);
       e.target.value = "";
     }
+  };
+
+  const handleStructureAssetUpload = async (
+    option: StructureUploadOption,
+    e: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!uploadedVideo?.projectId) {
+      alert("Upload a lecture video first so these files can be attached to its project.");
+      e.target.value = "";
+      return;
+    }
+
+    setStructureUploading(option.label);
+    try {
+      const asset = await api.uploadProjectAsset(
+        uploadedVideo.projectId,
+        option.type,
+        file,
+        false,
+        { intended_use: "lecture_structure_inference", upload_surface: "legacy_upload_panel" },
+      );
+      setStructureAssets(prev => [asset, ...prev]);
+    } catch (err) {
+      alert(`Teaching material upload failed: ${err}`);
+    } finally {
+      setStructureUploading(null);
+      e.target.value = "";
+    }
+  };
+
+  const handleDeleteStructureAsset = async (asset: ProjectAsset) => {
+    if (!uploadedVideo?.projectId) return;
+    await api.deleteProjectAsset(uploadedVideo.projectId, asset.id);
+    setStructureAssets(prev => prev.filter(item => item.id !== asset.id));
   };
 
   const handleDeleteMaterial = async (id: string) => {
@@ -125,7 +190,69 @@ export function UploadPanel({ onUpload }: Props) {
           )}
         </div>
 
-        {/* ── Course Materials ── */}
+        {/* Lecture Structure Assets */}
+        <div className="bg-surface-raised rounded-xl p-6 border border-surface-border">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-2">
+              <Presentation className="w-4 h-4 text-accent" />
+              <h2 className="text-sm font-semibold">Lecture Structure Assets</h2>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {structureUploadOptions.map((option) => {
+                const disabled = !uploadedVideo?.projectId || Boolean(structureUploading) || uploading || starting;
+                const Icon = option.icon === "slides" ? Presentation : FileText;
+                return (
+                  <label
+                    key={`${option.label}-${option.accept}`}
+                    className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs transition-colors ${
+                      disabled
+                        ? "cursor-not-allowed border-surface-border text-gray-600"
+                        : "cursor-pointer border-surface-border text-gray-300 hover:border-accent hover:text-accent"
+                    }`}
+                  >
+                    {structureUploading === option.label ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <Icon className="w-3 h-3" />
+                    )}
+                    {option.label}
+                    <input
+                      type="file"
+                      className="hidden"
+                      accept={option.accept}
+                      disabled={disabled}
+                      onChange={(event) => handleStructureAssetUpload(option, event)}
+                    />
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+
+          {structureAssets.length === 0 ? (
+            <p className="mt-4 text-xs text-gray-500">
+              Add slide decks, exported slide PDFs, or lecture notes to preserve the project structure for later section inference.
+            </p>
+          ) : (
+            <div className="mt-4 space-y-2">
+              {structureAssets.map(asset => (
+                <div key={asset.id} className="flex items-center justify-between bg-surface-overlay rounded-lg px-3 py-2 text-sm">
+                  <div className="min-w-0">
+                    <p className="truncate text-gray-200">{asset.original_filename}</p>
+                    <p className="text-xs capitalize text-gray-500">
+                      {structureAssetLabel(asset)}
+                      {asset.document_format ? ` / ${asset.document_format}` : ""}
+                    </p>
+                  </div>
+                  <button onClick={() => handleDeleteStructureAsset(asset)} className="text-gray-500 hover:text-red-400">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         <div className="bg-surface-raised rounded-xl p-6 border border-surface-border">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
@@ -173,7 +300,7 @@ export function UploadPanel({ onUpload }: Props) {
           </p>
           <button
             onClick={handleStartProcessing}
-            disabled={!uploadedVideo || uploading || materialUploading || starting}
+            disabled={!uploadedVideo || uploading || materialUploading || Boolean(structureUploading) || starting}
             className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
           >
             {starting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
