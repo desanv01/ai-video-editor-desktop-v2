@@ -11,7 +11,7 @@ import {
   type GuidedWorkflowStepId,
 } from "./GuidedWorkflow";
 import * as api from "../lib/api";
-import type { Chapter, Segment, EditPlan, SegmentAction, RevalidationResult } from "../types/api";
+import type { Chapter, Segment, EditPlan, SegmentAction, RevalidationResult, TranscriptCutDecision, TranscriptTimeline } from "../types/api";
 import {
   Activity,
   AlertTriangle,
@@ -55,6 +55,9 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   const [warnings, setWarnings] = useState<RevalidationResult | null>(null);
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [chaptersLoading, setChaptersLoading] = useState(false);
+  const [transcriptTimeline, setTranscriptTimeline] = useState<TranscriptTimeline | null>(null);
+  const [transcriptCuts, setTranscriptCuts] = useState<TranscriptCutDecision[]>([]);
+  const [transcriptCutsLoading, setTranscriptCutsLoading] = useState(false);
   const [approving, setApproving] = useState(false);
   const [duration, setDuration] = useState(0);
 
@@ -77,6 +80,27 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   useEffect(() => {
     void loadChapters();
   }, [loadChapters]);
+
+  const loadTranscriptEditingData = useCallback(async () => {
+    setTranscriptCutsLoading(true);
+    try {
+      const [timelineResult, cutsResult] = await Promise.all([
+        api.getTranscriptTimeline(videoId),
+        api.getTranscriptCutDecisions(videoId),
+      ]);
+      setTranscriptTimeline(timelineResult);
+      setTranscriptCuts(cutsResult);
+    } catch {
+      setTranscriptTimeline(null);
+      setTranscriptCuts([]);
+    } finally {
+      setTranscriptCutsLoading(false);
+    }
+  }, [videoId]);
+
+  useEffect(() => {
+    void loadTranscriptEditingData();
+  }, [loadTranscriptEditingData]);
 
   useEffect(() => {
     setCompletedWorkflowSteps(prev => {
@@ -115,6 +139,33 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
       // Revalidation is helpful context, but editing should continue if it fails.
     }
   }, [videoId, updateAction]);
+
+  const handleCreateTranscriptCut = useCallback(async (wordStartIndex: number, wordEndIndex: number) => {
+    const decision = await api.createTranscriptCutDecision(videoId, {
+      word_start_index: wordStartIndex,
+      word_end_index: wordEndIndex,
+      teacher_note: "Marked for cut from transcript text selection",
+    });
+    setTranscriptCuts(prev => [...prev, decision]);
+    setActiveWorkflowStep("clean");
+    try {
+      const updatedPlan = await api.getEditPlan(videoId);
+      setPlan(updatedPlan);
+    } catch {
+      // The cut decision is already stored; plan stats are secondary UI context.
+    }
+  }, [videoId]);
+
+  const handleDeleteTranscriptCut = useCallback(async (decisionId: string) => {
+    await api.deleteTranscriptCutDecision(videoId, decisionId);
+    setTranscriptCuts(prev => prev.filter(decision => decision.id !== decisionId));
+    try {
+      const updatedPlan = await api.getEditPlan(videoId);
+      setPlan(updatedPlan);
+    } catch {
+      // Keep the transcript panel responsive even if stats refresh fails.
+    }
+  }, [videoId]);
 
   const handleAcceptAll = useCallback(async () => {
     const count = await acceptAllHighConfidence(0.85);
@@ -331,10 +382,15 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
               {leftPanelTab === "transcript" ? (
                 <TranscriptPanel
                   segments={segments}
+                  timeline={transcriptTimeline}
+                  cutDecisions={transcriptCuts}
+                  cutsLoading={transcriptCutsLoading}
                   currentTime={currentTime}
                   onSeek={seekTo}
                   selectedSegmentId={selectedSegment?.id ?? null}
                   onSelectSegment={handleSelectSegment}
+                  onCreateTranscriptCut={handleCreateTranscriptCut}
+                  onDeleteTranscriptCut={handleDeleteTranscriptCut}
                 />
               ) : (
                 <AssetPanel

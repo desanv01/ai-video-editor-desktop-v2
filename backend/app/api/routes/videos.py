@@ -25,6 +25,7 @@ from db.models import (
 from models.schemas import (
     VideoUploadResponse, VideoResponse, VideoDetailResponse,
     SegmentResponse, SegmentUpdateRequest, BulkSegmentUpdateRequest,
+    TranscriptCutDecisionRequest, TranscriptCutDecisionResponse,
     TranscriptTimelineResponse,
     EditPlanResponse, EditPlanApproveRequest,
     CourseMaterialUploadResponse, CourseMaterialResponse,
@@ -37,6 +38,11 @@ from services.ffmpeg import ffmpeg_service
 from services.renderer import generate_quality_report
 from services.text_extraction import text_extractor
 from services.transcript_timeline import build_transcript_timeline
+from services.transcript_edit_decisions import (
+    create_transcript_cut_decision,
+    list_transcript_cut_decisions,
+    remove_transcript_cut_decision,
+)
 from services.progress import get_progress as get_pipeline_progress
 from services.app_settings import (
     get_or_create_ai_settings,
@@ -282,6 +288,104 @@ async def get_transcript_timeline(video_id: str, db: AsyncSession = Depends(get_
         review_segments=video.segments,
         duration_seconds=video.duration_seconds,
     )
+
+
+@router.get(
+    "/videos/{video_id}/transcript/cuts",
+    response_model=List[TranscriptCutDecisionResponse],
+    tags=["Transcript"],
+)
+async def get_transcript_cut_decisions(video_id: str, db: AsyncSession = Depends(get_db)):
+    """List manual word-level cut decisions for a video's transcript."""
+    result = await db.execute(
+        select(EditPlan).where(EditPlan.video_id == video_id)
+    )
+    plan = result.scalar_one_or_none()
+    return list_transcript_cut_decisions(plan)
+
+
+@router.post(
+    "/videos/{video_id}/transcript/cuts",
+    response_model=TranscriptCutDecisionResponse,
+    tags=["Transcript"],
+)
+async def create_transcript_cut(
+    video_id: str,
+    request: TranscriptCutDecisionRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a cut decision from selected transcript words."""
+    result = await db.execute(
+        select(Video)
+        .options(selectinload(Video.transcript), selectinload(Video.segments), selectinload(Video.edit_plan))
+        .where(Video.id == video_id)
+    )
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(404, "Video not found")
+    if not video.transcript:
+        raise HTTPException(404, "Transcript not found")
+
+    timeline = build_transcript_timeline(
+        video_id=video.id,
+        transcript=video.transcript,
+        review_segments=video.segments,
+        duration_seconds=video.duration_seconds,
+    )
+
+    plan = video.edit_plan
+    if not plan:
+        plan = EditPlan(
+            id=uuid.uuid4(),
+            video_id=video.id,
+            plan_json=[],
+            original_duration=video.duration_seconds,
+            estimated_duration=video.duration_seconds,
+            segments_total=len(video.segments),
+            segments_keep=len(video.segments),
+            segments_cut=0,
+            segments_highlight=0,
+        )
+        db.add(plan)
+        await db.flush()
+
+    try:
+        decision = create_transcript_cut_decision(
+            plan=plan,
+            timeline_words=timeline["words"],
+            word_start_index=request.word_start_index,
+            word_end_index=request.word_end_index,
+            teacher_note=request.teacher_note,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    await db.commit()
+    return decision
+
+
+@router.delete(
+    "/videos/{video_id}/transcript/cuts/{decision_id}",
+    tags=["Transcript"],
+)
+async def delete_transcript_cut(
+    video_id: str,
+    decision_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove a manual transcript cut decision."""
+    result = await db.execute(
+        select(EditPlan).where(EditPlan.video_id == video_id)
+    )
+    plan = result.scalar_one_or_none()
+    if not plan:
+        raise HTTPException(404, "Edit plan not found")
+
+    if not remove_transcript_cut_decision(plan=plan, decision_id=decision_id):
+        raise HTTPException(404, "Transcript cut decision not found")
+
+    await db.commit()
+    return {"status": "removed", "decision_id": decision_id}
 
 
 # ═══════════════════════════════════════════

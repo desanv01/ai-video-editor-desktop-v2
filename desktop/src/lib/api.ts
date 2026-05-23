@@ -11,6 +11,7 @@ import type {
   RevalidationResult, SegmentAction, BackendAISettings,
   BackendAISettingsUpdate,
   TranscriptTimeline,
+  TranscriptCutDecision, TranscriptCutDecisionRequest,
   LocalTranscriptionModelCatalog, LocalTranscriptionModelDownload,
   LocalTranscriptionModelRemoveResult,
   Project, ProjectAsset, ProjectAssetUploadResponse,
@@ -187,6 +188,26 @@ export async function getProcessingStatus(id: string): Promise<ProcessingStatus>
 
 export async function getTranscriptTimeline(videoId: string): Promise<TranscriptTimeline> {
   return request(`/videos/${videoId}/transcript/timeline`);
+}
+
+export async function getTranscriptCutDecisions(videoId: string): Promise<TranscriptCutDecision[]> {
+  return request(`/videos/${videoId}/transcript/cuts`);
+}
+
+export async function createTranscriptCutDecision(
+  videoId: string,
+  payload: TranscriptCutDecisionRequest,
+): Promise<TranscriptCutDecision> {
+  return request(`/videos/${videoId}/transcript/cuts`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteTranscriptCutDecision(videoId: string, decisionId: string): Promise<void> {
+  await request(`/videos/${videoId}/transcript/cuts/${decisionId}`, {
+    method: "DELETE",
+  });
 }
 
 // ═══════════════════════════════════════════

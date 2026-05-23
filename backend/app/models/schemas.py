@@ -248,6 +248,30 @@ class TranscriptTimelineResponse(BaseModel):
     segments: List[TranscriptTimelineSegment] = Field(default_factory=list)
 
 
+class TranscriptCutDecisionRequest(BaseModel):
+    word_start_index: int = Field(ge=0)
+    word_end_index: int = Field(ge=0)
+    teacher_note: Optional[str] = Field(default=None, max_length=500)
+
+
+class TranscriptCutDecisionResponse(BaseModel):
+    id: str
+    kind: str = "transcript_cut"
+    action: str = "cut"
+    source: str = "manual_text_selection"
+    status: str = "active"
+    text: str
+    start_time: float
+    end_time: float
+    duration: float
+    word_start_index: int
+    word_end_index: int
+    segment_ids: List[str] = Field(default_factory=list)
+    segment_indexes: List[int] = Field(default_factory=list)
+    teacher_note: Optional[str] = None
+    created_at: str
+
+
 # ═══════════════════════════════════════════
 #  SEGMENT
 # ═══════════════════════════════════════════

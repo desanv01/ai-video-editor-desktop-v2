@@ -204,6 +204,30 @@ export interface TranscriptTimeline {
   segments: TranscriptTimelineSegment[];
 }
 
+export interface TranscriptCutDecision {
+  id: string;
+  kind: "transcript_cut" | string;
+  action: "cut" | string;
+  source: "manual_text_selection" | string;
+  status: "active" | string;
+  text: string;
+  start_time: number;
+  end_time: number;
+  duration: number;
+  word_start_index: number;
+  word_end_index: number;
+  segment_ids: string[];
+  segment_indexes: number[];
+  teacher_note: string | null;
+  created_at: string;
+}
+
+export interface TranscriptCutDecisionRequest {
+  word_start_index: number;
+  word_end_index: number;
+  teacher_note?: string | null;
+}
+
 // ── Segment ──
 
 export interface Segment {
