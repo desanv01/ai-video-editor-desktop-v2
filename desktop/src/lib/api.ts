@@ -10,6 +10,7 @@ import type {
   ProcessingStatus, QualityReport, Chapter,
   RevalidationResult, SegmentAction, BackendAISettings,
   BackendAISettingsUpdate,
+  TranscriptTimeline,
   LocalTranscriptionModelCatalog, LocalTranscriptionModelDownload,
   LocalTranscriptionModelRemoveResult,
   Project, ProjectAsset, ProjectAssetUploadResponse,
@@ -182,6 +183,10 @@ export async function getVideo(id: string): Promise<Video> {
 
 export async function getProcessingStatus(id: string): Promise<ProcessingStatus> {
   return request(`/videos/${id}/status`);
+}
+
+export async function getTranscriptTimeline(videoId: string): Promise<TranscriptTimeline> {
+  return request(`/videos/${videoId}/transcript/timeline`);
 }
 
 // ═══════════════════════════════════════════

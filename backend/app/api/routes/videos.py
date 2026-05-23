@@ -25,6 +25,7 @@ from db.models import (
 from models.schemas import (
     VideoUploadResponse, VideoResponse, VideoDetailResponse,
     SegmentResponse, SegmentUpdateRequest, BulkSegmentUpdateRequest,
+    TranscriptTimelineResponse,
     EditPlanResponse, EditPlanApproveRequest,
     CourseMaterialUploadResponse, CourseMaterialResponse,
     ProcessingStatus, AppSettingsResponse, AppSettingsUpdateRequest,
@@ -35,6 +36,7 @@ from agents.edit_planner import revalidate_edit_plan
 from services.ffmpeg import ffmpeg_service
 from services.renderer import generate_quality_report
 from services.text_extraction import text_extractor
+from services.transcript_timeline import build_transcript_timeline
 from services.progress import get_progress as get_pipeline_progress
 from services.app_settings import (
     get_or_create_ai_settings,
@@ -254,6 +256,32 @@ async def get_processing_status(video_id: str, db: AsyncSession = Depends(get_db
         "steps_timing": progress.get("steps_timing", {}),
         "total_elapsed_seconds": progress.get("total_elapsed_seconds", 0),
     }
+
+
+# ═══════════════════════════════════════════
+#  TRANSCRIPT TIMELINE ENDPOINTS
+# ═══════════════════════════════════════════
+
+@router.get("/videos/{video_id}/transcript/timeline", response_model=TranscriptTimelineResponse, tags=["Transcript"])
+async def get_transcript_timeline(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Get word-level transcript timing mapped to the existing review segments."""
+    result = await db.execute(
+        select(Video)
+        .options(selectinload(Video.transcript), selectinload(Video.segments))
+        .where(Video.id == video_id)
+    )
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(404, "Video not found")
+    if not video.transcript:
+        raise HTTPException(404, "Transcript not found")
+
+    return build_transcript_timeline(
+        video_id=video.id,
+        transcript=video.transcript,
+        review_segments=video.segments,
+        duration_seconds=video.duration_seconds,
+    )
 
 
 # ═══════════════════════════════════════════

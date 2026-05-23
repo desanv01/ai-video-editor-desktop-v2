@@ -164,6 +164,46 @@ export interface Transcript {
   speakers: SpeakerInfo[] | null;
 }
 
+export interface TranscriptTimelineWord {
+  word_index: number;
+  text: string;
+  start_time: number;
+  end_time: number;
+  duration: number;
+  speaker: string | null;
+  confidence: number | null;
+  is_estimated: boolean;
+  source: "asr_word" | "transcript_segment_estimate" | string;
+  transcript_segment_index: number | null;
+  segment_id: string | null;
+  segment_index: number | null;
+}
+
+export interface TranscriptTimelineSegment {
+  segment_id: string;
+  segment_index: number;
+  start_time: number;
+  end_time: number;
+  duration: number | null;
+  text: string | null;
+  speaker: string | null;
+  word_start_index: number | null;
+  word_end_index: number | null;
+  word_count: number;
+}
+
+export interface TranscriptTimeline {
+  video_id: string;
+  transcript_id: string;
+  full_text: string | null;
+  language: string | null;
+  asr_provider: string | null;
+  duration_seconds: number | null;
+  word_count: number;
+  words: TranscriptTimelineWord[];
+  segments: TranscriptTimelineSegment[];
+}
+
 // ── Segment ──
 
 export interface Segment {

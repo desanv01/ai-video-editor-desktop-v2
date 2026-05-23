@@ -208,6 +208,46 @@ class TranscriptResponse(BaseModel):
         from_attributes = True
 
 
+class TranscriptTimelineWord(BaseModel):
+    word_index: int
+    text: str
+    start_time: float
+    end_time: float
+    duration: float
+    speaker: Optional[str] = None
+    confidence: Optional[float] = None
+    is_estimated: bool = False
+    source: str = "asr_word"
+    transcript_segment_index: Optional[int] = None
+    segment_id: Optional[UUID] = None
+    segment_index: Optional[int] = None
+
+
+class TranscriptTimelineSegment(BaseModel):
+    segment_id: UUID
+    segment_index: int
+    start_time: float
+    end_time: float
+    duration: Optional[float] = None
+    text: Optional[str] = None
+    speaker: Optional[str] = None
+    word_start_index: Optional[int] = None
+    word_end_index: Optional[int] = None
+    word_count: int = 0
+
+
+class TranscriptTimelineResponse(BaseModel):
+    video_id: UUID
+    transcript_id: UUID
+    full_text: Optional[str] = None
+    language: Optional[str] = None
+    asr_provider: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    word_count: int = 0
+    words: List[TranscriptTimelineWord] = Field(default_factory=list)
+    segments: List[TranscriptTimelineSegment] = Field(default_factory=list)
+
+
 # ═══════════════════════════════════════════
 #  SEGMENT
 # ═══════════════════════════════════════════
