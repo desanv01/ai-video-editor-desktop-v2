@@ -417,7 +417,10 @@ async def update_segment(
 
     segment.teacher_action = update.teacher_action
     segment.teacher_note = update.teacher_note
-    segment.is_teacher_modified = True
+    if update.is_teacher_modified is not None:
+        segment.is_teacher_modified = update.is_teacher_modified
+    else:
+        segment.is_teacher_modified = update.teacher_action is not None
     await db.commit()
 
     return {"status": "updated", "segment_id": segment_id}

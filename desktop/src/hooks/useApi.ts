@@ -72,13 +72,35 @@ export function useSegments(videoId: string | null) {
     note?: string,
   ) => {
     if (!videoId) return;
-    await api.updateSegment(videoId, segmentId, action, note);
+    await api.updateSegment(videoId, segmentId, action, note, true);
 
-    // Optimistic update
     setSegments(prev =>
       prev.map(s =>
         s.id === segmentId
           ? { ...s, teacher_action: action, teacher_note: note || null, is_teacher_modified: true }
+          : s
+      )
+    );
+  }, [videoId]);
+
+  const applySegmentOverride = useCallback(async (
+    segmentId: string,
+    teacherAction: SegmentAction | null,
+    teacherNote: string | null,
+    isTeacherModified: boolean,
+  ) => {
+    if (!videoId) return;
+    await api.updateSegment(videoId, segmentId, teacherAction, teacherNote, isTeacherModified);
+
+    setSegments(prev =>
+      prev.map(s =>
+        s.id === segmentId
+          ? {
+              ...s,
+              teacher_action: teacherAction,
+              teacher_note: teacherNote,
+              is_teacher_modified: isTeacherModified,
+            }
           : s
       )
     );
@@ -102,7 +124,7 @@ export function useSegments(videoId: string | null) {
     return updates.length;
   }, [videoId, segments, load]);
 
-  return { segments, loading, reload: load, updateAction, acceptAllHighConfidence };
+  return { segments, loading, reload: load, updateAction, applySegmentOverride, acceptAllHighConfidence };
 }
 
 /**

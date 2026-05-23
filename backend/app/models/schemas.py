@@ -319,8 +319,9 @@ class SegmentResponse(BaseModel):
 
 class SegmentUpdateRequest(BaseModel):
     """Teacher updates a single segment's action."""
-    teacher_action: SegmentAction
+    teacher_action: Optional[SegmentAction] = None
     teacher_note: Optional[str] = None
+    is_teacher_modified: Optional[bool] = None
 
 
 class BulkSegmentUpdateRequest(BaseModel):
