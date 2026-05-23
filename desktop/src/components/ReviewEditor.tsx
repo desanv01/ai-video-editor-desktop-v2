@@ -11,7 +11,16 @@ import {
   type GuidedWorkflowStepId,
 } from "./GuidedWorkflow";
 import * as api from "../lib/api";
-import type { Chapter, Segment, EditPlan, SegmentAction, RevalidationResult, TranscriptCutDecision, TranscriptTimeline } from "../types/api";
+import type {
+  Chapter,
+  Segment,
+  EditPlan,
+  SegmentAction,
+  RevalidationResult,
+  TranscriptCutDecision,
+  TranscriptCutDecisionRequest,
+  TranscriptTimeline,
+} from "../types/api";
 import {
   Activity,
   AlertTriangle,
@@ -43,8 +52,43 @@ interface Props {
 
 type LeftPanelTab = "transcript" | "assets";
 
+type SegmentOverrideSnapshot = {
+  segment_id: string;
+  segment_index: number;
+  teacher_action: SegmentAction | null;
+  teacher_note: string | null;
+  is_teacher_modified: boolean;
+};
+
+type SegmentHistoryEntry = {
+  id: string;
+  kind: "segment_override";
+  label: string;
+  before: SegmentOverrideSnapshot;
+  after: SegmentOverrideSnapshot;
+};
+
+type BulkSegmentHistoryEntry = {
+  id: string;
+  kind: "bulk_segment_override";
+  label: string;
+  before: SegmentOverrideSnapshot[];
+  after: SegmentOverrideSnapshot[];
+};
+
+type TranscriptCutHistoryEntry = {
+  id: string;
+  kind: "transcript_cut_create" | "transcript_cut_delete";
+  label: string;
+  decision: TranscriptCutDecision;
+  request: TranscriptCutDecisionRequest;
+};
+
+type EditHistoryEntry = SegmentHistoryEntry | BulkSegmentHistoryEntry | TranscriptCutHistoryEntry;
+type HistoryDirection = "undo" | "redo";
+
 export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) {
-  const { segments, loading, updateAction, acceptAllHighConfidence } = useSegments(videoId);
+  const { segments, loading, applySegmentOverride, acceptAllHighConfidence } = useSegments(videoId);
   const { currentTime, setCurrentTime, isPlaying, setIsPlaying, videoRef, seekTo, togglePlay } = usePlaybackSync();
   const [selectedSegment, setSelectedSegment] = useState<Segment | null>(null);
   const [activeWorkflowStep, setActiveWorkflowStep] = useState<GuidedWorkflowStepId>("transcribe");
@@ -58,12 +102,27 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   const [transcriptTimeline, setTranscriptTimeline] = useState<TranscriptTimeline | null>(null);
   const [transcriptCuts, setTranscriptCuts] = useState<TranscriptCutDecision[]>([]);
   const [transcriptCutsLoading, setTranscriptCutsLoading] = useState(false);
+  const [undoStack, setUndoStack] = useState<EditHistoryEntry[]>([]);
+  const [redoStack, setRedoStack] = useState<EditHistoryEntry[]>([]);
+  const [historyBusy, setHistoryBusy] = useState(false);
   const [approving, setApproving] = useState(false);
   const [duration, setDuration] = useState(0);
 
   useEffect(() => {
     api.getEditPlan(videoId).then(setPlan).catch(() => {});
   }, [videoId]);
+
+  useEffect(() => {
+    setUndoStack([]);
+    setRedoStack([]);
+  }, [videoId]);
+
+  useEffect(() => {
+    setSelectedSegment(prev => {
+      if (!prev) return prev;
+      return segments.find(segment => segment.id === prev.id) ?? null;
+    });
+  }, [segments]);
 
   const loadChapters = useCallback(async () => {
     setChaptersLoading(true);
@@ -130,52 +189,135 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
     setActiveWorkflowStep("clean");
   }, []);
 
-  const handleUpdateAction = useCallback(async (segId: string, action: SegmentAction, note?: string) => {
-    await updateAction(segId, action, note);
+  const pushHistory = useCallback((entry: EditHistoryEntry) => {
+    setUndoStack(prev => [...prev, entry].slice(-50));
+    setRedoStack([]);
+  }, []);
+
+  const refreshEditWarnings = useCallback(async () => {
     try {
       const result = await api.revalidatePlan(videoId);
       setWarnings(result);
     } catch {
       // Revalidation is helpful context, but editing should continue if it fails.
     }
-  }, [videoId, updateAction]);
+  }, [videoId]);
+
+  const refreshEditPlan = useCallback(async () => {
+    try {
+      const updatedPlan = await api.getEditPlan(videoId);
+      setPlan(updatedPlan);
+    } catch {
+      // Plan stats are secondary UI context; the edit operation already completed.
+    }
+  }, [videoId]);
+
+  const applySegmentSnapshot = useCallback(async (snapshot: SegmentOverrideSnapshot) => {
+    await applySegmentOverride(
+      snapshot.segment_id,
+      snapshot.teacher_action,
+      snapshot.teacher_note,
+      snapshot.is_teacher_modified,
+    );
+  }, [applySegmentOverride]);
+
+  const applySegmentSnapshots = useCallback(async (snapshots: SegmentOverrideSnapshot[]) => {
+    for (const snapshot of snapshots) {
+      await applySegmentSnapshot(snapshot);
+    }
+  }, [applySegmentSnapshot]);
+
+  const handleUpdateAction = useCallback(async (segId: string, action: SegmentAction, note?: string) => {
+    const segment = segments.find(candidate => candidate.id === segId);
+    const before = segment ? snapshotSegmentOverride(segment) : null;
+    const after: SegmentOverrideSnapshot | null = before
+      ? {
+          ...before,
+          teacher_action: action,
+          teacher_note: note || null,
+          is_teacher_modified: true,
+        }
+      : null;
+
+    await applySegmentOverride(segId, action, note || null, true);
+
+    if (before && after && !sameSegmentOverrideSnapshot(before, after)) {
+      pushHistory({
+        id: createHistoryId(),
+        kind: "segment_override",
+        label: `Segment ${before.segment_index} ${action}`,
+        before,
+        after,
+      });
+    }
+    await refreshEditWarnings();
+  }, [applySegmentOverride, pushHistory, refreshEditWarnings, segments]);
 
   const handleCreateTranscriptCut = useCallback(async (wordStartIndex: number, wordEndIndex: number) => {
-    const decision = await api.createTranscriptCutDecision(videoId, {
+    const request: TranscriptCutDecisionRequest = {
       word_start_index: wordStartIndex,
       word_end_index: wordEndIndex,
       teacher_note: "Marked for cut from transcript text selection",
-    });
+    };
+    const decision = await api.createTranscriptCutDecision(videoId, request);
     setTranscriptCuts(prev => [...prev, decision]);
+    pushHistory({
+      id: createHistoryId(),
+      kind: "transcript_cut_create",
+      label: "Transcript text cut",
+      decision,
+      request,
+    });
     setActiveWorkflowStep("clean");
-    try {
-      const updatedPlan = await api.getEditPlan(videoId);
-      setPlan(updatedPlan);
-    } catch {
-      // The cut decision is already stored; plan stats are secondary UI context.
-    }
-  }, [videoId]);
+    await refreshEditPlan();
+  }, [pushHistory, refreshEditPlan, videoId]);
 
   const handleDeleteTranscriptCut = useCallback(async (decisionId: string) => {
+    const decision = transcriptCuts.find(candidate => candidate.id === decisionId);
     await api.deleteTranscriptCutDecision(videoId, decisionId);
     setTranscriptCuts(prev => prev.filter(decision => decision.id !== decisionId));
-    try {
-      const updatedPlan = await api.getEditPlan(videoId);
-      setPlan(updatedPlan);
-    } catch {
-      // Keep the transcript panel responsive even if stats refresh fails.
+    if (decision) {
+      pushHistory({
+        id: createHistoryId(),
+        kind: "transcript_cut_delete",
+        label: "Remove transcript cut",
+        decision,
+        request: {
+          word_start_index: decision.word_start_index,
+          word_end_index: decision.word_end_index,
+          teacher_note: decision.teacher_note,
+        },
+      });
     }
-  }, [videoId]);
+    await refreshEditPlan();
+  }, [pushHistory, refreshEditPlan, transcriptCuts, videoId]);
 
   const handleAcceptAll = useCallback(async () => {
+    const candidates = segments.filter(segment => (segment.action_confidence ?? 0) >= 0.85 && !segment.is_teacher_modified);
+    const before = candidates.map(snapshotSegmentOverride);
+    const after = candidates.map(segment => ({
+      ...snapshotSegmentOverride(segment),
+      teacher_action: segment.action,
+      teacher_note: "Auto-accepted (high confidence)",
+      is_teacher_modified: true,
+    }));
+
     const count = await acceptAllHighConfidence(0.85);
     if (count && count > 0) {
+      pushHistory({
+        id: createHistoryId(),
+        kind: "bulk_segment_override",
+        label: `Auto-accept ${count} segments`,
+        before,
+        after,
+      });
       setCompletedWorkflowSteps(prev => new Set(prev).add("clean"));
+      await refreshEditWarnings();
       alert(`Auto-accepted ${count} high-confidence segments`);
     } else {
       alert("No segments to auto-accept (all already reviewed or below threshold)");
     }
-  }, [acceptAllHighConfidence]);
+  }, [acceptAllHighConfidence, pushHistory, refreshEditWarnings, segments]);
 
   const handleApprove = useCallback(async () => {
     setApproving(true);
@@ -208,7 +350,86 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
     if (previousStep) setActiveWorkflowStep(previousStep.id);
   }, [activeWorkflowStep]);
 
+  const applyHistoryEntry = useCallback(async (
+    entry: EditHistoryEntry,
+    direction: HistoryDirection,
+  ): Promise<EditHistoryEntry> => {
+    if (entry.kind === "segment_override") {
+      await applySegmentSnapshot(direction === "undo" ? entry.before : entry.after);
+      await refreshEditWarnings();
+      return entry;
+    }
+
+    if (entry.kind === "bulk_segment_override") {
+      await applySegmentSnapshots(direction === "undo" ? entry.before : entry.after);
+      await refreshEditWarnings();
+      return entry;
+    }
+
+    if (entry.kind === "transcript_cut_create") {
+      if (direction === "undo") {
+        await api.deleteTranscriptCutDecision(videoId, entry.decision.id);
+        setTranscriptCuts(prev => prev.filter(decision => decision.id !== entry.decision.id));
+        await refreshEditPlan();
+        return entry;
+      }
+
+      const decision = await api.createTranscriptCutDecision(videoId, entry.request);
+      setTranscriptCuts(prev => [...prev, decision]);
+      await refreshEditPlan();
+      return { ...entry, decision };
+    }
+
+    if (direction === "undo") {
+      const decision = await api.createTranscriptCutDecision(videoId, entry.request);
+      setTranscriptCuts(prev => [...prev, decision]);
+      await refreshEditPlan();
+      return { ...entry, decision };
+    }
+
+    await api.deleteTranscriptCutDecision(videoId, entry.decision.id);
+    setTranscriptCuts(prev => prev.filter(decision => decision.id !== entry.decision.id));
+    await refreshEditPlan();
+    return entry;
+  }, [applySegmentSnapshot, applySegmentSnapshots, refreshEditPlan, refreshEditWarnings, videoId]);
+
+  const handleUndo = useCallback(async () => {
+    const entry = undoStack[undoStack.length - 1];
+    if (!entry || historyBusy) return;
+
+    setHistoryBusy(true);
+    try {
+      const updatedEntry = await applyHistoryEntry(entry, "undo");
+      setUndoStack(prev => prev.slice(0, -1));
+      setRedoStack(prev => [...prev, updatedEntry].slice(-50));
+    } catch (error) {
+      alert(`Undo failed: ${error}`);
+    } finally {
+      setHistoryBusy(false);
+    }
+  }, [applyHistoryEntry, historyBusy, undoStack]);
+
+  const handleRedo = useCallback(async () => {
+    const entry = redoStack[redoStack.length - 1];
+    if (!entry || historyBusy) return;
+
+    setHistoryBusy(true);
+    try {
+      const updatedEntry = await applyHistoryEntry(entry, "redo");
+      setRedoStack(prev => prev.slice(0, -1));
+      setUndoStack(prev => [...prev, updatedEntry].slice(-50));
+    } catch (error) {
+      alert(`Redo failed: ${error}`);
+    } finally {
+      setHistoryBusy(false);
+    }
+  }, [applyHistoryEntry, historyBusy, redoStack]);
+
   const effectiveDuration = duration || plan?.original_duration || 0;
+  const nextUndoEntry = undoStack[undoStack.length - 1] ?? null;
+  const nextRedoEntry = redoStack[redoStack.length - 1] ?? null;
+  const canUndo = Boolean(nextUndoEntry) && !historyBusy;
+  const canRedo = Boolean(nextRedoEntry) && !historyBusy;
 
   const editorCommands = useMemo<CommandPaletteCommand[]>(() => [
     {
@@ -267,24 +488,24 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
     },
     {
       id: "undo",
-      label: "Undo",
+      label: nextUndoEntry ? `Undo ${nextUndoEntry.label}` : "Undo",
       category: "Editing",
       bindings: [{ key: "z", label: "Ctrl+Z", ctrlOrMeta: true }],
-      disabledReason: "Undo history arrives in Phase 5",
+      disabledReason: canUndo ? undefined : historyBusy ? "Applying edit history" : "Nothing to undo",
       icon: Undo2,
-      run: () => {},
+      run: handleUndo,
     },
     {
       id: "redo",
-      label: "Redo",
+      label: nextRedoEntry ? `Redo ${nextRedoEntry.label}` : "Redo",
       category: "Editing",
       bindings: [
         { key: "z", label: "Ctrl+Shift+Z", ctrlOrMeta: true, shift: true },
         { key: "y", label: "Ctrl+Y", ctrlOrMeta: true },
       ],
-      disabledReason: "Redo history arrives in Phase 5",
+      disabledReason: canRedo ? undefined : historyBusy ? "Applying edit history" : "Nothing to redo",
       icon: Redo2,
-      run: () => {},
+      run: handleRedo,
     },
     {
       id: "open-export",
@@ -304,9 +525,16 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
     },
   ], [
     currentTime,
+    canRedo,
+    canUndo,
     effectiveDuration,
     handleUpdateAction,
+    handleRedo,
+    handleUndo,
+    historyBusy,
     isPlaying,
+    nextRedoEntry,
+    nextUndoEntry,
     onOpenSettings,
     seekTo,
     selectedSegment,
@@ -417,6 +645,26 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
                 </span>
                 <button
                   type="button"
+                  onClick={handleUndo}
+                  disabled={!canUndo}
+                  className="flex h-7 w-7 items-center justify-center rounded-md bg-surface-overlay text-gray-300 transition-colors hover:bg-surface-border disabled:cursor-not-allowed disabled:opacity-40"
+                  aria-label={nextUndoEntry ? `Undo ${nextUndoEntry.label}` : "Undo"}
+                  title={nextUndoEntry ? `Undo ${nextUndoEntry.label} (Ctrl+Z)` : "Nothing to undo"}
+                >
+                  <Undo2 className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRedo}
+                  disabled={!canRedo}
+                  className="flex h-7 w-7 items-center justify-center rounded-md bg-surface-overlay text-gray-300 transition-colors hover:bg-surface-border disabled:cursor-not-allowed disabled:opacity-40"
+                  aria-label={nextRedoEntry ? `Redo ${nextRedoEntry.label}` : "Redo"}
+                  title={nextRedoEntry ? `Redo ${nextRedoEntry.label} (Ctrl+Shift+Z)` : "Nothing to redo"}
+                >
+                  <Redo2 className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
                   onClick={() => setCommandPaletteOpen(true)}
                   className="flex h-7 w-7 items-center justify-center rounded-md bg-surface-overlay text-gray-300 transition-colors hover:bg-surface-border"
                   aria-label="Open command palette"
@@ -517,7 +765,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
             />
             <div className="mt-2 flex items-center justify-between text-xs text-gray-500">
               <span>{segments.length} transcript segments</span>
-              <span>Ctrl+K commands, Space play/pause, J/L seek, X cut selected</span>
+              <span>Ctrl+K commands, Ctrl+Z undo, Ctrl+Shift+Z redo, X cut selected</span>
             </div>
           </div>
         </footer>
@@ -596,6 +844,28 @@ function PreviewMetric({
       </div>
       <div className={`truncate text-sm font-semibold ${toneClass}`}>{value}</div>
     </div>
+  );
+}
+
+function createHistoryId(): string {
+  return `history-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function snapshotSegmentOverride(segment: Segment): SegmentOverrideSnapshot {
+  return {
+    segment_id: segment.id,
+    segment_index: segment.segment_index,
+    teacher_action: segment.teacher_action,
+    teacher_note: segment.teacher_note,
+    is_teacher_modified: segment.is_teacher_modified,
+  };
+}
+
+function sameSegmentOverrideSnapshot(a: SegmentOverrideSnapshot, b: SegmentOverrideSnapshot): boolean {
+  return (
+    a.teacher_action === b.teacher_action &&
+    a.teacher_note === b.teacher_note &&
+    a.is_teacher_modified === b.is_teacher_modified
   );
 }
 

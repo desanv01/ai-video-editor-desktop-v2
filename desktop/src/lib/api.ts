@@ -221,12 +221,17 @@ export async function getSegments(videoId: string): Promise<Segment[]> {
 export async function updateSegment(
   videoId: string,
   segmentId: string,
-  action: SegmentAction,
-  note?: string,
+  action: SegmentAction | null,
+  note?: string | null,
+  isTeacherModified?: boolean,
 ): Promise<void> {
   await request(`/videos/${videoId}/segments/${segmentId}`, {
     method: "PUT",
-    body: JSON.stringify({ teacher_action: action, teacher_note: note || null }),
+    body: JSON.stringify({
+      teacher_action: action,
+      teacher_note: note || null,
+      is_teacher_modified: isTeacherModified,
+    }),
   });
 }
 
