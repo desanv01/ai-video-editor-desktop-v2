@@ -109,7 +109,11 @@ export default function App() {
           />
         )}
         {view === "review" && videoId && (
-          <ReviewEditor videoId={videoId} videoFilename={videoFilename} />
+          <ReviewEditor
+            videoId={videoId}
+            videoFilename={videoFilename}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
         )}
       </main>
 

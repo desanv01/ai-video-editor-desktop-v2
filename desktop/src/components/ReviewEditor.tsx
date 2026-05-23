@@ -1,7 +1,9 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useSegments, usePlaybackSync } from "../hooks/useApi";
+import { useCommandShortcuts } from "../hooks/useCommandShortcuts";
 import { Timeline } from "./Timeline";
 import { TranscriptPanel } from "./TranscriptPanel";
+import { CommandPalette, type CommandPaletteCommand } from "./CommandPalette";
 import {
   GUIDED_WORKFLOW_STEPS,
   GuidedWorkflowPanel,
@@ -15,29 +17,40 @@ import {
   AlertTriangle,
   CheckSquare,
   Clock3,
+  Download,
   FileText,
   FolderOpen,
+  Keyboard,
   Layers,
   Loader2,
   MonitorPlay,
+  Pause,
   Play,
   RadioTower,
+  Redo2,
+  Scissors,
+  Settings,
+  SkipBack,
+  SkipForward,
+  Undo2,
 } from "lucide-react";
 
 interface Props {
   videoId: string;
   videoFilename?: string;
+  onOpenSettings: () => void;
 }
 
 type LeftPanelTab = "transcript" | "assets";
 
-export function ReviewEditor({ videoId, videoFilename }: Props) {
+export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) {
   const { segments, loading, updateAction, acceptAllHighConfidence } = useSegments(videoId);
-  const { currentTime, setCurrentTime, videoRef, seekTo, togglePlay } = usePlaybackSync();
+  const { currentTime, setCurrentTime, isPlaying, setIsPlaying, videoRef, seekTo, togglePlay } = usePlaybackSync();
   const [selectedSegment, setSelectedSegment] = useState<Segment | null>(null);
   const [activeWorkflowStep, setActiveWorkflowStep] = useState<GuidedWorkflowStepId>("transcribe");
   const [completedWorkflowSteps, setCompletedWorkflowSteps] = useState<Set<GuidedWorkflowStepId>>(() => new Set());
   const [leftPanelTab, setLeftPanelTab] = useState<LeftPanelTab>("transcript");
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [plan, setPlan] = useState<EditPlan | null>(null);
   const [warnings, setWarnings] = useState<RevalidationResult | null>(null);
   const [chapters, setChapters] = useState<Chapter[]>([]);
@@ -144,20 +157,117 @@ export function ReviewEditor({ videoId, videoFilename }: Props) {
     if (previousStep) setActiveWorkflowStep(previousStep.id);
   }, [activeWorkflowStep]);
 
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
+  const effectiveDuration = duration || plan?.original_duration || 0;
 
-      switch (e.key) {
-        case " ": e.preventDefault(); togglePlay(); break;
-        case "j": seekTo(Math.max(0, currentTime - 5)); break;
-        case "l": seekTo(currentTime + 5); break;
-        case "k": togglePlay(); break;
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [togglePlay, seekTo, currentTime]);
+  const editorCommands = useMemo<CommandPaletteCommand[]>(() => [
+    {
+      id: "open-command-palette",
+      label: "Open command palette",
+      category: "Workspace",
+      bindings: [{ key: "k", label: "Ctrl+K", ctrlOrMeta: true }],
+      icon: Keyboard,
+      run: () => setCommandPaletteOpen(true),
+    },
+    {
+      id: "play-pause",
+      label: isPlaying ? "Pause preview" : "Play preview",
+      category: "Playback",
+      bindings: [
+        { key: " ", label: "Space" },
+        { key: "k", label: "K" },
+      ],
+      icon: isPlaying ? Pause : Play,
+      run: togglePlay,
+    },
+    {
+      id: "seek-backward",
+      label: "Seek backward 5 seconds",
+      category: "Playback",
+      bindings: [
+        { key: "j", label: "J" },
+        { key: "ArrowLeft", label: "Left" },
+      ],
+      icon: SkipBack,
+      run: () => seekTo(Math.max(0, currentTime - 5)),
+    },
+    {
+      id: "seek-forward",
+      label: "Seek forward 5 seconds",
+      category: "Playback",
+      bindings: [
+        { key: "l", label: "L" },
+        { key: "ArrowRight", label: "Right" },
+      ],
+      icon: SkipForward,
+      run: () => seekTo(effectiveDuration > 0 ? Math.min(effectiveDuration, currentTime + 5) : currentTime + 5),
+    },
+    {
+      id: "cut-selection",
+      label: "Cut selected segment",
+      category: "Editing",
+      bindings: [{ key: "x", label: "X" }],
+      disabledReason: selectedSegment ? undefined : "Select a transcript or timeline segment first",
+      icon: Scissors,
+      run: async () => {
+        if (!selectedSegment) return;
+        await handleUpdateAction(selectedSegment.id, "cut", "Marked for cut via shortcut");
+        setActiveWorkflowStep("clean");
+      },
+    },
+    {
+      id: "undo",
+      label: "Undo",
+      category: "Editing",
+      bindings: [{ key: "z", label: "Ctrl+Z", ctrlOrMeta: true }],
+      disabledReason: "Undo history arrives in Phase 5",
+      icon: Undo2,
+      run: () => {},
+    },
+    {
+      id: "redo",
+      label: "Redo",
+      category: "Editing",
+      bindings: [
+        { key: "z", label: "Ctrl+Shift+Z", ctrlOrMeta: true, shift: true },
+        { key: "y", label: "Ctrl+Y", ctrlOrMeta: true },
+      ],
+      disabledReason: "Redo history arrives in Phase 5",
+      icon: Redo2,
+      run: () => {},
+    },
+    {
+      id: "open-export",
+      label: "Open export step",
+      category: "Navigation",
+      bindings: [{ key: "e", label: "Ctrl+E", ctrlOrMeta: true }],
+      icon: Download,
+      run: () => setActiveWorkflowStep("export"),
+    },
+    {
+      id: "open-settings",
+      label: "Open settings",
+      category: "Workspace",
+      bindings: [{ key: ",", label: "Ctrl+,", ctrlOrMeta: true }],
+      icon: Settings,
+      run: onOpenSettings,
+    },
+  ], [
+    currentTime,
+    effectiveDuration,
+    handleUpdateAction,
+    isPlaying,
+    onOpenSettings,
+    seekTo,
+    selectedSegment,
+    togglePlay,
+  ]);
+
+  useCommandShortcuts(editorCommands);
+
+  const paletteCommands = useMemo(
+    () => editorCommands.filter((command) => command.id !== "open-command-palette"),
+    [editorCommands],
+  );
 
   if (loading && segments.length === 0) {
     return (
@@ -167,7 +277,6 @@ export function ReviewEditor({ videoId, videoFilename }: Props) {
     );
   }
 
-  const effectiveDuration = duration || plan?.original_duration || 0;
   const activeWorkflowLabel = GUIDED_WORKFLOW_STEPS.find((step) => step.id === activeWorkflowStep)?.label ?? "Editor";
   const reviewedSegments = segments.filter((segment) => segment.is_teacher_modified).length;
   const warningCount = (warnings?.warnings.length ?? 0) + (warnings?.consequence_alerts.length ?? 0);
@@ -252,11 +361,20 @@ export function ReviewEditor({ videoId, videoFilename }: Props) {
                 </span>
                 <button
                   type="button"
+                  onClick={() => setCommandPaletteOpen(true)}
+                  className="flex h-7 w-7 items-center justify-center rounded-md bg-surface-overlay text-gray-300 transition-colors hover:bg-surface-border"
+                  aria-label="Open command palette"
+                  title="Open command palette (Ctrl+K)"
+                >
+                  <Keyboard className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
                   onClick={togglePlay}
                   className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-accent-hover"
                 >
-                  <Play className="h-3.5 w-3.5" />
-                  Play
+                  {isPlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+                  {isPlaying ? "Pause" : "Play"}
                 </button>
               </div>
             </div>
@@ -271,6 +389,8 @@ export function ReviewEditor({ videoId, videoFilename }: Props) {
                 className="max-h-full max-w-full bg-black shadow-2xl"
                 onTimeUpdate={handleTimeUpdate}
                 onLoadedMetadata={handleLoadedMetadata}
+                onPlay={() => setIsPlaying(true)}
+                onPause={() => setIsPlaying(false)}
                 onClick={togglePlay}
               />
             </div>
@@ -341,11 +461,16 @@ export function ReviewEditor({ videoId, videoFilename }: Props) {
             />
             <div className="mt-2 flex items-center justify-between text-xs text-gray-500">
               <span>{segments.length} transcript segments</span>
-              <span>Keyboard: Space play/pause, J back 5s, K play/pause, L forward 5s</span>
+              <span>Ctrl+K commands, Space play/pause, J/L seek, X cut selected</span>
             </div>
           </div>
         </footer>
       </div>
+      <CommandPalette
+        isOpen={commandPaletteOpen}
+        commands={paletteCommands}
+        onClose={() => setCommandPaletteOpen(false)}
+      />
     </div>
   );
 }
