@@ -88,8 +88,122 @@ class TopicSegmentationTests(unittest.TestCase):
         self.assertIn("Matrix", result["sections"][0]["label"])
         self.assertIn("Docker", result["sections"][1]["label"])
 
+    def test_slide_changes_and_slide_titles_drive_section_boundaries(self):
+        result = analyze_topic_sections(
+            segments=[
+                _segment(
+                    0,
+                    0.0,
+                    20.0,
+                    topic=None,
+                    text="We start with course goals and learning outcomes",
+                    slide_index=1,
+                    slide_change=True,
+                ),
+                _segment(
+                    1,
+                    20.0,
+                    38.0,
+                    topic=None,
+                    text="Assessment rubrics and course expectations",
+                    slide_index=1,
+                ),
+                _segment(
+                    2,
+                    44.0,
+                    70.0,
+                    topic=None,
+                    text="Now the learning rate updates parameters with a loss function",
+                    slide_index=2,
+                    slide_change=True,
+                ),
+                _segment(
+                    3,
+                    82.0,
+                    108.0,
+                    topic=None,
+                    text="Deployment packages containers and releases the model",
+                    slide_index=3,
+                    slide_change=True,
+                ),
+            ],
+            structure_references=[
+                {
+                    "asset_id": "deck-1",
+                    "source_filename": "week-1.pptx",
+                    "reference_role": "slide_sequence",
+                    "document_format": "pptx",
+                    "items": [
+                        {"index": 1, "title": "Course Goals", "text": "Course goals learning outcomes"},
+                        {"index": 2, "title": "Gradient Descent", "text": "Learning rate loss function parameters"},
+                        {"index": 3, "title": "Model Deployment", "text": "Containers release production model"},
+                    ],
+                }
+            ],
+            duration_seconds=110.0,
+        )
 
-def _segment(index, start, end, *, topic, text, pause=0.0, action="keep"):
+        self.assertEqual(result["summary"]["sections_total"], 3)
+        self.assertEqual(result["summary"]["structure_reference_count"], 1)
+        self.assertEqual(
+            [section["label"] for section in result["sections"]],
+            ["Course Goals", "Gradient Descent", "Model Deployment"],
+        )
+        self.assertTrue(result["sections"][1]["source_signals"]["slide_change"])
+        self.assertTrue(result["sections"][1]["source_signals"]["structure_title_change"])
+        self.assertEqual(result["sections"][1]["label_source"], "teaching_material")
+        self.assertEqual(result["sections"][1]["structure_reference"]["source_filename"], "week-1.pptx")
+        self.assertIn("00:44 Gradient Descent", result["youtube_format"])
+
+    def test_pdf_page_titles_improve_labels_without_topic_labels(self):
+        result = analyze_topic_sections(
+            segments=[
+                _segment(0, 0.0, 34.0, topic=None, text="generic transcript about setup"),
+                _segment(
+                    1,
+                    40.0,
+                    76.0,
+                    topic=None,
+                    text="Next we discuss optimization objectives and constraints",
+                    pause=3.0,
+                ),
+            ],
+            structure_references=[
+                {
+                    "asset_id": "notes-1",
+                    "source_filename": "lecture-notes.pdf",
+                    "reference_role": "pdf_notes",
+                    "document_format": "pdf",
+                    "items": [
+                        {"index": 1, "title": "Course Setup", "text": "setup introduction"},
+                        {
+                            "index": 2,
+                            "title": "Optimization Objectives",
+                            "text": "optimization objectives constraints",
+                        },
+                    ],
+                }
+            ],
+            duration_seconds=80.0,
+        )
+
+        self.assertEqual(result["summary"]["sections_total"], 2)
+        self.assertEqual(result["sections"][1]["label"], "Optimization Objectives")
+        self.assertEqual(result["sections"][1]["structure_reference"]["reference_role"], "pdf_notes")
+
+
+def _segment(
+    index,
+    start,
+    end,
+    *,
+    topic,
+    text,
+    pause=0.0,
+    action="keep",
+    slide_index=None,
+    slide_change=False,
+):
     return SimpleNamespace(
         id=f"seg-{index}",
         segment_index=index,
@@ -100,6 +214,8 @@ def _segment(index, start, end, *, topic, text, pause=0.0, action="keep"):
         topic_label=topic,
         summary=None,
         pause_duration_total=pause,
+        slide_index=slide_index,
+        has_slide_change=slide_change,
         action=action,
         teacher_action=None,
         is_teacher_modified=False,

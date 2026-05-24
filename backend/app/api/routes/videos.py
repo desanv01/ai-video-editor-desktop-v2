@@ -38,6 +38,7 @@ from models.schemas import (
 from agents.orchestrator import run_processing_pipeline, run_render_pipeline
 from agents.edit_planner import revalidate_edit_plan
 from services.ffmpeg import ffmpeg_service
+from services.lecture_structure import build_structure_references_from_assets
 from services.renderer import generate_quality_report
 from services.text_extraction import text_extractor
 from services.transcript_timeline import build_transcript_timeline
@@ -688,12 +689,16 @@ async def get_chapters(video_id: str, db: AsyncSession = Depends(get_db)):
     Get auto-generated chapter and section markers for the video.
 
     Chapters are generated from transcript content shifts, topic transitions,
-    and pauses in kept/highlighted segments.
+    pauses, slide changes, and uploaded slide/PDF title cues.
     Format compatible with YouTube chapter markers.
     """
     result = await db.execute(
         select(Video)
-        .options(selectinload(Video.transcript), selectinload(Video.segments))
+        .options(
+            selectinload(Video.transcript),
+            selectinload(Video.segments),
+            selectinload(Video.project).selectinload(Project.assets),
+        )
         .where(Video.id == video_id)
     )
     video = result.scalar_one_or_none()
@@ -717,6 +722,9 @@ async def get_chapters(video_id: str, db: AsyncSession = Depends(get_db)):
         segments=video.segments,
         timeline_words=timeline_words,
         duration_seconds=video.duration_seconds,
+        structure_references=build_structure_references_from_assets(
+            video.project.assets if video.project else []
+        ),
     )
     return {
         "video_id": video_id,
