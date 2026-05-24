@@ -254,6 +254,14 @@ class TranscriptCutDecisionRequest(BaseModel):
     teacher_note: Optional[str] = Field(default=None, max_length=500)
 
 
+class TranscriptCutTrimUpdateRequest(BaseModel):
+    start_time: Optional[float] = Field(default=None, ge=0)
+    end_time: Optional[float] = Field(default=None, ge=0)
+    pre_roll_seconds: Optional[float] = Field(default=None, ge=0, le=5)
+    post_roll_seconds: Optional[float] = Field(default=None, ge=0, le=5)
+    teacher_note: Optional[str] = Field(default=None, max_length=500)
+
+
 class TranscriptCutDecisionResponse(BaseModel):
     id: str
     kind: str = "transcript_cut"
@@ -261,15 +269,21 @@ class TranscriptCutDecisionResponse(BaseModel):
     source: str = "manual_text_selection"
     status: str = "active"
     text: str
+    word_start_time: Optional[float] = None
+    word_end_time: Optional[float] = None
     start_time: float
     end_time: float
     duration: float
+    pre_roll_seconds: float = 0.0
+    post_roll_seconds: float = 0.0
+    trim_source: str = "word_bounds"
     word_start_index: int
     word_end_index: int
     segment_ids: List[str] = Field(default_factory=list)
     segment_indexes: List[int] = Field(default_factory=list)
     teacher_note: Optional[str] = None
     created_at: str
+    updated_at: Optional[str] = None
 
 
 class TranscriptCutIntervalResponse(BaseModel):

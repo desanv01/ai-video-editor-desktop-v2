@@ -11,7 +11,7 @@ import type {
   RevalidationResult, SegmentAction, BackendAISettings,
   BackendAISettingsUpdate,
   TranscriptTimeline,
-  TranscriptCutDecision, TranscriptCutDecisionRequest,
+  TranscriptCutDecision, TranscriptCutDecisionRequest, TranscriptCutTrimUpdateRequest,
   EditDecisionSync,
   LocalTranscriptionModelCatalog, LocalTranscriptionModelDownload,
   LocalTranscriptionModelRemoveResult,
@@ -208,6 +208,17 @@ export async function createTranscriptCutDecision(
 export async function deleteTranscriptCutDecision(videoId: string, decisionId: string): Promise<void> {
   await request(`/videos/${videoId}/transcript/cuts/${decisionId}`, {
     method: "DELETE",
+  });
+}
+
+export async function updateTranscriptCutTrim(
+  videoId: string,
+  decisionId: string,
+  payload: TranscriptCutTrimUpdateRequest,
+): Promise<TranscriptCutDecision> {
+  return request(`/videos/${videoId}/transcript/cuts/${decisionId}/trim`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
   });
 }
 

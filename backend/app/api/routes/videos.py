@@ -26,7 +26,7 @@ from models.schemas import (
     VideoUploadResponse, VideoResponse, VideoDetailResponse,
     SegmentResponse, SegmentUpdateRequest, BulkSegmentUpdateRequest,
     EditDecisionSyncResponse,
-    TranscriptCutDecisionRequest, TranscriptCutDecisionResponse,
+    TranscriptCutDecisionRequest, TranscriptCutDecisionResponse, TranscriptCutTrimUpdateRequest,
     TranscriptTimelineResponse,
     EditPlanResponse, EditPlanApproveRequest,
     CourseMaterialUploadResponse, CourseMaterialResponse,
@@ -44,6 +44,7 @@ from services.transcript_edit_decisions import (
     create_transcript_cut_decision,
     list_transcript_cut_decisions,
     remove_transcript_cut_decision,
+    update_transcript_cut_trim,
 )
 from services.progress import get_progress as get_pipeline_progress
 from services.app_settings import (
@@ -388,6 +389,45 @@ async def delete_transcript_cut(
 
     await db.commit()
     return {"status": "removed", "decision_id": decision_id}
+
+
+@router.put(
+    "/videos/{video_id}/transcript/cuts/{decision_id}/trim",
+    response_model=TranscriptCutDecisionResponse,
+    tags=["Transcript"],
+)
+async def update_transcript_cut_trim_settings(
+    video_id: str,
+    decision_id: str,
+    request: TranscriptCutTrimUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Adjust exact trim timing and pre/post-roll tolerance for a transcript cut."""
+    result = await db.execute(
+        select(EditPlan).where(EditPlan.video_id == video_id)
+    )
+    plan = result.scalar_one_or_none()
+    if not plan:
+        raise HTTPException(404, "Edit plan not found")
+
+    try:
+        decision = update_transcript_cut_trim(
+            plan=plan,
+            decision_id=decision_id,
+            start_time=request.start_time,
+            end_time=request.end_time,
+            pre_roll_seconds=request.pre_roll_seconds,
+            post_roll_seconds=request.post_roll_seconds,
+            teacher_note=request.teacher_note,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        if "not found" in message:
+            raise HTTPException(404, message) from exc
+        raise HTTPException(400, message) from exc
+
+    await db.commit()
+    return decision
 
 
 @router.get(

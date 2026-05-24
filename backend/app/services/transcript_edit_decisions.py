@@ -8,6 +8,7 @@ from typing import Any, Iterable, Optional
 
 
 TRANSCRIPT_DECISION_SCHEMA_VERSION = "phase5.transcript-decisions.v1"
+MAX_TRIM_TOLERANCE_SECONDS = 5.0
 
 
 def list_transcript_cut_decisions(plan: Any) -> list[dict[str, Any]]:
@@ -204,9 +205,14 @@ def create_transcript_cut_decision(
         "source": "manual_text_selection",
         "status": "active",
         "text": text,
+        "word_start_time": round(start_time, 3),
+        "word_end_time": round(end_time, 3),
         "start_time": round(start_time, 3),
         "end_time": round(end_time, 3),
         "duration": round(max(0.0, end_time - start_time), 3),
+        "pre_roll_seconds": 0.0,
+        "post_roll_seconds": 0.0,
+        "trim_source": "word_bounds",
         "word_start_index": word_start_index,
         "word_end_index": word_end_index,
         "segment_ids": segment_ids,
@@ -217,6 +223,65 @@ def create_transcript_cut_decision(
 
     payload = normalize_plan_payload(plan.plan_json)
     payload.setdefault("edit_decisions", []).append(decision)
+    _refresh_transcript_cut_summary(payload, plan)
+    plan.plan_json = payload
+    return decision
+
+
+def update_transcript_cut_trim(
+    *,
+    plan: Any,
+    decision_id: str,
+    start_time: Optional[float] = None,
+    end_time: Optional[float] = None,
+    pre_roll_seconds: Optional[float] = None,
+    post_roll_seconds: Optional[float] = None,
+    teacher_note: Optional[str] = None,
+) -> dict[str, Any]:
+    """Update effective trim timing for an active transcript cut decision."""
+    payload = normalize_plan_payload(plan.plan_json)
+    decision = _find_active_transcript_cut(payload, decision_id)
+    if not decision:
+        raise ValueError("Transcript cut decision not found")
+
+    word_start_time = _float_value(decision.get("word_start_time", decision.get("start_time")))
+    word_end_time = _float_value(decision.get("word_end_time", decision.get("end_time")))
+    next_pre_roll = _coerce_trim_tolerance(
+        decision.get("pre_roll_seconds", 0.0) if pre_roll_seconds is None else pre_roll_seconds,
+        "pre-roll",
+    )
+    next_post_roll = _coerce_trim_tolerance(
+        decision.get("post_roll_seconds", 0.0) if post_roll_seconds is None else post_roll_seconds,
+        "post-roll",
+    )
+
+    if start_time is None:
+        next_start_time = max(0.0, word_start_time - next_pre_roll)
+    else:
+        next_start_time = _coerce_timeline_time(start_time, "Cut start")
+
+    if end_time is None:
+        next_end_time = word_end_time + next_post_roll
+    else:
+        next_end_time = _coerce_timeline_time(end_time, "Cut end")
+
+    if next_end_time <= next_start_time:
+        raise ValueError("Cut end time must be after cut start time")
+
+    decision.update({
+        "word_start_time": round(word_start_time, 3),
+        "word_end_time": round(word_end_time, 3),
+        "start_time": round(next_start_time, 3),
+        "end_time": round(next_end_time, 3),
+        "duration": round(next_end_time - next_start_time, 3),
+        "pre_roll_seconds": round(next_pre_roll, 3),
+        "post_roll_seconds": round(next_post_roll, 3),
+        "trim_source": "manual_trim",
+        "updated_at": _utc_now(),
+    })
+    if teacher_note is not None:
+        decision["teacher_note"] = teacher_note
+
     _refresh_transcript_cut_summary(payload, plan)
     plan.plan_json = payload
     return decision
@@ -317,6 +382,34 @@ def _float_value(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _find_active_transcript_cut(payload: dict[str, Any], decision_id: str) -> Optional[dict[str, Any]]:
+    for decision in payload.get("edit_decisions", []):
+        if (
+            decision.get("id") == decision_id
+            and decision.get("kind") == "transcript_cut"
+            and decision.get("status") == "active"
+        ):
+            return decision
+    return None
+
+
+def _coerce_timeline_time(value: Any, label: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a number") from exc
+    if parsed < 0:
+        raise ValueError(f"{label} cannot be negative")
+    return parsed
+
+
+def _coerce_trim_tolerance(value: Any, label: str) -> float:
+    parsed = _coerce_timeline_time(value, label)
+    if parsed > MAX_TRIM_TOLERANCE_SECONDS:
+        raise ValueError(f"{label} cannot exceed {MAX_TRIM_TOLERANCE_SECONDS:.1f} seconds")
+    return parsed
 
 
 def _min_optional(left: Any, right: Any) -> Any:
