@@ -261,7 +261,7 @@ export function GuidedWorkflowPanel({
       await onCleanApplied();
       onCompleteStep("clean");
       setCleanMessage(
-        `Applied ${result.created_transcript_cuts.length} filler cuts and ${result.updated_segments.length} segment edits`,
+        `Applied ${result.created_transcript_cuts.length} transcript cuts and ${result.updated_segments.length} segment edits`,
       );
     } catch (error) {
       setCleanMessage(`Auto-clean failed: ${error}`);
@@ -339,10 +339,11 @@ export function GuidedWorkflowPanel({
                   </button>
                 </div>
                 {cleanPreview && (
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-2 gap-2">
                     <MiniMetric label="Fillers" value={String(cleanPreview.summary.filler_word_count)} />
                     <MiniMetric label="Dead air" value={String(cleanPreview.summary.dead_air_count)} />
                     <MiniMetric label="Bad takes" value={String(cleanPreview.summary.bad_take_count)} />
+                    <MiniMetric label="Repetition" value={String(cleanPreview.summary.repetition_suggestion_count ?? 0)} />
                   </div>
                 )}
                 {cleanMessage && <p className="text-xs leading-5 text-gray-400">{cleanMessage}</p>}

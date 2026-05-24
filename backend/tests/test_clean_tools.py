@@ -100,6 +100,121 @@ class CleanToolsTests(unittest.TestCase):
         self.assertEqual(list_transcript_cut_decisions(plan)[0]["source"], "auto_clean_filler_word")
         self.assertLess(plan.estimated_duration, 12.0)
 
+    def test_detects_false_starts_restarted_sentences_and_repeated_phrases(self):
+        result = analyze_clean_suggestions(
+            segments=[],
+            timeline_words=[
+                _word(0, "we", 0.0, 0.2, "seg-1", 0),
+                _word(1, "can", 0.2, 0.4, "seg-1", 0),
+                _word(2, "we", 0.5, 0.7, "seg-1", 0),
+                _word(3, "can", 0.7, 0.9, "seg-1", 0),
+                _word(4, "solve", 0.9, 1.2, "seg-1", 0),
+                _word(5, "local", 1.5, 1.7, "seg-1", 0),
+                _word(6, "search", 1.7, 1.9, "seg-1", 0),
+                _word(7, "local", 2.0, 2.2, "seg-1", 0),
+                _word(8, "search", 2.2, 2.4, "seg-1", 0),
+                _word(9, "the", 3.0, 3.1, "seg-2", 1),
+                _word(10, "gradient", 3.1, 3.4, "seg-2", 1),
+                _word(11, "points", 3.4, 3.7, "seg-2", 1),
+                _word(12, "toward", 3.7, 4.0, "seg-2", 1),
+                _word(13, "minimum", 4.0, 4.4, "seg-2", 1),
+                _word(14, "the", 4.6, 4.7, "seg-2", 1),
+                _word(15, "gradient", 4.7, 5.0, "seg-2", 1),
+                _word(16, "points", 5.0, 5.3, "seg-2", 1),
+                _word(17, "toward", 5.3, 5.6, "seg-2", 1),
+                _word(18, "minimum", 5.6, 6.0, "seg-2", 1),
+            ],
+            plan=_plan(),
+            profile_id="conservative",
+        )
+
+        self.assertEqual(result["summary"]["false_start_count"], 1)
+        self.assertEqual(result["summary"]["repeated_phrase_count"], 1)
+        self.assertEqual(result["summary"]["restarted_sentence_count"], 1)
+        self.assertEqual(result["summary"]["repetition_suggestion_count"], 3)
+        self.assertEqual(
+            {item["type"] for item in result["suggestions"]},
+            {"false_start", "repeated_phrase", "restarted_sentence"},
+        )
+
+    def test_detects_repeated_explanations_between_segments(self):
+        result = analyze_clean_suggestions(
+            segments=[
+                _segment(
+                    "seg-1",
+                    0,
+                    0.0,
+                    5.0,
+                    pause=0.1,
+                    importance=0.8,
+                    fluency=0.9,
+                    text="Gradient descent updates parameters using learning rate and loss function toward minimum",
+                ),
+                _segment(
+                    "seg-2",
+                    1,
+                    5.0,
+                    10.0,
+                    pause=0.1,
+                    importance=0.5,
+                    fluency=0.8,
+                    text="Gradient descent updates parameters using learning rate and loss function toward minimum again",
+                ),
+            ],
+            timeline_words=[],
+            plan=_plan(),
+            profile_id="conservative",
+        )
+
+        self.assertEqual(result["summary"]["repeated_explanation_count"], 1)
+        self.assertEqual(result["suggestions"][0]["type"], "repeated_explanation")
+        self.assertEqual(result["suggestions"][0]["segment_index"], 1)
+
+    def test_apply_repetition_suggestions_creates_reviewable_edit_suggestions(self):
+        plan = _plan(original_duration=10.0)
+        segments = [
+            _segment(
+                "seg-1",
+                0,
+                0.0,
+                5.0,
+                pause=0.1,
+                importance=0.8,
+                fluency=0.9,
+                text="Gradient descent updates parameters using learning rate and loss function toward minimum",
+            ),
+            _segment(
+                "seg-2",
+                1,
+                5.0,
+                10.0,
+                pause=0.1,
+                importance=0.5,
+                fluency=0.8,
+                text="Gradient descent updates parameters using learning rate and loss function toward minimum again",
+            ),
+        ]
+        words = [
+            _word(0, "we", 0.0, 0.2, "seg-1", 0),
+            _word(1, "can", 0.2, 0.4, "seg-1", 0),
+            _word(2, "we", 0.5, 0.7, "seg-1", 0),
+            _word(3, "can", 0.7, 0.9, "seg-1", 0),
+        ]
+
+        applied = apply_clean_suggestions(
+            plan=plan,
+            segments=segments,
+            timeline_words=words,
+            profile_id="conservative",
+        )
+
+        self.assertEqual(applied["summary"]["false_start_count"], 1)
+        self.assertEqual(applied["summary"]["repeated_explanation_count"], 1)
+        self.assertEqual(len(applied["created_transcript_cuts"]), 1)
+        self.assertEqual(applied["created_transcript_cuts"][0]["source"], "auto_clean_false_start")
+        self.assertEqual(len(applied["updated_segments"]), 1)
+        self.assertEqual(segments[1].teacher_action, "cut")
+
 
 def _plan(original_duration=20.0):
     return SimpleNamespace(
@@ -137,6 +252,7 @@ def _segment(
     fluency,
     filler_count=0,
     segment_type="core_content",
+    text="sample lecture segment",
 ):
     return SimpleNamespace(
         id=segment_id,
@@ -144,7 +260,7 @@ def _segment(
         start_time=start,
         end_time=end,
         duration=end - start,
-        text="sample lecture segment",
+        text=text,
         segment_type=segment_type,
         importance_score=importance,
         fluency_score=fluency,

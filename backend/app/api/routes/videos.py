@@ -469,7 +469,7 @@ async def analyze_clean_tools(
     profile: str = "conservative",
     db: AsyncSession = Depends(get_db),
 ):
-    """Preview Clean step suggestions for filler removal, dead air, and bad takes."""
+    """Preview Clean step suggestions for filler removal, repetition, dead air, and bad takes."""
     result = await db.execute(
         select(Video)
         .options(selectinload(Video.transcript), selectinload(Video.segments), selectinload(Video.edit_plan))

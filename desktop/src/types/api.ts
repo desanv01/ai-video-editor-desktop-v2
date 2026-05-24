@@ -289,7 +289,9 @@ export interface EditDecisionSync {
 }
 
 export type CleanProfileId = "conservative" | "aggressive";
-export type CleanSuggestionType = "filler_word" | "dead_air" | "bad_take";
+export type CleanSuggestionType =
+  | "filler_word" | "dead_air" | "bad_take"
+  | "false_start" | "repeated_phrase" | "restarted_sentence" | "repeated_explanation";
 
 export interface CleanProfile {
   id: CleanProfileId | string;
@@ -302,6 +304,11 @@ export interface CleanSummary {
   filler_word_count: number;
   dead_air_count: number;
   bad_take_count: number;
+  false_start_count: number;
+  repeated_phrase_count: number;
+  restarted_sentence_count: number;
+  repeated_explanation_count: number;
+  repetition_suggestion_count: number;
   estimated_time_saved_seconds: number;
 }
 
@@ -322,6 +329,9 @@ export interface CleanSuggestion {
   target_action: SegmentAction | string;
   apply_kind: "transcript_cut" | "segment_override" | string;
   padding_seconds: number | null;
+  matched_text?: string | null;
+  duplicate_of_segment_id?: string | null;
+  duplicate_of_segment_index?: number | null;
 }
 
 export interface CleanAnalyzeResult {

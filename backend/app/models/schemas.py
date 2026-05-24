@@ -355,6 +355,9 @@ class CleanSuggestionResponse(BaseModel):
     target_action: str
     apply_kind: str
     padding_seconds: Optional[float] = None
+    matched_text: Optional[str] = None
+    duplicate_of_segment_id: Optional[str] = None
+    duplicate_of_segment_index: Optional[int] = None
 
 
 class CleanSummaryResponse(BaseModel):
@@ -362,6 +365,11 @@ class CleanSummaryResponse(BaseModel):
     filler_word_count: int = 0
     dead_air_count: int = 0
     bad_take_count: int = 0
+    false_start_count: int = 0
+    repeated_phrase_count: int = 0
+    restarted_sentence_count: int = 0
+    repeated_explanation_count: int = 0
+    repetition_suggestion_count: int = 0
     estimated_time_saved_seconds: float = 0.0
 
 
