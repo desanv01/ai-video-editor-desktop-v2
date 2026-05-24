@@ -452,6 +452,59 @@ export interface Chapter {
   formatted: string;
   label: string;
   segment_index: number;
+  duration?: number | null;
+  confidence?: number | null;
+  boundary_reason?: string | null;
+  keywords?: string[];
+  segment_count?: number | null;
+}
+
+export interface TopicSectionSignals {
+  topic_change: boolean;
+  long_pause: boolean;
+  content_shift: boolean;
+  transition_cue: boolean;
+  pause_seconds: number;
+  content_shift_score: number;
+}
+
+export interface LectureSection {
+  id: string;
+  chapter_index: number;
+  timestamp: number;
+  formatted: string;
+  label: string;
+  title: string;
+  summary: string;
+  start_time: number;
+  end_time: number;
+  duration: number;
+  segment_start_index: number;
+  segment_end_index: number;
+  segment_index: number;
+  segment_indexes: number[];
+  segment_count: number;
+  keywords: string[];
+  confidence: number;
+  boundary_reason: string;
+  source_signals: TopicSectionSignals;
+}
+
+export interface TopicSegmentationSummary {
+  sections_total: number;
+  chapters_total: number;
+  average_confidence: number;
+  estimated_total_duration_seconds: number;
+}
+
+export interface TopicSegmentationResult {
+  video_id: string;
+  schema_version: string;
+  summary: TopicSegmentationSummary;
+  sections: LectureSection[];
+  chapters: Chapter[];
+  chapters_count: number;
+  youtube_format: string;
 }
 
 // ── Revalidation ──

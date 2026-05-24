@@ -7,7 +7,7 @@
 
 import type {
   Video, VideoUploadResponse, Segment, EditPlan,
-  ProcessingStatus, QualityReport, Chapter,
+  ProcessingStatus, QualityReport,
   RevalidationResult, SegmentAction, BackendAISettings,
   BackendAISettingsUpdate,
   TranscriptTimeline,
@@ -19,6 +19,7 @@ import type {
   Project, ProjectAsset, ProjectAssetUploadResponse,
   ProjectAssetSyncUpdateRequest, ProjectAssetUploadType,
   ProjectCreateRequest, ProjectDetail, ProjectSourceSyncPlan,
+  TopicSegmentationResult,
 } from "../types/api";
 
 let BASE_URL = "http://localhost:8000/api/v1";
@@ -302,7 +303,7 @@ export async function revalidatePlan(videoId: string): Promise<RevalidationResul
   return request(`/videos/${videoId}/plan/revalidate`, { method: "POST" });
 }
 
-export async function getChapters(videoId: string): Promise<{ chapters: Chapter[]; youtube_format: string }> {
+export async function getChapters(videoId: string): Promise<TopicSegmentationResult> {
   return request(`/videos/${videoId}/chapters`);
 }
 
