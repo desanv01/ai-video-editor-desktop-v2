@@ -27,6 +27,7 @@ from models.schemas import (
     SegmentResponse, SegmentUpdateRequest, BulkSegmentUpdateRequest,
     EditDecisionSyncResponse,
     CleanAnalyzeResponse, CleanApplyRequest, CleanApplyResponse,
+    TopicSegmentationResponse,
     TranscriptCutDecisionRequest, TranscriptCutDecisionResponse, TranscriptCutTrimUpdateRequest,
     TranscriptTimelineResponse,
     EditPlanResponse, EditPlanApproveRequest,
@@ -48,6 +49,7 @@ from services.transcript_edit_decisions import (
     update_transcript_cut_trim,
 )
 from services.clean_tools import analyze_clean_suggestions, apply_clean_suggestions
+from services.topic_segmentation import analyze_topic_sections
 from services.progress import get_progress as get_pipeline_progress
 from services.app_settings import (
     get_or_create_ai_settings,
@@ -680,51 +682,46 @@ async def revalidate_plan(
     return result
 
 
-@router.get("/videos/{video_id}/chapters", tags=["Edit Plan"])
+@router.get("/videos/{video_id}/chapters", response_model=TopicSegmentationResponse, tags=["Edit Plan"])
 async def get_chapters(video_id: str, db: AsyncSession = Depends(get_db)):
     """
-    Get auto-generated chapter markers for the video.
+    Get auto-generated chapter and section markers for the video.
 
-    Chapters are generated from topic transitions in kept/highlighted segments.
+    Chapters are generated from transcript content shifts, topic transitions,
+    and pauses in kept/highlighted segments.
     Format compatible with YouTube chapter markers.
     """
     result = await db.execute(
-        select(Segment)
-        .where(Segment.video_id == video_id)
-        .order_by(Segment.segment_index)
+        select(Video)
+        .options(selectinload(Video.transcript), selectinload(Video.segments))
+        .where(Video.id == video_id)
     )
-    segments = list(result.scalars().all())
+    video = result.scalar_one_or_none()
 
-    if not segments:
+    if not video:
+        raise HTTPException(404, "Video not found")
+    if not video.segments:
         raise HTTPException(404, "No segments found")
 
-    # Generate chapters from non-cut segments
-    chapters = []
-    current_topic = None
-    for seg in segments:
-        action = seg.teacher_action if seg.is_teacher_modified else seg.action
-        if action == SegmentAction.CUT:
-            continue
+    timeline_words = []
+    if video.transcript:
+        timeline = build_transcript_timeline(
+            video_id=video.id,
+            transcript=video.transcript,
+            review_segments=video.segments,
+            duration_seconds=video.duration_seconds,
+        )
+        timeline_words = timeline["words"]
 
-        topic = seg.topic_label or "Unknown"
-        if topic != current_topic and (seg.importance_score or 0) >= 0.3:
-            minutes = int(seg.start_time // 60)
-            seconds = int(seg.start_time % 60)
-            chapters.append({
-                "timestamp": seg.start_time,
-                "formatted": f"{minutes:02d}:{seconds:02d}",
-                "label": topic,
-                "segment_index": seg.segment_index,
-            })
-            current_topic = topic
-
+    analysis = analyze_topic_sections(
+        segments=video.segments,
+        timeline_words=timeline_words,
+        duration_seconds=video.duration_seconds,
+    )
     return {
         "video_id": video_id,
-        "chapters_count": len(chapters),
-        "chapters": chapters,
-        "youtube_format": "\n".join(
-            f"{ch['formatted']} {ch['label']}" for ch in chapters
-        ),
+        "chapters_count": len(analysis["chapters"]),
+        **analysis,
     }
 
 

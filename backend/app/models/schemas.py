@@ -402,6 +402,66 @@ class CleanApplyResponse(BaseModel):
     suggestions: List[CleanSuggestionResponse] = Field(default_factory=list)
 
 
+class TopicSectionSignalResponse(BaseModel):
+    topic_change: bool = False
+    long_pause: bool = False
+    content_shift: bool = False
+    transition_cue: bool = False
+    pause_seconds: float = 0.0
+    content_shift_score: float = 0.0
+
+
+class LectureSectionResponse(BaseModel):
+    id: str
+    chapter_index: int
+    timestamp: float
+    formatted: str
+    label: str
+    title: str
+    summary: str = ""
+    start_time: float
+    end_time: float
+    duration: float
+    segment_start_index: int
+    segment_end_index: int
+    segment_index: int
+    segment_indexes: List[int] = Field(default_factory=list)
+    segment_count: int
+    keywords: List[str] = Field(default_factory=list)
+    confidence: float
+    boundary_reason: str
+    source_signals: TopicSectionSignalResponse
+
+
+class ChapterResponse(BaseModel):
+    timestamp: float
+    formatted: str
+    label: str
+    segment_index: int
+    duration: Optional[float] = None
+    confidence: Optional[float] = None
+    boundary_reason: Optional[str] = None
+    keywords: List[str] = Field(default_factory=list)
+    segment_count: Optional[int] = None
+
+
+class TopicSegmentationSummaryResponse(BaseModel):
+    sections_total: int = 0
+    chapters_total: int = 0
+    average_confidence: float = 0.0
+    estimated_total_duration_seconds: float = 0.0
+
+
+class TopicSegmentationResponse(BaseModel):
+    video_id: UUID
+    schema_version: str
+    summary: TopicSegmentationSummaryResponse
+    sections: List[LectureSectionResponse] = Field(default_factory=list)
+    chapters: List[ChapterResponse] = Field(default_factory=list)
+    chapters_count: int = 0
+    youtube_format: str = ""
+
+
 # ═══════════════════════════════════════════
 #  SEGMENT
 # ═══════════════════════════════════════════

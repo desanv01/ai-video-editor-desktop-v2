@@ -408,7 +408,16 @@ export function GuidedWorkflowPanel({
                     className="flex w-full items-start gap-3 rounded-md border border-surface-border bg-surface-overlay px-3 py-2 text-left"
                   >
                     <span className="font-mono text-xs text-accent">{chapter.formatted}</span>
-                    <span className="min-w-0 flex-1 text-xs text-gray-200">{chapter.label}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-xs text-gray-200">{chapter.label}</span>
+                      <span className="mt-1 block text-[11px] leading-4 text-gray-500">
+                        {[
+                          chapter.segment_count ? `${chapter.segment_count} segments` : null,
+                          chapter.confidence != null ? `${Math.round(chapter.confidence * 100)}% confidence` : null,
+                          chapter.boundary_reason,
+                        ].filter(Boolean).join(" - ")}
+                      </span>
+                    </span>
                   </button>
                 ))}
               </div>
