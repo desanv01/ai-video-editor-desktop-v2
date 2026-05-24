@@ -17,6 +17,7 @@ import type {
   EditPlan,
   SegmentAction,
   RevalidationResult,
+  EditDecisionSync,
   TranscriptCutDecision,
   TranscriptCutDecisionRequest,
   TranscriptTimeline,
@@ -101,6 +102,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   const [chaptersLoading, setChaptersLoading] = useState(false);
   const [transcriptTimeline, setTranscriptTimeline] = useState<TranscriptTimeline | null>(null);
   const [transcriptCuts, setTranscriptCuts] = useState<TranscriptCutDecision[]>([]);
+  const [editDecisionSync, setEditDecisionSync] = useState<EditDecisionSync | null>(null);
   const [transcriptCutsLoading, setTranscriptCutsLoading] = useState(false);
   const [undoStack, setUndoStack] = useState<EditHistoryEntry[]>([]);
   const [redoStack, setRedoStack] = useState<EditHistoryEntry[]>([]);
@@ -143,15 +145,18 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   const loadTranscriptEditingData = useCallback(async () => {
     setTranscriptCutsLoading(true);
     try {
-      const [timelineResult, cutsResult] = await Promise.all([
+      const [timelineResult, cutsResult, syncResult] = await Promise.all([
         api.getTranscriptTimeline(videoId),
         api.getTranscriptCutDecisions(videoId),
+        api.getEditDecisionSync(videoId),
       ]);
       setTranscriptTimeline(timelineResult);
       setTranscriptCuts(cutsResult);
+      setEditDecisionSync(syncResult);
     } catch {
       setTranscriptTimeline(null);
       setTranscriptCuts([]);
+      setEditDecisionSync(null);
     } finally {
       setTranscriptCutsLoading(false);
     }
@@ -171,12 +176,27 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   }, [segments.length, plan?.is_approved]);
 
   const videoSrc = api.getVideoStreamUrl(videoId);
+  const syncedCutIntervals = editDecisionSync?.cut_intervals ?? [];
+  const syncedExportPlan = editDecisionSync?.export_plan ?? null;
+  const effectiveDuration = duration || plan?.original_duration || 0;
 
   const handleTimeUpdate = useCallback(() => {
     if (videoRef.current) {
       setCurrentTime(videoRef.current.currentTime);
     }
   }, [videoRef, setCurrentTime]);
+
+  useEffect(() => {
+    if (!isPlaying || !videoRef.current || syncedCutIntervals.length === 0) return;
+    const activeCut = syncedCutIntervals.find(
+      interval => currentTime >= interval.start_time && currentTime < interval.end_time,
+    );
+    if (!activeCut) return;
+
+    const nextTime = Math.min(activeCut.end_time + 0.03, effectiveDuration || activeCut.end_time);
+    videoRef.current.currentTime = nextTime;
+    setCurrentTime(nextTime);
+  }, [currentTime, effectiveDuration, isPlaying, setCurrentTime, syncedCutIntervals, videoRef]);
 
   const handleLoadedMetadata = useCallback(() => {
     if (videoRef.current) {
@@ -209,6 +229,15 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
       setPlan(updatedPlan);
     } catch {
       // Plan stats are secondary UI context; the edit operation already completed.
+    }
+  }, [videoId]);
+
+  const refreshEditDecisionSync = useCallback(async () => {
+    try {
+      const sync = await api.getEditDecisionSync(videoId);
+      setEditDecisionSync(sync);
+    } catch {
+      setEditDecisionSync(null);
     }
   }, [videoId]);
 
@@ -251,7 +280,8 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
       });
     }
     await refreshEditWarnings();
-  }, [applySegmentOverride, pushHistory, refreshEditWarnings, segments]);
+    await refreshEditDecisionSync();
+  }, [applySegmentOverride, pushHistory, refreshEditDecisionSync, refreshEditWarnings, segments]);
 
   const handleCreateTranscriptCut = useCallback(async (wordStartIndex: number, wordEndIndex: number) => {
     const request: TranscriptCutDecisionRequest = {
@@ -270,7 +300,8 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
     });
     setActiveWorkflowStep("clean");
     await refreshEditPlan();
-  }, [pushHistory, refreshEditPlan, videoId]);
+    await refreshEditDecisionSync();
+  }, [pushHistory, refreshEditDecisionSync, refreshEditPlan, videoId]);
 
   const handleDeleteTranscriptCut = useCallback(async (decisionId: string) => {
     const decision = transcriptCuts.find(candidate => candidate.id === decisionId);
@@ -290,7 +321,8 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
       });
     }
     await refreshEditPlan();
-  }, [pushHistory, refreshEditPlan, transcriptCuts, videoId]);
+    await refreshEditDecisionSync();
+  }, [pushHistory, refreshEditDecisionSync, refreshEditPlan, transcriptCuts, videoId]);
 
   const handleAcceptAll = useCallback(async () => {
     const candidates = segments.filter(segment => (segment.action_confidence ?? 0) >= 0.85 && !segment.is_teacher_modified);
@@ -313,11 +345,12 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
       });
       setCompletedWorkflowSteps(prev => new Set(prev).add("clean"));
       await refreshEditWarnings();
+      await refreshEditDecisionSync();
       alert(`Auto-accepted ${count} high-confidence segments`);
     } else {
       alert("No segments to auto-accept (all already reviewed or below threshold)");
     }
-  }, [acceptAllHighConfidence, pushHistory, refreshEditWarnings, segments]);
+  }, [acceptAllHighConfidence, pushHistory, refreshEditDecisionSync, refreshEditWarnings, segments]);
 
   const handleApprove = useCallback(async () => {
     setApproving(true);
@@ -357,12 +390,14 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
     if (entry.kind === "segment_override") {
       await applySegmentSnapshot(direction === "undo" ? entry.before : entry.after);
       await refreshEditWarnings();
+      await refreshEditDecisionSync();
       return entry;
     }
 
     if (entry.kind === "bulk_segment_override") {
       await applySegmentSnapshots(direction === "undo" ? entry.before : entry.after);
       await refreshEditWarnings();
+      await refreshEditDecisionSync();
       return entry;
     }
 
@@ -371,12 +406,14 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
         await api.deleteTranscriptCutDecision(videoId, entry.decision.id);
         setTranscriptCuts(prev => prev.filter(decision => decision.id !== entry.decision.id));
         await refreshEditPlan();
+        await refreshEditDecisionSync();
         return entry;
       }
 
       const decision = await api.createTranscriptCutDecision(videoId, entry.request);
       setTranscriptCuts(prev => [...prev, decision]);
       await refreshEditPlan();
+      await refreshEditDecisionSync();
       return { ...entry, decision };
     }
 
@@ -384,14 +421,16 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
       const decision = await api.createTranscriptCutDecision(videoId, entry.request);
       setTranscriptCuts(prev => [...prev, decision]);
       await refreshEditPlan();
+      await refreshEditDecisionSync();
       return { ...entry, decision };
     }
 
     await api.deleteTranscriptCutDecision(videoId, entry.decision.id);
     setTranscriptCuts(prev => prev.filter(decision => decision.id !== entry.decision.id));
     await refreshEditPlan();
+    await refreshEditDecisionSync();
     return entry;
-  }, [applySegmentSnapshot, applySegmentSnapshots, refreshEditPlan, refreshEditWarnings, videoId]);
+  }, [applySegmentSnapshot, applySegmentSnapshots, refreshEditDecisionSync, refreshEditPlan, refreshEditWarnings, videoId]);
 
   const handleUndo = useCallback(async () => {
     const entry = undoStack[undoStack.length - 1];
@@ -425,7 +464,6 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
     }
   }, [applyHistoryEntry, historyBusy, redoStack]);
 
-  const effectiveDuration = duration || plan?.original_duration || 0;
   const nextUndoEntry = undoStack[undoStack.length - 1] ?? null;
   const nextRedoEntry = redoStack[redoStack.length - 1] ?? null;
   const canUndo = Boolean(nextUndoEntry) && !historyBusy;
@@ -703,7 +741,11 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
               <PreviewMetric icon={<Activity className="h-3.5 w-3.5" />} label="Reviewed" value={`${reviewedSegments}/${segments.length}`} />
               <PreviewMetric icon={<Layers className="h-3.5 w-3.5" />} label="Step" value={activeWorkflowLabel} />
               <PreviewMetric icon={<RadioTower className="h-3.5 w-3.5" />} label="Warnings" value={String(warningCount)} tone={warningCount > 0 ? "warn" : "good"} />
-              <PreviewMetric icon={<MonitorPlay className="h-3.5 w-3.5" />} label="Duration" value={formatDuration(effectiveDuration)} />
+              <PreviewMetric
+                icon={<MonitorPlay className="h-3.5 w-3.5" />}
+                label="Output"
+                value={formatDuration(syncedExportPlan?.estimated_output_duration_seconds ?? plan?.estimated_duration ?? effectiveDuration)}
+              />
             </div>
           </main>
 
@@ -762,10 +804,13 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
               onSeek={seekTo}
               onSelectSegment={handleSelectSegment}
               selectedSegmentId={selectedSegment?.id ?? null}
+              cutIntervals={syncedCutIntervals}
             />
             <div className="mt-2 flex items-center justify-between text-xs text-gray-500">
               <span>{segments.length} transcript segments</span>
-              <span>Ctrl+K commands, Ctrl+Z undo, Ctrl+Shift+Z redo, X cut selected</span>
+              <span>
+                {syncedExportPlan?.transcript_cut_count ?? 0} transcript cuts synced to preview, timeline, and export
+              </span>
             </div>
           </div>
         </footer>

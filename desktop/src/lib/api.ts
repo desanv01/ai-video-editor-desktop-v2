@@ -12,6 +12,7 @@ import type {
   BackendAISettingsUpdate,
   TranscriptTimeline,
   TranscriptCutDecision, TranscriptCutDecisionRequest,
+  EditDecisionSync,
   LocalTranscriptionModelCatalog, LocalTranscriptionModelDownload,
   LocalTranscriptionModelRemoveResult,
   Project, ProjectAsset, ProjectAssetUploadResponse,
@@ -208,6 +209,10 @@ export async function deleteTranscriptCutDecision(videoId: string, decisionId: s
   await request(`/videos/${videoId}/transcript/cuts/${decisionId}`, {
     method: "DELETE",
   });
+}
+
+export async function getEditDecisionSync(videoId: string): Promise<EditDecisionSync> {
+  return request(`/videos/${videoId}/edit-decision-sync`);
 }
 
 // ═══════════════════════════════════════════

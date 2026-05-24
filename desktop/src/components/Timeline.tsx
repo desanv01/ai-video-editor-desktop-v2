@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { Segment, SegmentAction } from "../types/api";
+import type { Segment, SegmentAction, TranscriptCutInterval } from "../types/api";
 
 interface Props {
   segments: Segment[];
@@ -8,6 +8,7 @@ interface Props {
   onSeek: (time: number) => void;
   onSelectSegment: (seg: Segment) => void;
   selectedSegmentId: string | null;
+  cutIntervals?: TranscriptCutInterval[];
 }
 
 const ACTION_COLORS: Record<SegmentAction, string> = {
@@ -17,7 +18,15 @@ const ACTION_COLORS: Record<SegmentAction, string> = {
   highlight: "timeline-highlight",
 };
 
-export function Timeline({ segments, duration, currentTime, onSeek, onSelectSegment, selectedSegmentId }: Props) {
+export function Timeline({
+  segments,
+  duration,
+  currentTime,
+  onSeek,
+  onSelectSegment,
+  selectedSegmentId,
+  cutIntervals = [],
+}: Props) {
   const playheadPct = duration > 0 ? (currentTime / duration) * 100 : 0;
 
   const segBars = useMemo(() => {
@@ -29,6 +38,15 @@ export function Timeline({ segments, duration, currentTime, onSeek, onSelectSegm
       return { seg, action, left, width };
     });
   }, [segments, duration]);
+
+  const cutBars = useMemo(() => {
+    if (!duration || duration === 0) return [];
+    return cutIntervals.map((interval, index) => {
+      const left = (interval.start_time / duration) * 100;
+      const width = Math.max(((interval.end_time - interval.start_time) / duration) * 100, 0.35);
+      return { interval, index, left, width };
+    });
+  }, [cutIntervals, duration]);
 
   return (
     <div className="w-full space-y-1">
@@ -51,6 +69,15 @@ export function Timeline({ segments, duration, currentTime, onSeek, onSelectSegm
             style={{ left: `${left}%`, width: `${width}%` }}
             title={`${seg.topic_label || "Segment"} (${action})`}
             onClick={(e) => { e.stopPropagation(); onSelectSegment(seg); }}
+          />
+        ))}
+
+        {cutBars.map(({ interval, index, left, width }) => (
+          <div
+            key={`${interval.start_time}-${interval.end_time}-${index}`}
+            className="absolute bottom-0 z-[5] h-3 border-x border-red-200/40 bg-red-500/70"
+            style={{ left: `${left}%`, width: `${width}%` }}
+            title={`Transcript cut ${formatTime(interval.start_time)} - ${formatTime(interval.end_time)}`}
           />
         ))}
 

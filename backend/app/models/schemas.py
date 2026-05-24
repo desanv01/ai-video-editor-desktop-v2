@@ -272,6 +272,52 @@ class TranscriptCutDecisionResponse(BaseModel):
     created_at: str
 
 
+class TranscriptCutIntervalResponse(BaseModel):
+    start_time: float
+    end_time: float
+    duration: float
+    decision_ids: List[str] = Field(default_factory=list)
+    texts: List[str] = Field(default_factory=list)
+    word_start_index: Optional[int] = None
+    word_end_index: Optional[int] = None
+    source: str = "transcript_cut"
+
+
+class EditDecisionPlayableRangeResponse(BaseModel):
+    segment_id: UUID
+    segment_index: int
+    source_start_time: float
+    source_end_time: float
+    duration: float
+    output_start_time: float
+    output_end_time: float
+    action: str
+
+
+class EditDecisionSegmentOverlayResponse(BaseModel):
+    segment_id: UUID
+    segment_index: int
+    cut_intervals: List[TranscriptCutIntervalResponse] = Field(default_factory=list)
+    covered_duration: float = 0.0
+
+
+class EditDecisionExportPlanResponse(BaseModel):
+    source_duration_seconds: Optional[float] = None
+    estimated_output_duration_seconds: float = 0.0
+    transcript_cut_count: int = 0
+    merged_cut_interval_count: int = 0
+    transcript_cut_duration_seconds: float = 0.0
+    playable_range_count: int = 0
+
+
+class EditDecisionSyncResponse(BaseModel):
+    schema_version: str
+    cut_intervals: List[TranscriptCutIntervalResponse] = Field(default_factory=list)
+    playable_ranges: List[EditDecisionPlayableRangeResponse] = Field(default_factory=list)
+    segment_overlays: List[EditDecisionSegmentOverlayResponse] = Field(default_factory=list)
+    export_plan: EditDecisionExportPlanResponse
+
+
 # ═══════════════════════════════════════════
 #  SEGMENT
 # ═══════════════════════════════════════════

@@ -228,6 +228,52 @@ export interface TranscriptCutDecisionRequest {
   teacher_note?: string | null;
 }
 
+export interface TranscriptCutInterval {
+  start_time: number;
+  end_time: number;
+  duration: number;
+  decision_ids: string[];
+  texts: string[];
+  word_start_index: number | null;
+  word_end_index: number | null;
+  source: "transcript_cut" | string;
+}
+
+export interface EditDecisionPlayableRange {
+  segment_id: string;
+  segment_index: number;
+  source_start_time: number;
+  source_end_time: number;
+  duration: number;
+  output_start_time: number;
+  output_end_time: number;
+  action: SegmentAction | string;
+}
+
+export interface EditDecisionSegmentOverlay {
+  segment_id: string;
+  segment_index: number;
+  cut_intervals: TranscriptCutInterval[];
+  covered_duration: number;
+}
+
+export interface EditDecisionExportPlan {
+  source_duration_seconds: number | null;
+  estimated_output_duration_seconds: number;
+  transcript_cut_count: number;
+  merged_cut_interval_count: number;
+  transcript_cut_duration_seconds: number;
+  playable_range_count: number;
+}
+
+export interface EditDecisionSync {
+  schema_version: string;
+  cut_intervals: TranscriptCutInterval[];
+  playable_ranges: EditDecisionPlayableRange[];
+  segment_overlays: EditDecisionSegmentOverlay[];
+  export_plan: EditDecisionExportPlan;
+}
+
 // ── Segment ──
 
 export interface Segment {
