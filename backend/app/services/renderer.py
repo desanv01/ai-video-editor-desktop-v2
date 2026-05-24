@@ -33,6 +33,7 @@ from sqlalchemy import select
 from db.models import Video, Transcript, Segment, EditPlan, SegmentAction, VideoStatus
 from services.ffmpeg import ffmpeg_service, FFmpegService
 from services.progress import start_step, complete_step, PipelineStep
+from services.transcript_edit_decisions import build_synced_timeline_plan
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -100,36 +101,49 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
     logger.info(f"Renderer: Starting render for video {video_id} ({len(segments)} segments)")
 
     try:
-        # ── Step 1: Determine kept segments ──
-        kept_segments: List[Segment] = []
-        for seg in segments:
-            action = seg.teacher_action if seg.is_teacher_modified else seg.action
-            if action in (SegmentAction.KEEP, SegmentAction.HIGHLIGHT, SegmentAction.SHORTEN):
-                kept_segments.append(seg)
+        # ── Step 1: Determine playable ranges from segment and transcript edits ──
+        sync_plan = build_synced_timeline_plan(
+            plan=plan,
+            segments=segments,
+            duration_seconds=video.duration_seconds,
+        )
+        segment_by_id = {str(segment.id): segment for segment in segments}
+        render_ranges = [
+            {**playable_range, "segment": segment_by_id[playable_range["segment_id"]]}
+            for playable_range in sync_plan["playable_ranges"]
+            if playable_range["segment_id"] in segment_by_id
+        ]
+        included_segment_ids = {item["segment_id"] for item in render_ranges}
 
-        if not kept_segments:
-            raise ValueError("No segments to keep — nothing to render")
+        if not render_ranges:
+            raise ValueError("No playable ranges to render after edit decisions")
 
-        logger.info(f"  Keeping {len(kept_segments)}/{len(segments)} segments")
+        logger.info(
+            "  Keeping %s/%s segments across %s ranges after %s transcript cuts",
+            len(included_segment_ids),
+            len(segments),
+            len(render_ranges),
+            sync_plan["export_plan"]["transcript_cut_count"],
+        )
 
         # ── Step 2: Trim clips ──
         clip_dir = os.path.join(settings.TEMP_PATH, f"clips_{video.id}")
         os.makedirs(clip_dir, exist_ok=True)
 
         clip_paths = []
-        for i, seg in enumerate(kept_segments):
-            action = seg.teacher_action if seg.is_teacher_modified else seg.action
+        for i, render_range in enumerate(render_ranges):
+            action = render_range["action"]
             raw_clip = os.path.join(clip_dir, f"raw_{i:04d}.mp4")
 
             # Trim the segment from the original video
             await ffmpeg_service.trim_video(
                 video_path=video.file_path,
                 output_path=raw_clip,
-                start_time=seg.start_time,
-                end_time=seg.end_time,
+                start_time=render_range["source_start_time"],
+                end_time=render_range["source_end_time"],
             )
 
-            if action == SegmentAction.SHORTEN:
+            if action == SegmentAction.SHORTEN.value:
                 # Additional silence removal for SHORTEN segments
                 shortened_clip = os.path.join(clip_dir, f"clip_{i:04d}.mp4")
                 await ffmpeg_service.trim_silence_from_clip(
@@ -166,7 +180,7 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
         # ── Step 4: Generate subtitles ──
         word_timestamps = transcript.words_json if transcript else None
 
-        srt_content = _generate_word_level_srt(kept_segments, word_timestamps)
+        srt_content = _generate_word_level_srt(render_ranges, word_timestamps)
         srt_filename = f"{video.id}_subtitles.srt"
         srt_path = os.path.join(settings.VIDEO_STORAGE_PATH, srt_filename)
         with open(srt_path, "w", encoding="utf-8") as f:
@@ -181,14 +195,14 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
         logger.info(f"  Generated SRT + VTT subtitles")
 
         # ── Step 5: Generate chapter markers ──
-        chapters = _generate_chapter_file(kept_segments)
+        chapters = _generate_chapter_file(render_ranges)
         chapters_filename = f"{video.id}_chapters.txt"
         chapters_path = os.path.join(settings.VIDEO_STORAGE_PATH, chapters_filename)
         with open(chapters_path, "w", encoding="utf-8") as f:
             f.write(chapters)
 
         # ── Step 6: Export edit plan JSON ──
-        plan_export = _export_plan_json(video, plan, segments, kept_segments)
+        plan_export = _export_plan_json(video, plan, segments, render_ranges, sync_plan)
         plan_filename = f"{video.id}_edit_plan.json"
         plan_path = os.path.join(settings.VIDEO_STORAGE_PATH, plan_filename)
         with open(plan_path, "w", encoding="utf-8") as f:
@@ -213,8 +227,8 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
 
         logger.info(
             f"Render complete: {output_duration:.1f}s output, "
-            f"{len(kept_segments)} segments included, "
-            f"{len(segments) - len(kept_segments)} removed"
+            f"{len(included_segment_ids)} segments included, "
+            f"{len(segments) - len(included_segment_ids)} removed"
         )
 
         return {
@@ -226,8 +240,10 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
             "plan_export_path": plan_path,
             "output_duration": round(output_duration, 2),
             "original_duration": round(video.duration_seconds or 0, 2),
-            "segments_included": len(kept_segments),
-            "segments_removed": len(segments) - len(kept_segments),
+            "segments_included": len(included_segment_ids),
+            "segments_removed": len(segments) - len(included_segment_ids),
+            "playable_ranges": len(render_ranges),
+            "transcript_cuts_applied": sync_plan["export_plan"]["transcript_cut_count"],
         }
 
     except Exception as e:
@@ -243,7 +259,7 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
 # ═══════════════════════════════════════════
 
 def _generate_word_level_srt(
-    kept_segments: List[Segment],
+    render_ranges: List[dict],
     word_timestamps: list | None,
     max_chars_per_line: int = 80,
     max_duration_per_cue: float = 5.0,
@@ -260,15 +276,18 @@ def _generate_word_level_srt(
     cues = []
     cumulative_offset = 0.0
 
-    for seg in kept_segments:
-        seg_duration = seg.end_time - seg.start_time
+    for render_range in render_ranges:
+        seg = render_range["segment"]
+        source_start = float(render_range["source_start_time"])
+        source_end = float(render_range["source_end_time"])
+        seg_duration = source_end - source_start
 
         if word_timestamps:
             # Find words within this segment's original time range
             seg_words = [
                 w for w in word_timestamps
-                if w.get("start", 0) >= seg.start_time
-                and w.get("end", 0) <= seg.end_time
+                if w.get("start", 0) >= source_start
+                and w.get("end", 0) <= source_end
             ]
 
             if seg_words:
@@ -283,11 +302,11 @@ def _generate_word_level_srt(
                         continue
 
                     if cue_start is None:
-                        cue_start = word["start"] - seg.start_time + cumulative_offset
+                        cue_start = word["start"] - source_start + cumulative_offset
 
                     current_cue_words.append(word)
                     current_cue_text += (" " if current_cue_text else "") + word_text
-                    cue_end = word["end"] - seg.start_time + cumulative_offset
+                    cue_end = word["end"] - source_start + cumulative_offset
                     cue_duration = cue_end - cue_start
 
                     # Flush cue if line is long enough or duration exceeded
@@ -382,7 +401,7 @@ def _srt_to_vtt(srt_content: str) -> str:
 #  CHAPTER MARKERS
 # ═══════════════════════════════════════════
 
-def _generate_chapter_file(kept_segments: List[Segment]) -> str:
+def _generate_chapter_file(render_ranges: List[dict]) -> str:
     """
     Generate YouTube-compatible chapter markers.
     Based on topic transitions in the kept segments.
@@ -391,7 +410,13 @@ def _generate_chapter_file(kept_segments: List[Segment]) -> str:
     current_topic = None
     cumulative_time = 0.0
 
-    for seg in kept_segments:
+    seen_segments = set()
+    for render_range in render_ranges:
+        seg = render_range["segment"]
+        if str(seg.id) in seen_segments:
+            cumulative_time += render_range["duration"]
+            continue
+        seen_segments.add(str(seg.id))
         topic = seg.topic_label or "Unknown"
         if topic != current_topic and (seg.importance_score or 0) >= 0.3:
             minutes = int(cumulative_time // 60)
@@ -399,7 +424,7 @@ def _generate_chapter_file(kept_segments: List[Segment]) -> str:
             chapters.append(f"{minutes:02d}:{seconds:02d} {topic}")
             current_topic = topic
 
-        cumulative_time += (seg.end_time - seg.start_time)
+        cumulative_time += render_range["duration"]
 
     return "\n".join(chapters) if chapters else "00:00 Full Lecture"
 
@@ -412,12 +437,25 @@ def _export_plan_json(
     video: Video,
     plan: EditPlan,
     all_segments: List[Segment],
-    kept_segments: List[Segment],
+    render_ranges: List[dict],
+    sync_plan: dict,
 ) -> dict:
     """
     Export the complete edit plan as a standalone JSON file.
     Used for thesis documentation and reproducibility.
     """
+    ranges_by_segment: dict[str, list[dict]] = {}
+    for render_range in render_ranges:
+        segment_id = render_range["segment_id"]
+        ranges_by_segment.setdefault(segment_id, []).append({
+            "source_start_time": render_range["source_start_time"],
+            "source_end_time": render_range["source_end_time"],
+            "duration": render_range["duration"],
+            "output_start_time": render_range["output_start_time"],
+            "output_end_time": render_range["output_end_time"],
+            "action": render_range["action"],
+        })
+
     return {
         "export_version": "1.0",
         "exported_at": datetime.utcnow().isoformat(),
@@ -441,6 +479,11 @@ def _export_plan_json(
             "approved_at": str(plan.approved_at) if plan.approved_at else None,
             "teacher_notes": plan.teacher_notes,
         },
+        "transcript_edit_sync": {
+            "schema_version": sync_plan.get("schema_version"),
+            "cut_intervals": sync_plan.get("cut_intervals", []),
+            "export_plan": sync_plan.get("export_plan", {}),
+        },
         "segments": [
             {
                 "index": seg.segment_index,
@@ -462,7 +505,8 @@ def _export_plan_json(
                 "teacher_action": seg.teacher_action.value if seg.teacher_action else None,
                 "teacher_note": seg.teacher_note,
                 "final_action": (seg.teacher_action or seg.action).value if (seg.teacher_action or seg.action) else None,
-                "included_in_output": seg in kept_segments,
+                "included_in_output": str(seg.id) in ranges_by_segment,
+                "output_ranges": ranges_by_segment.get(str(seg.id), []),
             }
             for seg in all_segments
         ],
@@ -493,6 +537,12 @@ async def generate_quality_report(video_id: str, db: AsyncSession) -> dict:
 
     if not plan or not segments:
         return {"error": "No data available"}
+
+    sync_plan = build_synced_timeline_plan(
+        plan=plan,
+        segments=segments,
+        duration_seconds=video.duration_seconds if video else None,
+    )
 
     # ── Compute metrics ──
     total_fillers = sum(s.filler_count or 0 for s in segments)
@@ -562,6 +612,7 @@ async def generate_quality_report(video_id: str, db: AsyncSession) -> dict:
         "action_distribution": action_dist,
         "teacher_modifications": teacher_modified,
         "teacher_overrides": teacher_overrides,
+        "transcript_edit_sync": sync_plan["export_plan"],
         "is_rendered": video.status == VideoStatus.COMPLETED if video else False,
         "output_files": {
             "video": video.processed_video_path if video else None,

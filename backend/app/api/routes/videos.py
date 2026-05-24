@@ -25,6 +25,7 @@ from db.models import (
 from models.schemas import (
     VideoUploadResponse, VideoResponse, VideoDetailResponse,
     SegmentResponse, SegmentUpdateRequest, BulkSegmentUpdateRequest,
+    EditDecisionSyncResponse,
     TranscriptCutDecisionRequest, TranscriptCutDecisionResponse,
     TranscriptTimelineResponse,
     EditPlanResponse, EditPlanApproveRequest,
@@ -39,6 +40,7 @@ from services.renderer import generate_quality_report
 from services.text_extraction import text_extractor
 from services.transcript_timeline import build_transcript_timeline
 from services.transcript_edit_decisions import (
+    build_synced_timeline_plan,
     create_transcript_cut_decision,
     list_transcript_cut_decisions,
     remove_transcript_cut_decision,
@@ -386,6 +388,29 @@ async def delete_transcript_cut(
 
     await db.commit()
     return {"status": "removed", "decision_id": decision_id}
+
+
+@router.get(
+    "/videos/{video_id}/edit-decision-sync",
+    response_model=EditDecisionSyncResponse,
+    tags=["Edit Plan"],
+)
+async def get_edit_decision_sync(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Return synchronized transcript cuts, playable ranges, timeline overlays, and export planning."""
+    result = await db.execute(
+        select(Video)
+        .options(selectinload(Video.segments), selectinload(Video.edit_plan))
+        .where(Video.id == video_id)
+    )
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(404, "Video not found")
+
+    return build_synced_timeline_plan(
+        plan=video.edit_plan,
+        segments=video.segments,
+        duration_seconds=video.duration_seconds,
+    )
 
 
 # ═══════════════════════════════════════════
