@@ -211,20 +211,34 @@ export interface TranscriptCutDecision {
   source: "manual_text_selection" | string;
   status: "active" | string;
   text: string;
+  word_start_time: number | null;
+  word_end_time: number | null;
   start_time: number;
   end_time: number;
   duration: number;
+  pre_roll_seconds: number;
+  post_roll_seconds: number;
+  trim_source: "word_bounds" | "manual_trim" | string;
   word_start_index: number;
   word_end_index: number;
   segment_ids: string[];
   segment_indexes: number[];
   teacher_note: string | null;
   created_at: string;
+  updated_at: string | null;
 }
 
 export interface TranscriptCutDecisionRequest {
   word_start_index: number;
   word_end_index: number;
+  teacher_note?: string | null;
+}
+
+export interface TranscriptCutTrimUpdateRequest {
+  start_time?: number;
+  end_time?: number;
+  pre_roll_seconds?: number;
+  post_roll_seconds?: number;
   teacher_note?: string | null;
 }
 

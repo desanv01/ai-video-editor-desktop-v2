@@ -20,6 +20,7 @@ import type {
   EditDecisionSync,
   TranscriptCutDecision,
   TranscriptCutDecisionRequest,
+  TranscriptCutTrimUpdateRequest,
   TranscriptTimeline,
 } from "../types/api";
 import {
@@ -85,7 +86,19 @@ type TranscriptCutHistoryEntry = {
   request: TranscriptCutDecisionRequest;
 };
 
-type EditHistoryEntry = SegmentHistoryEntry | BulkSegmentHistoryEntry | TranscriptCutHistoryEntry;
+type TranscriptCutTrimHistoryEntry = {
+  id: string;
+  kind: "transcript_cut_trim_update";
+  label: string;
+  before: TranscriptCutDecision;
+  after: TranscriptCutDecision;
+};
+
+type EditHistoryEntry =
+  | SegmentHistoryEntry
+  | BulkSegmentHistoryEntry
+  | TranscriptCutHistoryEntry
+  | TranscriptCutTrimHistoryEntry;
 type HistoryDirection = "undo" | "redo";
 
 export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) {
@@ -324,6 +337,27 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
     await refreshEditDecisionSync();
   }, [pushHistory, refreshEditDecisionSync, refreshEditPlan, transcriptCuts, videoId]);
 
+  const handleUpdateTranscriptCutTrim = useCallback(async (
+    decisionId: string,
+    update: Required<Pick<TranscriptCutTrimUpdateRequest, "start_time" | "end_time" | "pre_roll_seconds" | "post_roll_seconds">>,
+  ) => {
+    const before = transcriptCuts.find(candidate => candidate.id === decisionId) ?? null;
+    const updated = await api.updateTranscriptCutTrim(videoId, decisionId, update);
+    setTranscriptCuts(prev => prev.map(decision => decision.id === decisionId ? updated : decision));
+    if (before && !sameTranscriptCutTiming(before, updated)) {
+      pushHistory({
+        id: createHistoryId(),
+        kind: "transcript_cut_trim_update",
+        label: "Adjust transcript cut trim",
+        before,
+        after: updated,
+      });
+    }
+    setActiveWorkflowStep("clean");
+    await refreshEditPlan();
+    await refreshEditDecisionSync();
+  }, [pushHistory, refreshEditDecisionSync, refreshEditPlan, transcriptCuts, videoId]);
+
   const handleAcceptAll = useCallback(async () => {
     const candidates = segments.filter(segment => (segment.action_confidence ?? 0) >= 0.85 && !segment.is_teacher_modified);
     const before = candidates.map(snapshotSegmentOverride);
@@ -415,6 +449,15 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
       await refreshEditPlan();
       await refreshEditDecisionSync();
       return { ...entry, decision };
+    }
+
+    if (entry.kind === "transcript_cut_trim_update") {
+      const target = direction === "undo" ? entry.before : entry.after;
+      const updated = await api.updateTranscriptCutTrim(videoId, target.id, transcriptCutTrimRequest(target));
+      setTranscriptCuts(prev => prev.map(decision => decision.id === target.id ? updated : decision));
+      await refreshEditPlan();
+      await refreshEditDecisionSync();
+      return direction === "undo" ? { ...entry, before: updated } : { ...entry, after: updated };
     }
 
     if (direction === "undo") {
@@ -657,6 +700,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
                   onSelectSegment={handleSelectSegment}
                   onCreateTranscriptCut={handleCreateTranscriptCut}
                   onDeleteTranscriptCut={handleDeleteTranscriptCut}
+                  onUpdateTranscriptCutTrim={handleUpdateTranscriptCutTrim}
                 />
               ) : (
                 <AssetPanel
@@ -912,6 +956,25 @@ function sameSegmentOverrideSnapshot(a: SegmentOverrideSnapshot, b: SegmentOverr
     a.teacher_note === b.teacher_note &&
     a.is_teacher_modified === b.is_teacher_modified
   );
+}
+
+function sameTranscriptCutTiming(a: TranscriptCutDecision, b: TranscriptCutDecision): boolean {
+  return (
+    a.start_time === b.start_time &&
+    a.end_time === b.end_time &&
+    (a.pre_roll_seconds ?? 0) === (b.pre_roll_seconds ?? 0) &&
+    (a.post_roll_seconds ?? 0) === (b.post_roll_seconds ?? 0)
+  );
+}
+
+function transcriptCutTrimRequest(decision: TranscriptCutDecision): TranscriptCutTrimUpdateRequest {
+  return {
+    start_time: decision.start_time,
+    end_time: decision.end_time,
+    pre_roll_seconds: decision.pre_roll_seconds ?? 0,
+    post_roll_seconds: decision.post_roll_seconds ?? 0,
+    teacher_note: decision.teacher_note,
+  };
 }
 
 function formatDuration(seconds: number): string {

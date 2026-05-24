@@ -16,6 +16,7 @@ from services.transcript_edit_decisions import (  # noqa: E402
     normalize_plan_payload,
     remove_transcript_cut_decision,
     subtract_cut_intervals,
+    update_transcript_cut_trim,
 )
 
 
@@ -114,6 +115,43 @@ class TranscriptEditDecisionTests(unittest.TestCase):
         self.assertEqual(intervals[0]["end_time"], 2.0)
         self.assertEqual(intervals[0]["duration"], 1.5)
         self.assertEqual(len(intervals[0]["decision_ids"]), 2)
+
+    def test_updates_cut_trim_with_pre_and_post_roll(self):
+        plan = SimpleNamespace(
+            plan_json=[],
+            original_duration=8.0,
+            estimated_duration=8.0,
+        )
+        words = [
+            _word(0, "trim", 2.0, 2.5, "seg-1", 0),
+            _word(1, "this", 2.5, 3.0, "seg-1", 0),
+        ]
+        decision = create_transcript_cut_decision(
+            plan=plan,
+            timeline_words=words,
+            word_start_index=0,
+            word_end_index=1,
+        )
+
+        updated = update_transcript_cut_trim(
+            plan=plan,
+            decision_id=decision["id"],
+            pre_roll_seconds=0.25,
+            post_roll_seconds=0.5,
+        )
+        intervals = list_active_transcript_cut_intervals(plan)
+
+        self.assertEqual(updated["word_start_time"], 2.0)
+        self.assertEqual(updated["word_end_time"], 3.0)
+        self.assertEqual(updated["start_time"], 1.75)
+        self.assertEqual(updated["end_time"], 3.5)
+        self.assertEqual(updated["duration"], 1.75)
+        self.assertEqual(updated["pre_roll_seconds"], 0.25)
+        self.assertEqual(updated["post_roll_seconds"], 0.5)
+        self.assertEqual(updated["trim_source"], "manual_trim")
+        self.assertEqual(intervals[0]["start_time"], 1.75)
+        self.assertEqual(intervals[0]["end_time"], 3.5)
+        self.assertEqual(plan.estimated_duration, 6.2)
 
     def test_subtracts_cut_intervals_from_playable_range(self):
         playable = subtract_cut_intervals(
