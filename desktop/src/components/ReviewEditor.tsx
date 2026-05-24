@@ -102,7 +102,7 @@ type EditHistoryEntry =
 type HistoryDirection = "undo" | "redo";
 
 export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) {
-  const { segments, loading, applySegmentOverride, acceptAllHighConfidence } = useSegments(videoId);
+  const { segments, loading, reload: reloadSegments, applySegmentOverride, acceptAllHighConfidence } = useSegments(videoId);
   const { currentTime, setCurrentTime, isPlaying, setIsPlaying, videoRef, seekTo, togglePlay } = usePlaybackSync();
   const [selectedSegment, setSelectedSegment] = useState<Segment | null>(null);
   const [activeWorkflowStep, setActiveWorkflowStep] = useState<GuidedWorkflowStepId>("transcribe");
@@ -385,6 +385,15 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
       alert("No segments to auto-accept (all already reviewed or below threshold)");
     }
   }, [acceptAllHighConfidence, pushHistory, refreshEditDecisionSync, refreshEditWarnings, segments]);
+
+  const handleCleanApplied = useCallback(async () => {
+    await Promise.all([
+      reloadSegments(),
+      loadTranscriptEditingData(),
+      refreshEditPlan(),
+      refreshEditWarnings(),
+    ]);
+  }, [loadTranscriptEditingData, refreshEditPlan, refreshEditWarnings, reloadSegments]);
 
   const handleApprove = useCallback(async () => {
     setApproving(true);
@@ -807,6 +816,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
               chaptersLoading={chaptersLoading}
               approving={approving}
               onAcceptAll={handleAcceptAll}
+              onCleanApplied={handleCleanApplied}
               onApprove={handleApprove}
               onRefreshChapters={() => void loadChapters()}
               onSeekToTime={seekTo}

@@ -332,6 +332,68 @@ class EditDecisionSyncResponse(BaseModel):
     export_plan: EditDecisionExportPlanResponse
 
 
+class CleanProfileResponse(BaseModel):
+    id: str
+    label: str
+    description: str
+
+
+class CleanSuggestionResponse(BaseModel):
+    id: str
+    type: str
+    title: str
+    text: str = ""
+    reason: str
+    confidence: float
+    start_time: float
+    end_time: float
+    duration: float
+    word_start_index: Optional[int] = None
+    word_end_index: Optional[int] = None
+    segment_id: Optional[str] = None
+    segment_index: Optional[int] = None
+    target_action: str
+    apply_kind: str
+    padding_seconds: Optional[float] = None
+
+
+class CleanSummaryResponse(BaseModel):
+    suggestions_total: int = 0
+    filler_word_count: int = 0
+    dead_air_count: int = 0
+    bad_take_count: int = 0
+    estimated_time_saved_seconds: float = 0.0
+
+
+class CleanAnalyzeResponse(BaseModel):
+    schema_version: str
+    profile: str
+    profiles: List[CleanProfileResponse] = Field(default_factory=list)
+    summary: CleanSummaryResponse
+    suggestions: List[CleanSuggestionResponse] = Field(default_factory=list)
+
+
+class CleanApplyRequest(BaseModel):
+    profile: str = "conservative"
+    suggestion_ids: Optional[List[str]] = None
+
+
+class CleanSegmentUpdateResponse(BaseModel):
+    segment_id: str
+    segment_index: int
+    teacher_action: str
+    teacher_note: Optional[str] = None
+
+
+class CleanApplyResponse(BaseModel):
+    schema_version: str
+    profile: str
+    summary: CleanSummaryResponse
+    created_transcript_cuts: List[TranscriptCutDecisionResponse] = Field(default_factory=list)
+    updated_segments: List[CleanSegmentUpdateResponse] = Field(default_factory=list)
+    suggestions: List[CleanSuggestionResponse] = Field(default_factory=list)
+
+
 # ═══════════════════════════════════════════
 #  SEGMENT
 # ═══════════════════════════════════════════

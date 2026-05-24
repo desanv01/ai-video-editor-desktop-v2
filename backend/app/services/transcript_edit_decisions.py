@@ -178,6 +178,9 @@ def create_transcript_cut_decision(
     word_start_index: int,
     word_end_index: int,
     teacher_note: Optional[str] = None,
+    source: str = "manual_text_selection",
+    pre_roll_seconds: float = 0.0,
+    post_roll_seconds: float = 0.0,
 ) -> dict[str, Any]:
     """Create and persist a transcript cut decision from inclusive word indexes."""
     if word_start_index > word_end_index:
@@ -190,8 +193,12 @@ def create_transcript_cut_decision(
     if not selected_words:
         raise ValueError("Select at least one transcript word")
 
-    start_time = min(float(word["start_time"]) for word in selected_words)
-    end_time = max(float(word["end_time"]) for word in selected_words)
+    word_start_time = min(float(word["start_time"]) for word in selected_words)
+    word_end_time = max(float(word["end_time"]) for word in selected_words)
+    next_pre_roll = _coerce_trim_tolerance(pre_roll_seconds, "pre-roll")
+    next_post_roll = _coerce_trim_tolerance(post_roll_seconds, "post-roll")
+    start_time = max(0.0, word_start_time - next_pre_roll)
+    end_time = word_end_time + next_post_roll
     text = " ".join(str(word.get("text") or "").strip() for word in selected_words).strip()
     segment_ids = _unique_values(word.get("segment_id") for word in selected_words if word.get("segment_id"))
     segment_indexes = _unique_values(
@@ -202,17 +209,17 @@ def create_transcript_cut_decision(
         "id": str(uuid.uuid4()),
         "kind": "transcript_cut",
         "action": "cut",
-        "source": "manual_text_selection",
+        "source": source,
         "status": "active",
         "text": text,
-        "word_start_time": round(start_time, 3),
-        "word_end_time": round(end_time, 3),
+        "word_start_time": round(word_start_time, 3),
+        "word_end_time": round(word_end_time, 3),
         "start_time": round(start_time, 3),
         "end_time": round(end_time, 3),
         "duration": round(max(0.0, end_time - start_time), 3),
-        "pre_roll_seconds": 0.0,
-        "post_roll_seconds": 0.0,
-        "trim_source": "word_bounds",
+        "pre_roll_seconds": round(next_pre_roll, 3),
+        "post_roll_seconds": round(next_post_roll, 3),
+        "trim_source": "auto_padding" if next_pre_roll or next_post_roll else "word_bounds",
         "word_start_index": word_start_index,
         "word_end_index": word_end_index,
         "segment_ids": segment_ids,

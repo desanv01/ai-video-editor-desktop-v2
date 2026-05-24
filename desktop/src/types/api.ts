@@ -288,6 +288,64 @@ export interface EditDecisionSync {
   export_plan: EditDecisionExportPlan;
 }
 
+export type CleanProfileId = "conservative" | "aggressive";
+export type CleanSuggestionType = "filler_word" | "dead_air" | "bad_take";
+
+export interface CleanProfile {
+  id: CleanProfileId | string;
+  label: string;
+  description: string;
+}
+
+export interface CleanSummary {
+  suggestions_total: number;
+  filler_word_count: number;
+  dead_air_count: number;
+  bad_take_count: number;
+  estimated_time_saved_seconds: number;
+}
+
+export interface CleanSuggestion {
+  id: string;
+  type: CleanSuggestionType | string;
+  title: string;
+  text: string;
+  reason: string;
+  confidence: number;
+  start_time: number;
+  end_time: number;
+  duration: number;
+  word_start_index: number | null;
+  word_end_index: number | null;
+  segment_id: string | null;
+  segment_index: number | null;
+  target_action: SegmentAction | string;
+  apply_kind: "transcript_cut" | "segment_override" | string;
+  padding_seconds: number | null;
+}
+
+export interface CleanAnalyzeResult {
+  schema_version: string;
+  profile: CleanProfileId | string;
+  profiles: CleanProfile[];
+  summary: CleanSummary;
+  suggestions: CleanSuggestion[];
+}
+
+export interface CleanApplyResult {
+  schema_version: string;
+  profile: CleanProfileId | string;
+  summary: CleanSummary;
+  created_transcript_cuts: TranscriptCutDecision[];
+  updated_segments: {
+    segment_id: string;
+    segment_index: number;
+    teacher_action: SegmentAction | string;
+    teacher_note: string | null;
+  }[];
+  suggestions: CleanSuggestion[];
+}
+
 // ── Segment ──
 
 export interface Segment {

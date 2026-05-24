@@ -18,14 +18,16 @@ import {
   Palette,
   RefreshCw,
   Scissors,
+  SlidersHorizontal,
   Sparkles,
   SplitSquareHorizontal,
   TextSelect,
+  Wand2,
   Volume2,
 } from "lucide-react";
 import { SegmentDetail } from "./SegmentDetail";
 import * as api from "../lib/api";
-import type { Chapter, EditPlan, RevalidationResult, Segment } from "../types/api";
+import type { Chapter, CleanAnalyzeResult, CleanProfileId, EditPlan, RevalidationResult, Segment } from "../types/api";
 
 export type GuidedWorkflowStepId = "transcribe" | "clean" | "sections" | "layout" | "polish" | "export";
 
@@ -105,6 +107,7 @@ type PanelProps = StepperProps & {
   chaptersLoading: boolean;
   approving: boolean;
   onAcceptAll: () => void;
+  onCleanApplied: () => Promise<void> | void;
   onApprove: () => void;
   onRefreshChapters: () => void;
   onSeekToTime: (time: number) => void;
@@ -185,6 +188,7 @@ export function GuidedWorkflowPanel({
   chaptersLoading,
   approving,
   onAcceptAll,
+  onCleanApplied,
   onApprove,
   onRefreshChapters,
   onSeekToTime,
@@ -195,6 +199,10 @@ export function GuidedWorkflowPanel({
   onStepChange,
 }: PanelProps) {
   const [layoutPreset, setLayoutPreset] = useState("slide-pip");
+  const [cleanProfile, setCleanProfile] = useState<CleanProfileId>("conservative");
+  const [cleanPreview, setCleanPreview] = useState<CleanAnalyzeResult | null>(null);
+  const [cleanBusy, setCleanBusy] = useState(false);
+  const [cleanMessage, setCleanMessage] = useState<string | null>(null);
   const [polishOptions, setPolishOptions] = useState({
     captions: true,
     sectionLabels: true,
@@ -223,6 +231,44 @@ export function GuidedWorkflowPanel({
   const saved = Math.max(0, original - estimated);
   const warningCount = (warnings?.warnings.length ?? 0) + (warnings?.consequence_alerts.length ?? 0);
   const StepIcon = activeStepMeta.icon;
+
+  const handleAnalyzeClean = async () => {
+    setCleanBusy(true);
+    setCleanMessage(null);
+    try {
+      const result = await api.analyzeCleanSuggestions(videoId, cleanProfile);
+      setCleanPreview(result);
+      setCleanMessage(`${result.summary.suggestions_total} suggestions found`);
+    } catch (error) {
+      setCleanMessage(`Clean analysis failed: ${error}`);
+    } finally {
+      setCleanBusy(false);
+    }
+  };
+
+  const handleApplyClean = async () => {
+    setCleanBusy(true);
+    setCleanMessage(null);
+    try {
+      const result = await api.applyCleanSuggestions(videoId, cleanProfile);
+      setCleanPreview({
+        schema_version: result.schema_version,
+        profile: result.profile,
+        profiles: cleanPreview?.profiles ?? [],
+        summary: result.summary,
+        suggestions: result.suggestions,
+      });
+      await onCleanApplied();
+      onCompleteStep("clean");
+      setCleanMessage(
+        `Applied ${result.created_transcript_cuts.length} filler cuts and ${result.updated_segments.length} segment edits`,
+      );
+    } catch (error) {
+      setCleanMessage(`Auto-clean failed: ${error}`);
+    } finally {
+      setCleanBusy(false);
+    }
+  };
 
   return (
     <aside className="flex h-full flex-col bg-surface-raised">
@@ -258,6 +304,50 @@ export function GuidedWorkflowPanel({
 
         {activeStep === "clean" && (
           <PanelStack>
+            <WorkflowCard title="Auto-Clean" icon={<Wand2 className="h-4 w-4 text-sky-300" />}>
+              <div className="space-y-3">
+                <OptionGroup
+                  value={cleanProfile}
+                  onChange={(value) => {
+                    setCleanProfile(value as CleanProfileId);
+                    setCleanPreview(null);
+                    setCleanMessage(null);
+                  }}
+                  options={[
+                    { value: "conservative", label: "Conservative", icon: SlidersHorizontal },
+                    { value: "aggressive", label: "Aggressive", icon: Sparkles },
+                  ]}
+                />
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={handleAnalyzeClean}
+                    disabled={cleanBusy}
+                    className="flex items-center justify-center gap-2 rounded-md bg-surface-raised px-3 py-2 text-xs font-semibold text-gray-200 transition-colors hover:bg-surface-border disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {cleanBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                    Analyze
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleApplyClean}
+                    disabled={cleanBusy}
+                    className="flex items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {cleanBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Scissors className="h-3.5 w-3.5" />}
+                    Auto-clean
+                  </button>
+                </div>
+                {cleanPreview && (
+                  <div className="grid grid-cols-3 gap-2">
+                    <MiniMetric label="Fillers" value={String(cleanPreview.summary.filler_word_count)} />
+                    <MiniMetric label="Dead air" value={String(cleanPreview.summary.dead_air_count)} />
+                    <MiniMetric label="Bad takes" value={String(cleanPreview.summary.bad_take_count)} />
+                  </div>
+                )}
+                {cleanMessage && <p className="text-xs leading-5 text-gray-400">{cleanMessage}</p>}
+              </div>
+            </WorkflowCard>
             <button
               type="button"
               onClick={onAcceptAll}
@@ -499,6 +589,15 @@ function Metric({ label, value, tone = "muted" }: { label: string; value: string
     <div className="rounded-md border border-surface-border bg-surface-overlay px-3 py-2">
       <div className={`text-sm font-semibold ${toneClass}`}>{value}</div>
       <div className="mt-1 text-[11px] text-gray-500">{label}</div>
+    </div>
+  );
+}
+
+function MiniMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-surface-border bg-surface-raised px-2 py-2">
+      <div className="text-sm font-semibold text-gray-100">{value}</div>
+      <div className="mt-0.5 truncate text-[11px] text-gray-500">{label}</div>
     </div>
   );
 }

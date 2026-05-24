@@ -26,6 +26,7 @@ from models.schemas import (
     VideoUploadResponse, VideoResponse, VideoDetailResponse,
     SegmentResponse, SegmentUpdateRequest, BulkSegmentUpdateRequest,
     EditDecisionSyncResponse,
+    CleanAnalyzeResponse, CleanApplyRequest, CleanApplyResponse,
     TranscriptCutDecisionRequest, TranscriptCutDecisionResponse, TranscriptCutTrimUpdateRequest,
     TranscriptTimelineResponse,
     EditPlanResponse, EditPlanApproveRequest,
@@ -46,6 +47,7 @@ from services.transcript_edit_decisions import (
     remove_transcript_cut_decision,
     update_transcript_cut_trim,
 )
+from services.clean_tools import analyze_clean_suggestions, apply_clean_suggestions
 from services.progress import get_progress as get_pipeline_progress
 from services.app_settings import (
     get_or_create_ai_settings,
@@ -456,6 +458,108 @@ async def get_edit_decision_sync(video_id: str, db: AsyncSession = Depends(get_d
 # ═══════════════════════════════════════════
 #  SEGMENT / REVIEW ENDPOINTS
 # ═══════════════════════════════════════════
+
+@router.get(
+    "/videos/{video_id}/clean/analyze",
+    response_model=CleanAnalyzeResponse,
+    tags=["Clean"],
+)
+async def analyze_clean_tools(
+    video_id: str,
+    profile: str = "conservative",
+    db: AsyncSession = Depends(get_db),
+):
+    """Preview Clean step suggestions for filler removal, dead air, and bad takes."""
+    result = await db.execute(
+        select(Video)
+        .options(selectinload(Video.transcript), selectinload(Video.segments), selectinload(Video.edit_plan))
+        .where(Video.id == video_id)
+    )
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(404, "Video not found")
+
+    timeline_words = []
+    if video.transcript:
+        timeline = build_transcript_timeline(
+            video_id=video.id,
+            transcript=video.transcript,
+            review_segments=video.segments,
+            duration_seconds=video.duration_seconds,
+        )
+        timeline_words = timeline["words"]
+
+    try:
+        return analyze_clean_suggestions(
+            segments=video.segments,
+            timeline_words=timeline_words,
+            plan=video.edit_plan,
+            profile_id=profile,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post(
+    "/videos/{video_id}/clean/apply",
+    response_model=CleanApplyResponse,
+    tags=["Clean"],
+)
+async def apply_clean_tools(
+    video_id: str,
+    request: CleanApplyRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Apply auto-clean suggestions as reviewable edit decisions."""
+    result = await db.execute(
+        select(Video)
+        .options(selectinload(Video.transcript), selectinload(Video.segments), selectinload(Video.edit_plan))
+        .where(Video.id == video_id)
+    )
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(404, "Video not found")
+
+    timeline_words = []
+    if video.transcript:
+        timeline = build_transcript_timeline(
+            video_id=video.id,
+            transcript=video.transcript,
+            review_segments=video.segments,
+            duration_seconds=video.duration_seconds,
+        )
+        timeline_words = timeline["words"]
+
+    plan = video.edit_plan
+    if not plan:
+        plan = EditPlan(
+            id=uuid.uuid4(),
+            video_id=video.id,
+            plan_json=[],
+            original_duration=video.duration_seconds,
+            estimated_duration=video.duration_seconds,
+            segments_total=len(video.segments),
+            segments_keep=len(video.segments),
+            segments_cut=0,
+            segments_highlight=0,
+        )
+        db.add(plan)
+        await db.flush()
+
+    try:
+        applied = apply_clean_suggestions(
+            plan=plan,
+            segments=video.segments,
+            timeline_words=timeline_words,
+            profile_id=request.profile,
+            suggestion_ids=set(request.suggestion_ids) if request.suggestion_ids else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    await db.commit()
+    return applied
+
 
 @router.get("/videos/{video_id}/segments", response_model=List[SegmentResponse], tags=["Review"])
 async def get_segments(video_id: str, db: AsyncSession = Depends(get_db)):
