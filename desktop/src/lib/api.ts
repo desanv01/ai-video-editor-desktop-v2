@@ -13,6 +13,7 @@ import type {
   TranscriptTimeline,
   TranscriptCutDecision, TranscriptCutDecisionRequest, TranscriptCutTrimUpdateRequest,
   EditDecisionSync,
+  CleanAnalyzeResult, CleanApplyResult, CleanProfileId,
   LocalTranscriptionModelCatalog, LocalTranscriptionModelDownload,
   LocalTranscriptionModelRemoveResult,
   Project, ProjectAsset, ProjectAssetUploadResponse,
@@ -229,6 +230,27 @@ export async function getEditDecisionSync(videoId: string): Promise<EditDecision
 // ═══════════════════════════════════════════
 //  SEGMENTS
 // ═══════════════════════════════════════════
+
+export async function analyzeCleanSuggestions(
+  videoId: string,
+  profile: CleanProfileId | string = "conservative",
+): Promise<CleanAnalyzeResult> {
+  return request(`/videos/${videoId}/clean/analyze?profile=${encodeURIComponent(profile)}`);
+}
+
+export async function applyCleanSuggestions(
+  videoId: string,
+  profile: CleanProfileId | string = "conservative",
+  suggestionIds?: string[],
+): Promise<CleanApplyResult> {
+  return request(`/videos/${videoId}/clean/apply`, {
+    method: "POST",
+    body: JSON.stringify({
+      profile,
+      suggestion_ids: suggestionIds && suggestionIds.length > 0 ? suggestionIds : null,
+    }),
+  });
+}
 
 export async function getSegments(videoId: string): Promise<Segment[]> {
   return request(`/videos/${videoId}/segments`);
