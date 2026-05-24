@@ -44,6 +44,7 @@ from models.schemas import (
     VideoUploadResponse,
 )
 from services.ffmpeg import ffmpeg_service
+from services.lecture_structure import extract_structure_reference_metadata
 from services.source_sync import (
     SYNC_METADATA_KEY,
     build_sync_metadata,
@@ -316,6 +317,22 @@ async def _upload_project_asset(
                 "audio_stream_tags": media_metadata.get("audio_tags") or {},
             }
         )
+
+    if metadata_json.get("structure_inference_ready"):
+        try:
+            metadata_json.update(
+                await extract_structure_reference_metadata(
+                    file_path=file_path,
+                    original_filename=file.filename or filename,
+                    structure_reference_role=str(metadata_json.get("structure_reference_role") or "teaching_material"),
+                )
+            )
+        except Exception as exc:
+            logger.warning("Could not extract structure metadata for %s: %s", file_path, exc)
+            metadata_json.update({
+                "text_extraction_status": "failed",
+                "text_extraction_error": str(exc),
+            })
 
     user_sync_offset = extract_user_sync_offset(user_metadata)
     if user_sync_offset is not None:

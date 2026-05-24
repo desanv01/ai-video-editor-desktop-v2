@@ -6,12 +6,14 @@ import re
 from typing import Any, Iterable
 
 
-SECTION_SCHEMA_VERSION = "phase6.topic-segmentation.v1"
+SECTION_SCHEMA_VERSION = "phase6.slide-aware-segmentation.v2"
 
 PAUSE_BOUNDARY_SECONDS = 2.0
 STRONG_PAUSE_SECONDS = 4.0
 CONTENT_SHIFT_THRESHOLD = 0.72
 MIN_BOUNDARY_SPACING_SECONDS = 30.0
+SLIDE_BOUNDARY_SPACING_SECONDS = 8.0
+STRUCTURE_MATCH_THRESHOLD = 0.18
 
 GENERIC_TOPICS = {"", "unknown", "general", "topic", "lecture", "content"}
 TRANSITION_CUES = (
@@ -78,14 +80,16 @@ def analyze_topic_sections(
     segments: Iterable[Any],
     timeline_words: Iterable[dict[str, Any]] | None = None,
     duration_seconds: float | None = None,
+    structure_references: Iterable[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Generate suggested lecture sections from transcript content and pauses."""
+    """Generate suggested lecture sections from transcript, visual, and teaching material cues."""
     segment_list = [
         segment
         for segment in sorted(list(segments or []), key=lambda item: item.segment_index)
         if _final_action(segment) != "cut"
     ]
     words = list(timeline_words or [])
+    references = _normalize_structure_references(structure_references)
     if not segment_list:
         return {
             "schema_version": SECTION_SCHEMA_VERSION,
@@ -95,13 +99,13 @@ def analyze_topic_sections(
             "youtube_format": "",
         }
 
-    boundaries = _detect_boundaries(segment_list, words)
-    sections = _build_sections(segment_list, boundaries, duration_seconds, words)
+    boundaries = _detect_boundaries(segment_list, words, references)
+    sections = _build_sections(segment_list, boundaries, duration_seconds, words, references)
     chapters = [_chapter_from_section(section) for section in sections]
 
     return {
         "schema_version": SECTION_SCHEMA_VERSION,
-        "summary": _summary(sections),
+        "summary": _summary(sections, references),
         "sections": sections,
         "chapters": chapters,
         "youtube_format": "\n".join(
@@ -110,7 +114,12 @@ def analyze_topic_sections(
     }
 
 
-def _detect_boundaries(segments: list[Any], words: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _detect_boundaries(
+    segments: list[Any],
+    words: list[dict[str, Any]],
+    references: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    start_match = _best_structure_match(segments[0], words, references)
     boundaries: list[dict[str, Any]] = [
         {
             "segment_index": segments[0].segment_index,
@@ -121,20 +130,35 @@ def _detect_boundaries(segments: list[Any], words: list[dict[str, Any]]) -> list
                 "long_pause": False,
                 "content_shift": False,
                 "transition_cue": False,
+                "slide_change": bool(getattr(segments[0], "has_slide_change", False)),
+                "structure_title_change": False,
                 "pause_seconds": 0.0,
                 "content_shift_score": 0.0,
+                "structure_match_confidence": start_match["confidence"] if start_match else 0.0,
+                "structure_title": start_match["title"] if start_match else None,
+                "structure_reference_role": start_match["reference_role"] if start_match else None,
             },
+            "structure_match": start_match,
         }
     ]
     last_boundary_time = float(segments[0].start_time or 0.0)
 
     for previous, current in zip(segments, segments[1:]):
-        candidate = _boundary_candidate(previous, current, words)
+        candidate = _boundary_candidate(previous, current, words, references)
         if not candidate["is_boundary"]:
             continue
 
         elapsed = float(current.start_time or 0.0) - last_boundary_time
-        if elapsed < MIN_BOUNDARY_SPACING_SECONDS and candidate["confidence"] < 0.72:
+        is_slide_structure_boundary = (
+            candidate["signals"]["slide_change"]
+            and candidate["signals"]["structure_title_change"]
+            and elapsed >= SLIDE_BOUNDARY_SPACING_SECONDS
+        )
+        if (
+            elapsed < MIN_BOUNDARY_SPACING_SECONDS
+            and candidate["confidence"] < 0.72
+            and not is_slide_structure_boundary
+        ):
             continue
 
         boundaries.append({
@@ -142,13 +166,19 @@ def _detect_boundaries(segments: list[Any], words: list[dict[str, Any]]) -> list
             "confidence": candidate["confidence"],
             "reason": candidate["reason"],
             "signals": candidate["signals"],
+            "structure_match": candidate["structure_match"],
         })
         last_boundary_time = float(current.start_time or 0.0)
 
     return boundaries
 
 
-def _boundary_candidate(previous: Any, current: Any, words: list[dict[str, Any]]) -> dict[str, Any]:
+def _boundary_candidate(
+    previous: Any,
+    current: Any,
+    words: list[dict[str, Any]],
+    references: list[dict[str, Any]],
+) -> dict[str, Any]:
     previous_topic = _normalize_topic(getattr(previous, "topic_label", None))
     current_topic = _normalize_topic(getattr(current, "topic_label", None))
     topic_change = bool(current_topic and previous_topic and current_topic != previous_topic)
@@ -167,6 +197,10 @@ def _boundary_candidate(previous: Any, current: Any, words: list[dict[str, Any]]
         and content_shift_score >= CONTENT_SHIFT_THRESHOLD
     )
     transition_cue = _has_transition_cue(getattr(current, "text", "") or "")
+    slide_change = _has_slide_change(previous, current)
+    previous_structure = _best_structure_match(previous, words, references)
+    current_structure = _best_structure_match(current, words, references)
+    structure_title_change = _structure_title_changed(previous_structure, current_structure)
 
     score = 0.0
     reasons: list[str] = []
@@ -182,8 +216,19 @@ def _boundary_candidate(previous: Any, current: Any, words: list[dict[str, Any]]
     if transition_cue:
         score += 0.2
         reasons.append("teacher transition phrase")
+    if slide_change:
+        score += 0.2
+        reasons.append("slide changed")
+    if structure_title_change and current_structure:
+        score += 0.28
+        reasons.append(f"teaching material title changed to {_clean_label(current_structure['title'])}")
 
-    is_boundary = score >= 0.46 or strong_pause or (topic_change and (long_pause or content_shift))
+    is_boundary = (
+        score >= 0.46
+        or strong_pause
+        or (slide_change and structure_title_change)
+        or (topic_change and (long_pause or content_shift))
+    )
     return {
         "is_boundary": is_boundary,
         "confidence": round(min(0.96, max(0.35, score)), 3),
@@ -193,9 +238,15 @@ def _boundary_candidate(previous: Any, current: Any, words: list[dict[str, Any]]
             "long_pause": long_pause,
             "content_shift": content_shift,
             "transition_cue": transition_cue,
+            "slide_change": slide_change,
+            "structure_title_change": structure_title_change,
             "pause_seconds": round(pause_seconds, 3),
             "content_shift_score": round(content_shift_score, 3),
+            "structure_match_confidence": current_structure["confidence"] if current_structure else 0.0,
+            "structure_title": current_structure["title"] if current_structure else None,
+            "structure_reference_role": current_structure["reference_role"] if current_structure else None,
         },
+        "structure_match": current_structure,
     }
 
 
@@ -204,6 +255,7 @@ def _build_sections(
     boundaries: list[dict[str, Any]],
     duration_seconds: float | None,
     words: list[dict[str, Any]],
+    references: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     segment_by_index = {segment.segment_index: segment for segment in segments}
     sections: list[dict[str, Any]] = []
@@ -224,7 +276,13 @@ def _build_sections(
         start_time = float(section_segments[0].start_time or 0.0)
         end_time = _section_end_time(section_segments, duration_seconds)
         keywords = _section_keywords(section_segments, words)
-        label = _section_label(section_segments, keywords, index + 1)
+        structure_match = _section_structure_match(
+            section_segments,
+            boundary.get("structure_match"),
+            words,
+            references,
+        )
+        label = _section_label(section_segments, keywords, index + 1, structure_match)
 
         sections.append({
             "id": f"section-{index + 1:02d}-{section_segments[0].segment_index}",
@@ -246,6 +304,8 @@ def _build_sections(
             "confidence": boundary["confidence"],
             "boundary_reason": boundary["reason"],
             "source_signals": boundary["signals"],
+            "label_source": "teaching_material" if structure_match else "transcript",
+            "structure_reference": structure_match,
         })
 
     return sections
@@ -262,10 +322,14 @@ def _chapter_from_section(section: dict[str, Any]) -> dict[str, Any]:
         "boundary_reason": section["boundary_reason"],
         "keywords": section["keywords"],
         "segment_count": section["segment_count"],
+        "structure_reference": section.get("structure_reference"),
     }
 
 
-def _summary(sections: list[dict[str, Any]]) -> dict[str, Any]:
+def _summary(
+    sections: list[dict[str, Any]],
+    references: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     return {
         "sections_total": len(sections),
         "chapters_total": len(sections),
@@ -279,6 +343,13 @@ def _summary(sections: list[dict[str, Any]]) -> dict[str, Any]:
             sum(float(section.get("duration") or 0.0) for section in sections),
             3,
         ),
+        "structure_reference_count": len(references or []),
+        "slide_aware_sections": sum(
+            1
+            for section in sections
+            if section.get("structure_reference")
+            or (section.get("source_signals") or {}).get("slide_change")
+        ),
     }
 
 
@@ -289,7 +360,15 @@ def _section_end_time(section_segments: list[Any], duration_seconds: float | Non
     return min(max(end_time, 0.0), float(duration_seconds))
 
 
-def _section_label(section_segments: list[Any], keywords: list[str], index: int) -> str:
+def _section_label(
+    section_segments: list[Any],
+    keywords: list[str],
+    index: int,
+    structure_match: dict[str, Any] | None = None,
+) -> str:
+    if structure_match and structure_match.get("title"):
+        return _clean_label(structure_match["title"])
+
     topic_counts: dict[str, int] = {}
     for segment in section_segments:
         topic = _normalize_topic(getattr(segment, "topic_label", None))
@@ -302,6 +381,25 @@ def _section_label(section_segments: list[Any], keywords: list[str], index: int)
     if keywords:
         return " ".join(word.capitalize() for word in keywords[:3])
     return f"Section {index}"
+
+
+def _section_structure_match(
+    section_segments: list[Any],
+    boundary_match: dict[str, Any] | None,
+    words: list[dict[str, Any]],
+    references: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if boundary_match:
+        return boundary_match
+
+    matches = [
+        match
+        for segment in section_segments
+        if (match := _best_structure_match(segment, words, references))
+    ]
+    if not matches:
+        return None
+    return max(matches, key=lambda item: item.get("confidence", 0.0))
 
 
 def _section_summary(section_segments: list[Any]) -> str:
@@ -379,6 +477,182 @@ def _content_shift(left: set[str], right: set[str]) -> float:
     return 1.0 - overlap
 
 
+def _normalize_structure_references(
+    structure_references: Iterable[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    references: list[dict[str, Any]] = []
+    for reference in structure_references or []:
+        if not isinstance(reference, dict):
+            continue
+        items = []
+        for item in reference.get("items") or reference.get("titles") or []:
+            normalized = _normalize_structure_item(item, reference)
+            if normalized:
+                items.append(normalized)
+        if items:
+            references.append({
+                "asset_id": reference.get("asset_id"),
+                "source_filename": reference.get("source_filename") or reference.get("filename"),
+                "reference_role": reference.get("reference_role")
+                or reference.get("structure_reference_role")
+                or reference.get("role")
+                or "teaching_material",
+                "document_format": reference.get("document_format") or reference.get("file_type"),
+                "title": _clean_label(reference.get("title")),
+                "items": items,
+            })
+    return references
+
+
+def _normalize_structure_item(
+    item: Any,
+    reference: dict[str, Any],
+) -> dict[str, Any] | None:
+    if isinstance(item, str):
+        raw = {"title": item}
+    elif isinstance(item, dict):
+        raw = item
+    else:
+        return None
+
+    title = _first_non_empty(
+        raw.get("title"),
+        raw.get("heading"),
+        raw.get("label"),
+        _first_line(raw.get("text")),
+    )
+    text = _first_non_empty(raw.get("text"), raw.get("summary"), title)
+    if not title and not text:
+        return None
+
+    index = raw.get("index", raw.get("slide_index", raw.get("page_num", raw.get("page"))))
+    try:
+        item_index = int(index) if index is not None else None
+    except (TypeError, ValueError):
+        item_index = None
+
+    tokens = _content_tokens(" ".join(str(value or "") for value in (title, text)))
+    if not tokens:
+        return None
+
+    return {
+        "asset_id": reference.get("asset_id"),
+        "source_filename": reference.get("source_filename") or reference.get("filename"),
+        "reference_role": reference.get("reference_role")
+        or reference.get("structure_reference_role")
+        or reference.get("role")
+        or "teaching_material",
+        "document_format": reference.get("document_format") or reference.get("file_type"),
+        "index": item_index,
+        "title": _clean_label(title),
+        "text": _clip_text(text, 260),
+        "tokens": tokens,
+    }
+
+
+def _best_structure_match(
+    segment: Any,
+    words: list[dict[str, Any]],
+    references: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not references:
+        return None
+
+    segment_index = getattr(segment, "segment_index", None)
+    segment_words = " ".join(
+        str(word.get("text") or "")
+        for word in words
+        if word.get("segment_index") == segment_index
+    )
+    segment_text = " ".join(
+        str(value or "")
+        for value in (
+            getattr(segment, "topic_label", None),
+            getattr(segment, "summary", None),
+            getattr(segment, "text", None),
+            segment_words,
+        )
+    )
+    segment_tokens = _content_tokens(segment_text)
+    slide_index = getattr(segment, "slide_index", None)
+
+    best: dict[str, Any] | None = None
+    best_score = 0.0
+    for reference in references:
+        for item in reference["items"]:
+            index_score = _structure_index_score(slide_index, item.get("index"))
+            overlap_score = _structure_overlap_score(segment_tokens, item["tokens"])
+            score = max(index_score, overlap_score)
+            if index_score and overlap_score:
+                score = min(1.0, score + 0.12)
+            if score > best_score:
+                best_score = score
+                best = item
+
+    if not best or best_score < STRUCTURE_MATCH_THRESHOLD:
+        return None
+
+    return {
+        "asset_id": best.get("asset_id"),
+        "source_filename": best.get("source_filename"),
+        "reference_role": best.get("reference_role"),
+        "document_format": best.get("document_format"),
+        "index": best.get("index"),
+        "title": best.get("title"),
+        "confidence": round(min(0.98, best_score), 3),
+    }
+
+
+def _structure_index_score(slide_index: Any, structure_index: int | None) -> float:
+    if slide_index is None or structure_index is None:
+        return 0.0
+    try:
+        slide = int(slide_index)
+    except (TypeError, ValueError):
+        return 0.0
+    if slide == structure_index:
+        return 0.95
+    if slide + 1 == structure_index:
+        return 0.9
+    return 0.0
+
+
+def _structure_overlap_score(segment_tokens: set[str], item_tokens: set[str]) -> float:
+    if not segment_tokens or not item_tokens:
+        return 0.0
+    overlap = len(segment_tokens & item_tokens)
+    if overlap == 0:
+        return 0.0
+    return min(0.86, overlap / max(3, min(len(item_tokens), 8)))
+
+
+def _has_slide_change(previous: Any, current: Any) -> bool:
+    if bool(getattr(current, "has_slide_change", False)):
+        return True
+    previous_index = getattr(previous, "slide_index", None)
+    current_index = getattr(current, "slide_index", None)
+    return previous_index is not None and current_index is not None and previous_index != current_index
+
+
+def _structure_title_changed(
+    previous: dict[str, Any] | None,
+    current: dict[str, Any] | None,
+) -> bool:
+    if not current:
+        return False
+    if not previous:
+        return True
+    return (
+        current.get("asset_id"),
+        current.get("index"),
+        _normalize_topic(current.get("title")),
+    ) != (
+        previous.get("asset_id"),
+        previous.get("index"),
+        _normalize_topic(previous.get("title")),
+    )
+
+
 def _has_transition_cue(text: str) -> bool:
     normalized = " ".join(str(text or "").lower().split())
     return any(normalized.startswith(cue) or f" {cue} " in f" {normalized} " for cue in TRANSITION_CUES)
@@ -392,6 +666,22 @@ def _normalize_topic(value: Any) -> str:
 def _clean_label(value: Any) -> str:
     text = " ".join(str(value or "").strip().split())
     return text[:80]
+
+
+def _first_non_empty(*values: Any) -> str:
+    for value in values:
+        text = " ".join(str(value or "").strip().split())
+        if text:
+            return text
+    return ""
+
+
+def _first_line(value: Any) -> str:
+    for line in str(value or "").splitlines():
+        text = line.strip()
+        if text:
+            return text
+    return ""
 
 
 def _clip_text(value: Any, limit: int) -> str:

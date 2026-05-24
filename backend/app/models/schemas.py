@@ -407,8 +407,13 @@ class TopicSectionSignalResponse(BaseModel):
     long_pause: bool = False
     content_shift: bool = False
     transition_cue: bool = False
+    slide_change: bool = False
+    structure_title_change: bool = False
     pause_seconds: float = 0.0
     content_shift_score: float = 0.0
+    structure_match_confidence: float = 0.0
+    structure_title: Optional[str] = None
+    structure_reference_role: Optional[str] = None
 
 
 class LectureSectionResponse(BaseModel):
@@ -431,6 +436,8 @@ class LectureSectionResponse(BaseModel):
     confidence: float
     boundary_reason: str
     source_signals: TopicSectionSignalResponse
+    label_source: str = "transcript"
+    structure_reference: Optional[Dict[str, Any]] = None
 
 
 class ChapterResponse(BaseModel):
@@ -443,6 +450,7 @@ class ChapterResponse(BaseModel):
     boundary_reason: Optional[str] = None
     keywords: List[str] = Field(default_factory=list)
     segment_count: Optional[int] = None
+    structure_reference: Optional[Dict[str, Any]] = None
 
 
 class TopicSegmentationSummaryResponse(BaseModel):
@@ -450,6 +458,8 @@ class TopicSegmentationSummaryResponse(BaseModel):
     chapters_total: int = 0
     average_confidence: float = 0.0
     estimated_total_duration_seconds: float = 0.0
+    structure_reference_count: int = 0
+    slide_aware_sections: int = 0
 
 
 class TopicSegmentationResponse(BaseModel):
