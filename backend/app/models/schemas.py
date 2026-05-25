@@ -3,7 +3,7 @@ Pydantic schemas for API requests and responses.
 Updated for v2: speaker diarization, ASR provider tracking, domain terms.
 """
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 from typing import Any, Dict, Optional, List
 from datetime import datetime
 from uuid import UUID
@@ -18,6 +18,14 @@ from db.models import (
     VideoStatus,
     SegmentAction,
     SegmentType,
+)
+from services.layout_model import (
+    CameraCorner,
+    CameraShape,
+    LayoutAspectRatio,
+    LayoutMode,
+    LayoutSourceRole,
+    normalize_layout_cues,
 )
 
 
@@ -476,6 +484,67 @@ class TopicSegmentationResponse(BaseModel):
 #  SEGMENT
 # ═══════════════════════════════════════════
 
+class LayoutSourceRefResponse(BaseModel):
+    role: LayoutSourceRole
+    asset_id: Optional[str] = None
+    enabled: bool = True
+    track: str
+    sync_offset_seconds: float = 0.0
+
+    model_config = ConfigDict(extra="allow")
+
+
+class LayoutCueSourcesResponse(BaseModel):
+    screen: LayoutSourceRefResponse
+    camera: LayoutSourceRefResponse
+    audio: LayoutSourceRefResponse
+
+    model_config = ConfigDict(extra="allow")
+
+
+class LayoutCueTimingResponse(BaseModel):
+    start_time: float = 0.0
+    end_time: Optional[float] = None
+    duration_seconds: Optional[float] = None
+    transition_in: str = "cut"
+    transition_out: str = "cut"
+
+    model_config = ConfigDict(extra="allow")
+
+
+class LayoutCueOutputResponse(BaseModel):
+    aspect_ratio: LayoutAspectRatio = LayoutAspectRatio.LANDSCAPE_16_9
+
+    model_config = ConfigDict(extra="allow")
+
+
+class LayoutCueCameraResponse(BaseModel):
+    enabled: bool = False
+    shape: CameraShape = CameraShape.ROUNDED_RECTANGLE
+    corner: CameraCorner = CameraCorner.BOTTOM_RIGHT
+    size: str = "medium"
+    margin_percent: float = 4
+
+    model_config = ConfigDict(extra="allow")
+
+
+class LayoutCueResponse(BaseModel):
+    id: str
+    kind: str = "layout_cue"
+    schema_version: str
+    status: str = "planned"
+    layout: LayoutMode
+    start_time: float = 0.0
+    end_time: Optional[float] = None
+    timing: LayoutCueTimingResponse
+    sources: LayoutCueSourcesResponse
+    output: LayoutCueOutputResponse
+    camera: LayoutCueCameraResponse
+    reason: str = ""
+
+    model_config = ConfigDict(extra="allow")
+
+
 class SegmentResponse(BaseModel):
     id: UUID
     segment_index: int
@@ -616,8 +685,13 @@ class EditPlanResponse(BaseModel):
 
     @computed_field
     @property
-    def layout_cues(self) -> List[Dict[str, Any]]:
-        return self._payload().get("layout_cues", [])
+    def layout_cues(self) -> List[LayoutCueResponse]:
+        payload = self._payload()
+        cues = normalize_layout_cues(
+            payload.get("layout_cues", []),
+            duration_seconds=self.original_duration,
+        )
+        return [LayoutCueResponse.model_validate(cue) for cue in cues]
 
     @computed_field
     @property

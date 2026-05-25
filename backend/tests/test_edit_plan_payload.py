@@ -43,7 +43,10 @@ class EditPlanPayloadTests(unittest.TestCase):
 
         self.assertEqual(payload["schema_version"], EDIT_PLAN_SCHEMA_VERSION)
         self.assertEqual(payload["segments"][0]["action"], "highlight")
-        self.assertEqual(payload["layout_cues"][0]["layout"], "single_source_fullscreen")
+        self.assertEqual(payload["layout_cues"][0]["layout"], "full_screen_source")
+        self.assertEqual(payload["layout_cues"][0]["sources"]["screen"]["role"], "screen")
+        self.assertEqual(payload["layout_cues"][0]["sources"]["audio"]["enabled"], True)
+        self.assertEqual(payload["layout_cues"][0]["output"]["aspect_ratio"], "16:9")
         self.assertEqual(payload["polish_actions"][0]["kind"], "caption_policy")
         self.assertEqual(payload["export_metadata"]["source_duration_seconds"], 120.0)
         self.assertIn("youtube_1080p", payload["export_metadata"]["target_presets"])
