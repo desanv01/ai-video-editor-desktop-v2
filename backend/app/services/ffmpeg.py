@@ -207,6 +207,80 @@ class FFmpegService:
         return output_path
 
     @staticmethod
+    async def render_side_by_side_clip(
+        *,
+        screen_path: str,
+        camera_path: str,
+        output_path: str,
+        start_time: float,
+        end_time: float,
+        screen_sync_offset: float = 0.0,
+        camera_sync_offset: float = 0.0,
+        audio_path: str | None = None,
+        audio_sync_offset: float = 0.0,
+        output_width: int = 1920,
+        output_height: int = 1080,
+    ) -> str:
+        """Render one timeline range as equal-width screen and camera panels."""
+        cmd = FFmpegService.build_side_by_side_command(
+            screen_path=screen_path,
+            camera_path=camera_path,
+            output_path=output_path,
+            start_time=start_time,
+            end_time=end_time,
+            screen_sync_offset=screen_sync_offset,
+            camera_sync_offset=camera_sync_offset,
+            audio_path=audio_path,
+            audio_sync_offset=audio_sync_offset,
+            output_width=output_width,
+            output_height=output_height,
+        )
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        _, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            raise RuntimeError(f"Side-by-side render failed: {stderr.decode()[:800]}")
+
+        return output_path
+
+    @staticmethod
+    async def render_full_source_clip(
+        *,
+        source_path: str,
+        output_path: str,
+        start_time: float,
+        end_time: float,
+        source_sync_offset: float = 0.0,
+        audio_path: str | None = None,
+        audio_sync_offset: float = 0.0,
+        output_width: int = 1920,
+        output_height: int = 1080,
+    ) -> str:
+        """Render one source full-frame on the target canvas, with optional separate audio."""
+        cmd = FFmpegService.build_full_source_command(
+            source_path=source_path,
+            output_path=output_path,
+            start_time=start_time,
+            end_time=end_time,
+            source_sync_offset=source_sync_offset,
+            audio_path=audio_path,
+            audio_sync_offset=audio_sync_offset,
+            output_width=output_width,
+            output_height=output_height,
+        )
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        _, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            raise RuntimeError(f"Full-source render failed: {stderr.decode()[:800]}")
+
+        return output_path
+
+    @staticmethod
     def build_picture_in_picture_command(
         *,
         screen_path: str,
@@ -307,6 +381,124 @@ class FFmpegService:
         return cmd
 
     @staticmethod
+    def build_side_by_side_command(
+        *,
+        screen_path: str,
+        camera_path: str,
+        output_path: str,
+        start_time: float,
+        end_time: float,
+        screen_sync_offset: float = 0.0,
+        camera_sync_offset: float = 0.0,
+        audio_path: str | None = None,
+        audio_sync_offset: float = 0.0,
+        output_width: int = 1920,
+        output_height: int = 1080,
+    ) -> list[str]:
+        """Build the ffmpeg command used for a single side-by-side clip."""
+        duration = max(0.001, float(end_time) - float(start_time))
+        output_width = max(2, int(output_width or 1920))
+        output_height = max(2, int(output_height or 1080))
+        left_width = _even_int(output_width / 2)
+        right_width = max(2, output_width - left_width)
+
+        audio_input_path = audio_path or screen_path
+        uses_separate_audio = bool(audio_path and os.path.abspath(audio_path) != os.path.abspath(screen_path))
+        filter_complex = (
+            f"[0:v]scale={left_width}:{output_height}:force_original_aspect_ratio=decrease,"
+            f"pad={left_width}:{output_height}:(ow-iw)/2:(oh-ih)/2,setsar=1[left];"
+            f"[1:v]scale={right_width}:{output_height}:force_original_aspect_ratio=decrease,"
+            f"pad={right_width}:{output_height}:(ow-iw)/2:(oh-ih)/2,setsar=1[right];"
+            f"[left][right]hstack=inputs=2[v]"
+        )
+
+        cmd = [
+            "ffmpeg",
+            "-ss",
+            str(FFmpegService._source_timestamp(start_time, screen_sync_offset)),
+            "-t",
+            str(duration),
+            "-i",
+            screen_path,
+            "-ss",
+            str(FFmpegService._source_timestamp(start_time, camera_sync_offset)),
+            "-t",
+            str(duration),
+            "-i",
+            camera_path,
+        ]
+        if uses_separate_audio:
+            cmd.extend([
+                "-ss",
+                str(FFmpegService._source_timestamp(start_time, audio_sync_offset)),
+                "-t",
+                str(duration),
+                "-i",
+                audio_input_path,
+            ])
+
+        audio_map = "2:a?" if uses_separate_audio else "0:a?"
+        cmd.extend(FFmpegService._encoded_video_output_args(filter_complex, audio_map, output_path))
+        return cmd
+
+    @staticmethod
+    def build_full_source_command(
+        *,
+        source_path: str,
+        output_path: str,
+        start_time: float,
+        end_time: float,
+        source_sync_offset: float = 0.0,
+        audio_path: str | None = None,
+        audio_sync_offset: float = 0.0,
+        output_width: int = 1920,
+        output_height: int = 1080,
+    ) -> list[str]:
+        """Build the ffmpeg command used for full-screen source or full-camera clips."""
+        duration = max(0.001, float(end_time) - float(start_time))
+        output_width = max(2, int(output_width or 1920))
+        output_height = max(2, int(output_height or 1080))
+        audio_input_path = audio_path or source_path
+        uses_separate_audio = bool(audio_path and os.path.abspath(audio_path) != os.path.abspath(source_path))
+        filter_complex = (
+            f"[0:v]scale={output_width}:{output_height}:force_original_aspect_ratio=decrease,"
+            f"pad={output_width}:{output_height}:(ow-iw)/2:(oh-ih)/2,setsar=1[v]"
+        )
+
+        cmd = [
+            "ffmpeg",
+            "-ss",
+            str(FFmpegService._source_timestamp(start_time, source_sync_offset)),
+            "-t",
+            str(duration),
+            "-i",
+            source_path,
+        ]
+        if uses_separate_audio:
+            cmd.extend([
+                "-ss",
+                str(FFmpegService._source_timestamp(start_time, audio_sync_offset)),
+                "-t",
+                str(duration),
+                "-i",
+                audio_input_path,
+            ])
+
+        audio_map = "1:a?" if uses_separate_audio else "0:a?"
+        cmd.extend(FFmpegService._encoded_video_output_args(filter_complex, audio_map, output_path))
+        return cmd
+
+    @staticmethod
+    def output_dimensions_for_aspect_ratio(aspect_ratio: str | None) -> tuple[int, int]:
+        """Return the default render canvas for a supported layout aspect ratio."""
+        return {
+            "4:3": (1440, 1080),
+            "1:1": (1080, 1080),
+            "9:16": (1080, 1920),
+            "16:9": (1920, 1080),
+        }.get(str(aspect_ratio or "16:9"), (1920, 1080))
+
+    @staticmethod
     def _source_timestamp(timeline_time: float, sync_offset: float) -> float:
         return round(max(0.0, float(timeline_time or 0.0) - float(sync_offset or 0.0)), 3)
 
@@ -377,6 +569,32 @@ class FFmpegService:
             "bottom_left": (left, bottom),
             "bottom_right": (right, bottom),
         }.get(corner_value, (right, bottom))
+
+    @staticmethod
+    def _encoded_video_output_args(filter_complex: str, audio_map: str, output_path: str) -> list[str]:
+        return [
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            "[v]",
+            "-map",
+            audio_map,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "23",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-shortest",
+            "-movflags",
+            "+faststart",
+            "-y",
+            output_path,
+        ]
 
     @staticmethod
     async def concat_videos(clip_paths: List[str], output_path: str) -> str:

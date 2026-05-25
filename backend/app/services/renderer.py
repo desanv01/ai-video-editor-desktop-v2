@@ -147,8 +147,9 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
 
         clip_paths = []
         layout_clip_count = 0
+        layout_render_counts: dict[str, int] = {}
         for i, render_range in enumerate(render_ranges):
-            rendered_paths, rendered_layout_clips = await _render_range_clips(
+            rendered_paths, rendered_layout_counts = await _render_range_clips(
                 video=video,
                 render_range=render_range,
                 range_index=i,
@@ -156,10 +157,12 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
                 layout_context=layout_render_context,
             )
             clip_paths.extend(rendered_paths)
-            layout_clip_count += rendered_layout_clips
+            for layout, count in rendered_layout_counts.items():
+                layout_render_counts[layout] = layout_render_counts.get(layout, 0) + count
+                layout_clip_count += count
 
         logger.info(
-            "  Prepared %s clips (%s picture-in-picture layout clips)",
+            "  Prepared %s clips (%s rendered layout clips)",
             len(clip_paths),
             layout_clip_count,
         )
@@ -209,8 +212,13 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
             render_ranges,
             sync_plan,
             render_metadata_extra={
-                "layout_renderer": "picture_in_picture" if layout_clip_count else "single_source",
-                "picture_in_picture_clip_count": layout_clip_count,
+                "layout_renderer": "phase7_layouts" if layout_clip_count else "single_source",
+                "layout_clip_count": layout_clip_count,
+                "layout_render_counts": layout_render_counts,
+                "picture_in_picture_clip_count": layout_render_counts.get(LayoutMode.PICTURE_IN_PICTURE.value, 0),
+                "side_by_side_clip_count": layout_render_counts.get(LayoutMode.SIDE_BY_SIDE.value, 0),
+                "full_screen_source_clip_count": layout_render_counts.get(LayoutMode.FULL_SCREEN_SOURCE.value, 0),
+                "full_camera_source_clip_count": layout_render_counts.get(LayoutMode.FULL_CAMERA_SOURCE.value, 0),
             },
             artifact_paths={
                 "edited_video": output_path,
@@ -259,7 +267,9 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
             "segments_removed": len(segments) - len(included_segment_ids),
             "playable_ranges": len(render_ranges),
             "transcript_cuts_applied": sync_plan["export_plan"]["transcript_cut_count"],
-            "picture_in_picture_clips": layout_clip_count,
+            "picture_in_picture_clips": layout_render_counts.get(LayoutMode.PICTURE_IN_PICTURE.value, 0),
+            "layout_clip_count": layout_clip_count,
+            "layout_render_counts": layout_render_counts,
         }
 
     except Exception as e:
@@ -280,7 +290,7 @@ async def _build_layout_render_context(
     db: AsyncSession,
 ) -> LayoutRenderContext | None:
     cues = list(plan_payload.get("layout_cues") or [])
-    if not any(_is_picture_in_picture_cue(cue) for cue in cues):
+    if not any(_is_renderable_layout_cue(cue) for cue in cues):
         return None
     if not video.project_id:
         return None
@@ -306,36 +316,26 @@ async def _render_range_clips(
     range_index: int,
     clip_dir: str,
     layout_context: LayoutRenderContext | None,
-) -> tuple[list[str], int]:
+) -> tuple[list[str], dict[str, int]]:
     clip_paths = []
-    layout_clip_count = 0
+    layout_counts: dict[str, int] = {}
     spans = _layout_spans_for_range(render_range, layout_context.cues if layout_context else [])
 
     for span_index, (start_time, end_time, cue) in enumerate(spans):
         raw_clip = os.path.join(clip_dir, f"raw_{range_index:04d}_{span_index:02d}.mp4")
-        if layout_context and _is_picture_in_picture_cue(cue):
-            screen_asset = _cue_asset(cue, "screen", layout_context) or layout_context.fallback_screen_asset
-            camera_asset = _cue_asset(cue, "camera", layout_context) or layout_context.fallback_camera_asset
-            audio_asset = _cue_asset(cue, "audio", layout_context) or layout_context.fallback_audio_asset
-            if screen_asset and camera_asset:
-                await ffmpeg_service.render_picture_in_picture_clip(
-                    screen_path=screen_asset.file_path,
-                    camera_path=camera_asset.file_path,
-                    audio_path=audio_asset.file_path if audio_asset else None,
-                    output_path=raw_clip,
-                    start_time=start_time,
-                    end_time=end_time,
-                    screen_sync_offset=_cue_sync_offset(cue, "screen", screen_asset),
-                    camera_sync_offset=_cue_sync_offset(cue, "camera", camera_asset),
-                    audio_sync_offset=_cue_sync_offset(cue, "audio", audio_asset),
-                    camera_corner=str(_dict_value(cue.get("camera")).get("corner") or "bottom_right"),
-                    camera_shape=str(_dict_value(cue.get("camera")).get("shape") or "rounded_rectangle"),
-                    camera_size=str(_dict_value(cue.get("camera")).get("size") or "medium"),
-                    margin_percent=_float_value(_dict_value(cue.get("camera")).get("margin_percent"), 4.0),
-                )
-                layout_clip_count += 1
-            else:
-                await _trim_single_source_clip(video.file_path, raw_clip, start_time, end_time)
+        rendered_layout = None
+        if layout_context and _is_renderable_layout_cue(cue):
+            rendered_layout = await _render_layout_span(
+                cue=cue,
+                layout_context=layout_context,
+                output_path=raw_clip,
+                fallback_video_path=video.file_path,
+                start_time=start_time,
+                end_time=end_time,
+            )
+
+        if rendered_layout:
+            layout_counts[rendered_layout] = layout_counts.get(rendered_layout, 0) + 1
         else:
             await _trim_single_source_clip(video.file_path, raw_clip, start_time, end_time)
 
@@ -356,7 +356,103 @@ async def _render_range_clips(
             os.rename(raw_clip, final_clip)
         clip_paths.append(final_clip)
 
-    return clip_paths, layout_clip_count
+    return clip_paths, layout_counts
+
+
+async def _render_layout_span(
+    *,
+    cue: dict | None,
+    layout_context: LayoutRenderContext,
+    output_path: str,
+    fallback_video_path: str,
+    start_time: float,
+    end_time: float,
+) -> str | None:
+    layout = str(_dict_value(cue).get("layout") or "")
+    output_width, output_height = FFmpegService.output_dimensions_for_aspect_ratio(
+        _dict_value(_dict_value(cue).get("output")).get("aspect_ratio")
+    )
+    screen_asset = _cue_asset(cue, "screen", layout_context) or layout_context.fallback_screen_asset
+    camera_asset = _cue_asset(cue, "camera", layout_context) or layout_context.fallback_camera_asset
+    audio_asset = _cue_asset(cue, "audio", layout_context) or layout_context.fallback_audio_asset
+
+    if layout == LayoutMode.PICTURE_IN_PICTURE.value and screen_asset and camera_asset:
+        await ffmpeg_service.render_picture_in_picture_clip(
+            screen_path=screen_asset.file_path,
+            camera_path=camera_asset.file_path,
+            audio_path=audio_asset.file_path if audio_asset else None,
+            output_path=output_path,
+            start_time=start_time,
+            end_time=end_time,
+            screen_sync_offset=_cue_sync_offset(cue, "screen", screen_asset),
+            camera_sync_offset=_cue_sync_offset(cue, "camera", camera_asset),
+            audio_sync_offset=_cue_sync_offset(cue, "audio", audio_asset),
+            output_width=output_width,
+            output_height=output_height,
+            camera_corner=str(_dict_value(cue.get("camera")).get("corner") or "bottom_right"),
+            camera_shape=str(_dict_value(cue.get("camera")).get("shape") or "rounded_rectangle"),
+            camera_size=str(_dict_value(cue.get("camera")).get("size") or "medium"),
+            margin_percent=_float_value(_dict_value(cue.get("camera")).get("margin_percent"), 4.0),
+        )
+        return layout
+
+    if layout == LayoutMode.SIDE_BY_SIDE.value and screen_asset and camera_asset:
+        await ffmpeg_service.render_side_by_side_clip(
+            screen_path=screen_asset.file_path,
+            camera_path=camera_asset.file_path,
+            audio_path=audio_asset.file_path if audio_asset else None,
+            output_path=output_path,
+            start_time=start_time,
+            end_time=end_time,
+            screen_sync_offset=_cue_sync_offset(cue, "screen", screen_asset),
+            camera_sync_offset=_cue_sync_offset(cue, "camera", camera_asset),
+            audio_sync_offset=_cue_sync_offset(cue, "audio", audio_asset),
+            output_width=output_width,
+            output_height=output_height,
+        )
+        return layout
+
+    if layout == LayoutMode.FULL_SCREEN_SOURCE.value:
+        source_asset = screen_asset
+        if source_asset:
+            await ffmpeg_service.render_full_source_clip(
+                source_path=source_asset.file_path,
+                audio_path=audio_asset.file_path if audio_asset else None,
+                output_path=output_path,
+                start_time=start_time,
+                end_time=end_time,
+                source_sync_offset=_cue_sync_offset(cue, "screen", source_asset),
+                audio_sync_offset=_cue_sync_offset(cue, "audio", audio_asset),
+                output_width=output_width,
+                output_height=output_height,
+            )
+            return layout
+        if not screen_asset:
+            await ffmpeg_service.render_full_source_clip(
+                source_path=fallback_video_path,
+                output_path=output_path,
+                start_time=start_time,
+                end_time=end_time,
+                output_width=output_width,
+                output_height=output_height,
+            )
+            return layout
+
+    if layout == LayoutMode.FULL_CAMERA_SOURCE.value and camera_asset:
+        await ffmpeg_service.render_full_source_clip(
+            source_path=camera_asset.file_path,
+            audio_path=audio_asset.file_path if audio_asset else None,
+            output_path=output_path,
+            start_time=start_time,
+            end_time=end_time,
+            source_sync_offset=_cue_sync_offset(cue, "camera", camera_asset),
+            audio_sync_offset=_cue_sync_offset(cue, "audio", audio_asset),
+            output_width=output_width,
+            output_height=output_height,
+        )
+        return layout
+
+    return None
 
 
 async def _trim_single_source_clip(
@@ -414,6 +510,15 @@ def _cue_at_time(cues: list[dict], timestamp: float) -> dict | None:
 
 def _is_picture_in_picture_cue(cue: dict | None) -> bool:
     return isinstance(cue, dict) and cue.get("layout") == LayoutMode.PICTURE_IN_PICTURE.value
+
+
+def _is_renderable_layout_cue(cue: dict | None) -> bool:
+    return isinstance(cue, dict) and cue.get("layout") in {
+        LayoutMode.PICTURE_IN_PICTURE.value,
+        LayoutMode.SIDE_BY_SIDE.value,
+        LayoutMode.FULL_SCREEN_SOURCE.value,
+        LayoutMode.FULL_CAMERA_SOURCE.value,
+    }
 
 
 def _cue_asset(
