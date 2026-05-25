@@ -356,6 +356,73 @@ export interface CleanApplyResult {
   suggestions: CleanSuggestion[];
 }
 
+// ── Layout Cues ──
+
+export type LayoutSourceRole = "screen" | "camera" | "audio" | "primary_timeline";
+export type LayoutMode =
+  | "picture_in_picture"
+  | "side_by_side"
+  | "full_screen_source"
+  | "full_camera_source";
+export type LayoutAspectRatio = "16:9" | "4:3" | "1:1" | "9:16";
+export type CameraShape = "rectangle" | "rounded_rectangle" | "circle";
+export type CameraCorner = "top_left" | "top_right" | "bottom_left" | "bottom_right";
+
+export interface LayoutSourceRef {
+  role: LayoutSourceRole;
+  asset_id: string | null;
+  enabled: boolean;
+  track: string;
+  sync_offset_seconds: number;
+  [key: string]: unknown;
+}
+
+export interface LayoutCueSources {
+  screen: LayoutSourceRef;
+  camera: LayoutSourceRef;
+  audio: LayoutSourceRef;
+  [key: string]: unknown;
+}
+
+export interface LayoutCueTiming {
+  start_time: number;
+  end_time: number | null;
+  duration_seconds: number | null;
+  transition_in: string;
+  transition_out: string;
+  [key: string]: unknown;
+}
+
+export interface LayoutCueOutput {
+  aspect_ratio: LayoutAspectRatio;
+  [key: string]: unknown;
+}
+
+export interface LayoutCueCamera {
+  enabled: boolean;
+  shape: CameraShape;
+  corner: CameraCorner;
+  size: string;
+  margin_percent: number;
+  [key: string]: unknown;
+}
+
+export interface LayoutCue {
+  id: string;
+  kind: "layout_cue" | string;
+  schema_version: string;
+  status: "planned" | "suggested" | "active" | "applied" | string;
+  layout: LayoutMode;
+  start_time: number;
+  end_time: number | null;
+  timing: LayoutCueTiming;
+  sources: LayoutCueSources;
+  output: LayoutCueOutput;
+  camera: LayoutCueCamera;
+  reason: string;
+  [key: string]: unknown;
+}
+
 // ── Segment ──
 
 export interface Segment {
@@ -409,7 +476,7 @@ export interface EditPlan {
   sections: Record<string, unknown>[];
   chapters: Record<string, unknown>[];
   section_summary: Record<string, unknown>;
-  layout_cues: Record<string, unknown>[];
+  layout_cues: LayoutCue[];
   polish_actions: Record<string, unknown>[];
   export_metadata: Record<string, unknown>;
   original_duration: number | null;

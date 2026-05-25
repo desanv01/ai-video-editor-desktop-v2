@@ -5,6 +5,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Iterable
 
+from services.layout_model import default_layout_cues as default_phase7_layout_cues
+from services.layout_model import normalize_layout_cues
+
 
 EDIT_PLAN_SCHEMA_VERSION = "phase6.edit-plan.v2"
 
@@ -36,7 +39,10 @@ def normalize_plan_payload(plan_json: Any) -> dict[str, Any]:
     payload.setdefault("cleaning_suggestions", [])
     payload.setdefault("sections", [])
     payload.setdefault("chapters", [])
-    payload.setdefault("layout_cues", [])
+    payload["layout_cues"] = normalize_layout_cues(
+        payload.get("layout_cues", []),
+        duration_seconds=_payload_duration_seconds(payload),
+    )
     payload.setdefault("polish_actions", [])
     payload.setdefault("export_metadata", _default_export_metadata())
     payload["export_metadata"] = _dict_value(payload.get("export_metadata"))
@@ -81,19 +87,8 @@ def build_edit_plan_payload(
 
 
 def default_layout_cues(duration_seconds: float | None = None) -> list[dict[str, Any]]:
-    """Return conservative layout placeholders for Phase 7 to refine."""
-    return [
-        {
-            "id": "layout-default-full-source",
-            "kind": "layout_cue",
-            "status": "planned",
-            "layout": "single_source_fullscreen",
-            "source_role": "primary_timeline",
-            "start_time": 0.0,
-            "end_time": duration_seconds,
-            "reason": "Default single-source lecture layout until timed layout planning is available.",
-        }
-    ]
+    """Return conservative Phase 7 layout placeholders."""
+    return default_phase7_layout_cues(duration_seconds)
 
 
 def default_polish_actions() -> list[dict[str, Any]]:
@@ -185,6 +180,22 @@ def _default_export_metadata() -> dict[str, Any]:
         "artifacts": [],
         "updated_at": None,
     }
+
+
+def _payload_duration_seconds(payload: dict[str, Any]) -> float | None:
+    summary = _dict_value(payload.get("summary"))
+    for value in (
+        summary.get("original_duration_seconds"),
+        summary.get("estimated_duration_seconds"),
+        _dict_value(payload.get("export_metadata")).get("source_duration_seconds"),
+    ):
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _dict_value(value: Any) -> dict[str, Any]:
