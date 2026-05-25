@@ -684,12 +684,19 @@ class FFmpegService:
         video_path: str,
         srt_path: str,
         output_path: str,
-        font_size: int = 24
+        font_size: int = 24,
+        placement: str = "bottom_center",
+        style: dict | None = None,
     ) -> str:
         """Burn SRT subtitles into the video (requires re-encoding)."""
+        force_style = FFmpegService._subtitle_force_style(
+            font_size=font_size,
+            placement=placement,
+            style=style,
+        )
         cmd = [
             "ffmpeg", "-i", video_path,
-            "-vf", f"subtitles={srt_path}:force_style='FontSize={font_size},PrimaryColour=&HFFFFFF,OutlineColour=&H000000,Outline=2'",
+            "-vf", f"subtitles={FFmpegService._escape_subtitle_path(srt_path)}:force_style='{force_style}'",
             "-c:a", "copy",
             "-y",
             output_path
@@ -703,6 +710,48 @@ class FFmpegService:
             raise RuntimeError(f"Subtitle burn failed: {stderr.decode()}")
 
         return output_path
+
+    @staticmethod
+    def _subtitle_force_style(font_size: int, placement: str, style: dict | None = None) -> str:
+        style = dict(style or {})
+        primary = FFmpegService._ass_color(style.get("primary_color"), "FFFFFF")
+        outline = FFmpegService._ass_color(style.get("outline_color"), "000000")
+        outline_width = int(style.get("outline_width") if style.get("outline_width") is not None else 2)
+        border_style = 3 if style.get("background") == "box" else 1
+        alignment = {
+            "bottom_left": 1,
+            "bottom_center": 2,
+            "bottom_right": 3,
+            "top_left": 7,
+            "top_center": 8,
+            "top_right": 9,
+        }.get(str(placement or "bottom_center"), 2)
+        margin_v = 56 if alignment in {1, 2, 3} else 42
+        return (
+            f"FontSize={int(font_size or 24)},"
+            f"PrimaryColour={primary},"
+            f"OutlineColour={outline},"
+            f"Outline={max(0, min(8, outline_width))},"
+            f"BorderStyle={border_style},"
+            f"Alignment={alignment},"
+            f"MarginV={margin_v}"
+        )
+
+    @staticmethod
+    def _ass_color(value: object, default_rgb: str) -> str:
+        text = str(value or "").strip().lstrip("#")
+        if len(text) != 6:
+            text = default_rgb
+        try:
+            int(text, 16)
+        except ValueError:
+            text = default_rgb
+        red, green, blue = text[0:2], text[2:4], text[4:6]
+        return f"&H00{blue}{green}{red}"
+
+    @staticmethod
+    def _escape_subtitle_path(path: str) -> str:
+        return str(path).replace("\\", "/").replace(":", r"\:")
 
     @staticmethod
     async def extract_frame(video_path: str, timestamp: float, output_path: str) -> str:

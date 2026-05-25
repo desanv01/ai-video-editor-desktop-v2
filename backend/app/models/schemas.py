@@ -716,6 +716,35 @@ class EditPlanApproveRequest(BaseModel):
     teacher_notes: Optional[str] = None
 
 
+class CaptionStyleRequest(BaseModel):
+    font_size: Optional[int] = Field(default=None, ge=14, le=72)
+    font_family: Optional[str] = Field(default=None, max_length=80)
+    primary_color: Optional[str] = Field(default=None, max_length=7)
+    outline_color: Optional[str] = Field(default=None, max_length=7)
+    outline_width: Optional[int] = Field(default=None, ge=0, le=8)
+    background: Optional[str] = Field(default=None, max_length=30)
+    max_chars_per_line: Optional[int] = Field(default=None, ge=32, le=120)
+    max_duration_per_cue: Optional[float] = Field(default=None, ge=1.5, le=10.0)
+
+
+class CaptionRangeRequest(BaseModel):
+    id: Optional[str] = Field(default=None, max_length=80)
+    start_time: float = Field(ge=0)
+    end_time: float = Field(ge=0)
+    label: Optional[str] = Field(default=None, max_length=120)
+
+
+class CaptionPolicyUpdateRequest(BaseModel):
+    enabled: Optional[bool] = None
+    appearance: Optional[str] = Field(default=None, max_length=40)
+    placement: Optional[str] = Field(default=None, max_length=40)
+    export_behavior: Optional[str] = Field(default=None, max_length=40)
+    style: Optional[CaptionStyleRequest] = None
+    ranges: Optional[List[CaptionRangeRequest]] = None
+    section_intro_seconds: Optional[float] = Field(default=None, ge=1, le=30)
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
 # ═══════════════════════════════════════════
 #  COURSE MATERIAL
 # ═══════════════════════════════════════════

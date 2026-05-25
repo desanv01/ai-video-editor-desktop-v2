@@ -34,7 +34,7 @@ from sqlalchemy import select
 from db.models import Video, Transcript, Segment, EditPlan, ProjectAsset, SegmentAction, VideoStatus
 from services.ffmpeg import ffmpeg_service, FFmpegService
 from services.progress import start_step, complete_step, PipelineStep
-from services.edit_plan_payload import normalize_plan_payload, update_export_metadata
+from services.edit_plan_payload import get_caption_policy, normalize_plan_payload, update_export_metadata
 from services.layout_model import LayoutMode
 from services.transcript_edit_decisions import build_synced_timeline_plan
 from config import settings
@@ -181,19 +181,49 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
         # ── Step 4: Generate subtitles ──
         word_timestamps = transcript.words_json if transcript else None
 
-        srt_content = _generate_word_level_srt(render_ranges, word_timestamps)
+        caption_policy = get_caption_policy(plan_payload)
+        srt_content = _generate_word_level_srt(
+            render_ranges,
+            word_timestamps,
+            caption_policy=caption_policy,
+        )
         srt_filename = f"{video.id}_subtitles.srt"
         srt_path = os.path.join(settings.VIDEO_STORAGE_PATH, srt_filename)
-        with open(srt_path, "w", encoding="utf-8") as f:
-            f.write(srt_content)
-
-        vtt_content = _srt_to_vtt(srt_content)
         vtt_filename = f"{video.id}_subtitles.vtt"
         vtt_path = os.path.join(settings.VIDEO_STORAGE_PATH, vtt_filename)
-        with open(vtt_path, "w", encoding="utf-8") as f:
-            f.write(vtt_content)
+        sidecar_enabled = _caption_sidecar_enabled(caption_policy)
+        burn_in_enabled = _caption_burn_in_enabled(caption_policy)
 
-        logger.info(f"  Generated SRT + VTT subtitles")
+        if sidecar_enabled:
+            with open(srt_path, "w", encoding="utf-8") as f:
+                f.write(srt_content)
+            with open(vtt_path, "w", encoding="utf-8") as f:
+                f.write(_srt_to_vtt(srt_content))
+        else:
+            _remove_file(srt_path)
+            _remove_file(vtt_path)
+
+        if burn_in_enabled and srt_content.strip():
+            burn_srt_path = srt_path if sidecar_enabled else os.path.join(clip_dir, f"{video.id}_burn_subtitles.srt")
+            if not sidecar_enabled:
+                with open(burn_srt_path, "w", encoding="utf-8") as f:
+                    f.write(srt_content)
+            burned_output_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_edited_burned.mp4")
+            await ffmpeg_service.burn_subtitles(
+                video_path=output_path,
+                srt_path=burn_srt_path,
+                output_path=burned_output_path,
+                font_size=int(_dict_value(caption_policy.get("style")).get("font_size") or 24),
+                placement=str(caption_policy.get("placement") or "bottom_center"),
+                style=_dict_value(caption_policy.get("style")),
+            )
+            output_path = burned_output_path
+
+        logger.info(
+            "  Caption export policy: %s (%s cues)",
+            caption_policy.get("export_behavior"),
+            srt_content.count(" --> "),
+        )
 
         # ── Step 5: Generate chapter markers ──
         chapters = _generate_chapter_file(render_ranges)
@@ -219,11 +249,20 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
                 "side_by_side_clip_count": layout_render_counts.get(LayoutMode.SIDE_BY_SIDE.value, 0),
                 "full_screen_source_clip_count": layout_render_counts.get(LayoutMode.FULL_SCREEN_SOURCE.value, 0),
                 "full_camera_source_clip_count": layout_render_counts.get(LayoutMode.FULL_CAMERA_SOURCE.value, 0),
+                "caption_policy": {
+                    "enabled": bool(caption_policy.get("enabled")),
+                    "appearance": caption_policy.get("appearance"),
+                    "placement": caption_policy.get("placement"),
+                    "export_behavior": caption_policy.get("export_behavior"),
+                    "sidecar_files": sidecar_enabled,
+                    "burned_in": burn_in_enabled,
+                    "cue_count": srt_content.count(" --> "),
+                },
             },
             artifact_paths={
                 "edited_video": output_path,
-                "subtitles_srt": srt_path,
-                "subtitles_vtt": vtt_path,
+                "subtitles_srt": srt_path if sidecar_enabled else None,
+                "subtitles_vtt": vtt_path if sidecar_enabled else None,
                 "chapters": chapters_path,
                 "plan_json": plan_path,
             },
@@ -591,6 +630,7 @@ def _generate_word_level_srt(
     word_timestamps: list | None,
     max_chars_per_line: int = 80,
     max_duration_per_cue: float = 5.0,
+    caption_policy: dict | None = None,
 ) -> str:
     """
     Generate SRT subtitles with sentence-level timing.
@@ -601,6 +641,10 @@ def _generate_word_level_srt(
 
     The timestamps are REMAPPED to the edited timeline (cumulative offset).
     """
+    policy = _caption_policy_value(caption_policy)
+    style = _dict_value(policy.get("style"))
+    max_chars_per_line = int(style.get("max_chars_per_line") or max_chars_per_line)
+    max_duration_per_cue = float(style.get("max_duration_per_cue") or max_duration_per_cue)
     cues = []
     cumulative_offset = 0.0
 
@@ -684,8 +728,86 @@ def _generate_word_level_srt(
 
         cumulative_offset += seg_duration
 
-    # Build SRT string
+    cues = _filter_caption_cues(cues, render_ranges, policy)
     return FFmpegService.generate_srt(cues)
+
+
+def _caption_sidecar_enabled(caption_policy: dict | None) -> bool:
+    policy = _caption_policy_value(caption_policy)
+    behavior = str(policy.get("export_behavior") or "sidecar")
+    return bool(policy.get("enabled")) and behavior in {"sidecar", "sidecar_and_burn_in"}
+
+
+def _caption_burn_in_enabled(caption_policy: dict | None) -> bool:
+    policy = _caption_policy_value(caption_policy)
+    behavior = str(policy.get("export_behavior") or "sidecar")
+    return bool(policy.get("enabled")) and behavior in {"burn_in", "sidecar_and_burn_in"}
+
+
+def _caption_policy_value(caption_policy: dict | None) -> dict:
+    if isinstance(caption_policy, dict):
+        return get_caption_policy({"polish_actions": [{"kind": "caption_policy", **caption_policy}]})
+    return get_caption_policy({})
+
+
+def _filter_caption_cues(cues: list[dict], render_ranges: List[dict], caption_policy: dict) -> list[dict]:
+    if not caption_policy.get("enabled") or caption_policy.get("appearance") == "off":
+        return []
+    intervals = _caption_active_intervals(render_ranges, caption_policy)
+    if not intervals:
+        return list(cues)
+
+    filtered = []
+    for cue in cues:
+        cue_start = float(cue.get("start") or 0.0)
+        cue_end = float(cue.get("end") or cue_start)
+        for start, end in intervals:
+            if cue_start < end and cue_end > start:
+                filtered.append({
+                    **cue,
+                    "start": max(cue_start, start),
+                    "end": min(cue_end, end),
+                })
+                break
+    return [cue for cue in filtered if float(cue.get("end") or 0) > float(cue.get("start") or 0)]
+
+
+def _caption_active_intervals(render_ranges: List[dict], caption_policy: dict) -> list[tuple[float, float]]:
+    appearance = str(caption_policy.get("appearance") or "always")
+    if appearance == "always":
+        return []
+    if appearance == "highlight_segments":
+        return [
+            (float(item["output_start_time"]), float(item["output_end_time"]))
+            for item in render_ranges
+            if item.get("action") == SegmentAction.HIGHLIGHT.value
+        ]
+    if appearance == "section_starts":
+        seconds = _float_value(caption_policy.get("section_intro_seconds"), 6.0) or 6.0
+        intervals = []
+        current_topic = object()
+        for item in render_ranges:
+            segment = item.get("segment")
+            topic = getattr(segment, "topic_label", None) or getattr(segment, "summary", None) or item.get("segment_id")
+            if topic == current_topic:
+                continue
+            current_topic = topic
+            start = float(item["output_start_time"])
+            end = min(float(item["output_end_time"]), start + seconds)
+            if end > start:
+                intervals.append((start, end))
+        return intervals
+    if appearance == "manual_ranges":
+        intervals = []
+        for item in caption_policy.get("ranges") or []:
+            if not isinstance(item, dict):
+                continue
+            start = _float_value(item.get("start_time"), None)
+            end = _float_value(item.get("end_time"), None)
+            if start is not None and end is not None and end > start:
+                intervals.append((start, end))
+        return intervals
+    return []
 
 
 def _split_into_sentences(text: str, max_chars: int = 80) -> List[str]:
@@ -723,6 +845,14 @@ def _srt_to_vtt(srt_content: str) -> str:
         # Replace SRT time separator with VTT format
         vtt_lines.append(line.replace(",", "."))
     return "\n".join(vtt_lines)
+
+
+def _remove_file(path: str) -> None:
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        logger.warning("Could not remove stale caption sidecar: %s", path)
 
 
 # ═══════════════════════════════════════════

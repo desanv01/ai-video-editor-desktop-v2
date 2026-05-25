@@ -425,6 +425,52 @@ export interface LayoutCue {
 
 // ── Segment ──
 
+export type CaptionAppearance = "always" | "highlight_segments" | "section_starts" | "manual_ranges" | "off";
+export type CaptionPlacement =
+  | "bottom_center" | "bottom_left" | "bottom_right"
+  | "top_center" | "top_left" | "top_right";
+export type CaptionExportBehavior = "sidecar" | "burn_in" | "sidecar_and_burn_in" | "none";
+
+export interface CaptionStyle {
+  font_size: number;
+  font_family: string;
+  primary_color: string;
+  outline_color: string;
+  outline_width: number;
+  background: "transparent" | "box" | string;
+  max_chars_per_line: number;
+  max_duration_per_cue: number;
+}
+
+export interface CaptionRange {
+  id: string;
+  start_time: number;
+  end_time: number;
+  label: string;
+}
+
+export interface CaptionPolicy {
+  id: string;
+  kind: "caption_policy";
+  schema_version: string;
+  status: "planned" | "active" | string;
+  enabled: boolean;
+  appearance: CaptionAppearance;
+  placement: CaptionPlacement;
+  export_behavior: CaptionExportBehavior;
+  style: CaptionStyle;
+  ranges: CaptionRange[];
+  section_intro_seconds: number;
+  reason: string;
+  [key: string]: unknown;
+}
+
+export type PolishAction = CaptionPolicy | Record<string, unknown>;
+
+export type CaptionPolicyUpdate = Partial<Omit<CaptionPolicy, "id" | "kind" | "schema_version" | "status" | "style">> & {
+  style?: Partial<CaptionStyle>;
+};
+
 export interface Segment {
   id: string;
   segment_index: number;
@@ -477,7 +523,7 @@ export interface EditPlan {
   chapters: Record<string, unknown>[];
   section_summary: Record<string, unknown>;
   layout_cues: LayoutCue[];
-  polish_actions: Record<string, unknown>[];
+  polish_actions: PolishAction[];
   export_metadata: Record<string, unknown>;
   original_duration: number | null;
   estimated_duration: number | null;

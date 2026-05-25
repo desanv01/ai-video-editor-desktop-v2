@@ -827,6 +827,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
               chaptersLoading={chaptersLoading}
               approving={approving}
               onLayoutSettingsChange={setLayoutPreviewSettings}
+              onPolishPlanUpdated={setPlan}
               onAcceptAll={handleAcceptAll}
               onCleanApplied={handleCleanApplied}
               onApprove={handleApprove}
