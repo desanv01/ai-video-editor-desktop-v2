@@ -329,6 +329,7 @@ async def _render_range_clips(
                     camera_sync_offset=_cue_sync_offset(cue, "camera", camera_asset),
                     audio_sync_offset=_cue_sync_offset(cue, "audio", audio_asset),
                     camera_corner=str(_dict_value(cue.get("camera")).get("corner") or "bottom_right"),
+                    camera_shape=str(_dict_value(cue.get("camera")).get("shape") or "rounded_rectangle"),
                     camera_size=str(_dict_value(cue.get("camera")).get("size") or "medium"),
                     margin_percent=_float_value(_dict_value(cue.get("camera")).get("margin_percent"), 4.0),
                 )
