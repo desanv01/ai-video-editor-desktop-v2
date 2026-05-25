@@ -27,7 +27,19 @@ import {
 } from "lucide-react";
 import { SegmentDetail } from "./SegmentDetail";
 import * as api from "../lib/api";
-import type { Chapter, CleanAnalyzeResult, CleanProfileId, EditPlan, RevalidationResult, Segment } from "../types/api";
+import type {
+  CameraCorner,
+  CameraShape,
+  Chapter,
+  CleanAnalyzeResult,
+  CleanProfileId,
+  EditPlan,
+  LayoutAspectRatio,
+  LayoutCue,
+  LayoutMode,
+  RevalidationResult,
+  Segment,
+} from "../types/api";
 
 export type GuidedWorkflowStepId = "transcribe" | "clean" | "sections" | "layout" | "polish" | "export";
 
@@ -39,6 +51,37 @@ export type GuidedWorkflowStep = {
   description: string;
   icon: LucideIcon;
 };
+
+export type CameraSize = "small" | "medium" | "large";
+
+export type LayoutPreviewSettings = {
+  layout: LayoutMode;
+  aspectRatio: LayoutAspectRatio;
+  cameraCorner: CameraCorner;
+  cameraShape: CameraShape;
+  cameraSize: CameraSize;
+  cameraMarginPercent: number;
+};
+
+export const DEFAULT_LAYOUT_PREVIEW_SETTINGS: LayoutPreviewSettings = {
+  layout: "picture_in_picture",
+  aspectRatio: "16:9",
+  cameraCorner: "bottom_right",
+  cameraShape: "rounded_rectangle",
+  cameraSize: "medium",
+  cameraMarginPercent: 4,
+};
+
+export function layoutPreviewSettingsFromCue(cue: LayoutCue | null | undefined): LayoutPreviewSettings {
+  return {
+    layout: cue?.layout ?? DEFAULT_LAYOUT_PREVIEW_SETTINGS.layout,
+    aspectRatio: cue?.output.aspect_ratio ?? DEFAULT_LAYOUT_PREVIEW_SETTINGS.aspectRatio,
+    cameraCorner: cue?.camera.corner ?? DEFAULT_LAYOUT_PREVIEW_SETTINGS.cameraCorner,
+    cameraShape: cue?.camera.shape ?? DEFAULT_LAYOUT_PREVIEW_SETTINGS.cameraShape,
+    cameraSize: normalizeCameraSize(cue?.camera.size),
+    cameraMarginPercent: normalizeMarginPercent(cue?.camera.margin_percent),
+  };
+}
 
 export const GUIDED_WORKFLOW_STEPS: GuidedWorkflowStep[] = [
   {
@@ -102,10 +145,12 @@ type PanelProps = StepperProps & {
   segments: Segment[];
   selectedSegment: Segment | null;
   plan: EditPlan | null;
+  layoutSettings: LayoutPreviewSettings;
   warnings: RevalidationResult | null;
   chapters: Chapter[];
   chaptersLoading: boolean;
   approving: boolean;
+  onLayoutSettingsChange: (settings: LayoutPreviewSettings) => void;
   onAcceptAll: () => void;
   onCleanApplied: () => Promise<void> | void;
   onApprove: () => void;
@@ -183,10 +228,12 @@ export function GuidedWorkflowPanel({
   segments,
   selectedSegment,
   plan,
+  layoutSettings,
   warnings,
   chapters,
   chaptersLoading,
   approving,
+  onLayoutSettingsChange,
   onAcceptAll,
   onCleanApplied,
   onApprove,
@@ -198,7 +245,6 @@ export function GuidedWorkflowPanel({
   onPreviousStep,
   onStepChange,
 }: PanelProps) {
-  const [layoutPreset, setLayoutPreset] = useState("slide-pip");
   const [cleanProfile, setCleanProfile] = useState<CleanProfileId>("conservative");
   const [cleanPreview, setCleanPreview] = useState<CleanAnalyzeResult | null>(null);
   const [cleanBusy, setCleanBusy] = useState(false);
@@ -231,6 +277,12 @@ export function GuidedWorkflowPanel({
   const saved = Math.max(0, original - estimated);
   const warningCount = (warnings?.warnings.length ?? 0) + (warnings?.consequence_alerts.length ?? 0);
   const StepIcon = activeStepMeta.icon;
+  const layoutCues = plan?.layout_cues ?? [];
+  const primaryLayoutCue = layoutCues[0] ?? null;
+  const cameraEnabled = layoutUsesCamera(layoutSettings.layout);
+  const updateLayoutSettings = (patch: Partial<LayoutPreviewSettings>) => {
+    onLayoutSettingsChange({ ...layoutSettings, ...patch });
+  };
 
   const handleAnalyzeClean = async () => {
     setCleanBusy(true);
@@ -429,20 +481,99 @@ export function GuidedWorkflowPanel({
 
         {activeStep === "layout" && (
           <PanelStack>
-            <OptionGroup
-              value={layoutPreset}
-              onChange={setLayoutPreset}
-              options={[
-                { value: "slide-pip", label: "Slides + camera", icon: MonitorPlay },
-                { value: "side-by-side", label: "Side by side", icon: SplitSquareHorizontal },
-                { value: "camera-full", label: "Camera focus", icon: Film },
-                { value: "screen-full", label: "Screen focus", icon: Layers },
-              ]}
-            />
-            <WorkflowCard title="Layout Intent" icon={<SplitSquareHorizontal className="h-4 w-4 text-blue-300" />}>
-              <p className="text-xs leading-5 text-gray-400">
-                This step captures the teacher-facing workflow position before the Phase 7 layout engine adds timed layout cues and renderer support.
-              </p>
+            <WorkflowCard title="Layout Style" icon={<SplitSquareHorizontal className="h-4 w-4 text-blue-300" />}>
+              <OptionGroup
+                value={layoutSettings.layout}
+                onChange={(value) => updateLayoutSettings({ layout: value as LayoutMode })}
+                options={[
+                  { value: "picture_in_picture", label: "Picture-in-picture", icon: MonitorPlay },
+                  { value: "side_by_side", label: "Side by side", icon: SplitSquareHorizontal },
+                  { value: "full_screen_source", label: "Full screen", icon: Layers },
+                  { value: "full_camera_source", label: "Full camera", icon: Film },
+                ]}
+              />
+            </WorkflowCard>
+
+            <WorkflowCard title="Output Aspect" icon={<MonitorPlay className="h-4 w-4 text-sky-300" />}>
+              <ChoiceGrid
+                value={layoutSettings.aspectRatio}
+                onChange={(value) => updateLayoutSettings({ aspectRatio: value as LayoutAspectRatio })}
+                options={[
+                  { value: "16:9", label: "16:9", detail: "YouTube, LMS" },
+                  { value: "4:3", label: "4:3", detail: "Classic slides" },
+                  { value: "1:1", label: "1:1", detail: "Square clip" },
+                  { value: "9:16", label: "9:16", detail: "Vertical" },
+                ]}
+              />
+            </WorkflowCard>
+
+            <WorkflowCard title="Camera Position" icon={<Film className="h-4 w-4 text-green-300" />}>
+              <div className="space-y-3">
+                <ChoiceGrid
+                  value={layoutSettings.cameraCorner}
+                  onChange={(value) => updateLayoutSettings({ cameraCorner: value as CameraCorner })}
+                  disabled={!cameraEnabled}
+                  options={[
+                    { value: "top_left", label: "Top left", detail: "Slides bottom-right clear" },
+                    { value: "top_right", label: "Top right", detail: "Common lecture frame" },
+                    { value: "bottom_left", label: "Bottom left", detail: "Presenter near captions" },
+                    { value: "bottom_right", label: "Bottom right", detail: "Default PiP" },
+                  ]}
+                />
+                <SliderControl
+                  label="Inset margin"
+                  value={layoutSettings.cameraMarginPercent}
+                  min={2}
+                  max={8}
+                  step={1}
+                  suffix="%"
+                  disabled={!cameraEnabled}
+                  onChange={(value) => updateLayoutSettings({ cameraMarginPercent: value })}
+                />
+              </div>
+            </WorkflowCard>
+
+            <WorkflowCard title="Camera Shape" icon={<Circle className="h-4 w-4 text-yellow-300" />}>
+              <div className="space-y-3">
+                <ChoiceGrid
+                  value={layoutSettings.cameraShape}
+                  onChange={(value) => updateLayoutSettings({ cameraShape: value as CameraShape })}
+                  disabled={!cameraEnabled}
+                  options={[
+                    { value: "rectangle", label: "Rectangle", detail: "Maximum image area" },
+                    { value: "rounded_rectangle", label: "Rounded", detail: "Soft inset" },
+                    { value: "circle", label: "Circle", detail: "Headshot crop" },
+                  ]}
+                />
+                <ChoiceGrid
+                  value={layoutSettings.cameraSize}
+                  onChange={(value) => updateLayoutSettings({ cameraSize: value as CameraSize })}
+                  disabled={!cameraEnabled}
+                  options={[
+                    { value: "small", label: "Small", detail: "18% frame" },
+                    { value: "medium", label: "Medium", detail: "24% frame" },
+                    { value: "large", label: "Large", detail: "31% frame" },
+                  ]}
+                />
+              </div>
+            </WorkflowCard>
+
+            <WorkflowCard title="Preview Cue" icon={<Layers className="h-4 w-4 text-purple-300" />}>
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <MiniMetric label="Plan cues" value={String(layoutCues.length)} />
+                  <MiniMetric label="Camera" value={cameraEnabled ? "On" : "Off"} />
+                  <MiniMetric label="Aspect" value={layoutSettings.aspectRatio} />
+                  <MiniMetric label="Status" value={primaryLayoutCue?.status ?? "Preview"} />
+                </div>
+                {primaryLayoutCue?.reason ? (
+                  <p className="text-xs leading-5 text-gray-400">{primaryLayoutCue.reason}</p>
+                ) : (
+                  <p className="text-xs leading-5 text-gray-400">
+                    No planned layout cue is attached to this edit plan yet.
+                  </p>
+                )}
+              </div>
             </WorkflowCard>
           </PanelStack>
         )}
@@ -661,6 +792,77 @@ function OptionGroup({ value, onChange, options }: OptionGroupProps) {
   );
 }
 
+type ChoiceGridProps = {
+  value: string;
+  disabled?: boolean;
+  onChange: (value: string) => void;
+  options: { value: string; label: string; detail: string }[];
+};
+
+function ChoiceGrid({ value, disabled = false, onChange, options }: ChoiceGridProps) {
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      {options.map((option) => {
+        const active = value === option.value;
+
+        return (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => onChange(option.value)}
+            disabled={disabled}
+            className={`min-h-[58px] rounded-md border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
+              active ? "border-accent bg-accent/15 text-white" : "border-surface-border bg-surface-overlay text-gray-400 hover:text-gray-200"
+            }`}
+          >
+            <span className="block text-xs font-semibold">{option.label}</span>
+            <span className="mt-1 block text-[11px] leading-4 text-gray-500">{option.detail}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function SliderControl({
+  label,
+  value,
+  min,
+  max,
+  step,
+  suffix,
+  disabled = false,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  suffix: string;
+  disabled?: boolean;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="block rounded-md border border-surface-border bg-surface-raised px-3 py-2">
+      <span className="mb-2 flex items-center justify-between gap-2 text-xs font-semibold text-gray-300">
+        <span>{label}</span>
+        <span className="font-mono text-gray-400">{value}{suffix}</span>
+      </span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        disabled={disabled}
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="w-full accent-accent disabled:cursor-not-allowed disabled:opacity-45"
+      />
+    </label>
+  );
+}
+
 function ToggleRow({
   label,
   detail,
@@ -712,4 +914,20 @@ function formatDuration(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = Math.round(seconds % 60);
   return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
+}
+
+function layoutUsesCamera(layout: LayoutMode): boolean {
+  return layout === "picture_in_picture" || layout === "side_by_side" || layout === "full_camera_source";
+}
+
+function normalizeCameraSize(value: unknown): CameraSize {
+  if (value === "small" || value === "medium" || value === "large") return value;
+  return DEFAULT_LAYOUT_PREVIEW_SETTINGS.cameraSize;
+}
+
+function normalizeMarginPercent(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_LAYOUT_PREVIEW_SETTINGS.cameraMarginPercent;
+  }
+  return Math.min(8, Math.max(2, Math.round(value)));
 }

@@ -1,13 +1,17 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { forwardRef, useState, useEffect, useCallback, useMemo } from "react";
+import type { CSSProperties, VideoHTMLAttributes } from "react";
 import { useSegments, usePlaybackSync } from "../hooks/useApi";
 import { useCommandShortcuts } from "../hooks/useCommandShortcuts";
 import { Timeline } from "./Timeline";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { CommandPalette, type CommandPaletteCommand } from "./CommandPalette";
 import {
+  DEFAULT_LAYOUT_PREVIEW_SETTINGS,
   GUIDED_WORKFLOW_STEPS,
   GuidedWorkflowPanel,
   GuidedWorkflowStepper,
+  layoutPreviewSettingsFromCue,
+  type LayoutPreviewSettings,
   type GuidedWorkflowStepId,
 } from "./GuidedWorkflow";
 import * as api from "../lib/api";
@@ -29,6 +33,7 @@ import {
   CheckSquare,
   Clock3,
   Download,
+  Film,
   FileText,
   FolderOpen,
   Keyboard,
@@ -107,6 +112,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   const [selectedSegment, setSelectedSegment] = useState<Segment | null>(null);
   const [activeWorkflowStep, setActiveWorkflowStep] = useState<GuidedWorkflowStepId>("transcribe");
   const [completedWorkflowSteps, setCompletedWorkflowSteps] = useState<Set<GuidedWorkflowStepId>>(() => new Set());
+  const [layoutPreviewSettings, setLayoutPreviewSettings] = useState<LayoutPreviewSettings>(DEFAULT_LAYOUT_PREVIEW_SETTINGS);
   const [leftPanelTab, setLeftPanelTab] = useState<LeftPanelTab>("transcript");
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [plan, setPlan] = useState<EditPlan | null>(null);
@@ -126,6 +132,10 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   useEffect(() => {
     api.getEditPlan(videoId).then(setPlan).catch(() => {});
   }, [videoId]);
+
+  useEffect(() => {
+    setLayoutPreviewSettings(layoutPreviewSettingsFromCue(plan?.layout_cues[0]));
+  }, [plan?.layout_cues]);
 
   useEffect(() => {
     setUndoStack([]);
@@ -778,10 +788,10 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
               <div className="absolute left-4 top-4 z-10 rounded bg-black/65 px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-gray-300">
                 Program preview
               </div>
-              <video
+              <LayoutProgramPreview
                 ref={videoRef}
                 src={videoSrc}
-                className="max-h-full max-w-full bg-black shadow-2xl"
+                settings={layoutPreviewSettings}
                 onTimeUpdate={handleTimeUpdate}
                 onLoadedMetadata={handleLoadedMetadata}
                 onPlay={() => setIsPlaying(true)}
@@ -811,10 +821,12 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
               segments={segments}
               selectedSegment={selectedSegment}
               plan={plan}
+              layoutSettings={layoutPreviewSettings}
               warnings={warnings}
               chapters={chapters}
               chaptersLoading={chaptersLoading}
               approving={approving}
+              onLayoutSettingsChange={setLayoutPreviewSettings}
               onAcceptAll={handleAcceptAll}
               onCleanApplied={handleCleanApplied}
               onApprove={handleApprove}
@@ -918,6 +930,70 @@ function AssetRow({ icon, label, value, detail }: { icon: React.ReactNode; label
   );
 }
 
+type LayoutProgramPreviewProps = Pick<
+  VideoHTMLAttributes<HTMLVideoElement>,
+  "onTimeUpdate" | "onLoadedMetadata" | "onPlay" | "onPause" | "onClick"
+> & {
+  src: string;
+  settings: LayoutPreviewSettings;
+};
+
+const LayoutProgramPreview = forwardRef<HTMLVideoElement, LayoutProgramPreviewProps>(function LayoutProgramPreview(
+  { src, settings, ...videoProps },
+  ref,
+) {
+  const video = (
+    <video
+      ref={ref}
+      src={src}
+      className={settings.layout === "full_camera_source" ? "h-full w-full bg-black object-cover" : "h-full w-full bg-black object-contain"}
+      {...videoProps}
+    />
+  );
+
+  return (
+    <div
+      className="relative flex max-h-full max-w-full overflow-hidden bg-[#08080d] shadow-2xl ring-1 ring-white/10"
+      style={{ aspectRatio: previewAspectRatio(settings.aspectRatio), width: "100%" }}
+    >
+      {settings.layout === "side_by_side" ? (
+        <div className="absolute inset-0 grid grid-cols-2 gap-px bg-surface-border">
+          <div className="relative min-w-0 bg-black">{video}</div>
+          <CameraPreviewSurface settings={settings} variant="panel" />
+        </div>
+      ) : (
+        <div className="absolute inset-0 bg-black">
+          {video}
+          {settings.layout === "picture_in_picture" && (
+            <CameraPreviewSurface settings={settings} variant="inset" />
+          )}
+        </div>
+      )}
+    </div>
+  );
+});
+
+function CameraPreviewSurface({ settings, variant }: { settings: LayoutPreviewSettings; variant: "inset" | "panel" }) {
+  if (variant === "panel") {
+    return (
+      <div className="flex min-w-0 items-center justify-center bg-[#141421] p-5">
+        <div className={`flex items-center justify-center border border-white/20 bg-surface-raised/90 ${cameraShapeClass(settings.cameraShape)} ${settings.cameraShape === "circle" ? "aspect-square h-[56%]" : "aspect-video w-full"}`}>
+          <Film className="h-6 w-6 text-gray-400" />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={`absolute z-10 flex items-center justify-center border border-white/25 bg-surface-raised/95 shadow-xl ${cameraShapeClass(settings.cameraShape)}`}
+      style={cameraInsetStyle(settings)}
+    >
+      <Film className="h-5 w-5 text-gray-300" />
+    </div>
+  );
+}
+
 function PreviewMetric({
   icon,
   label,
@@ -992,4 +1068,40 @@ function formatDuration(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = Math.round(seconds % 60);
   return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
+}
+
+function previewAspectRatio(value: LayoutPreviewSettings["aspectRatio"]): string {
+  if (value === "4:3") return "4 / 3";
+  if (value === "1:1") return "1 / 1";
+  if (value === "9:16") return "9 / 16";
+  return "16 / 9";
+}
+
+function cameraShapeClass(shape: LayoutPreviewSettings["cameraShape"]): string {
+  if (shape === "circle") return "rounded-full";
+  if (shape === "rectangle") return "rounded";
+  return "rounded-xl";
+}
+
+function cameraInsetStyle(settings: LayoutPreviewSettings): CSSProperties {
+  const margin = `${settings.cameraMarginPercent}%`;
+  const width = settings.cameraSize === "small" ? "18%" : settings.cameraSize === "large" ? "31%" : "24%";
+  const style: CSSProperties = {
+    width,
+    aspectRatio: settings.cameraShape === "circle" ? "1 / 1" : "16 / 9",
+  };
+
+  if (settings.cameraCorner.includes("top")) {
+    style.top = margin;
+  } else {
+    style.bottom = margin;
+  }
+
+  if (settings.cameraCorner.includes("left")) {
+    style.left = margin;
+  } else {
+    style.right = margin;
+  }
+
+  return style;
 }
