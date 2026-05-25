@@ -86,6 +86,53 @@ class PictureInPictureCommandTests(unittest.TestCase):
         self.assertIn("overlay=1391:551", filter_complex)
 
 
+class LayoutModeCommandTests(unittest.TestCase):
+    def test_builds_side_by_side_command_with_equal_panels_and_audio_master(self):
+        cmd = FFmpegService.build_side_by_side_command(
+            screen_path="screen.mp4",
+            camera_path="camera.mp4",
+            audio_path="voice.wav",
+            output_path="out.mp4",
+            start_time=10.0,
+            end_time=18.0,
+            screen_sync_offset=1.0,
+            camera_sync_offset=0.25,
+            audio_sync_offset=0.5,
+        )
+
+        self.assertEqual(cmd[0], "ffmpeg")
+        self.assertIn("9.0", cmd)
+        self.assertIn("9.75", cmd)
+        self.assertIn("9.5", cmd)
+        self.assertIn("2:a?", cmd)
+        filter_complex = cmd[cmd.index("-filter_complex") + 1]
+        self.assertIn("scale=960:1080", filter_complex)
+        self.assertIn("pad=960:1080", filter_complex)
+        self.assertIn("hstack=inputs=2", filter_complex)
+
+    def test_builds_full_source_command_with_canvas_fit_and_audio_fallback(self):
+        cmd = FFmpegService.build_full_source_command(
+            source_path="screen.mp4",
+            output_path="out.mp4",
+            start_time=2.0,
+            end_time=5.0,
+            output_width=1440,
+            output_height=1080,
+        )
+
+        self.assertEqual(cmd.count("-i"), 1)
+        self.assertIn("0:a?", cmd)
+        filter_complex = cmd[cmd.index("-filter_complex") + 1]
+        self.assertIn("scale=1440:1080", filter_complex)
+        self.assertIn("pad=1440:1080", filter_complex)
+
+    def test_maps_supported_aspect_ratios_to_even_render_canvases(self):
+        self.assertEqual(FFmpegService.output_dimensions_for_aspect_ratio("16:9"), (1920, 1080))
+        self.assertEqual(FFmpegService.output_dimensions_for_aspect_ratio("4:3"), (1440, 1080))
+        self.assertEqual(FFmpegService.output_dimensions_for_aspect_ratio("1:1"), (1080, 1080))
+        self.assertEqual(FFmpegService.output_dimensions_for_aspect_ratio("9:16"), (1080, 1920))
+
+
 class PictureInPictureRenderSelectionTests(unittest.IsolatedAsyncioTestCase):
     def test_splits_range_around_picture_in_picture_cue(self):
         cue = build_layout_cue(
@@ -149,7 +196,7 @@ class PictureInPictureRenderSelectionTests(unittest.IsolatedAsyncioTestCase):
                     },
                 )
 
-                clip_paths, layout_clip_count = await renderer._render_range_clips(
+                clip_paths, layout_counts = await renderer._render_range_clips(
                     video=SimpleNamespace(file_path="legacy.mp4"),
                     render_range={
                         "source_start_time": 0.0,
@@ -162,13 +209,135 @@ class PictureInPictureRenderSelectionTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertEqual(len(clip_paths), 3)
-            self.assertEqual(layout_clip_count, 1)
+            self.assertEqual(layout_counts, {"picture_in_picture": 1})
             self.assertEqual(len(fake.trim_calls), 2)
             self.assertEqual(len(fake.pip_calls), 1)
             self.assertEqual(fake.pip_calls[0]["screen_path"], "screen.mp4")
             self.assertEqual(fake.pip_calls[0]["camera_sync_offset"], 0.4)
             self.assertEqual(fake.pip_calls[0]["audio_path"], "voice.wav")
             self.assertEqual(fake.pip_calls[0]["camera_shape"], "rounded_rectangle")
+        finally:
+            renderer.ffmpeg_service = original_ffmpeg
+
+    async def test_renders_side_by_side_and_fullscreen_spans_with_layout_compositor(self):
+        class FakeFFmpeg:
+            def __init__(self):
+                self.trim_calls = []
+                self.side_by_side_calls = []
+                self.full_source_calls = []
+
+            async def trim_video(self, **kwargs):
+                self.trim_calls.append(kwargs)
+                Path(kwargs["output_path"]).write_text("trim", encoding="utf-8")
+
+            async def render_side_by_side_clip(self, **kwargs):
+                self.side_by_side_calls.append(kwargs)
+                Path(kwargs["output_path"]).write_text("side", encoding="utf-8")
+
+            async def render_full_source_clip(self, **kwargs):
+                self.full_source_calls.append(kwargs)
+                Path(kwargs["output_path"]).write_text("full", encoding="utf-8")
+
+        fake = FakeFFmpeg()
+        original_ffmpeg = renderer.ffmpeg_service
+        renderer.ffmpeg_service = fake
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                side_by_side = build_layout_cue(
+                    cue_id="side-1",
+                    layout="side_by_side",
+                    start_time=0.0,
+                    end_time=10.0,
+                    screen_source_id="screen",
+                    camera_source_id="camera",
+                    audio_source_id="audio",
+                )
+                full_screen = build_layout_cue(
+                    cue_id="screen-1",
+                    layout="full_screen_source",
+                    start_time=10.0,
+                    end_time=20.0,
+                    screen_source_id="screen",
+                    audio_source_id="audio",
+                )
+                context = renderer.LayoutRenderContext(
+                    cues=[side_by_side, full_screen],
+                    assets_by_id={
+                        "screen": SimpleNamespace(file_path="screen.mp4", sync_offset_seconds=0.0),
+                        "camera": SimpleNamespace(file_path="camera.mp4", sync_offset_seconds=0.25),
+                        "audio": SimpleNamespace(file_path="voice.wav", sync_offset_seconds=0.5),
+                    },
+                )
+
+                clip_paths, layout_counts = await renderer._render_range_clips(
+                    video=SimpleNamespace(file_path="legacy.mp4"),
+                    render_range={
+                        "source_start_time": 0.0,
+                        "source_end_time": 20.0,
+                        "action": "keep",
+                    },
+                    range_index=0,
+                    clip_dir=temp_dir,
+                    layout_context=context,
+                )
+
+            self.assertEqual(len(clip_paths), 2)
+            self.assertEqual(layout_counts, {"side_by_side": 1, "full_screen_source": 1})
+            self.assertEqual(fake.side_by_side_calls[0]["screen_path"], "screen.mp4")
+            self.assertEqual(fake.side_by_side_calls[0]["camera_sync_offset"], 0.25)
+            self.assertEqual(fake.side_by_side_calls[0]["audio_path"], "voice.wav")
+            self.assertEqual(fake.full_source_calls[0]["source_path"], "screen.mp4")
+            self.assertEqual(fake.full_source_calls[0]["audio_sync_offset"], 0.5)
+            self.assertEqual(len(fake.trim_calls), 0)
+        finally:
+            renderer.ffmpeg_service = original_ffmpeg
+
+    async def test_renders_full_camera_span_from_camera_asset(self):
+        class FakeFFmpeg:
+            def __init__(self):
+                self.full_source_calls = []
+
+            async def trim_video(self, **kwargs):
+                Path(kwargs["output_path"]).write_text("trim", encoding="utf-8")
+
+            async def render_full_source_clip(self, **kwargs):
+                self.full_source_calls.append(kwargs)
+                Path(kwargs["output_path"]).write_text("camera", encoding="utf-8")
+
+        fake = FakeFFmpeg()
+        original_ffmpeg = renderer.ffmpeg_service
+        renderer.ffmpeg_service = fake
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                cue = build_layout_cue(
+                    cue_id="camera-1",
+                    layout="full_camera_source",
+                    start_time=2.0,
+                    end_time=8.0,
+                    camera_source_id="camera",
+                )
+                context = renderer.LayoutRenderContext(
+                    cues=[cue],
+                    assets_by_id={
+                        "camera": SimpleNamespace(file_path="camera.mp4", sync_offset_seconds=0.75),
+                    },
+                )
+
+                _, layout_counts = await renderer._render_range_clips(
+                    video=SimpleNamespace(file_path="legacy.mp4"),
+                    render_range={
+                        "source_start_time": 2.0,
+                        "source_end_time": 8.0,
+                        "action": "keep",
+                    },
+                    range_index=0,
+                    clip_dir=temp_dir,
+                    layout_context=context,
+                )
+
+            self.assertEqual(layout_counts, {"full_camera_source": 1})
+            self.assertEqual(fake.full_source_calls[0]["source_path"], "camera.mp4")
+            self.assertEqual(fake.full_source_calls[0]["source_sync_offset"], 0.75)
         finally:
             renderer.ffmpeg_service = original_ffmpeg
 
