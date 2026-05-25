@@ -26,18 +26,29 @@ import json
 import uuid
 import shutil
 import logging
+from dataclasses import dataclass
 from typing import List
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from db.models import Video, Transcript, Segment, EditPlan, SegmentAction, VideoStatus
+from db.models import Video, Transcript, Segment, EditPlan, ProjectAsset, SegmentAction, VideoStatus
 from services.ffmpeg import ffmpeg_service, FFmpegService
 from services.progress import start_step, complete_step, PipelineStep
 from services.edit_plan_payload import normalize_plan_payload, update_export_metadata
+from services.layout_model import LayoutMode
 from services.transcript_edit_decisions import build_synced_timeline_plan
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class LayoutRenderContext:
+    cues: list[dict]
+    assets_by_id: dict[str, ProjectAsset]
+    fallback_screen_asset: ProjectAsset | None = None
+    fallback_camera_asset: ProjectAsset | None = None
+    fallback_audio_asset: ProjectAsset | None = None
 
 
 # ═══════════════════════════════════════════
@@ -128,44 +139,30 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
         )
 
         # ── Step 2: Trim clips ──
+        plan_payload = normalize_plan_payload(plan.plan_json)
+        layout_render_context = await _build_layout_render_context(video, plan_payload, db)
+
         clip_dir = os.path.join(settings.TEMP_PATH, f"clips_{video.id}")
         os.makedirs(clip_dir, exist_ok=True)
 
         clip_paths = []
+        layout_clip_count = 0
         for i, render_range in enumerate(render_ranges):
-            action = render_range["action"]
-            raw_clip = os.path.join(clip_dir, f"raw_{i:04d}.mp4")
-
-            # Trim the segment from the original video
-            await ffmpeg_service.trim_video(
-                video_path=video.file_path,
-                output_path=raw_clip,
-                start_time=render_range["source_start_time"],
-                end_time=render_range["source_end_time"],
+            rendered_paths, rendered_layout_clips = await _render_range_clips(
+                video=video,
+                render_range=render_range,
+                range_index=i,
+                clip_dir=clip_dir,
+                layout_context=layout_render_context,
             )
+            clip_paths.extend(rendered_paths)
+            layout_clip_count += rendered_layout_clips
 
-            if action == SegmentAction.SHORTEN.value:
-                # Additional silence removal for SHORTEN segments
-                shortened_clip = os.path.join(clip_dir, f"clip_{i:04d}.mp4")
-                await ffmpeg_service.trim_silence_from_clip(
-                    input_path=raw_clip,
-                    output_path=shortened_clip,
-                    threshold_db=settings.SILENCE_THRESHOLD_DB,
-                    min_silence=0.8,
-                )
-                clip_paths.append(shortened_clip)
-                # Clean raw clip
-                try:
-                    os.remove(raw_clip)
-                except OSError:
-                    pass
-            else:
-                # Rename raw to final clip
-                final_clip = os.path.join(clip_dir, f"clip_{i:04d}.mp4")
-                os.rename(raw_clip, final_clip)
-                clip_paths.append(final_clip)
-
-        logger.info(f"  Trimmed {len(clip_paths)} clips")
+        logger.info(
+            "  Prepared %s clips (%s picture-in-picture layout clips)",
+            len(clip_paths),
+            layout_clip_count,
+        )
 
         # ── Step 3: Concatenate all clips ──
         output_filename = f"{video.id}_edited.mp4"
@@ -211,6 +208,10 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
             segments,
             render_ranges,
             sync_plan,
+            render_metadata_extra={
+                "layout_renderer": "picture_in_picture" if layout_clip_count else "single_source",
+                "picture_in_picture_clip_count": layout_clip_count,
+            },
             artifact_paths={
                 "edited_video": output_path,
                 "subtitles_srt": srt_path,
@@ -258,6 +259,7 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
             "segments_removed": len(segments) - len(included_segment_ids),
             "playable_ranges": len(render_ranges),
             "transcript_cuts_applied": sync_plan["export_plan"]["transcript_cut_count"],
+            "picture_in_picture_clips": layout_clip_count,
         }
 
     except Exception as e:
@@ -271,6 +273,212 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
 # ═══════════════════════════════════════════
 #  SUBTITLE GENERATION
 # ═══════════════════════════════════════════
+
+async def _build_layout_render_context(
+    video: Video,
+    plan_payload: dict,
+    db: AsyncSession,
+) -> LayoutRenderContext | None:
+    cues = list(plan_payload.get("layout_cues") or [])
+    if not any(_is_picture_in_picture_cue(cue) for cue in cues):
+        return None
+    if not video.project_id:
+        return None
+
+    result = await db.execute(
+        select(ProjectAsset).where(ProjectAsset.project_id == video.project_id)
+    )
+    assets = list(result.scalars().all())
+    assets_by_id = {str(asset.id): asset for asset in assets}
+    return LayoutRenderContext(
+        cues=cues,
+        assets_by_id=assets_by_id,
+        fallback_screen_asset=_first_asset_with_role(assets, {"screen", "primary"}),
+        fallback_camera_asset=_first_asset_with_role(assets, {"camera"}),
+        fallback_audio_asset=_first_asset_with_role(assets, {"audio"}),
+    )
+
+
+async def _render_range_clips(
+    *,
+    video: Video,
+    render_range: dict,
+    range_index: int,
+    clip_dir: str,
+    layout_context: LayoutRenderContext | None,
+) -> tuple[list[str], int]:
+    clip_paths = []
+    layout_clip_count = 0
+    spans = _layout_spans_for_range(render_range, layout_context.cues if layout_context else [])
+
+    for span_index, (start_time, end_time, cue) in enumerate(spans):
+        raw_clip = os.path.join(clip_dir, f"raw_{range_index:04d}_{span_index:02d}.mp4")
+        if layout_context and _is_picture_in_picture_cue(cue):
+            screen_asset = _cue_asset(cue, "screen", layout_context) or layout_context.fallback_screen_asset
+            camera_asset = _cue_asset(cue, "camera", layout_context) or layout_context.fallback_camera_asset
+            audio_asset = _cue_asset(cue, "audio", layout_context) or layout_context.fallback_audio_asset
+            if screen_asset and camera_asset:
+                await ffmpeg_service.render_picture_in_picture_clip(
+                    screen_path=screen_asset.file_path,
+                    camera_path=camera_asset.file_path,
+                    audio_path=audio_asset.file_path if audio_asset else None,
+                    output_path=raw_clip,
+                    start_time=start_time,
+                    end_time=end_time,
+                    screen_sync_offset=_cue_sync_offset(cue, "screen", screen_asset),
+                    camera_sync_offset=_cue_sync_offset(cue, "camera", camera_asset),
+                    audio_sync_offset=_cue_sync_offset(cue, "audio", audio_asset),
+                    camera_corner=str(_dict_value(cue.get("camera")).get("corner") or "bottom_right"),
+                    camera_size=str(_dict_value(cue.get("camera")).get("size") or "medium"),
+                    margin_percent=_float_value(_dict_value(cue.get("camera")).get("margin_percent"), 4.0),
+                )
+                layout_clip_count += 1
+            else:
+                await _trim_single_source_clip(video.file_path, raw_clip, start_time, end_time)
+        else:
+            await _trim_single_source_clip(video.file_path, raw_clip, start_time, end_time)
+
+        if render_range["action"] == SegmentAction.SHORTEN.value:
+            final_clip = os.path.join(clip_dir, f"clip_{range_index:04d}_{span_index:02d}.mp4")
+            await ffmpeg_service.trim_silence_from_clip(
+                input_path=raw_clip,
+                output_path=final_clip,
+                threshold_db=settings.SILENCE_THRESHOLD_DB,
+                min_silence=0.8,
+            )
+            try:
+                os.remove(raw_clip)
+            except OSError:
+                pass
+        else:
+            final_clip = os.path.join(clip_dir, f"clip_{range_index:04d}_{span_index:02d}.mp4")
+            os.rename(raw_clip, final_clip)
+        clip_paths.append(final_clip)
+
+    return clip_paths, layout_clip_count
+
+
+async def _trim_single_source_clip(
+    video_path: str,
+    output_path: str,
+    start_time: float,
+    end_time: float,
+) -> None:
+    await ffmpeg_service.trim_video(
+        video_path=video_path,
+        output_path=output_path,
+        start_time=start_time,
+        end_time=end_time,
+    )
+
+
+def _layout_spans_for_range(
+    render_range: dict,
+    cues: list[dict],
+) -> list[tuple[float, float, dict | None]]:
+    range_start = float(render_range["source_start_time"])
+    range_end = float(render_range["source_end_time"])
+    boundaries = {range_start, range_end}
+    for cue in cues:
+        cue_start = _float_value(cue.get("start_time"), 0.0) or 0.0
+        cue_end = cue.get("end_time")
+        if range_start < cue_start < range_end:
+            boundaries.add(cue_start)
+        if cue_end is not None:
+            cue_end_value = _float_value(cue_end, range_end) or range_end
+            if range_start < cue_end_value < range_end:
+                boundaries.add(cue_end_value)
+
+    ordered = sorted(boundaries)
+    spans = []
+    for start_time, end_time in zip(ordered, ordered[1:]):
+        if end_time <= start_time:
+            continue
+        spans.append((start_time, end_time, _cue_at_time(cues, start_time)))
+    return spans or [(range_start, range_end, _cue_at_time(cues, range_start))]
+
+
+def _cue_at_time(cues: list[dict], timestamp: float) -> dict | None:
+    matching = []
+    for cue in cues:
+        cue_start = _float_value(cue.get("start_time"), 0.0) or 0.0
+        cue_end = cue.get("end_time")
+        cue_end_value = float("inf") if cue_end is None else (_float_value(cue_end, cue_start) or cue_start)
+        if cue_start <= timestamp < cue_end_value:
+            matching.append((cue_start, cue))
+    if not matching:
+        return None
+    return sorted(matching, key=lambda item: item[0])[-1][1]
+
+
+def _is_picture_in_picture_cue(cue: dict | None) -> bool:
+    return isinstance(cue, dict) and cue.get("layout") == LayoutMode.PICTURE_IN_PICTURE.value
+
+
+def _cue_asset(
+    cue: dict | None,
+    role: str,
+    context: LayoutRenderContext,
+) -> ProjectAsset | None:
+    source = _dict_value(_dict_value(cue).get("sources")).get(role)
+    source_dict = _dict_value(source)
+    if not source_dict.get("enabled", True):
+        return None
+    asset_id = source_dict.get("asset_id")
+    if asset_id:
+        return context.assets_by_id.get(str(asset_id))
+    return None
+
+
+def _cue_sync_offset(cue: dict | None, role: str, asset: ProjectAsset | None) -> float:
+    source = _dict_value(_dict_value(cue).get("sources")).get(role)
+    source_offset = _float_value(_dict_value(source).get("sync_offset_seconds"), None)
+    asset_offset = float(asset.sync_offset_seconds or 0.0) if asset else 0.0
+    if asset_offset:
+        return asset_offset
+    return source_offset or 0.0
+
+
+def _first_asset_with_role(assets: list[ProjectAsset], roles: set[str]) -> ProjectAsset | None:
+    sync_roles = {
+        "screen_reference" if "screen" in roles else "",
+        "primary_timeline" if "primary" in roles else "",
+        "camera_overlay" if "camera" in roles else "",
+        "audio_master" if "audio" in roles else "",
+    }
+    candidates = [
+        asset for asset in assets
+        if _enum_value(getattr(asset, "role", None)) in roles
+        or _enum_value(getattr(asset, "sync_role", None)) in sync_roles
+    ]
+    if not candidates:
+        return None
+    return sorted(
+        candidates,
+        key=lambda asset: (
+            0 if asset.is_primary else 1,
+            0 if _enum_value(asset.status) == "ready" else 1,
+            asset.created_at or datetime.min,
+        ),
+    )[0]
+
+
+def _enum_value(value) -> str:
+    return str(value.value if hasattr(value, "value") else value or "").lower()
+
+
+def _dict_value(value) -> dict:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _float_value(value, default: float | None) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
 
 def _generate_word_level_srt(
     render_ranges: List[dict],
@@ -453,6 +661,7 @@ def _export_plan_json(
     all_segments: List[Segment],
     render_ranges: List[dict],
     sync_plan: dict,
+    render_metadata_extra: dict | None = None,
     artifact_paths: dict[str, str] | None = None,
 ) -> dict:
     """
@@ -482,6 +691,7 @@ def _export_plan_json(
             "estimated_output_duration_seconds"
         ),
     }
+    render_metadata.update(render_metadata_extra or {})
     plan_payload = update_export_metadata(
         normalize_plan_payload(plan.plan_json),
         artifacts=artifacts,

@@ -155,6 +155,195 @@ class FFmpegService:
         return output_path
 
     @staticmethod
+    async def render_picture_in_picture_clip(
+        *,
+        screen_path: str,
+        camera_path: str,
+        output_path: str,
+        start_time: float,
+        end_time: float,
+        screen_sync_offset: float = 0.0,
+        camera_sync_offset: float = 0.0,
+        audio_path: str | None = None,
+        audio_sync_offset: float = 0.0,
+        output_width: int = 1920,
+        output_height: int = 1080,
+        camera_corner: str = "bottom_right",
+        camera_size: str = "medium",
+        margin_percent: float = 4.0,
+    ) -> str:
+        """
+        Render one timeline range as screen-first picture-in-picture.
+
+        Sync offsets are stored relative to the project timeline, so a source
+        that starts later than the timeline uses an earlier local timestamp.
+        """
+        cmd = FFmpegService.build_picture_in_picture_command(
+            screen_path=screen_path,
+            camera_path=camera_path,
+            output_path=output_path,
+            start_time=start_time,
+            end_time=end_time,
+            screen_sync_offset=screen_sync_offset,
+            camera_sync_offset=camera_sync_offset,
+            audio_path=audio_path,
+            audio_sync_offset=audio_sync_offset,
+            output_width=output_width,
+            output_height=output_height,
+            camera_corner=camera_corner,
+            camera_size=camera_size,
+            margin_percent=margin_percent,
+        )
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        _, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            raise RuntimeError(f"Picture-in-picture render failed: {stderr.decode()[:800]}")
+
+        return output_path
+
+    @staticmethod
+    def build_picture_in_picture_command(
+        *,
+        screen_path: str,
+        camera_path: str,
+        output_path: str,
+        start_time: float,
+        end_time: float,
+        screen_sync_offset: float = 0.0,
+        camera_sync_offset: float = 0.0,
+        audio_path: str | None = None,
+        audio_sync_offset: float = 0.0,
+        output_width: int = 1920,
+        output_height: int = 1080,
+        camera_corner: str = "bottom_right",
+        camera_size: str = "medium",
+        margin_percent: float = 4.0,
+    ) -> list[str]:
+        """Build the ffmpeg command used for a single PIP clip."""
+        duration = max(0.001, float(end_time) - float(start_time))
+        output_width = max(2, int(output_width or 1920))
+        output_height = max(2, int(output_height or 1080))
+        camera_width, camera_height = FFmpegService._pip_camera_dimensions(
+            output_width,
+            output_height,
+            camera_size,
+        )
+        margin = max(0, round(min(output_width, output_height) * (float(margin_percent or 0) / 100)))
+        overlay_x, overlay_y = FFmpegService._pip_overlay_position(
+            output_width,
+            output_height,
+            camera_width,
+            camera_height,
+            camera_corner,
+            margin,
+        )
+
+        audio_input_path = audio_path or screen_path
+        uses_separate_audio = bool(audio_path and os.path.abspath(audio_path) != os.path.abspath(screen_path))
+        filter_complex = (
+            f"[0:v]scale={output_width}:{output_height}:force_original_aspect_ratio=decrease,"
+            f"pad={output_width}:{output_height}:(ow-iw)/2:(oh-ih)/2,setsar=1[screen];"
+            f"[1:v]scale={camera_width}:{camera_height}:force_original_aspect_ratio=decrease,"
+            f"pad={camera_width}:{camera_height}:(ow-iw)/2:(oh-ih)/2,setsar=1[cam];"
+            f"[screen][cam]overlay={overlay_x}:{overlay_y}:format=auto[v]"
+        )
+
+        cmd = [
+            "ffmpeg",
+            "-ss",
+            str(FFmpegService._source_timestamp(start_time, screen_sync_offset)),
+            "-t",
+            str(duration),
+            "-i",
+            screen_path,
+            "-ss",
+            str(FFmpegService._source_timestamp(start_time, camera_sync_offset)),
+            "-t",
+            str(duration),
+            "-i",
+            camera_path,
+        ]
+        if uses_separate_audio:
+            cmd.extend([
+                "-ss",
+                str(FFmpegService._source_timestamp(start_time, audio_sync_offset)),
+                "-t",
+                str(duration),
+                "-i",
+                audio_input_path,
+            ])
+
+        audio_map = "2:a?" if uses_separate_audio else "0:a?"
+        cmd.extend([
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            "[v]",
+            "-map",
+            audio_map,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "23",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-shortest",
+            "-movflags",
+            "+faststart",
+            "-y",
+            output_path,
+        ])
+        return cmd
+
+    @staticmethod
+    def _source_timestamp(timeline_time: float, sync_offset: float) -> float:
+        return round(max(0.0, float(timeline_time or 0.0) - float(sync_offset or 0.0)), 3)
+
+    @staticmethod
+    def _pip_camera_dimensions(output_width: int, output_height: int, size: str) -> tuple[int, int]:
+        width_ratio_by_size = {
+            "small": 0.20,
+            "medium": 0.26,
+            "large": 0.34,
+        }
+        ratio = width_ratio_by_size.get(str(size or "medium").lower(), 0.26)
+        camera_width = _even_int(output_width * ratio)
+        camera_height = _even_int(camera_width * 9 / 16)
+        max_height = _even_int(output_height * 0.45)
+        if camera_height > max_height:
+            camera_height = max_height
+            camera_width = _even_int(camera_height * 16 / 9)
+        return max(2, camera_width), max(2, camera_height)
+
+    @staticmethod
+    def _pip_overlay_position(
+        output_width: int,
+        output_height: int,
+        camera_width: int,
+        camera_height: int,
+        corner: str,
+        margin: int,
+    ) -> tuple[int, int]:
+        corner_value = str(corner or "bottom_right").lower()
+        left = margin
+        right = max(margin, output_width - camera_width - margin)
+        top = margin
+        bottom = max(margin, output_height - camera_height - margin)
+        return {
+            "top_left": (left, top),
+            "top_right": (right, top),
+            "bottom_left": (left, bottom),
+            "bottom_right": (right, bottom),
+        }.get(corner_value, (right, bottom))
+
+    @staticmethod
     async def concat_videos(clip_paths: List[str], output_path: str) -> str:
         """
         Concatenate multiple video clips into one.
@@ -334,6 +523,11 @@ class FFmpegService:
         secs = int(seconds % 60)
         millis = int((seconds % 1) * 1000)
         return f"{hrs:02d}:{mins:02d}:{secs:02d},{millis:03d}"
+
+
+def _even_int(value: float) -> int:
+    number = int(round(float(value or 0)))
+    return number if number % 2 == 0 else number - 1
 
 
 # Singleton
