@@ -399,6 +399,19 @@ export interface Segment {
 
 export interface EditPlan {
   id: string;
+  schema_version: string;
+  metadata: Record<string, unknown>;
+  segments: Record<string, unknown>[];
+  edit_decisions: Record<string, unknown>[];
+  transcript_edit_summary: Record<string, unknown>;
+  cleaning_suggestions: Record<string, unknown>[];
+  clean_summary: Record<string, unknown>;
+  sections: Record<string, unknown>[];
+  chapters: Record<string, unknown>[];
+  section_summary: Record<string, unknown>;
+  layout_cues: Record<string, unknown>[];
+  polish_actions: Record<string, unknown>[];
+  export_metadata: Record<string, unknown>;
   original_duration: number | null;
   estimated_duration: number | null;
   segments_total: number | null;

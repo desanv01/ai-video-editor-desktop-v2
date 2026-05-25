@@ -50,6 +50,7 @@ from services.transcript_edit_decisions import (
     update_transcript_cut_trim,
 )
 from services.clean_tools import analyze_clean_suggestions, apply_clean_suggestions
+from services.edit_plan_payload import update_sections_payload
 from services.topic_segmentation import analyze_topic_sections
 from services.progress import get_progress as get_pipeline_progress
 from services.app_settings import (
@@ -697,6 +698,7 @@ async def get_chapters(video_id: str, db: AsyncSession = Depends(get_db)):
         .options(
             selectinload(Video.transcript),
             selectinload(Video.segments),
+            selectinload(Video.edit_plan),
             selectinload(Video.project).selectinload(Project.assets),
         )
         .where(Video.id == video_id)
@@ -726,6 +728,10 @@ async def get_chapters(video_id: str, db: AsyncSession = Depends(get_db)):
             video.project.assets if video.project else []
         ),
     )
+    if video.edit_plan:
+        video.edit_plan.plan_json = update_sections_payload(video.edit_plan.plan_json, analysis)
+        await db.commit()
+
     return {
         "video_id": video_id,
         "chapters_count": len(analysis["chapters"]),

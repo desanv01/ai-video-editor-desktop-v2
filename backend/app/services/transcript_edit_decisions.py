@@ -6,6 +6,8 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, Iterable, Optional
 
+from services.edit_plan_payload import EDIT_PLAN_SCHEMA_VERSION, normalize_plan_payload
+
 
 TRANSCRIPT_DECISION_SCHEMA_VERSION = "phase5.transcript-decisions.v1"
 MAX_TRIM_TOLERANCE_SECONDS = 5.0
@@ -312,22 +314,6 @@ def remove_transcript_cut_decision(*, plan: Any, decision_id: str) -> bool:
     return removed
 
 
-def normalize_plan_payload(plan_json: Any) -> dict[str, Any]:
-    """Preserve legacy list-shaped plans while adding decision metadata."""
-    if isinstance(plan_json, dict):
-        payload = dict(plan_json)
-        payload.setdefault("schema_version", TRANSCRIPT_DECISION_SCHEMA_VERSION)
-        payload.setdefault("segments", [])
-        payload.setdefault("edit_decisions", [])
-        return payload
-
-    return {
-        "schema_version": TRANSCRIPT_DECISION_SCHEMA_VERSION,
-        "segments": list(plan_json or []) if isinstance(plan_json, list) else [],
-        "edit_decisions": [],
-    }
-
-
 def _refresh_transcript_cut_summary(payload: dict[str, Any], plan: Any) -> None:
     active_cuts = [
         decision
@@ -345,6 +331,7 @@ def _refresh_transcript_cut_summary(payload: dict[str, Any], plan: Any) -> None:
         base_estimated = plan.estimated_duration if plan.estimated_duration is not None else plan.original_duration
 
     summary.update({
+        "schema_version": EDIT_PLAN_SCHEMA_VERSION,
         "cut_count": len(active_cuts),
         "total_cut_duration_seconds": round(total_duration, 3),
         "base_estimated_duration_seconds": base_estimated,

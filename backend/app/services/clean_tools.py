@@ -10,8 +10,8 @@ from typing import Any, Iterable, Optional, TYPE_CHECKING
 from services.transcript_edit_decisions import (
     create_transcript_cut_decision,
     list_active_transcript_cut_intervals,
-    normalize_plan_payload,
 )
+from services.edit_plan_payload import normalize_plan_payload, update_cleaning_payload
 
 if TYPE_CHECKING:
     from db.models import EditPlan
@@ -669,13 +669,15 @@ def _refresh_clean_plan_summary(
     profile_id: str,
     suggestions: list[dict[str, Any]],
 ) -> None:
-    payload = normalize_plan_payload(plan.plan_json)
-    payload["clean_summary"] = {
-        "schema_version": CLEAN_SCHEMA_VERSION,
-        "profile": profile_id,
-        "applied_at": datetime.now(UTC).isoformat(),
-        **_summary(suggestions),
-    }
+    summary = _summary(suggestions)
+    payload = update_cleaning_payload(
+        normalize_plan_payload(plan.plan_json),
+        profile=profile_id,
+        summary=summary,
+        suggestions=suggestions,
+        applied=True,
+    )
+    payload["clean_summary"]["applied_at"] = datetime.now(UTC).isoformat()
     plan.plan_json = payload
 
     counts = {"keep": 0, "cut": 0, "shorten": 0, "highlight": 0}
@@ -703,7 +705,7 @@ def _refresh_clean_plan_summary(
     plan.segments_keep = counts["keep"]
     plan.segments_cut = counts["cut"]
     plan.segments_highlight = counts["highlight"]
-    plan.filler_words_removed = filler_words_removed + _summary(suggestions)["filler_word_count"]
+    plan.filler_words_removed = filler_words_removed + summary["filler_word_count"]
     plan.silence_removed_seconds = round(silence_removed, 2)
 
 

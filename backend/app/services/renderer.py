@@ -33,6 +33,7 @@ from sqlalchemy import select
 from db.models import Video, Transcript, Segment, EditPlan, SegmentAction, VideoStatus
 from services.ffmpeg import ffmpeg_service, FFmpegService
 from services.progress import start_step, complete_step, PipelineStep
+from services.edit_plan_payload import normalize_plan_payload, update_export_metadata
 from services.transcript_edit_decisions import build_synced_timeline_plan
 from config import settings
 
@@ -202,9 +203,22 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
             f.write(chapters)
 
         # ── Step 6: Export edit plan JSON ──
-        plan_export = _export_plan_json(video, plan, segments, render_ranges, sync_plan)
         plan_filename = f"{video.id}_edit_plan.json"
         plan_path = os.path.join(settings.VIDEO_STORAGE_PATH, plan_filename)
+        plan_export = _export_plan_json(
+            video,
+            plan,
+            segments,
+            render_ranges,
+            sync_plan,
+            artifact_paths={
+                "edited_video": output_path,
+                "subtitles_srt": srt_path,
+                "subtitles_vtt": vtt_path,
+                "chapters": chapters_path,
+                "plan_json": plan_path,
+            },
+        )
         with open(plan_path, "w", encoding="utf-8") as f:
             json.dump(plan_export, f, indent=2, default=str)
 
@@ -439,6 +453,7 @@ def _export_plan_json(
     all_segments: List[Segment],
     render_ranges: List[dict],
     sync_plan: dict,
+    artifact_paths: dict[str, str] | None = None,
 ) -> dict:
     """
     Export the complete edit plan as a standalone JSON file.
@@ -456,8 +471,26 @@ def _export_plan_json(
             "action": render_range["action"],
         })
 
+    artifacts = [
+        {"kind": kind, "path": path, "available": bool(path and os.path.exists(path))}
+        for kind, path in (artifact_paths or {}).items()
+    ]
+    render_metadata = {
+        "playable_range_count": len(render_ranges),
+        "transcript_cuts_applied": sync_plan.get("export_plan", {}).get("transcript_cut_count", 0),
+        "estimated_output_duration_seconds": sync_plan.get("export_plan", {}).get(
+            "estimated_output_duration_seconds"
+        ),
+    }
+    plan_payload = update_export_metadata(
+        normalize_plan_payload(plan.plan_json),
+        artifacts=artifacts,
+        render=render_metadata,
+    )
+    plan.plan_json = plan_payload
+
     return {
-        "export_version": "1.0",
+        "export_version": "2.0",
         "exported_at": datetime.utcnow().isoformat(),
         "video": {
             "id": str(video.id),
@@ -484,6 +517,12 @@ def _export_plan_json(
             "cut_intervals": sync_plan.get("cut_intervals", []),
             "export_plan": sync_plan.get("export_plan", {}),
         },
+        "edit_plan_payload": plan_payload,
+        "layout_cues": plan_payload.get("layout_cues", []),
+        "polish_actions": plan_payload.get("polish_actions", []),
+        "sections": plan_payload.get("sections", []),
+        "chapters": plan_payload.get("chapters", []),
+        "export_metadata": plan_payload.get("export_metadata", {}),
         "segments": [
             {
                 "index": seg.segment_index,

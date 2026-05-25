@@ -551,6 +551,7 @@ class SceneResponse(BaseModel):
 
 class EditPlanResponse(BaseModel):
     id: UUID
+    plan_json: Optional[Any] = Field(default=None, exclude=True)
     original_duration: Optional[float] = None
     estimated_duration: Optional[float] = None
     segments_total: Optional[int] = None
@@ -562,6 +563,76 @@ class EditPlanResponse(BaseModel):
     is_approved: bool = False
     approved_at: Optional[datetime] = None
     teacher_notes: Optional[str] = None
+
+    @computed_field
+    @property
+    def schema_version(self) -> str:
+        return self._payload().get("schema_version", "phase6.edit-plan.v2")
+
+    @computed_field
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return self._payload().get("metadata", {})
+
+    @computed_field
+    @property
+    def segments(self) -> List[Dict[str, Any]]:
+        return self._payload().get("segments", [])
+
+    @computed_field
+    @property
+    def edit_decisions(self) -> List[Dict[str, Any]]:
+        return self._payload().get("edit_decisions", [])
+
+    @computed_field
+    @property
+    def transcript_edit_summary(self) -> Dict[str, Any]:
+        return self._payload().get("transcript_edit_summary", {})
+
+    @computed_field
+    @property
+    def cleaning_suggestions(self) -> List[Dict[str, Any]]:
+        return self._payload().get("cleaning_suggestions", [])
+
+    @computed_field
+    @property
+    def clean_summary(self) -> Dict[str, Any]:
+        return self._payload().get("clean_summary", {})
+
+    @computed_field
+    @property
+    def sections(self) -> List[Dict[str, Any]]:
+        return self._payload().get("sections", [])
+
+    @computed_field
+    @property
+    def chapters(self) -> List[Dict[str, Any]]:
+        return self._payload().get("chapters", [])
+
+    @computed_field
+    @property
+    def section_summary(self) -> Dict[str, Any]:
+        return self._payload().get("section_summary", {})
+
+    @computed_field
+    @property
+    def layout_cues(self) -> List[Dict[str, Any]]:
+        return self._payload().get("layout_cues", [])
+
+    @computed_field
+    @property
+    def polish_actions(self) -> List[Dict[str, Any]]:
+        return self._payload().get("polish_actions", [])
+
+    @computed_field
+    @property
+    def export_metadata(self) -> Dict[str, Any]:
+        return self._payload().get("export_metadata", {})
+
+    def _payload(self) -> Dict[str, Any]:
+        from services.edit_plan_payload import normalize_plan_payload
+
+        return normalize_plan_payload(getattr(self, "plan_json", None))
 
     class Config:
         from_attributes = True

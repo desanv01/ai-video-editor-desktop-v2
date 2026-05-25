@@ -32,6 +32,7 @@ from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from db.models import Video, Segment, EditPlan, SegmentAction, SegmentType, VideoStatus
+from services.edit_plan_payload import build_edit_plan_payload
 from services.llm import llm_service
 from config import settings
 
@@ -251,6 +252,13 @@ async def run_edit_planner_agent(video_id: str, db: AsyncSession) -> dict:
             "has_slide_change": seg.has_slide_change,
         })
 
+    plan_payload = build_edit_plan_payload(
+        segments=plan_entries,
+        original_duration=original_duration,
+        estimated_duration=round(estimated_duration, 1),
+        warnings=all_warnings,
+    )
+
     # ── Step 7: Create or update EditPlan ──
     existing_plan = await db.execute(
         select(EditPlan).where(EditPlan.video_id == video_id)
@@ -259,7 +267,7 @@ async def run_edit_planner_agent(video_id: str, db: AsyncSession) -> dict:
 
     if plan:
         # Update existing plan (re-run scenario)
-        plan.plan_json = plan_entries
+        plan.plan_json = plan_payload
         plan.original_duration = original_duration
         plan.estimated_duration = round(estimated_duration, 1)
         plan.segments_total = len(segments)
@@ -274,7 +282,7 @@ async def run_edit_planner_agent(video_id: str, db: AsyncSession) -> dict:
         plan = EditPlan(
             id=uuid.uuid4(),
             video_id=video.id,
-            plan_json=plan_entries,
+            plan_json=plan_payload,
             original_duration=original_duration,
             estimated_duration=round(estimated_duration, 1),
             segments_total=len(segments),
