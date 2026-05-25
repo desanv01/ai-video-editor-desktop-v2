@@ -7,6 +7,7 @@ from typing import Any, Iterable
 
 from services.layout_model import default_layout_cues as default_phase7_layout_cues
 from services.layout_model import normalize_layout_cues
+from services.layout_planner import layout_planning_summary, plan_layout_cues
 
 
 EDIT_PLAN_SCHEMA_VERSION = "phase6.edit-plan.v2"
@@ -60,8 +61,12 @@ def build_edit_plan_payload(
     original_duration: float | None,
     estimated_duration: float | None,
     warnings: Iterable[str] | None = None,
+    source_assets: Iterable[Any] | None = None,
+    layout_segments: Iterable[Any] | None = None,
 ) -> dict[str, Any]:
     """Create a fresh v2 edit-plan payload from generated segment decisions."""
+    segment_list = list(segments)
+    source_asset_list = list(source_assets) if source_assets is not None else None
     payload = normalize_plan_payload(None)
     payload["metadata"].update({
         "generated_at": _utc_now(),
@@ -73,8 +78,16 @@ def build_edit_plan_payload(
         "estimated_duration_seconds": estimated_duration,
         "warnings": list(warnings or []),
     }
-    payload["segments"] = list(segments)
-    payload["layout_cues"] = default_layout_cues(original_duration)
+    payload["segments"] = segment_list
+    if source_asset_list is None:
+        payload["layout_cues"] = default_layout_cues(original_duration)
+    else:
+        payload["layout_cues"] = plan_layout_cues(
+            source_asset_list,
+            duration_seconds=original_duration,
+            segments=layout_segments if layout_segments is not None else segment_list,
+        )
+        payload["metadata"]["layout_planning"] = layout_planning_summary(payload["layout_cues"])
     payload["polish_actions"] = default_polish_actions()
     payload["export_metadata"] = {
         **_default_export_metadata(),
