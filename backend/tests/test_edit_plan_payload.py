@@ -10,8 +10,10 @@ if str(APP_DIR) not in sys.path:
 from services.edit_plan_payload import (  # noqa: E402
     EDIT_PLAN_SCHEMA_VERSION,
     build_edit_plan_payload,
+    get_caption_policy,
     normalize_plan_payload,
     update_cleaning_payload,
+    update_caption_policy,
     update_export_metadata,
     update_sections_payload,
 )
@@ -29,7 +31,7 @@ class EditPlanPayloadTests(unittest.TestCase):
         self.assertEqual(payload["cleaning_suggestions"], [])
         self.assertEqual(payload["sections"], [])
         self.assertEqual(payload["layout_cues"], [])
-        self.assertEqual(payload["polish_actions"], [])
+        self.assertEqual(payload["polish_actions"][0]["kind"], "caption_policy")
         self.assertEqual(payload["export_metadata"]["artifacts"], [])
         self.assertEqual(payload["metadata"]["compatible_from_schema_version"], "legacy.segment-array.v1")
 
@@ -89,6 +91,28 @@ class EditPlanPayloadTests(unittest.TestCase):
         self.assertEqual(payload["section_summary"]["youtube_format"], "00:00 Intro")
         self.assertEqual(payload["export_metadata"]["artifacts"][0]["kind"], "plan_json")
         self.assertEqual(payload["export_metadata"]["render"]["playable_range_count"], 2)
+
+    def test_updates_selective_caption_policy(self):
+        payload = update_caption_policy(
+            normalize_plan_payload({"segments": []}),
+            {
+                "enabled": True,
+                "appearance": "highlight_segments",
+                "placement": "top_center",
+                "export_behavior": "sidecar_and_burn_in",
+                "style": {"font_size": 32, "background": "box"},
+            },
+        )
+
+        policy = get_caption_policy(payload)
+
+        self.assertEqual(policy["appearance"], "highlight_segments")
+        self.assertEqual(policy["placement"], "top_center")
+        self.assertEqual(policy["export_behavior"], "sidecar_and_burn_in")
+        self.assertEqual(policy["style"]["font_size"], 32)
+        self.assertEqual(policy["style"]["background"], "box")
+        self.assertEqual(payload["polish_actions"][0]["status"], "active")
+        self.assertEqual(payload["export_metadata"]["caption_policy"]["placement"], "top_center")
 
 
 if __name__ == "__main__":

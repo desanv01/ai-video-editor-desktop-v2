@@ -132,6 +132,73 @@ class LayoutModeCommandTests(unittest.TestCase):
         self.assertEqual(FFmpegService.output_dimensions_for_aspect_ratio("1:1"), (1080, 1080))
         self.assertEqual(FFmpegService.output_dimensions_for_aspect_ratio("9:16"), (1080, 1920))
 
+    def test_builds_subtitle_burn_style_from_caption_policy(self):
+        style = FFmpegService._subtitle_force_style(
+            font_size=30,
+            placement="top_center",
+            style={"primary_color": "#F8FAFC", "outline_color": "#111827", "background": "box"},
+        )
+
+        self.assertIn("FontSize=30", style)
+        self.assertIn("Alignment=8", style)
+        self.assertIn("BorderStyle=3", style)
+        self.assertIn("PrimaryColour=&H00FCFAF8", style)
+
+    def test_caption_srt_can_target_highlight_ranges_only(self):
+        first = SimpleNamespace(id="seg-1", text="Keep this normal explanation.", topic_label="Intro")
+        second = SimpleNamespace(id="seg-2", text="Highlight this important theorem.", topic_label="Proof")
+        render_ranges = [
+            {
+                "segment_id": "seg-1",
+                "segment": first,
+                "source_start_time": 0.0,
+                "source_end_time": 3.0,
+                "output_start_time": 0.0,
+                "output_end_time": 3.0,
+                "duration": 3.0,
+                "action": "keep",
+            },
+            {
+                "segment_id": "seg-2",
+                "segment": second,
+                "source_start_time": 3.0,
+                "source_end_time": 7.0,
+                "output_start_time": 3.0,
+                "output_end_time": 7.0,
+                "duration": 4.0,
+                "action": "highlight",
+            },
+        ]
+
+        srt = renderer._generate_word_level_srt(
+            render_ranges,
+            None,
+            caption_policy={"enabled": True, "appearance": "highlight_segments"},
+        )
+
+        self.assertNotIn("normal explanation", srt)
+        self.assertIn("important theorem", srt)
+        self.assertIn("00:00:03,000", srt)
+
+    def test_caption_srt_respects_disabled_policy(self):
+        segment = SimpleNamespace(id="seg-1", text="This should not appear.", topic_label="Intro")
+        srt = renderer._generate_word_level_srt(
+            [{
+                "segment_id": "seg-1",
+                "segment": segment,
+                "source_start_time": 0.0,
+                "source_end_time": 3.0,
+                "output_start_time": 0.0,
+                "output_end_time": 3.0,
+                "duration": 3.0,
+                "action": "keep",
+            }],
+            None,
+            caption_policy={"enabled": False, "export_behavior": "none"},
+        )
+
+        self.assertEqual(srt, "")
+
 
 class PictureInPictureRenderSelectionTests(unittest.IsolatedAsyncioTestCase):
     def test_splits_range_around_picture_in_picture_cue(self):

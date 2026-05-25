@@ -20,6 +20,7 @@ import type {
   ProjectAssetSyncUpdateRequest, ProjectAssetUploadType,
   ProjectCreateRequest, ProjectDetail, ProjectSourceSyncPlan,
   TopicSegmentationResult,
+  CaptionPolicyUpdate,
 } from "../types/api";
 
 let BASE_URL = "http://localhost:8000/api/v1";
@@ -290,6 +291,13 @@ export async function bulkUpdateSegments(
 
 export async function getEditPlan(videoId: string): Promise<EditPlan> {
   return request(`/videos/${videoId}/plan`);
+}
+
+export async function updateCaptionPolicy(videoId: string, payload: CaptionPolicyUpdate): Promise<EditPlan> {
+  return request(`/videos/${videoId}/plan/captions`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function approvePlan(videoId: string, notes?: string): Promise<void> {

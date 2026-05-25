@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   ArrowLeft,
@@ -30,6 +30,11 @@ import * as api from "../lib/api";
 import type {
   CameraCorner,
   CameraShape,
+  CaptionAppearance,
+  CaptionExportBehavior,
+  CaptionPlacement,
+  CaptionPolicy,
+  CaptionPolicyUpdate,
   Chapter,
   CleanAnalyzeResult,
   CleanProfileId,
@@ -70,6 +75,30 @@ export const DEFAULT_LAYOUT_PREVIEW_SETTINGS: LayoutPreviewSettings = {
   cameraShape: "rounded_rectangle",
   cameraSize: "medium",
   cameraMarginPercent: 4,
+};
+
+const DEFAULT_CAPTION_POLICY: CaptionPolicy = {
+  id: "polish-default-captions",
+  kind: "caption_policy",
+  schema_version: "phase6.edit-plan.v2",
+  status: "planned",
+  enabled: true,
+  appearance: "always",
+  placement: "bottom_center",
+  export_behavior: "sidecar",
+  style: {
+    font_size: 24,
+    font_family: "Arial",
+    primary_color: "#FFFFFF",
+    outline_color: "#000000",
+    outline_width: 2,
+    background: "transparent",
+    max_chars_per_line: 80,
+    max_duration_per_cue: 5,
+  },
+  ranges: [],
+  section_intro_seconds: 6,
+  reason: "Keep captions available as SRT/VTT without forcing burn-in.",
 };
 
 export function layoutPreviewSettingsFromCue(cue: LayoutCue | null | undefined): LayoutPreviewSettings {
@@ -151,6 +180,7 @@ type PanelProps = StepperProps & {
   chaptersLoading: boolean;
   approving: boolean;
   onLayoutSettingsChange: (settings: LayoutPreviewSettings) => void;
+  onPolishPlanUpdated: (plan: EditPlan) => void;
   onAcceptAll: () => void;
   onCleanApplied: () => Promise<void> | void;
   onApprove: () => void;
@@ -234,6 +264,7 @@ export function GuidedWorkflowPanel({
   chaptersLoading,
   approving,
   onLayoutSettingsChange,
+  onPolishPlanUpdated,
   onAcceptAll,
   onCleanApplied,
   onApprove,
@@ -249,8 +280,10 @@ export function GuidedWorkflowPanel({
   const [cleanPreview, setCleanPreview] = useState<CleanAnalyzeResult | null>(null);
   const [cleanBusy, setCleanBusy] = useState(false);
   const [cleanMessage, setCleanMessage] = useState<string | null>(null);
+  const [captionPolicy, setCaptionPolicy] = useState<CaptionPolicy>(DEFAULT_CAPTION_POLICY);
+  const [captionSaving, setCaptionSaving] = useState(false);
+  const [captionMessage, setCaptionMessage] = useState<string | null>(null);
   const [polishOptions, setPolishOptions] = useState({
-    captions: true,
     sectionLabels: true,
     titleCards: false,
     transitions: true,
@@ -282,6 +315,19 @@ export function GuidedWorkflowPanel({
   const cameraEnabled = layoutUsesCamera(layoutSettings.layout);
   const updateLayoutSettings = (patch: Partial<LayoutPreviewSettings>) => {
     onLayoutSettingsChange({ ...layoutSettings, ...patch });
+  };
+  useEffect(() => {
+    setCaptionPolicy(captionPolicyFromPlan(plan));
+    setCaptionMessage(null);
+  }, [plan?.polish_actions]);
+
+  const updateCaptionPolicyDraft = (patch: CaptionPolicyUpdate) => {
+    setCaptionPolicy((prev) => ({
+      ...prev,
+      ...patch,
+      style: { ...prev.style, ...(patch.style ?? {}) },
+    }));
+    setCaptionMessage(null);
   };
 
   const handleAnalyzeClean = async () => {
@@ -319,6 +365,29 @@ export function GuidedWorkflowPanel({
       setCleanMessage(`Auto-clean failed: ${error}`);
     } finally {
       setCleanBusy(false);
+    }
+  };
+
+  const handleSaveCaptionPolicy = async () => {
+    setCaptionSaving(true);
+    setCaptionMessage(null);
+    try {
+      const updatedPlan = await api.updateCaptionPolicy(videoId, {
+        enabled: captionPolicy.enabled,
+        appearance: captionPolicy.enabled ? captionPolicy.appearance : "off",
+        placement: captionPolicy.placement,
+        export_behavior: captionPolicy.enabled ? captionPolicy.export_behavior : "none",
+        style: captionPolicy.style,
+        ranges: captionPolicy.ranges,
+        section_intro_seconds: captionPolicy.section_intro_seconds,
+      });
+      onPolishPlanUpdated(updatedPlan);
+      onCompleteStep("polish");
+      setCaptionMessage("Caption policy saved");
+    } catch (error) {
+      setCaptionMessage(`Caption settings failed: ${error}`);
+    } finally {
+      setCaptionSaving(false);
     }
   };
 
@@ -582,11 +651,98 @@ export function GuidedWorkflowPanel({
           <PanelStack>
             <ToggleRow
               label="Selective captions"
-              detail="Prepare caption styling and burn-in decisions."
-              checked={polishOptions.captions}
+              detail="Control where captions appear and how they export."
+              checked={captionPolicy.enabled}
               icon={<Captions className="h-4 w-4 text-sky-300" />}
-              onChange={(checked) => setPolishOptions((prev) => ({ ...prev, captions: checked }))}
+              onChange={(checked) => updateCaptionPolicyDraft({
+                enabled: checked,
+                appearance: checked ? captionPolicy.appearance === "off" ? "always" : captionPolicy.appearance : "off",
+                export_behavior: checked ? captionPolicy.export_behavior === "none" ? "sidecar" : captionPolicy.export_behavior : "none",
+              })}
             />
+            <WorkflowCard title="Caption Timing" icon={<TextSelect className="h-4 w-4 text-sky-300" />}>
+              <ChoiceGrid
+                value={captionPolicy.appearance}
+                onChange={(value) => updateCaptionPolicyDraft({ appearance: value as CaptionAppearance, enabled: value !== "off" })}
+                options={[
+                  { value: "always", label: "Full edit", detail: "Caption every kept range" },
+                  { value: "highlight_segments", label: "Highlights", detail: "Only highlighted segments" },
+                  { value: "section_starts", label: "Section starts", detail: "First seconds per topic" },
+                  { value: "off", label: "Off", detail: "No caption output" },
+                ]}
+              />
+              {captionPolicy.appearance === "section_starts" && (
+                <div className="mt-3">
+                  <SliderControl
+                    label="Section caption window"
+                    value={captionPolicy.section_intro_seconds}
+                    min={2}
+                    max={12}
+                    step={1}
+                    suffix="s"
+                    onChange={(value) => updateCaptionPolicyDraft({ section_intro_seconds: value })}
+                  />
+                </div>
+              )}
+            </WorkflowCard>
+            <WorkflowCard title="Placement" icon={<Captions className="h-4 w-4 text-green-300" />}>
+              <ChoiceGrid
+                value={captionPolicy.placement}
+                onChange={(value) => updateCaptionPolicyDraft({ placement: value as CaptionPlacement })}
+                disabled={!captionPolicy.enabled}
+                options={[
+                  { value: "bottom_center", label: "Bottom", detail: "Standard subtitle position" },
+                  { value: "top_center", label: "Top", detail: "Keeps slide footer clear" },
+                  { value: "bottom_left", label: "Lower left", detail: "Avoids lower-right camera" },
+                  { value: "bottom_right", label: "Lower right", detail: "Avoids lower-left camera" },
+                ]}
+              />
+            </WorkflowCard>
+            <WorkflowCard title="Export Behavior" icon={<Download className="h-4 w-4 text-yellow-300" />}>
+              <ChoiceGrid
+                value={captionPolicy.export_behavior}
+                onChange={(value) => updateCaptionPolicyDraft({ export_behavior: value as CaptionExportBehavior, enabled: value !== "none" })}
+                options={[
+                  { value: "sidecar", label: "Sidecar", detail: "SRT and VTT files" },
+                  { value: "burn_in", label: "Burn in", detail: "Captions in MP4" },
+                  { value: "sidecar_and_burn_in", label: "Both", detail: "Files and hard captions" },
+                  { value: "none", label: "None", detail: "No caption artifacts" },
+                ]}
+              />
+            </WorkflowCard>
+            <WorkflowCard title="Caption Style" icon={<Palette className="h-4 w-4 text-pink-300" />}>
+              <div className="space-y-3">
+                <SliderControl
+                  label="Font size"
+                  value={captionPolicy.style.font_size}
+                  min={16}
+                  max={40}
+                  step={2}
+                  suffix="px"
+                  disabled={!captionPolicy.enabled}
+                  onChange={(value) => updateCaptionPolicyDraft({ style: { font_size: value } })}
+                />
+                <ChoiceGrid
+                  value={captionPolicy.style.background}
+                  onChange={(value) => updateCaptionPolicyDraft({ style: { background: value as "transparent" | "box" } })}
+                  disabled={!captionPolicy.enabled}
+                  options={[
+                    { value: "transparent", label: "Outline", detail: "Clean subtitle edge" },
+                    { value: "box", label: "Box", detail: "Maximum readability" },
+                  ]}
+                />
+              </div>
+            </WorkflowCard>
+            <button
+              type="button"
+              onClick={handleSaveCaptionPolicy}
+              disabled={captionSaving}
+              className="flex w-full items-center justify-center gap-2 rounded-md bg-accent px-3 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {captionSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+              Save Caption Policy
+            </button>
+            {captionMessage && <p className="text-xs leading-5 text-gray-400">{captionMessage}</p>}
             <ToggleRow
               label="Section labels"
               detail="Show topic names at chapter starts."
@@ -918,6 +1074,20 @@ function formatDuration(seconds: number): string {
 
 function layoutUsesCamera(layout: LayoutMode): boolean {
   return layout === "picture_in_picture" || layout === "side_by_side" || layout === "full_camera_source";
+}
+
+function captionPolicyFromPlan(plan: EditPlan | null): CaptionPolicy {
+  const action = plan?.polish_actions.find((item) => {
+    return typeof item === "object" && item != null && "kind" in item && item.kind === "caption_policy";
+  });
+  if (!action) return DEFAULT_CAPTION_POLICY;
+  const policy = action as CaptionPolicy;
+  return {
+    ...DEFAULT_CAPTION_POLICY,
+    ...policy,
+    style: { ...DEFAULT_CAPTION_POLICY.style, ...(policy.style ?? {}) },
+    ranges: Array.isArray(policy.ranges) ? policy.ranges : [],
+  };
 }
 
 function normalizeCameraSize(value: unknown): CameraSize {
