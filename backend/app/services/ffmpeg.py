@@ -169,6 +169,7 @@ class FFmpegService:
         output_width: int = 1920,
         output_height: int = 1080,
         camera_corner: str = "bottom_right",
+        camera_shape: str = "rounded_rectangle",
         camera_size: str = "medium",
         margin_percent: float = 4.0,
     ) -> str:
@@ -191,6 +192,7 @@ class FFmpegService:
             output_width=output_width,
             output_height=output_height,
             camera_corner=camera_corner,
+            camera_shape=camera_shape,
             camera_size=camera_size,
             margin_percent=margin_percent,
         )
@@ -219,6 +221,7 @@ class FFmpegService:
         output_width: int = 1920,
         output_height: int = 1080,
         camera_corner: str = "bottom_right",
+        camera_shape: str = "rounded_rectangle",
         camera_size: str = "medium",
         margin_percent: float = 4.0,
     ) -> list[str]:
@@ -230,6 +233,7 @@ class FFmpegService:
             output_width,
             output_height,
             camera_size,
+            camera_shape,
         )
         margin = max(0, round(min(output_width, output_height) * (float(margin_percent or 0) / 100)))
         overlay_x, overlay_y = FFmpegService._pip_overlay_position(
@@ -243,11 +247,11 @@ class FFmpegService:
 
         audio_input_path = audio_path or screen_path
         uses_separate_audio = bool(audio_path and os.path.abspath(audio_path) != os.path.abspath(screen_path))
+        camera_filter = FFmpegService._pip_camera_filter(camera_width, camera_height, camera_shape)
         filter_complex = (
             f"[0:v]scale={output_width}:{output_height}:force_original_aspect_ratio=decrease,"
             f"pad={output_width}:{output_height}:(ow-iw)/2:(oh-ih)/2,setsar=1[screen];"
-            f"[1:v]scale={camera_width}:{camera_height}:force_original_aspect_ratio=decrease,"
-            f"pad={camera_width}:{camera_height}:(ow-iw)/2:(oh-ih)/2,setsar=1[cam];"
+            f"[1:v]{camera_filter}[cam];"
             f"[screen][cam]overlay={overlay_x}:{overlay_y}:format=auto[v]"
         )
 
@@ -307,7 +311,7 @@ class FFmpegService:
         return round(max(0.0, float(timeline_time or 0.0) - float(sync_offset or 0.0)), 3)
 
     @staticmethod
-    def _pip_camera_dimensions(output_width: int, output_height: int, size: str) -> tuple[int, int]:
+    def _pip_camera_dimensions(output_width: int, output_height: int, size: str, shape: str = "rounded_rectangle") -> tuple[int, int]:
         width_ratio_by_size = {
             "small": 0.20,
             "medium": 0.26,
@@ -315,12 +319,43 @@ class FFmpegService:
         }
         ratio = width_ratio_by_size.get(str(size or "medium").lower(), 0.26)
         camera_width = _even_int(output_width * ratio)
-        camera_height = _even_int(camera_width * 9 / 16)
+        camera_height = camera_width if str(shape or "").lower() == "circle" else _even_int(camera_width * 9 / 16)
         max_height = _even_int(output_height * 0.45)
         if camera_height > max_height:
             camera_height = max_height
-            camera_width = _even_int(camera_height * 16 / 9)
+            camera_width = camera_height if str(shape or "").lower() == "circle" else _even_int(camera_height * 16 / 9)
         return max(2, camera_width), max(2, camera_height)
+
+    @staticmethod
+    def _pip_camera_filter(camera_width: int, camera_height: int, shape: str) -> str:
+        shape_value = str(shape or "rounded_rectangle").lower()
+        if shape_value == "circle":
+            radius = max(1, min(camera_width, camera_height) // 2)
+            alpha = _escape_ffmpeg_expr(
+                f"if(lte((X-W/2)*(X-W/2)+(Y-H/2)*(Y-H/2),{radius * radius}),255,0)"
+            )
+            return (
+                f"scale={camera_width}:{camera_height}:force_original_aspect_ratio=increase,"
+                f"crop={camera_width}:{camera_height},setsar=1,format=rgba,"
+                f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='{alpha}'"
+            )
+        if shape_value == "rounded_rectangle":
+            radius = max(6, min(camera_width, camera_height) // 10)
+            alpha = _escape_ffmpeg_expr(
+                "if(lte("
+                f"pow(max(abs(X-W/2)-(W/2-{radius}),0),2)+"
+                f"pow(max(abs(Y-H/2)-(H/2-{radius}),0),2),"
+                f"{radius * radius}),255,0)"
+            )
+            return (
+                f"scale={camera_width}:{camera_height}:force_original_aspect_ratio=decrease,"
+                f"pad={camera_width}:{camera_height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=rgba,"
+                f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='{alpha}'"
+            )
+        return (
+            f"scale={camera_width}:{camera_height}:force_original_aspect_ratio=decrease,"
+            f"pad={camera_width}:{camera_height}:(ow-iw)/2:(oh-ih)/2,setsar=1"
+        )
 
     @staticmethod
     def _pip_overlay_position(
@@ -528,6 +563,10 @@ class FFmpegService:
 def _even_int(value: float) -> int:
     number = int(round(float(value or 0)))
     return number if number % 2 == 0 else number - 1
+
+
+def _escape_ffmpeg_expr(expression: str) -> str:
+    return expression.replace(",", r"\,")
 
 
 # Singleton

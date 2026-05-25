@@ -38,6 +38,8 @@ class PictureInPictureCommandTests(unittest.TestCase):
         filter_complex = cmd[cmd.index("-filter_complex") + 1]
         self.assertIn("scale=1920:1080", filter_complex)
         self.assertIn("overlay=43:43", filter_complex)
+        self.assertIn("format=rgba", filter_complex)
+        self.assertIn("geq=", filter_complex)
 
     def test_builds_pip_command_with_screen_audio_fallback(self):
         cmd = FFmpegService.build_picture_in_picture_command(
@@ -50,6 +52,38 @@ class PictureInPictureCommandTests(unittest.TestCase):
 
         self.assertEqual(cmd.count("-i"), 2)
         self.assertIn("0:a?", cmd)
+
+    def test_rectangle_shape_uses_unmasked_camera_overlay(self):
+        cmd = FFmpegService.build_picture_in_picture_command(
+            screen_path="screen.mp4",
+            camera_path="camera.mp4",
+            output_path="out.mp4",
+            start_time=0.0,
+            end_time=5.0,
+            camera_shape="rectangle",
+        )
+
+        filter_complex = cmd[cmd.index("-filter_complex") + 1]
+        self.assertIn("force_original_aspect_ratio=decrease", filter_complex)
+        self.assertIn("pad=498:280", filter_complex)
+        self.assertNotIn("geq=", filter_complex)
+
+    def test_circle_shape_uses_square_crop_and_alpha_mask(self):
+        cmd = FFmpegService.build_picture_in_picture_command(
+            screen_path="screen.mp4",
+            camera_path="camera.mp4",
+            output_path="out.mp4",
+            start_time=0.0,
+            end_time=5.0,
+            camera_shape="circle",
+        )
+
+        filter_complex = cmd[cmd.index("-filter_complex") + 1]
+        self.assertIn("scale=486:486:force_original_aspect_ratio=increase", filter_complex)
+        self.assertIn("crop=486:486", filter_complex)
+        self.assertIn("format=rgba", filter_complex)
+        self.assertIn("geq=", filter_complex)
+        self.assertIn("overlay=1391:551", filter_complex)
 
 
 class PictureInPictureRenderSelectionTests(unittest.IsolatedAsyncioTestCase):
@@ -134,6 +168,7 @@ class PictureInPictureRenderSelectionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(fake.pip_calls[0]["screen_path"], "screen.mp4")
             self.assertEqual(fake.pip_calls[0]["camera_sync_offset"], 0.4)
             self.assertEqual(fake.pip_calls[0]["audio_path"], "voice.wav")
+            self.assertEqual(fake.pip_calls[0]["camera_shape"], "rounded_rectangle")
         finally:
             renderer.ffmpeg_service = original_ffmpeg
 
