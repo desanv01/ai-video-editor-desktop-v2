@@ -503,7 +503,45 @@ export interface AnnotationAction {
   [key: string]: unknown;
 }
 
-export type PolishAction = CaptionPolicy | AnnotationAction | Record<string, unknown>;
+export type EducationalOverlayType = "intro_card" | "section_title_card" | "chapter_label" | "step_label";
+export type EducationalOverlayPosition =
+  | "center"
+  | "top_left" | "top_center" | "top_right"
+  | "bottom_left" | "bottom_center" | "bottom_right";
+
+export interface EducationalOverlayStyle {
+  font_size: number;
+  subtitle_font_size: number;
+  text_color: string;
+  subtitle_color: string;
+  background_color: string;
+  accent_color: string;
+  opacity: number;
+}
+
+export interface EducationalOverlayAction {
+  id: string;
+  kind: "educational_overlay";
+  schema_version: string;
+  status: "planned" | "active" | "applied" | string;
+  overlay_type: EducationalOverlayType | string;
+  title: string;
+  subtitle: string;
+  start_time: number;
+  end_time: number;
+  duration: number;
+  position: EducationalOverlayPosition | string;
+  x_percent: number;
+  y_percent: number;
+  style: EducationalOverlayStyle;
+  chapter_index: number | null;
+  step_number: number | null;
+  source: string;
+  reason: string;
+  [key: string]: unknown;
+}
+
+export type PolishAction = CaptionPolicy | AnnotationAction | EducationalOverlayAction | Record<string, unknown>;
 
 export type CaptionPolicyUpdate = Partial<Omit<CaptionPolicy, "id" | "kind" | "schema_version" | "status" | "style">> & {
   style?: Partial<CaptionStyle>;
@@ -512,6 +550,10 @@ export type CaptionPolicyUpdate = Partial<Omit<CaptionPolicy, "id" | "kind" | "s
 export type AnnotationActionUpdate = Partial<Omit<AnnotationAction, "kind" | "schema_version" | "status" | "style" | "pointer">> & {
   style?: Partial<AnnotationStyle>;
   pointer?: Partial<AnnotationPointer>;
+};
+
+export type EducationalOverlayActionUpdate = Partial<Omit<EducationalOverlayAction, "kind" | "schema_version" | "status" | "style">> & {
+  style?: Partial<EducationalOverlayStyle>;
 };
 
 export interface Segment {

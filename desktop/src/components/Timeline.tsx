@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { AnnotationAction, Segment, SegmentAction, TranscriptCutInterval } from "../types/api";
+import type { AnnotationAction, EducationalOverlayAction, Segment, SegmentAction, TranscriptCutInterval } from "../types/api";
 
 interface Props {
   segments: Segment[];
@@ -10,7 +10,9 @@ interface Props {
   selectedSegmentId: string | null;
   cutIntervals?: TranscriptCutInterval[];
   annotations?: AnnotationAction[];
+  educationalOverlays?: EducationalOverlayAction[];
   onSelectAnnotation?: (annotation: AnnotationAction) => void;
+  onSelectEducationalOverlay?: (overlay: EducationalOverlayAction) => void;
 }
 
 const ACTION_COLORS: Record<SegmentAction, string> = {
@@ -29,7 +31,9 @@ export function Timeline({
   selectedSegmentId,
   cutIntervals = [],
   annotations = [],
+  educationalOverlays = [],
   onSelectAnnotation,
+  onSelectEducationalOverlay,
 }: Props) {
   const playheadPct = duration > 0 ? (currentTime / duration) * 100 : 0;
 
@@ -60,6 +64,15 @@ export function Timeline({
       return { annotation, left, width };
     });
   }, [annotations, duration]);
+
+  const educationalOverlayBars = useMemo(() => {
+    if (!duration || duration === 0) return [];
+    return educationalOverlays.map((overlay) => {
+      const left = (overlay.start_time / duration) * 100;
+      const width = Math.max(((overlay.end_time - overlay.start_time) / duration) * 100, 0.5);
+      return { overlay, left, width };
+    });
+  }, [educationalOverlays, duration]);
 
   return (
     <div className="w-full space-y-1">
@@ -108,6 +121,20 @@ export function Timeline({
           />
         ))}
 
+        {educationalOverlayBars.map(({ overlay, left, width }) => (
+          <button
+            key={overlay.id}
+            type="button"
+            className="absolute top-5 z-[6] h-3 rounded-sm border border-amber-100/60 bg-amber-300/85"
+            style={{ left: `${left}%`, width: `${width}%` }}
+            title={`${overlay.overlay_type}: ${overlay.title}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelectEducationalOverlay?.(overlay);
+            }}
+          />
+        ))}
+
         {/* Playhead */}
         <div
           className="absolute top-0 w-0.5 h-full bg-white z-10 pointer-events-none"
@@ -124,6 +151,7 @@ export function Timeline({
           <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-action-shorten inline-block" /> Shorten</span>
           <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-action-highlight inline-block" /> Highlight</span>
           <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-sky-400 inline-block" /> Callout</span>
+          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-amber-300 inline-block" /> Edu label</span>
         </div>
         <span>{formatTime(duration)}</span>
       </div>

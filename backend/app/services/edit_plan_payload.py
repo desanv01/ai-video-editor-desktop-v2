@@ -45,6 +45,21 @@ ANNOTATION_POSITIONS = {
     "bottom_center",
     "bottom_right",
 }
+EDUCATIONAL_OVERLAY_TYPES = {
+    "intro_card",
+    "section_title_card",
+    "chapter_label",
+    "step_label",
+}
+EDUCATIONAL_OVERLAY_POSITIONS = {
+    "center",
+    "top_left",
+    "top_center",
+    "top_right",
+    "bottom_left",
+    "bottom_center",
+    "bottom_right",
+}
 
 
 def normalize_plan_payload(plan_json: Any) -> dict[str, Any]:
@@ -187,6 +202,10 @@ def normalize_polish_actions(actions: Any) -> list[dict[str, Any]]:
             annotation = normalize_annotation_action(action)
             if annotation:
                 normalized.append(annotation)
+        elif action.get("kind") == "educational_overlay":
+            overlay = normalize_educational_overlay_action(action)
+            if overlay:
+                normalized.append(overlay)
         else:
             normalized.append(dict(action))
     if not caption_seen:
@@ -365,6 +384,132 @@ def update_annotations(payload: dict[str, Any], annotations: Iterable[dict[str, 
     return normalized
 
 
+def default_educational_overlay_style(overlay_type: str = "chapter_label") -> dict[str, Any]:
+    """Return readable defaults for educational step labels and title cards."""
+    if overlay_type in {"intro_card", "section_title_card"}:
+        return {
+            "font_size": 44,
+            "subtitle_font_size": 24,
+            "text_color": "#FFFFFF",
+            "subtitle_color": "#CBD5E1",
+            "background_color": "#111827",
+            "accent_color": "#38BDF8",
+            "opacity": 0.92,
+        }
+    return {
+        "font_size": 28,
+        "subtitle_font_size": 18,
+        "text_color": "#FFFFFF",
+        "subtitle_color": "#CBD5E1",
+        "background_color": "#0F172A",
+        "accent_color": "#FACC15",
+        "opacity": 0.88,
+    }
+
+
+def normalize_educational_overlay_action(action: Any) -> dict[str, Any] | None:
+    """Normalize one educational title card, chapter label, or step label."""
+    if not isinstance(action, dict):
+        return None
+
+    overlay_type = _choice(action.get("overlay_type"), EDUCATIONAL_OVERLAY_TYPES, "chapter_label")
+    title = str(action.get("title") or action.get("text") or "").strip()[:160]
+    if not title:
+        return None
+    subtitle = str(action.get("subtitle") or "").strip()[:220]
+
+    start = _bounded_float(action.get("start_time"), default=0.0, minimum=0.0, maximum=86400.0)
+    default_duration = 4.5 if overlay_type in {"intro_card", "section_title_card"} else 3.0
+    end = _bounded_float(
+        action.get("end_time"),
+        default=start + default_duration,
+        minimum=0.0,
+        maximum=86400.0,
+    )
+    if end <= start:
+        end = min(86400.0, start + default_duration)
+
+    default_position = "center" if overlay_type in {"intro_card", "section_title_card"} else "top_left"
+    position = _choice(action.get("position"), EDUCATIONAL_OVERLAY_POSITIONS, default_position)
+    x_percent, y_percent = _educational_overlay_position_to_percent(position)
+    x_percent = _bounded_float(action.get("x_percent"), default=x_percent, minimum=2.0, maximum=98.0)
+    y_percent = _bounded_float(action.get("y_percent"), default=y_percent, minimum=2.0, maximum=98.0)
+
+    chapter_index = action.get("chapter_index")
+    try:
+        chapter_index = int(chapter_index) if chapter_index is not None else None
+    except (TypeError, ValueError):
+        chapter_index = None
+    step_number = action.get("step_number")
+    try:
+        step_number = int(step_number) if step_number is not None else None
+    except (TypeError, ValueError):
+        step_number = None
+
+    normalized = {
+        "id": str(action.get("id") or f"{overlay_type}-{int(start * 1000)}"),
+        "kind": "educational_overlay",
+        "schema_version": EDIT_PLAN_SCHEMA_VERSION,
+        "status": str(action.get("status") or "active"),
+        "overlay_type": overlay_type,
+        "title": title,
+        "subtitle": subtitle,
+        "start_time": start,
+        "end_time": end,
+        "position": position,
+        "x_percent": x_percent,
+        "y_percent": y_percent,
+        "style": _normalize_educational_overlay_style(action.get("style"), overlay_type),
+        "chapter_index": chapter_index,
+        "step_number": step_number,
+        "source": str(action.get("source") or "teacher_polish")[:80],
+        "reason": str(action.get("reason") or "Teacher-added educational polish overlay.")[:500],
+    }
+    normalized["duration"] = round(normalized["end_time"] - normalized["start_time"], 3)
+    return normalized
+
+
+def get_educational_overlays(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Return normalized educational overlays from the plan payload."""
+    normalized = normalize_plan_payload(payload or {})
+    overlays = []
+    for action in normalized.get("polish_actions", []):
+        if isinstance(action, dict) and action.get("kind") == "educational_overlay":
+            overlay = normalize_educational_overlay_action(action)
+            if overlay:
+                overlays.append(overlay)
+    return sorted(overlays, key=lambda item: (item["start_time"], item["end_time"], item["id"]))
+
+
+def update_educational_overlays(payload: dict[str, Any], overlays: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Replace the editable educational overlay action set in the v2 polish list."""
+    normalized = normalize_plan_payload(payload)
+    next_overlays = [
+        overlay for overlay in (
+            normalize_educational_overlay_action(item) for item in list(overlays or [])
+        )
+        if overlay is not None
+    ]
+    actions = [
+        action for action in normalized.get("polish_actions", [])
+        if not (isinstance(action, dict) and action.get("kind") == "educational_overlay")
+    ]
+    normalized["polish_actions"] = actions + next_overlays
+    normalized["export_metadata"] = {
+        **_dict_value(normalized.get("export_metadata")),
+        "educational_overlays": {
+            "count": len(next_overlays),
+            "intro_card_count": sum(1 for item in next_overlays if item.get("overlay_type") == "intro_card"),
+            "section_title_card_count": sum(1 for item in next_overlays if item.get("overlay_type") == "section_title_card"),
+            "chapter_label_count": sum(1 for item in next_overlays if item.get("overlay_type") == "chapter_label"),
+            "step_label_count": sum(1 for item in next_overlays if item.get("overlay_type") == "step_label"),
+            "burned_in": len(next_overlays) > 0,
+        },
+        "updated_at": _utc_now(),
+    }
+    return normalized
+
+
 def update_cleaning_payload(
     payload: dict[str, Any],
     *,
@@ -532,6 +677,25 @@ def _normalize_annotation_pointer(value: Any, annotation_type: str) -> dict[str,
     }
 
 
+def _normalize_educational_overlay_style(value: Any, overlay_type: str) -> dict[str, Any]:
+    defaults = default_educational_overlay_style(overlay_type)
+    source = dict(value) if isinstance(value, dict) else {}
+    return {
+        "font_size": int(_bounded_float(source.get("font_size"), default=defaults["font_size"], minimum=18, maximum=72)),
+        "subtitle_font_size": int(_bounded_float(
+            source.get("subtitle_font_size"),
+            default=defaults["subtitle_font_size"],
+            minimum=12,
+            maximum=44,
+        )),
+        "text_color": _hex_color(source.get("text_color"), defaults["text_color"]),
+        "subtitle_color": _hex_color(source.get("subtitle_color"), defaults["subtitle_color"]),
+        "background_color": _hex_color(source.get("background_color"), defaults["background_color"]),
+        "accent_color": _hex_color(source.get("accent_color"), defaults["accent_color"]),
+        "opacity": _bounded_float(source.get("opacity"), default=defaults["opacity"], minimum=0.2, maximum=1.0),
+    }
+
+
 def _position_to_percent(position: str) -> tuple[float, float]:
     return {
         "top_left": (10.0, 12.0),
@@ -544,6 +708,18 @@ def _position_to_percent(position: str) -> tuple[float, float]:
         "bottom_center": (50.0, 82.0),
         "bottom_right": (78.0, 82.0),
     }.get(position, (78.0, 12.0))
+
+
+def _educational_overlay_position_to_percent(position: str) -> tuple[float, float]:
+    return {
+        "center": (50.0, 50.0),
+        "top_left": (9.0, 10.0),
+        "top_center": (50.0, 10.0),
+        "top_right": (91.0, 10.0),
+        "bottom_left": (9.0, 87.0),
+        "bottom_center": (50.0, 87.0),
+        "bottom_right": (91.0, 87.0),
+    }.get(position, (50.0, 50.0))
 
 
 def _hex_color(value: Any, default: str) -> str:

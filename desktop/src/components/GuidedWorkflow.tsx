@@ -46,6 +46,10 @@ import type {
   Chapter,
   CleanAnalyzeResult,
   CleanProfileId,
+  EducationalOverlayAction,
+  EducationalOverlayActionUpdate,
+  EducationalOverlayPosition,
+  EducationalOverlayType,
   EditPlan,
   LayoutAspectRatio,
   LayoutCue,
@@ -115,6 +119,16 @@ const DEFAULT_ANNOTATION_STYLE = {
   background_color: "#111827",
   border_color: "#38BDF8",
   opacity: 0.88,
+};
+
+const DEFAULT_EDUCATIONAL_OVERLAY_STYLE = {
+  font_size: 34,
+  subtitle_font_size: 18,
+  text_color: "#FFFFFF",
+  subtitle_color: "#CBD5E1",
+  background_color: "#111827",
+  accent_color: "#FACC15",
+  opacity: 0.9,
 };
 
 export function layoutPreviewSettingsFromCue(cue: LayoutCue | null | undefined): LayoutPreviewSettings {
@@ -190,6 +204,7 @@ type PanelProps = StepperProps & {
   segments: Segment[];
   selectedSegment: Segment | null;
   selectedAnnotationId: string | null;
+  selectedEducationalOverlayId: string | null;
   plan: EditPlan | null;
   currentTime: number;
   layoutSettings: LayoutPreviewSettings;
@@ -200,6 +215,7 @@ type PanelProps = StepperProps & {
   onLayoutSettingsChange: (settings: LayoutPreviewSettings) => void;
   onPolishPlanUpdated: (plan: EditPlan) => void;
   onSelectedAnnotationChange: (annotationId: string | null) => void;
+  onSelectedEducationalOverlayChange: (overlayId: string | null) => void;
   onAcceptAll: () => void;
   onCleanApplied: () => Promise<void> | void;
   onApprove: () => void;
@@ -277,6 +293,7 @@ export function GuidedWorkflowPanel({
   segments,
   selectedSegment,
   selectedAnnotationId,
+  selectedEducationalOverlayId,
   plan,
   currentTime,
   layoutSettings,
@@ -287,6 +304,7 @@ export function GuidedWorkflowPanel({
   onLayoutSettingsChange,
   onPolishPlanUpdated,
   onSelectedAnnotationChange,
+  onSelectedEducationalOverlayChange,
   onAcceptAll,
   onCleanApplied,
   onApprove,
@@ -308,11 +326,9 @@ export function GuidedWorkflowPanel({
   const [annotations, setAnnotations] = useState<AnnotationAction[]>([]);
   const [annotationSaving, setAnnotationSaving] = useState(false);
   const [annotationMessage, setAnnotationMessage] = useState<string | null>(null);
-  const [polishOptions, setPolishOptions] = useState({
-    sectionLabels: true,
-    titleCards: false,
-    transitions: true,
-  });
+  const [educationalOverlays, setEducationalOverlays] = useState<EducationalOverlayAction[]>([]);
+  const [educationalOverlaySaving, setEducationalOverlaySaving] = useState(false);
+  const [educationalOverlayMessage, setEducationalOverlayMessage] = useState<string | null>(null);
 
   const activeStepMeta = GUIDED_WORKFLOW_STEPS.find((step) => step.id === activeStep) ?? GUIDED_WORKFLOW_STEPS[0];
   const activeIndex = GUIDED_WORKFLOW_STEPS.findIndex((step) => step.id === activeStep);
@@ -344,11 +360,15 @@ export function GuidedWorkflowPanel({
   useEffect(() => {
     setCaptionPolicy(captionPolicyFromPlan(plan));
     setAnnotations(annotationsFromPlan(plan));
+    setEducationalOverlays(educationalOverlaysFromPlan(plan));
     setCaptionMessage(null);
     setAnnotationMessage(null);
+    setEducationalOverlayMessage(null);
   }, [plan?.polish_actions]);
 
   const selectedAnnotation = annotations.find((annotation) => annotation.id === selectedAnnotationId) ?? annotations[0] ?? null;
+  const selectedEducationalOverlay =
+    educationalOverlays.find((overlay) => overlay.id === selectedEducationalOverlayId) ?? educationalOverlays[0] ?? null;
 
   const updateCaptionPolicyDraft = (patch: CaptionPolicyUpdate) => {
     setCaptionPolicy((prev) => ({
@@ -424,6 +444,7 @@ export function GuidedWorkflowPanel({
     const annotation = createAnnotationDraft(currentTime, plan?.original_duration ?? currentTime + 4);
     setAnnotations((prev) => [...prev, annotation]);
     onSelectedAnnotationChange(annotation.id);
+    onSelectedEducationalOverlayChange(null);
     setAnnotationMessage(null);
   };
 
@@ -454,6 +475,57 @@ export function GuidedWorkflowPanel({
       setAnnotationMessage(`Annotation save failed: ${error}`);
     } finally {
       setAnnotationSaving(false);
+    }
+  };
+
+  const handleAddEducationalOverlay = (overlayType: EducationalOverlayType) => {
+    const overlay = createEducationalOverlayDraft(
+      overlayType,
+      currentTime,
+      plan?.original_duration ?? currentTime + 4,
+      educationalOverlays.length + 1,
+    );
+    setEducationalOverlays((prev) => [...prev, overlay]);
+    onSelectedEducationalOverlayChange(overlay.id);
+    onSelectedAnnotationChange(null);
+    setEducationalOverlayMessage(null);
+  };
+
+  const handleGenerateEducationalOverlays = () => {
+    const generated = createEducationalOverlaysFromChapters(chapters, plan?.original_duration ?? 0);
+    setEducationalOverlays(generated);
+    onSelectedEducationalOverlayChange(generated[0]?.id ?? null);
+    onSelectedAnnotationChange(null);
+    setEducationalOverlayMessage(`${generated.length} overlays prepared from chapters`);
+  };
+
+  const handleUpdateEducationalOverlayDraft = (id: string, patch: EducationalOverlayActionUpdate) => {
+    setEducationalOverlays((prev) => prev.map((overlay) => (
+      overlay.id === id ? mergeEducationalOverlayDraft(overlay, patch) : overlay
+    )));
+    setEducationalOverlayMessage(null);
+  };
+
+  const handleDeleteEducationalOverlay = (id: string) => {
+    setEducationalOverlays((prev) => prev.filter((overlay) => overlay.id !== id));
+    if (selectedEducationalOverlayId === id) {
+      onSelectedEducationalOverlayChange(null);
+    }
+    setEducationalOverlayMessage(null);
+  };
+
+  const handleSaveEducationalOverlays = async () => {
+    setEducationalOverlaySaving(true);
+    setEducationalOverlayMessage(null);
+    try {
+      const updatedPlan = await api.updateEducationalOverlays(videoId, educationalOverlays.map(educationalOverlayForSave));
+      onPolishPlanUpdated(updatedPlan);
+      onCompleteStep("polish");
+      setEducationalOverlayMessage(`${educationalOverlays.length} educational overlays saved`);
+    } catch (error) {
+      setEducationalOverlayMessage(`Educational overlays failed: ${error}`);
+    } finally {
+      setEducationalOverlaySaving(false);
     }
   };
 
@@ -829,7 +901,10 @@ export function GuidedWorkflowPanel({
                       <button
                         key={annotation.id}
                         type="button"
-                        onClick={() => onSelectedAnnotationChange(annotation.id)}
+                        onClick={() => {
+                          onSelectedAnnotationChange(annotation.id);
+                          onSelectedEducationalOverlayChange(null);
+                        }}
                         className={`rounded px-2 py-1 text-[11px] font-semibold transition-colors ${
                           selectedAnnotation?.id === annotation.id
                             ? "bg-accent text-white"
@@ -959,27 +1034,182 @@ export function GuidedWorkflowPanel({
                 {annotationMessage && <p className="text-xs leading-5 text-gray-400">{annotationMessage}</p>}
               </div>
             </WorkflowCard>
-            <ToggleRow
-              label="Section labels"
-              detail="Show topic names at chapter starts."
-              checked={polishOptions.sectionLabels}
-              icon={<ListChecks className="h-4 w-4 text-green-300" />}
-              onChange={(checked) => setPolishOptions((prev) => ({ ...prev, sectionLabels: checked }))}
-            />
-            <ToggleRow
-              label="Title cards"
-              detail="Reserve intro and section title cards for later polish tooling."
-              checked={polishOptions.titleCards}
-              icon={<Palette className="h-4 w-4 text-pink-300" />}
-              onChange={(checked) => setPolishOptions((prev) => ({ ...prev, titleCards: checked }))}
-            />
-            <ToggleRow
-              label="Gentle transitions"
-              detail="Use simple changes between sections and layouts."
-              checked={polishOptions.transitions}
-              icon={<Sparkles className="h-4 w-4 text-yellow-300" />}
-              onChange={(checked) => setPolishOptions((prev) => ({ ...prev, transitions: checked }))}
-            />
+            <WorkflowCard title="Educational Labels & Cards" icon={<ListChecks className="h-4 w-4 text-amber-300" />}>
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={handleGenerateEducationalOverlays}
+                    className="flex items-center justify-center gap-2 rounded-md bg-surface-raised px-3 py-2 text-xs font-semibold text-gray-200 transition-colors hover:bg-surface-border"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    From chapters
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleAddEducationalOverlay("intro_card")}
+                    className="flex items-center justify-center gap-2 rounded-md bg-surface-raised px-3 py-2 text-xs font-semibold text-gray-200 transition-colors hover:bg-surface-border"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    Intro card
+                  </button>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { value: "section_title_card", label: "Section" },
+                    { value: "chapter_label", label: "Chapter" },
+                    { value: "step_label", label: "Step" },
+                  ].map((item) => (
+                    <button
+                      key={item.value}
+                      type="button"
+                      onClick={() => handleAddEducationalOverlay(item.value as EducationalOverlayType)}
+                      className="rounded-md bg-surface-raised px-2 py-2 text-xs font-semibold text-gray-300 transition-colors hover:bg-surface-border"
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+
+                {educationalOverlays.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {educationalOverlays.map((overlay) => (
+                      <button
+                        key={overlay.id}
+                        type="button"
+                        onClick={() => {
+                          onSelectedEducationalOverlayChange(overlay.id);
+                          onSelectedAnnotationChange(null);
+                        }}
+                        className={`rounded px-2 py-1 text-[11px] font-semibold transition-colors ${
+                          selectedEducationalOverlay?.id === overlay.id
+                            ? "bg-amber-400 text-gray-950"
+                            : "bg-surface-raised text-gray-400 hover:text-gray-200"
+                        }`}
+                      >
+                        {formatDuration(overlay.start_time)}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {selectedEducationalOverlay ? (
+                  <div className="space-y-3 rounded-md border border-surface-border bg-surface-raised p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <ChoiceGrid
+                        value={selectedEducationalOverlay.overlay_type}
+                        onChange={(value) => handleUpdateEducationalOverlayDraft(
+                          selectedEducationalOverlay.id,
+                          educationalOverlayTypePatch(value as EducationalOverlayType),
+                        )}
+                        options={[
+                          { value: "intro_card", label: "Intro", detail: "Opening title" },
+                          { value: "section_title_card", label: "Section", detail: "Topic card" },
+                          { value: "chapter_label", label: "Chapter", detail: "Corner marker" },
+                          { value: "step_label", label: "Step", detail: "Procedure badge" },
+                        ]}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteEducationalOverlay(selectedEducationalOverlay.id)}
+                        className="rounded-md p-2 text-gray-500 transition-colors hover:bg-red-500/10 hover:text-red-300"
+                        aria-label="Delete educational overlay"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-gray-400">Title</span>
+                      <input
+                        value={selectedEducationalOverlay.title}
+                        onChange={(event) => handleUpdateEducationalOverlayDraft(selectedEducationalOverlay.id, { title: event.target.value })}
+                        className="w-full rounded-md border border-surface-border bg-surface-overlay px-3 py-2 text-sm text-gray-100 outline-none focus:border-accent"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-gray-400">Subtitle</span>
+                      <input
+                        value={selectedEducationalOverlay.subtitle}
+                        onChange={(event) => handleUpdateEducationalOverlayDraft(selectedEducationalOverlay.id, { subtitle: event.target.value })}
+                        className="w-full rounded-md border border-surface-border bg-surface-overlay px-3 py-2 text-sm text-gray-100 outline-none focus:border-accent"
+                      />
+                    </label>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <NumberField
+                        label="Start"
+                        value={selectedEducationalOverlay.start_time}
+                        min={0}
+                        step={0.5}
+                        suffix="s"
+                        onChange={(value) => handleUpdateEducationalOverlayDraft(selectedEducationalOverlay.id, {
+                          start_time: value,
+                          end_time: Math.max(value + 0.5, selectedEducationalOverlay.end_time),
+                        })}
+                      />
+                      <NumberField
+                        label="End"
+                        value={selectedEducationalOverlay.end_time}
+                        min={selectedEducationalOverlay.start_time + 0.5}
+                        step={0.5}
+                        suffix="s"
+                        onChange={(value) => handleUpdateEducationalOverlayDraft(selectedEducationalOverlay.id, { end_time: value })}
+                      />
+                    </div>
+
+                    <ChoiceGrid
+                      value={selectedEducationalOverlay.position}
+                      onChange={(value) => handleUpdateEducationalOverlayDraft(
+                        selectedEducationalOverlay.id,
+                        educationalOverlayPositionPatch(value as EducationalOverlayPosition),
+                      )}
+                      options={[
+                        { value: "center", label: "Center", detail: "Title card" },
+                        { value: "top_left", label: "Top left", detail: "Badge" },
+                        { value: "top_center", label: "Top", detail: "Header" },
+                        { value: "top_right", label: "Top right", detail: "Badge" },
+                        { value: "bottom_left", label: "Low left", detail: "Footer" },
+                        { value: "bottom_right", label: "Low right", detail: "Footer" },
+                      ]}
+                    />
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <NumberField
+                        label="Step"
+                        value={selectedEducationalOverlay.step_number ?? 1}
+                        min={1}
+                        step={1}
+                        suffix=""
+                        onChange={(value) => handleUpdateEducationalOverlayDraft(selectedEducationalOverlay.id, { step_number: Math.max(1, Math.round(value)) })}
+                      />
+                      <SliderControl
+                        label="Text size"
+                        value={selectedEducationalOverlay.style.font_size}
+                        min={18}
+                        max={56}
+                        step={2}
+                        suffix="px"
+                        onChange={(value) => handleUpdateEducationalOverlayDraft(selectedEducationalOverlay.id, { style: { font_size: value } })}
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <EmptyState title="No educational overlays yet" detail="Generate labels from chapters or add one at the current playhead." />
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleSaveEducationalOverlays}
+                  disabled={educationalOverlaySaving}
+                  className="flex w-full items-center justify-center gap-2 rounded-md bg-accent px-3 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {educationalOverlaySaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                  Save Educational Overlays
+                </button>
+                {educationalOverlayMessage && <p className="text-xs leading-5 text-gray-400">{educationalOverlayMessage}</p>}
+              </div>
+            </WorkflowCard>
           </PanelStack>
         )}
 
@@ -1353,6 +1583,163 @@ function annotationsFromPlan(plan: EditPlan | null): AnnotationAction[] {
       direction: annotation.pointer?.direction ?? "left",
     },
   }));
+}
+
+function educationalOverlaysFromPlan(plan: EditPlan | null): EducationalOverlayAction[] {
+  return (plan?.polish_actions ?? []).filter((item): item is EducationalOverlayAction => {
+    return typeof item === "object" && item != null && "kind" in item && item.kind === "educational_overlay";
+  }).map((overlay) => ({
+    ...overlay,
+    subtitle: overlay.subtitle ?? "",
+    style: { ...DEFAULT_EDUCATIONAL_OVERLAY_STYLE, ...(overlay.style ?? {}) },
+  }));
+}
+
+function createEducationalOverlayDraft(
+  overlayType: EducationalOverlayType,
+  currentTime: number,
+  duration: number,
+  ordinal: number,
+): EducationalOverlayAction {
+  const start = overlayType === "intro_card" ? 0 : Math.max(0, Math.round(currentTime * 2) / 2);
+  const defaultDuration = overlayType === "intro_card" || overlayType === "section_title_card" ? 4.5 : 3;
+  const end = Math.min(Math.max(duration, start + defaultDuration), start + defaultDuration);
+  const isCard = overlayType === "intro_card" || overlayType === "section_title_card";
+  return {
+    id: `edu-overlay-${Date.now()}-${ordinal}`,
+    kind: "educational_overlay",
+    schema_version: "phase6.edit-plan.v2",
+    status: "active",
+    overlay_type: overlayType,
+    title: defaultEducationalOverlayTitle(overlayType, ordinal),
+    subtitle: overlayType === "intro_card" ? "Course lesson overview" : "",
+    start_time: start,
+    end_time: Math.max(start + 0.5, end),
+    duration: Math.max(0.5, end - start),
+    position: isCard ? "center" : "top_left",
+    x_percent: isCard ? 50 : 9,
+    y_percent: isCard ? 50 : 10,
+    style: {
+      ...DEFAULT_EDUCATIONAL_OVERLAY_STYLE,
+      font_size: isCard ? 44 : 28,
+      subtitle_font_size: isCard ? 24 : 18,
+    },
+    chapter_index: overlayType === "chapter_label" ? Math.max(0, ordinal - 1) : null,
+    step_number: overlayType === "step_label" ? ordinal : null,
+    source: "teacher_polish",
+    reason: "Teacher-added educational polish overlay.",
+  };
+}
+
+function createEducationalOverlaysFromChapters(chapters: Chapter[], duration: number): EducationalOverlayAction[] {
+  const lessonTitle = chapters[0]?.label || "Lecture Overview";
+  const overlays: EducationalOverlayAction[] = [
+    {
+      ...createEducationalOverlayDraft("intro_card", 0, duration || 4.5, 1),
+      id: "edu-intro-card",
+      title: lessonTitle,
+      subtitle: chapters.length > 1 ? `${chapters.length} chapters in this lesson` : "Key ideas and examples",
+      source: "chapter_generation",
+    },
+  ];
+
+  chapters.slice(0, 12).forEach((chapter, index) => {
+    const start = Math.max(0, chapter.timestamp);
+    overlays.push({
+      ...createEducationalOverlayDraft("section_title_card", start, duration || start + 4.5, index + 1),
+      id: `edu-section-${index + 1}`,
+      title: chapter.label,
+      subtitle: chapter.keywords?.slice(0, 3).join(" / ") ?? "",
+      chapter_index: index,
+      source: "chapter_generation",
+    });
+    overlays.push({
+      ...createEducationalOverlayDraft("chapter_label", start + 0.2, duration || start + 3.2, index + 1),
+      id: `edu-chapter-${index + 1}`,
+      title: chapter.label,
+      chapter_index: index,
+      source: "chapter_generation",
+    });
+  });
+
+  return overlays;
+}
+
+function defaultEducationalOverlayTitle(overlayType: EducationalOverlayType, ordinal: number): string {
+  if (overlayType === "intro_card") return "Lecture Overview";
+  if (overlayType === "section_title_card") return `Section ${ordinal}`;
+  if (overlayType === "step_label") return "Key step";
+  return `Chapter ${ordinal}`;
+}
+
+function mergeEducationalOverlayDraft(
+  overlay: EducationalOverlayAction,
+  patch: EducationalOverlayActionUpdate,
+): EducationalOverlayAction {
+  const next = {
+    ...overlay,
+    ...patch,
+    style: { ...overlay.style, ...(patch.style ?? {}) },
+  };
+  const start = Math.max(0, Number(next.start_time) || 0);
+  const end = Math.max(start + 0.5, Number(next.end_time) || start + 4);
+  return {
+    ...next,
+    start_time: start,
+    end_time: end,
+    duration: end - start,
+  };
+}
+
+function educationalOverlayForSave(overlay: EducationalOverlayAction): EducationalOverlayActionUpdate {
+  return {
+    id: overlay.id,
+    overlay_type: overlay.overlay_type,
+    title: overlay.title,
+    subtitle: overlay.subtitle,
+    start_time: overlay.start_time,
+    end_time: overlay.end_time,
+    position: overlay.position,
+    x_percent: overlay.x_percent,
+    y_percent: overlay.y_percent,
+    style: overlay.style,
+    chapter_index: overlay.chapter_index,
+    step_number: overlay.step_number,
+    source: overlay.source,
+    reason: overlay.reason,
+  };
+}
+
+function educationalOverlayTypePatch(overlayType: EducationalOverlayType): EducationalOverlayActionUpdate {
+  const isCard = overlayType === "intro_card" || overlayType === "section_title_card";
+  const [x, y] = educationalOverlayPositionPercent(isCard ? "center" : "top_left");
+  return {
+    overlay_type: overlayType,
+    position: isCard ? "center" : "top_left",
+    x_percent: x,
+    y_percent: y,
+    style: {
+      font_size: isCard ? 44 : 28,
+      subtitle_font_size: isCard ? 24 : 18,
+    },
+  };
+}
+
+function educationalOverlayPositionPatch(position: EducationalOverlayPosition): EducationalOverlayActionUpdate {
+  const [x, y] = educationalOverlayPositionPercent(position);
+  return { position, x_percent: x, y_percent: y };
+}
+
+function educationalOverlayPositionPercent(position: string): [number, number] {
+  return {
+    center: [50, 50],
+    top_left: [9, 10],
+    top_center: [50, 10],
+    top_right: [91, 10],
+    bottom_left: [9, 87],
+    bottom_center: [50, 87],
+    bottom_right: [91, 87],
+  }[position] as [number, number] ?? [50, 50];
 }
 
 function createAnnotationDraft(currentTime: number, duration: number): AnnotationAction {

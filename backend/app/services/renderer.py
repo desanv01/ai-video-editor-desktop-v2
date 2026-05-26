@@ -34,7 +34,13 @@ from sqlalchemy import select
 from db.models import Video, Transcript, Segment, EditPlan, ProjectAsset, SegmentAction, VideoStatus
 from services.ffmpeg import ffmpeg_service, FFmpegService
 from services.progress import start_step, complete_step, PipelineStep
-from services.edit_plan_payload import get_annotations, get_caption_policy, normalize_plan_payload, update_export_metadata
+from services.edit_plan_payload import (
+    get_annotations,
+    get_caption_policy,
+    get_educational_overlays,
+    normalize_plan_payload,
+    update_export_metadata,
+)
 from services.layout_model import LayoutMode
 from services.transcript_edit_decisions import build_synced_timeline_plan
 from config import settings
@@ -183,11 +189,17 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
 
         caption_policy = get_caption_policy(plan_payload)
         annotations = get_annotations(plan_payload)
+        educational_overlays = get_educational_overlays(plan_payload)
         annotation_events = _annotation_events_for_render_ranges(annotations, render_ranges)
+        educational_overlay_events = _annotation_events_for_render_ranges(educational_overlays, render_ranges)
         annotation_burned_in = False
-        if annotation_events:
+        if annotation_events or educational_overlay_events:
             ass_width, ass_height = _annotation_canvas_dimensions(plan_payload)
-            annotation_ass_content = _generate_annotation_ass(annotation_events, width=ass_width, height=ass_height)
+            annotation_ass_content = _generate_annotation_ass(
+                annotation_events + educational_overlay_events,
+                width=ass_width,
+                height=ass_height,
+            )
             annotation_ass_path = os.path.join(clip_dir, f"{video.id}_annotations.ass")
             with open(annotation_ass_path, "w", encoding="utf-8") as f:
                 f.write(annotation_ass_content)
@@ -281,6 +293,15 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
                     "rendered_event_count": len(annotation_events),
                     "burned_in": annotation_burned_in,
                 },
+                "educational_overlays": {
+                    "count": len(educational_overlays),
+                    "rendered_event_count": len(educational_overlay_events),
+                    "intro_card_count": sum(1 for item in educational_overlays if item.get("overlay_type") == "intro_card"),
+                    "section_title_card_count": sum(1 for item in educational_overlays if item.get("overlay_type") == "section_title_card"),
+                    "chapter_label_count": sum(1 for item in educational_overlays if item.get("overlay_type") == "chapter_label"),
+                    "step_label_count": sum(1 for item in educational_overlays if item.get("overlay_type") == "step_label"),
+                    "burned_in": bool(educational_overlay_events),
+                },
             },
             artifact_paths={
                 "edited_video": output_path,
@@ -334,6 +355,7 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
             "layout_render_counts": layout_render_counts,
             "annotations_burned_in": annotation_burned_in,
             "annotation_count": len(annotations),
+            "educational_overlay_count": len(educational_overlays),
         }
 
     except Exception as e:
@@ -878,17 +900,22 @@ def _generate_annotation_ass(events: list[dict], *, width: int = 1920, height: i
     ]
     for event in events:
         style = _dict_value(event.get("style"))
+        is_educational = str(event.get("kind") or "") == "educational_overlay"
         font_size = int(_float_value(style.get("font_size"), 28) or 28)
         text_color = _ass_color(style.get("text_color"), "FFFFFF")
-        border_color = _ass_color(style.get("border_color"), "38BDF8")
+        border_color = _ass_color(
+            style.get("accent_color") if is_educational else style.get("border_color"),
+            "38BDF8",
+        )
         background_color = _ass_back_color(style.get("background_color"), style.get("opacity"))
         x = int((float(event.get("x_percent") or 50.0) / 100.0) * width)
         y = int((float(event.get("y_percent") or 50.0) / 100.0) * height)
-        align = _ass_alignment_for_position(str(event.get("position") or "top_right"))
-        label = _annotation_label_text(event)
+        align = _ass_alignment_for_position(str(event.get("position") or ("center" if is_educational else "top_right")))
+        label = _educational_overlay_label_text(event) if is_educational else _annotation_label_text(event)
+        border_width = 3 if str(event.get("overlay_type") or "") in {"intro_card", "section_title_card"} else 2
         override = (
             f"{{\\an{align}\\pos({x},{y})\\fs{font_size}\\1c{text_color}"
-            f"\\3c{border_color}\\4c{background_color}\\bord2\\shad0}}"
+            f"\\3c{border_color}\\4c{background_color}\\bord{border_width}\\shad0}}"
         )
         lines.append(
             "Dialogue: 0,"
@@ -917,8 +944,33 @@ def _annotation_label_text(event: dict) -> str:
     return text
 
 
+def _educational_overlay_label_text(event: dict) -> str:
+    overlay_type = str(event.get("overlay_type") or "chapter_label")
+    title = _escape_ass_text(str(event.get("title") or event.get("text") or ""))
+    subtitle = _escape_ass_text(str(event.get("subtitle") or ""))
+    step_number = event.get("step_number")
+    chapter_index = event.get("chapter_index")
+
+    prefix = ""
+    if overlay_type == "step_label" and step_number:
+        prefix = f"STEP {step_number}: "
+    elif overlay_type == "chapter_label" and chapter_index is not None:
+        try:
+            prefix = f"CHAPTER {int(chapter_index) + 1}: "
+        except (TypeError, ValueError):
+            prefix = "CHAPTER: "
+    elif overlay_type == "section_title_card":
+        prefix = "SECTION: "
+
+    if subtitle:
+        subtitle_size = int(_float_value(_dict_value(event.get("style")).get("subtitle_font_size"), 22) or 22)
+        return f"{prefix}{title}\\N{{\\fs{subtitle_size}}}{subtitle}"
+    return f"{prefix}{title}"
+
+
 def _ass_alignment_for_position(position: str) -> int:
     return {
+        "center": 5,
         "top_left": 7,
         "top_center": 8,
         "top_right": 9,
