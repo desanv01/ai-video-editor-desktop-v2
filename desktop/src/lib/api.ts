@@ -24,6 +24,7 @@ import type {
   CaptionPolicyUpdate,
   EndCardActionUpdate,
   EducationalOverlayActionUpdate,
+  ExportPresetCatalog,
 } from "../types/api";
 
 let BASE_URL = "http://localhost:8000/api/v1";
@@ -330,10 +331,14 @@ export async function updateEndCards(
   });
 }
 
-export async function approvePlan(videoId: string, notes?: string): Promise<void> {
+export async function getExportPresets(): Promise<ExportPresetCatalog> {
+  return request("/export/presets");
+}
+
+export async function approvePlan(videoId: string, notes?: string, exportPresetId?: string): Promise<void> {
   await request(`/videos/${videoId}/plan/approve`, {
     method: "POST",
-    body: JSON.stringify({ teacher_notes: notes || null }),
+    body: JSON.stringify({ teacher_notes: notes || null, export_preset_id: exportPresetId || null }),
   });
 }
 

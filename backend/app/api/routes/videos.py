@@ -33,6 +33,7 @@ from models.schemas import (
     EditPlanResponse, EditPlanApproveRequest, CaptionPolicyUpdateRequest,
     AnnotationActionsUpdateRequest, EducationalOverlayActionsUpdateRequest,
     EndCardActionsUpdateRequest,
+    ExportPresetCatalogResponse,
     CourseMaterialUploadResponse, CourseMaterialResponse,
     ProcessingStatus, AppSettingsResponse, AppSettingsUpdateRequest,
     DomainTermsUpdateRequest,
@@ -57,8 +58,10 @@ from services.edit_plan_payload import (
     update_caption_policy,
     update_educational_overlays,
     update_end_cards,
+    update_export_metadata,
     update_sections_payload,
 )
+from services.export_presets import get_export_preset, list_grouped_export_presets
 from services.topic_segmentation import analyze_topic_sections
 from services.progress import get_progress as get_pipeline_progress
 from services.app_settings import (
@@ -735,6 +738,12 @@ async def update_plan_end_cards(
     return plan
 
 
+@router.get("/export/presets", response_model=ExportPresetCatalogResponse, tags=["Export"])
+async def get_export_presets():
+    """Return grouped export presets for social, professional, and education targets."""
+    return list_grouped_export_presets()
+
+
 @router.post("/videos/{video_id}/plan/approve", tags=["Edit Plan"])
 async def approve_edit_plan(
     video_id: str,
@@ -750,9 +759,19 @@ async def approve_edit_plan(
     if not plan:
         raise HTTPException(404, "Edit plan not found")
 
+    try:
+        selected_preset = get_export_preset(request.export_preset_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
     plan.is_approved = True
     plan.approved_at = datetime.utcnow()
     plan.teacher_notes = request.teacher_notes
+    plan.plan_json = update_export_metadata(
+        plan.plan_json,
+        target_presets=[selected_preset["id"]],
+    )
+    plan.plan_json["export_metadata"]["selected_preset"] = selected_preset
     await db.commit()
 
     # Start rendering in background
@@ -762,6 +781,7 @@ async def approve_edit_plan(
         "status": "approved",
         "message": "Edit plan approved. Rendering started.",
         "video_id": video_id,
+        "export_preset_id": selected_preset["id"],
     }
 
 

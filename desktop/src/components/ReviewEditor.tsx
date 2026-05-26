@@ -430,10 +430,10 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
     ]);
   }, [loadTranscriptEditingData, refreshEditPlan, refreshEditWarnings, reloadSegments]);
 
-  const handleApprove = useCallback(async () => {
+  const handleApprove = useCallback(async (exportPresetId?: string) => {
     setApproving(true);
     try {
-      await api.approvePlan(videoId);
+      await api.approvePlan(videoId, undefined, exportPresetId);
       const updatedPlan = await api.getEditPlan(videoId);
       setPlan(updatedPlan);
       setCompletedWorkflowSteps(prev => new Set(prev).add("export"));

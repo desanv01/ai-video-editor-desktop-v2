@@ -57,6 +57,8 @@ import type {
   EndCardActionUpdate,
   EndCardType,
   EditPlan,
+  ExportPreset,
+  ExportPresetCatalog,
   LayoutAspectRatio,
   LayoutCue,
   LayoutMode,
@@ -254,7 +256,7 @@ type PanelProps = StepperProps & {
   onSelectedEducationalOverlayChange: (overlayId: string | null) => void;
   onAcceptAll: () => void;
   onCleanApplied: () => Promise<void> | void;
-  onApprove: () => void;
+  onApprove: (exportPresetId?: string) => void;
   onRefreshChapters: () => void;
   onSeekToTime: (time: number) => void;
   onUpdateAction: (segId: string, action: Segment["action"], note?: string) => void;
@@ -368,6 +370,9 @@ export function GuidedWorkflowPanel({
   const [endCards, setEndCards] = useState<EndCardAction[]>([]);
   const [endCardSaving, setEndCardSaving] = useState(false);
   const [endCardMessage, setEndCardMessage] = useState<string | null>(null);
+  const [exportPresetCatalog, setExportPresetCatalog] = useState<ExportPresetCatalog | null>(null);
+  const [selectedExportPresetId, setSelectedExportPresetId] = useState<string>("youtube_1080p");
+  const [exportPresetMessage, setExportPresetMessage] = useState<string | null>(null);
 
   const activeStepMeta = GUIDED_WORKFLOW_STEPS.find((step) => step.id === activeStep) ?? GUIDED_WORKFLOW_STEPS[0];
   const activeIndex = GUIDED_WORKFLOW_STEPS.findIndex((step) => step.id === activeStep);
@@ -392,6 +397,9 @@ export function GuidedWorkflowPanel({
   const StepIcon = activeStepMeta.icon;
   const layoutCues = plan?.layout_cues ?? [];
   const primaryLayoutCue = layoutCues[0] ?? null;
+  const exportPresets = useMemo(() => exportPresetCatalog?.groups.flatMap((group) => group.presets) ?? [], [exportPresetCatalog]);
+  const selectedExportPreset =
+    exportPresets.find((preset) => preset.id === selectedExportPresetId) ?? exportPresets[0] ?? null;
   const cameraEnabled = layoutUsesCamera(layoutSettings.layout);
   const updateLayoutSettings = (patch: Partial<LayoutPreviewSettings>) => {
     onLayoutSettingsChange({ ...layoutSettings, ...patch });
@@ -406,6 +414,35 @@ export function GuidedWorkflowPanel({
     setEducationalOverlayMessage(null);
     setEndCardMessage(null);
   }, [plan?.polish_actions]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.getExportPresets()
+      .then((catalog) => {
+        if (cancelled) return;
+        setExportPresetCatalog(catalog);
+        setSelectedExportPresetId((current) => {
+          const planPreset = selectedExportPresetIdFromPlan(plan);
+          const preferred = planPreset || current || catalog.default_preset_id;
+          const knownIds = new Set(catalog.groups.flatMap((group) => group.presets.map((preset) => preset.id)));
+          return knownIds.has(preferred) ? preferred : catalog.default_preset_id;
+        });
+        setExportPresetMessage(null);
+      })
+      .catch((error) => {
+        if (!cancelled) setExportPresetMessage(`Preset catalog unavailable: ${error}`);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const planPreset = selectedExportPresetIdFromPlan(plan);
+    if (planPreset) {
+      setSelectedExportPresetId(planPreset);
+    }
+  }, [plan?.export_metadata]);
 
   const selectedAnnotation = annotations.find((annotation) => annotation.id === selectedAnnotationId) ?? annotations[0] ?? null;
   const selectedEducationalOverlay =
@@ -1504,15 +1541,53 @@ export function GuidedWorkflowPanel({
               <Metric label="Estimated" value={formatDuration(estimated)} tone="good" />
               <Metric label="Saved" value={formatDuration(saved)} tone="warn" />
             </MetricGrid>
+            <WorkflowCard title="Export Preset" icon={<Download className="h-4 w-4 text-green-300" />}>
+              <div className="space-y-4">
+                {exportPresetCatalog ? (
+                  exportPresetCatalog.groups.map((group) => (
+                    <div key={group.id} className="space-y-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400">{group.label}</h4>
+                        <span className="text-[11px] text-gray-500">{group.presets.length} presets</span>
+                      </div>
+                      <div className="grid gap-2">
+                        {group.presets.map((preset) => (
+                          <ExportPresetButton
+                            key={preset.id}
+                            preset={preset}
+                            selected={preset.id === selectedExportPresetId}
+                            onSelect={() => {
+                              setSelectedExportPresetId(preset.id);
+                              setExportPresetMessage(null);
+                            }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="flex items-center gap-2 rounded-md border border-surface-border bg-surface-overlay px-3 py-2 text-sm text-gray-300">
+                    <Loader2 className="h-4 w-4 animate-spin text-accent" />
+                    Loading presets
+                  </div>
+                )}
+                {selectedExportPreset && (
+                  <div className="rounded-md border border-green-500/30 bg-green-500/10 px-3 py-2 text-xs leading-5 text-green-100">
+                    Selected: {selectedExportPreset.label} - {exportPresetSummary(selectedExportPreset)}
+                  </div>
+                )}
+                {exportPresetMessage && <p className="text-xs leading-5 text-yellow-200">{exportPresetMessage}</p>}
+              </div>
+            </WorkflowCard>
             {!plan?.is_approved ? (
               <button
                 type="button"
-                onClick={onApprove}
+                onClick={() => onApprove(selectedExportPreset?.id ?? selectedExportPresetId)}
                 disabled={approving || !plan}
                 className="flex w-full items-center justify-center gap-2 rounded-md bg-accent px-3 py-3 text-sm font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {approving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-                {approving ? "Rendering..." : "Approve & Render Video"}
+                {approving ? "Rendering..." : `Approve & Render ${selectedExportPreset?.label ?? "Video"}`}
               </button>
             ) : (
               <div className="space-y-2">
@@ -1815,6 +1890,45 @@ function ToggleRow({
   );
 }
 
+function ExportPresetButton({
+  preset,
+  selected,
+  onSelect,
+}: {
+  preset: ExportPreset;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-pressed={selected}
+      className={`flex min-w-0 items-start gap-3 rounded-md border px-3 py-2.5 text-left transition-colors ${
+        selected
+          ? "border-accent bg-accent/15 text-white"
+          : "border-surface-border bg-surface-overlay text-gray-200 hover:border-gray-500"
+      }`}
+    >
+      <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${
+        selected ? "border-accent bg-accent text-white" : "border-gray-600 text-transparent"
+      }`}>
+        <Circle className="h-2 w-2 fill-current" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex min-w-0 items-center justify-between gap-2">
+          <span className="truncate text-sm font-semibold">{preset.label}</span>
+          <span className="shrink-0 rounded bg-surface-raised px-1.5 py-0.5 text-[11px] uppercase text-gray-400">
+            {preset.audio_only ? preset.container : preset.aspect_ratio}
+          </span>
+        </span>
+        <span className="mt-1 block text-xs leading-5 text-gray-400">{preset.description}</span>
+        <span className="mt-1 block text-[11px] text-gray-500">{exportPresetSummary(preset)}</span>
+      </span>
+    </button>
+  );
+}
+
 function DownloadLink({ href, label, primary = false }: { href: string; label: string; primary?: boolean }) {
   return (
     <a
@@ -1836,6 +1950,30 @@ function formatDuration(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = Math.round(seconds % 60);
   return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
+}
+
+function selectedExportPresetIdFromPlan(plan: EditPlan | null): string | null {
+  const metadata = plan?.export_metadata;
+  if (!metadata || typeof metadata !== "object") return null;
+  const selected = metadata.selected_preset;
+  if (selected && typeof selected === "object" && "id" in selected) {
+    const id = String(selected.id || "").trim();
+    if (id) return id;
+  }
+  const targetPresets = metadata.target_presets;
+  if (Array.isArray(targetPresets) && targetPresets.length > 0) {
+    const id = String(targetPresets[0] || "").trim();
+    if (id) return id;
+  }
+  return null;
+}
+
+function exportPresetSummary(preset: ExportPreset): string {
+  if (preset.audio_only) {
+    return `${preset.container.toUpperCase()} ${preset.audio_codec.toUpperCase()} ${preset.audio_bitrate}`;
+  }
+  const size = preset.width && preset.height ? `${preset.width}x${preset.height}` : preset.aspect_ratio || "video";
+  return `${size} ${preset.video_codec?.toUpperCase() ?? "VIDEO"} / ${preset.audio_codec.toUpperCase()}`;
 }
 
 function layoutUsesCamera(layout: LayoutMode): boolean {
