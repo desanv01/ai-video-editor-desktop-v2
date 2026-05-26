@@ -913,9 +913,11 @@ def _generate_annotation_ass(events: list[dict], *, width: int = 1920, height: i
         align = _ass_alignment_for_position(str(event.get("position") or ("center" if is_educational else "top_right")))
         label = _educational_overlay_label_text(event) if is_educational else _annotation_label_text(event)
         border_width = 3 if str(event.get("overlay_type") or "") in {"intro_card", "section_title_card"} else 2
+        position_tag, animation_tags = _ass_animation_override(event, x, y)
         override = (
-            f"{{\\an{align}\\pos({x},{y})\\fs{font_size}\\1c{text_color}"
-            f"\\3c{border_color}\\4c{background_color}\\bord{border_width}\\shad0}}"
+            f"{{\\an{align}{position_tag}\\fs{font_size}\\1c{text_color}"
+            f"\\3c{border_color}\\4c{background_color}\\bord{border_width}\\shad0"
+            f"{animation_tags}}}"
         )
         lines.append(
             "Dialogue: 0,"
@@ -966,6 +968,38 @@ def _educational_overlay_label_text(event: dict) -> str:
         subtitle_size = int(_float_value(_dict_value(event.get("style")).get("subtitle_font_size"), 22) or 22)
         return f"{prefix}{title}\\N{{\\fs{subtitle_size}}}{subtitle}"
     return f"{prefix}{title}"
+
+
+def _ass_animation_override(event: dict, x: int, y: int) -> tuple[str, str]:
+    animation = _dict_value(event.get("animation"))
+    preset = str(animation.get("preset") or "fade").lower()
+    if preset == "none":
+        return f"\\pos({x},{y})", ""
+
+    duration = _float_value(animation.get("duration_seconds"), 0.35) or 0.35
+    duration_ms = int(max(80, min(2000, round(duration * 1000))))
+    event_duration = max(0.1, float(event.get("output_end_time", 0)) - float(event.get("output_start_time", 0)))
+    fade_ms = int(min(duration_ms, max(80, round(event_duration * 1000 / 3))))
+
+    if preset in {"slide_up", "slide_down", "slide_left", "slide_right"}:
+        offset = 70
+        start_x, start_y = x, y
+        if preset == "slide_up":
+            start_y = y + offset
+        elif preset == "slide_down":
+            start_y = y - offset
+        elif preset == "slide_left":
+            start_x = x + offset
+        elif preset == "slide_right":
+            start_x = x - offset
+        return f"\\move({start_x},{start_y},{x},{y},0,{duration_ms})", f"\\fad({fade_ms},{fade_ms})"
+
+    scale_tags = ""
+    if preset == "pop":
+        scale_tags = f"\\fscx88\\fscy88\\t(0,{duration_ms},\\fscx100\\fscy100)"
+    elif preset == "zoom":
+        scale_tags = f"\\fscx96\\fscy96\\t(0,{duration_ms},\\fscx100\\fscy100)"
+    return f"\\pos({x},{y})", f"{scale_tags}\\fad({fade_ms},{fade_ms})"
 
 
 def _ass_alignment_for_position(position: str) -> int:

@@ -148,7 +148,9 @@ class EditPlanPayloadTests(unittest.TestCase):
         self.assertEqual(annotations[1]["annotation_type"], "callout")
         self.assertEqual(annotations[1]["x_percent"], 78.0)
         self.assertEqual(annotations[1]["style"]["font_size"], 34)
+        self.assertEqual(annotations[1]["animation"]["preset"], "pop")
         self.assertEqual(payload["export_metadata"]["annotations"]["count"], 2)
+        self.assertEqual(payload["export_metadata"]["annotations"]["animated_count"], 2)
 
     def test_updates_educational_overlays_for_labels_and_title_cards(self):
         payload = update_educational_overlays(
@@ -180,8 +182,11 @@ class EditPlanPayloadTests(unittest.TestCase):
         self.assertEqual(overlays[0]["position"], "center")
         self.assertEqual(overlays[1]["step_number"], 2)
         self.assertEqual(overlays[1]["style"]["font_size"], 30)
+        self.assertEqual(overlays[0]["animation"]["preset"], "fade")
+        self.assertEqual(overlays[1]["animation"]["preset"], "slide_down")
         self.assertEqual(payload["export_metadata"]["educational_overlays"]["intro_card_count"], 1)
         self.assertEqual(payload["export_metadata"]["educational_overlays"]["step_label_count"], 1)
+        self.assertEqual(payload["export_metadata"]["educational_overlays"]["animated_count"], 2)
 
 
 if __name__ == "__main__":

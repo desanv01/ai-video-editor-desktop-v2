@@ -19,6 +19,7 @@ import type {
   Chapter,
   Segment,
   AnnotationAction,
+  AnimationSettings,
   EducationalOverlayAction,
   EditPlan,
   SegmentAction,
@@ -996,15 +997,27 @@ const LayoutProgramPreview = forwardRef<HTMLVideoElement, LayoutProgramPreviewPr
   return (
     <div
       className="relative flex max-h-full max-w-full overflow-hidden bg-[#08080d] shadow-2xl ring-1 ring-white/10"
-      style={{ aspectRatio: previewAspectRatio(settings.aspectRatio), width: "100%" }}
+      style={{
+        aspectRatio: previewAspectRatio(settings.aspectRatio),
+        width: "100%",
+        transition: `all ${settings.transitionDurationSeconds}s ease-out`,
+      }}
     >
       {settings.layout === "side_by_side" ? (
         <div className="absolute inset-0 grid grid-cols-2 gap-px bg-surface-border">
-          <div className="relative min-w-0 bg-black">{video}</div>
+          <div
+            className="relative min-w-0 bg-black transition-all ease-out"
+            style={{ transitionDuration: `${settings.transitionDurationSeconds}s` }}
+          >
+            {video}
+          </div>
           <CameraPreviewSurface settings={settings} variant="panel" />
         </div>
       ) : (
-        <div className="absolute inset-0 bg-black">
+        <div
+          className="absolute inset-0 bg-black transition-all ease-out"
+          style={{ transitionDuration: `${settings.transitionDurationSeconds}s` }}
+        >
           {video}
           {settings.layout === "picture_in_picture" && (
             <CameraPreviewSurface settings={settings} variant="inset" />
@@ -1034,6 +1047,7 @@ function AnnotationPreviewOverlay({ annotation }: { annotation: AnnotationAction
         backgroundColor: hexWithAlpha(style.background_color, style.opacity),
         borderColor: style.border_color,
         fontSize: `${Math.max(12, Math.round(style.font_size * 0.48))}px`,
+        animation: previewAnimationCss(annotation.animation),
       }}
     >
       {annotation.pointer.enabled && annotation.annotation_type === "callout" && (
@@ -1060,6 +1074,7 @@ function EducationalOverlayPreview({ overlay }: { overlay: EducationalOverlayAct
         backgroundColor: hexWithAlpha(style.background_color, style.opacity),
         borderColor: style.accent_color,
         fontSize: `${Math.max(12, Math.round(style.font_size * 0.48))}px`,
+        animation: previewAnimationCss(overlay.animation),
       }}
     >
       <div className="mb-1 text-[0.56em] font-bold uppercase tracking-wider" style={{ color: style.accent_color }}>
@@ -1089,7 +1104,10 @@ function CameraPreviewSurface({ settings, variant }: { settings: LayoutPreviewSe
   return (
     <div
       className={`absolute z-10 flex items-center justify-center border border-white/25 bg-surface-raised/95 shadow-xl ${cameraShapeClass(settings.cameraShape)}`}
-      style={cameraInsetStyle(settings)}
+      style={{
+        ...cameraInsetStyle(settings),
+        transition: `all ${settings.transitionDurationSeconds}s ease-out`,
+      }}
     >
       <Film className="h-5 w-5 text-gray-300" />
     </div>
@@ -1239,6 +1257,21 @@ function educationalOverlayEyebrow(overlay: EducationalOverlayAction): string {
   if (overlay.overlay_type === "section_title_card") return "Section";
   if (overlay.overlay_type === "intro_card") return "Intro";
   return "Label";
+}
+
+function previewAnimationCss(animation: AnimationSettings | undefined): string | undefined {
+  if (!animation || animation.preset === "none") return undefined;
+  let name: string | null = null;
+  if (animation.preset === "fade") name = "ave-fade-in";
+  if (animation.preset === "pop") name = "ave-pop-in";
+  if (animation.preset === "zoom") name = "ave-zoom-in";
+  if (animation.preset === "slide_up") name = "ave-slide-up";
+  if (animation.preset === "slide_down") name = "ave-slide-down";
+  if (animation.preset === "slide_left") name = "ave-slide-left";
+  if (animation.preset === "slide_right") name = "ave-slide-right";
+  if (!name) return undefined;
+  const duration = Math.min(2, Math.max(0.08, animation.duration_seconds || 0.35));
+  return `${name} ${duration}s ease-out both`;
 }
 
 function hexWithAlpha(hex: string, opacity: number): string {

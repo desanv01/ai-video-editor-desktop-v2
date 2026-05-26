@@ -50,6 +50,14 @@ LAYOUT_ALIASES = {
     "full_camera": LayoutMode.FULL_CAMERA_SOURCE.value,
     "pip": LayoutMode.PICTURE_IN_PICTURE.value,
 }
+LAYOUT_TRANSITIONS = {
+    "cut",
+    "crossfade",
+    "fade",
+    "dip_to_black",
+    "wipe_left",
+    "wipe_right",
+}
 
 
 def build_layout_cue(
@@ -91,8 +99,9 @@ def build_layout_cue(
             "start_time": start,
             "end_time": end,
             "duration_seconds": duration,
-            "transition_in": "cut",
-            "transition_out": "cut",
+            "transition_in": "crossfade",
+            "transition_out": "crossfade",
+            "transition_duration_seconds": 0.35,
         },
         "sources": {
             "screen": _source_ref(
@@ -201,8 +210,14 @@ def _normalize_layout_cue(
         cue.setdefault("compatible_from_layout", str(original_layout))
 
     timing = _dict_value(cue.get("timing"))
-    timing.setdefault("transition_in", "cut")
-    timing.setdefault("transition_out", "cut")
+    timing["transition_in"] = _transition_value(timing.get("transition_in"), "crossfade")
+    timing["transition_out"] = _transition_value(timing.get("transition_out"), "crossfade")
+    timing["transition_duration_seconds"] = _bounded_float(
+        timing.get("transition_duration_seconds"),
+        default=0.35,
+        minimum=0.0,
+        maximum=2.0,
+    )
     timing["start_time"] = start
     timing["end_time"] = end
     timing["duration_seconds"] = duration
@@ -309,8 +324,21 @@ def _enum_value(value: Any, enum_class: type[Enum], default: str) -> str:
     return default
 
 
+def _transition_value(value: Any, default: str) -> str:
+    candidate = str(value or "").lower()
+    return candidate if candidate in LAYOUT_TRANSITIONS else default
+
+
 def _dict_value(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _bounded_float(value: Any, *, default: float, minimum: float, maximum: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = default
+    return min(maximum, max(minimum, number))
 
 
 def _non_negative_float(value: Any, default: float) -> float:
