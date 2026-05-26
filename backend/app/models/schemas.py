@@ -506,8 +506,9 @@ class LayoutCueTimingResponse(BaseModel):
     start_time: float = 0.0
     end_time: Optional[float] = None
     duration_seconds: Optional[float] = None
-    transition_in: str = "cut"
-    transition_out: str = "cut"
+    transition_in: str = "crossfade"
+    transition_out: str = "crossfade"
+    transition_duration_seconds: float = 0.35
 
     model_config = ConfigDict(extra="allow")
 
@@ -758,6 +759,13 @@ class AnnotationPointerRequest(BaseModel):
     direction: Optional[str] = Field(default=None, max_length=20)
 
 
+class AnimationSettingsRequest(BaseModel):
+    preset: Optional[str] = Field(default=None, max_length=40)
+    direction: Optional[str] = Field(default=None, max_length=20)
+    duration_seconds: Optional[float] = Field(default=None, ge=0, le=2)
+    easing: Optional[str] = Field(default=None, max_length=40)
+
+
 class AnnotationActionRequest(BaseModel):
     id: Optional[str] = Field(default=None, max_length=80)
     annotation_type: Optional[str] = Field(default="callout", max_length=40)
@@ -769,6 +777,7 @@ class AnnotationActionRequest(BaseModel):
     y_percent: Optional[float] = Field(default=None, ge=2, le=98)
     style: Optional[AnnotationStyleRequest] = None
     pointer: Optional[AnnotationPointerRequest] = None
+    animation: Optional[AnimationSettingsRequest] = None
     reason: Optional[str] = Field(default=None, max_length=500)
 
 
@@ -797,6 +806,7 @@ class EducationalOverlayActionRequest(BaseModel):
     x_percent: Optional[float] = Field(default=None, ge=2, le=98)
     y_percent: Optional[float] = Field(default=None, ge=2, le=98)
     style: Optional[EducationalOverlayStyleRequest] = None
+    animation: Optional[AnimationSettingsRequest] = None
     chapter_index: Optional[int] = Field(default=None, ge=0)
     step_number: Optional[int] = Field(default=None, ge=1)
     source: Optional[str] = Field(default=None, max_length=80)

@@ -38,6 +38,8 @@ import type {
   AnnotationActionUpdate,
   AnnotationPosition,
   AnnotationType,
+  AnimationPreset,
+  AnimationSettings,
   CaptionAppearance,
   CaptionExportBehavior,
   CaptionPlacement,
@@ -78,6 +80,8 @@ export type LayoutPreviewSettings = {
   cameraShape: CameraShape;
   cameraSize: CameraSize;
   cameraMarginPercent: number;
+  transitionPreset: string;
+  transitionDurationSeconds: number;
 };
 
 export const DEFAULT_LAYOUT_PREVIEW_SETTINGS: LayoutPreviewSettings = {
@@ -87,6 +91,8 @@ export const DEFAULT_LAYOUT_PREVIEW_SETTINGS: LayoutPreviewSettings = {
   cameraShape: "rounded_rectangle",
   cameraSize: "medium",
   cameraMarginPercent: 4,
+  transitionPreset: "crossfade",
+  transitionDurationSeconds: 0.35,
 };
 
 const DEFAULT_CAPTION_POLICY: CaptionPolicy = {
@@ -131,6 +137,20 @@ const DEFAULT_EDUCATIONAL_OVERLAY_STYLE = {
   opacity: 0.9,
 };
 
+const DEFAULT_CALLOUT_ANIMATION: AnimationSettings = {
+  preset: "pop",
+  direction: "left",
+  duration_seconds: 0.35,
+  easing: "ease_out",
+};
+
+const DEFAULT_TITLE_CARD_ANIMATION: AnimationSettings = {
+  preset: "fade",
+  direction: "up",
+  duration_seconds: 0.45,
+  easing: "ease_out",
+};
+
 export function layoutPreviewSettingsFromCue(cue: LayoutCue | null | undefined): LayoutPreviewSettings {
   return {
     layout: cue?.layout ?? DEFAULT_LAYOUT_PREVIEW_SETTINGS.layout,
@@ -139,6 +159,8 @@ export function layoutPreviewSettingsFromCue(cue: LayoutCue | null | undefined):
     cameraShape: cue?.camera.shape ?? DEFAULT_LAYOUT_PREVIEW_SETTINGS.cameraShape,
     cameraSize: normalizeCameraSize(cue?.camera.size),
     cameraMarginPercent: normalizeMarginPercent(cue?.camera.margin_percent),
+    transitionPreset: String(cue?.timing.transition_in ?? DEFAULT_LAYOUT_PREVIEW_SETTINGS.transitionPreset),
+    transitionDurationSeconds: normalizeTransitionDuration(cue?.timing.transition_duration_seconds),
   };
 }
 
@@ -782,6 +804,32 @@ export function GuidedWorkflowPanel({
                 )}
               </div>
             </WorkflowCard>
+            <WorkflowCard title="Layout Transitions" icon={<Sparkles className="h-4 w-4 text-sky-300" />}>
+              <div className="space-y-3">
+                <ChoiceGrid
+                  value={layoutSettings.transitionPreset}
+                  onChange={(value) => updateLayoutSettings({ transitionPreset: value })}
+                  options={[
+                    { value: "crossfade", label: "Crossfade", detail: "Smooth layout change" },
+                    { value: "fade", label: "Fade", detail: "Gentle section reset" },
+                    { value: "wipe_left", label: "Wipe", detail: "Slide-led topic shift" },
+                    { value: "cut", label: "Cut", detail: "Instant switch" },
+                  ]}
+                />
+                <SliderControl
+                  label="Transition duration"
+                  value={layoutSettings.transitionDurationSeconds}
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  suffix="s"
+                  onChange={(value) => updateLayoutSettings({ transitionDurationSeconds: value })}
+                />
+                <p className="text-xs leading-5 text-gray-500">
+                  Current plan default: {primaryLayoutCue?.timing.transition_in ?? "crossfade"}.
+                </p>
+              </div>
+            </WorkflowCard>
           </PanelStack>
         )}
 
@@ -1017,6 +1065,27 @@ export function GuidedWorkflowPanel({
                         { value: "down", label: "Down", detail: "Points down" },
                       ]}
                     />
+
+                    <ChoiceGrid
+                      value={selectedAnnotation.animation.preset}
+                      onChange={(value) => handleUpdateAnnotationDraft(selectedAnnotation.id, annotationAnimationPatch(value as AnimationPreset))}
+                      options={[
+                        { value: "pop", label: "Pop", detail: "Quick emphasis" },
+                        { value: "fade", label: "Fade", detail: "Subtle reveal" },
+                        { value: "slide_left", label: "Slide", detail: "Moves into view" },
+                        { value: "none", label: "None", detail: "Static overlay" },
+                      ]}
+                    />
+                    <SliderControl
+                      label="Animation duration"
+                      value={selectedAnnotation.animation.duration_seconds}
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      suffix="s"
+                      onChange={(value) => handleUpdateAnnotationDraft(selectedAnnotation.id, { animation: { duration_seconds: value } })}
+                      disabled={selectedAnnotation.animation.preset === "none"}
+                    />
                   </div>
                 ) : (
                   <EmptyState title="No callouts yet" detail="Add one at the current playhead time." />
@@ -1193,6 +1262,30 @@ export function GuidedWorkflowPanel({
                         onChange={(value) => handleUpdateEducationalOverlayDraft(selectedEducationalOverlay.id, { style: { font_size: value } })}
                       />
                     </div>
+
+                    <ChoiceGrid
+                      value={selectedEducationalOverlay.animation.preset}
+                      onChange={(value) => handleUpdateEducationalOverlayDraft(
+                        selectedEducationalOverlay.id,
+                        educationalOverlayAnimationPatch(value as AnimationPreset, selectedEducationalOverlay.overlay_type),
+                      )}
+                      options={[
+                        { value: "fade", label: "Fade", detail: "Section start" },
+                        { value: "slide_up", label: "Slide", detail: "Title motion" },
+                        { value: "zoom", label: "Zoom", detail: "Card emphasis" },
+                        { value: "none", label: "None", detail: "Static label" },
+                      ]}
+                    />
+                    <SliderControl
+                      label="Animation duration"
+                      value={selectedEducationalOverlay.animation.duration_seconds}
+                      min={0}
+                      max={1.25}
+                      step={0.05}
+                      suffix="s"
+                      onChange={(value) => handleUpdateEducationalOverlayDraft(selectedEducationalOverlay.id, { animation: { duration_seconds: value } })}
+                      disabled={selectedEducationalOverlay.animation.preset === "none"}
+                    />
                   </div>
                 ) : (
                   <EmptyState title="No educational overlays yet" detail="Generate labels from chapters or add one at the current playhead." />
@@ -1582,6 +1675,11 @@ function annotationsFromPlan(plan: EditPlan | null): AnnotationAction[] {
       enabled: annotation.pointer?.enabled ?? annotation.annotation_type === "callout",
       direction: annotation.pointer?.direction ?? "left",
     },
+    animation: normalizeAnimationSettings(annotation.animation, annotation.annotation_type === "callout" ? DEFAULT_CALLOUT_ANIMATION : {
+      ...DEFAULT_CALLOUT_ANIMATION,
+      preset: "fade",
+      direction: "none",
+    }),
   }));
 }
 
@@ -1592,6 +1690,7 @@ function educationalOverlaysFromPlan(plan: EditPlan | null): EducationalOverlayA
     ...overlay,
     subtitle: overlay.subtitle ?? "",
     style: { ...DEFAULT_EDUCATIONAL_OVERLAY_STYLE, ...(overlay.style ?? {}) },
+    animation: normalizeAnimationSettings(overlay.animation, defaultEducationalOverlayAnimation(overlay.overlay_type)),
   }));
 }
 
@@ -1624,6 +1723,7 @@ function createEducationalOverlayDraft(
       font_size: isCard ? 44 : 28,
       subtitle_font_size: isCard ? 24 : 18,
     },
+    animation: defaultEducationalOverlayAnimation(overlayType),
     chapter_index: overlayType === "chapter_label" ? Math.max(0, ordinal - 1) : null,
     step_number: overlayType === "step_label" ? ordinal : null,
     source: "teacher_polish",
@@ -1680,6 +1780,10 @@ function mergeEducationalOverlayDraft(
     ...overlay,
     ...patch,
     style: { ...overlay.style, ...(patch.style ?? {}) },
+    animation: normalizeAnimationSettings(
+      { ...overlay.animation, ...(patch.animation ?? {}) },
+      defaultEducationalOverlayAnimation(String(patch.overlay_type ?? overlay.overlay_type)),
+    ),
   };
   const start = Math.max(0, Number(next.start_time) || 0);
   const end = Math.max(start + 0.5, Number(next.end_time) || start + 4);
@@ -1703,6 +1807,7 @@ function educationalOverlayForSave(overlay: EducationalOverlayAction): Education
     x_percent: overlay.x_percent,
     y_percent: overlay.y_percent,
     style: overlay.style,
+    animation: overlay.animation,
     chapter_index: overlay.chapter_index,
     step_number: overlay.step_number,
     source: overlay.source,
@@ -1722,6 +1827,7 @@ function educationalOverlayTypePatch(overlayType: EducationalOverlayType): Educa
       font_size: isCard ? 44 : 28,
       subtitle_font_size: isCard ? 24 : 18,
     },
+    animation: defaultEducationalOverlayAnimation(overlayType),
   };
 }
 
@@ -1760,6 +1866,7 @@ function createAnnotationDraft(currentTime: number, duration: number): Annotatio
     y_percent: 12,
     style: DEFAULT_ANNOTATION_STYLE,
     pointer: { enabled: true, direction: "left" },
+    animation: DEFAULT_CALLOUT_ANIMATION,
     reason: "Teacher-added polish annotation.",
   };
 }
@@ -1770,6 +1877,14 @@ function mergeAnnotationDraft(annotation: AnnotationAction, patch: AnnotationAct
     ...patch,
     style: { ...annotation.style, ...(patch.style ?? {}) },
     pointer: { ...annotation.pointer, ...(patch.pointer ?? {}) },
+    animation: normalizeAnimationSettings(
+      { ...annotation.animation, ...(patch.animation ?? {}) },
+      annotation.annotation_type === "callout" ? DEFAULT_CALLOUT_ANIMATION : {
+        ...DEFAULT_CALLOUT_ANIMATION,
+        preset: "fade",
+        direction: "none",
+      },
+    ),
   };
   const start = Math.max(0, Number(next.start_time) || 0);
   const end = Math.max(start + 0.5, Number(next.end_time) || start + 4);
@@ -1793,8 +1908,82 @@ function annotationForSave(annotation: AnnotationAction): AnnotationActionUpdate
     y_percent: annotation.y_percent,
     style: annotation.style,
     pointer: annotation.pointer,
+    animation: annotation.animation,
     reason: annotation.reason,
   };
+}
+
+function annotationAnimationPatch(preset: AnimationPreset): AnnotationActionUpdate {
+  return {
+    animation: {
+      preset,
+      direction: animationDirectionForPreset(preset, "left"),
+      duration_seconds: preset === "none" ? 0 : preset === "fade" ? 0.3 : 0.35,
+      easing: "ease_out",
+    },
+  };
+}
+
+function educationalOverlayAnimationPatch(
+  preset: AnimationPreset,
+  overlayType: string,
+): EducationalOverlayActionUpdate {
+  const defaults = defaultEducationalOverlayAnimation(overlayType);
+  return {
+    animation: {
+      preset,
+      direction: animationDirectionForPreset(preset, defaults.direction),
+      duration_seconds: preset === "none" ? 0 : defaults.duration_seconds,
+      easing: "ease_out",
+    },
+  };
+}
+
+function defaultEducationalOverlayAnimation(overlayType: string): AnimationSettings {
+  const isCard = overlayType === "intro_card" || overlayType === "section_title_card";
+  return isCard ? DEFAULT_TITLE_CARD_ANIMATION : {
+    preset: "slide_down",
+    direction: "down",
+    duration_seconds: 0.3,
+    easing: "ease_out",
+  };
+}
+
+function normalizeAnimationSettings(value: unknown, defaults: AnimationSettings): AnimationSettings {
+  const source = typeof value === "object" && value != null ? value as Partial<AnimationSettings> : {};
+  const preset = normalizeAnimationPreset(source.preset, defaults.preset);
+  return {
+    preset,
+    direction: preset === "none" ? "none" : String(source.direction ?? defaults.direction),
+    duration_seconds: normalizeAnimationDuration(source.duration_seconds, defaults.duration_seconds),
+    easing: String(source.easing ?? defaults.easing),
+  };
+}
+
+function normalizeAnimationPreset(value: unknown, fallback: AnimationSettings["preset"]): AnimationSettings["preset"] {
+  if (
+    value === "none" || value === "fade" || value === "pop" || value === "zoom" ||
+    value === "slide_up" || value === "slide_down" || value === "slide_left" || value === "slide_right"
+  ) {
+    return value;
+  }
+  return fallback;
+}
+
+function animationDirectionForPreset(preset: AnimationPreset, fallback: string): string {
+  if (preset === "slide_up") return "up";
+  if (preset === "slide_down") return "down";
+  if (preset === "slide_left") return "left";
+  if (preset === "slide_right") return "right";
+  if (preset === "none" || preset === "fade" || preset === "zoom") return "none";
+  return fallback;
+}
+
+function normalizeAnimationDuration(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(2, Math.max(0, Math.round(value * 100) / 100));
 }
 
 function annotationPositionPatch(position: AnnotationPosition): AnnotationActionUpdate {
@@ -1826,4 +2015,11 @@ function normalizeMarginPercent(value: unknown): number {
     return DEFAULT_LAYOUT_PREVIEW_SETTINGS.cameraMarginPercent;
   }
   return Math.min(8, Math.max(2, Math.round(value)));
+}
+
+function normalizeTransitionDuration(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_LAYOUT_PREVIEW_SETTINGS.transitionDurationSeconds;
+  }
+  return Math.min(2, Math.max(0, Math.round(value * 100) / 100));
 }

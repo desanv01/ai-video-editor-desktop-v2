@@ -390,6 +390,7 @@ export interface LayoutCueTiming {
   duration_seconds: number | null;
   transition_in: string;
   transition_out: string;
+  transition_duration_seconds: number;
   [key: string]: unknown;
 }
 
@@ -484,6 +485,18 @@ export interface AnnotationPointer {
   direction: "up" | "down" | "left" | "right" | "none" | string;
 }
 
+export type AnimationPreset =
+  | "none" | "fade" | "pop" | "zoom"
+  | "slide_up" | "slide_down" | "slide_left" | "slide_right";
+export type AnimationEasing = "linear" | "ease_in" | "ease_out" | "ease_in_out";
+
+export interface AnimationSettings {
+  preset: AnimationPreset | string;
+  direction: "none" | "up" | "down" | "left" | "right" | string;
+  duration_seconds: number;
+  easing: AnimationEasing | string;
+}
+
 export interface AnnotationAction {
   id: string;
   kind: "annotation";
@@ -499,6 +512,7 @@ export interface AnnotationAction {
   y_percent: number;
   style: AnnotationStyle;
   pointer: AnnotationPointer;
+  animation: AnimationSettings;
   reason: string;
   [key: string]: unknown;
 }
@@ -534,6 +548,7 @@ export interface EducationalOverlayAction {
   x_percent: number;
   y_percent: number;
   style: EducationalOverlayStyle;
+  animation: AnimationSettings;
   chapter_index: number | null;
   step_number: number | null;
   source: string;
@@ -547,13 +562,15 @@ export type CaptionPolicyUpdate = Partial<Omit<CaptionPolicy, "id" | "kind" | "s
   style?: Partial<CaptionStyle>;
 };
 
-export type AnnotationActionUpdate = Partial<Omit<AnnotationAction, "kind" | "schema_version" | "status" | "style" | "pointer">> & {
+export type AnnotationActionUpdate = Partial<Omit<AnnotationAction, "kind" | "schema_version" | "status" | "style" | "pointer" | "animation">> & {
   style?: Partial<AnnotationStyle>;
   pointer?: Partial<AnnotationPointer>;
+  animation?: Partial<AnimationSettings>;
 };
 
-export type EducationalOverlayActionUpdate = Partial<Omit<EducationalOverlayAction, "kind" | "schema_version" | "status" | "style">> & {
+export type EducationalOverlayActionUpdate = Partial<Omit<EducationalOverlayAction, "kind" | "schema_version" | "status" | "style" | "animation">> & {
   style?: Partial<EducationalOverlayStyle>;
+  animation?: Partial<AnimationSettings>;
 };
 
 export interface Segment {

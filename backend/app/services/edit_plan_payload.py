@@ -60,6 +60,18 @@ EDUCATIONAL_OVERLAY_POSITIONS = {
     "bottom_center",
     "bottom_right",
 }
+ANIMATION_PRESETS = {
+    "none",
+    "fade",
+    "pop",
+    "zoom",
+    "slide_up",
+    "slide_down",
+    "slide_left",
+    "slide_right",
+}
+ANIMATION_DIRECTIONS = {"none", "up", "down", "left", "right"}
+ANIMATION_EASINGS = {"linear", "ease_in", "ease_out", "ease_in_out"}
 
 
 def normalize_plan_payload(plan_json: Any) -> dict[str, Any]:
@@ -340,6 +352,12 @@ def normalize_annotation_action(action: Any) -> dict[str, Any] | None:
         "y_percent": y_percent,
         "style": _normalize_annotation_style(action.get("style")),
         "pointer": _normalize_annotation_pointer(action.get("pointer"), annotation_type),
+        "animation": _normalize_animation_settings(
+            action.get("animation"),
+            default_preset="pop" if annotation_type == "callout" else "fade",
+            default_direction="left" if annotation_type == "callout" else "none",
+            default_duration=0.35,
+        ),
         "reason": str(action.get("reason") or "Teacher-added polish annotation.")[:500],
     }
     normalized["duration"] = round(normalized["end_time"] - normalized["start_time"], 3)
@@ -377,6 +395,7 @@ def update_annotations(payload: dict[str, Any], annotations: Iterable[dict[str, 
         "annotations": {
             "count": len(next_annotations),
             "callout_count": sum(1 for item in next_annotations if item.get("annotation_type") == "callout"),
+            "animated_count": sum(1 for item in next_annotations if item.get("animation", {}).get("preset") != "none"),
             "burned_in": len(next_annotations) > 0,
         },
         "updated_at": _utc_now(),
@@ -460,6 +479,12 @@ def normalize_educational_overlay_action(action: Any) -> dict[str, Any] | None:
         "x_percent": x_percent,
         "y_percent": y_percent,
         "style": _normalize_educational_overlay_style(action.get("style"), overlay_type),
+        "animation": _normalize_animation_settings(
+            action.get("animation"),
+            default_preset="fade" if overlay_type in {"intro_card", "section_title_card"} else "slide_down",
+            default_direction="up" if overlay_type in {"intro_card", "section_title_card"} else "down",
+            default_duration=0.45 if overlay_type in {"intro_card", "section_title_card"} else 0.3,
+        ),
         "chapter_index": chapter_index,
         "step_number": step_number,
         "source": str(action.get("source") or "teacher_polish")[:80],
@@ -503,6 +528,7 @@ def update_educational_overlays(payload: dict[str, Any], overlays: Iterable[dict
             "section_title_card_count": sum(1 for item in next_overlays if item.get("overlay_type") == "section_title_card"),
             "chapter_label_count": sum(1 for item in next_overlays if item.get("overlay_type") == "chapter_label"),
             "step_label_count": sum(1 for item in next_overlays if item.get("overlay_type") == "step_label"),
+            "animated_count": sum(1 for item in next_overlays if item.get("animation", {}).get("preset") != "none"),
             "burned_in": len(next_overlays) > 0,
         },
         "updated_at": _utc_now(),
@@ -674,6 +700,31 @@ def _normalize_annotation_pointer(value: Any, annotation_type: str) -> dict[str,
     return {
         "enabled": bool(source.get("enabled", annotation_type == "callout")),
         "direction": _choice(source.get("direction"), {"up", "down", "left", "right", "none"}, "left"),
+    }
+
+
+def _normalize_animation_settings(
+    value: Any,
+    *,
+    default_preset: str,
+    default_direction: str,
+    default_duration: float,
+) -> dict[str, Any]:
+    source = dict(value) if isinstance(value, dict) else {}
+    preset = _choice(source.get("preset"), ANIMATION_PRESETS, default_preset)
+    if preset == "none":
+        default_direction = "none"
+        default_duration = 0.0
+    return {
+        "preset": preset,
+        "direction": _choice(source.get("direction"), ANIMATION_DIRECTIONS, default_direction),
+        "duration_seconds": _bounded_float(
+            source.get("duration_seconds"),
+            default=default_duration,
+            minimum=0.0,
+            maximum=2.0,
+        ),
+        "easing": _choice(source.get("easing"), ANIMATION_EASINGS, "ease_out"),
     }
 
 
