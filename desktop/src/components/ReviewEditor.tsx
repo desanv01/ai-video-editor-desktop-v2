@@ -18,6 +18,7 @@ import * as api from "../lib/api";
 import type {
   Chapter,
   Segment,
+  AnnotationAction,
   EditPlan,
   SegmentAction,
   RevalidationResult,
@@ -116,6 +117,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   const [leftPanelTab, setLeftPanelTab] = useState<LeftPanelTab>("transcript");
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [plan, setPlan] = useState<EditPlan | null>(null);
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<RevalidationResult | null>(null);
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [chaptersLoading, setChaptersLoading] = useState(false);
@@ -202,6 +204,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   const syncedCutIntervals = editDecisionSync?.cut_intervals ?? [];
   const syncedExportPlan = editDecisionSync?.export_plan ?? null;
   const effectiveDuration = duration || plan?.original_duration || 0;
+  const annotations = useMemo(() => annotationsFromPlan(plan), [plan]);
 
   const handleTimeUpdate = useCallback(() => {
     if (videoRef.current) {
@@ -231,6 +234,12 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
     setSelectedSegment(seg);
     setActiveWorkflowStep("clean");
   }, []);
+
+  const handleSelectAnnotation = useCallback((annotation: AnnotationAction) => {
+    setSelectedAnnotationId(annotation.id);
+    setActiveWorkflowStep("polish");
+    seekTo(annotation.start_time);
+  }, [seekTo]);
 
   const pushHistory = useCallback((entry: EditHistoryEntry) => {
     setUndoStack(prev => [...prev, entry].slice(-50));
@@ -792,6 +801,8 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
                 ref={videoRef}
                 src={videoSrc}
                 settings={layoutPreviewSettings}
+                annotations={annotations}
+                currentTime={currentTime}
                 onTimeUpdate={handleTimeUpdate}
                 onLoadedMetadata={handleLoadedMetadata}
                 onPlay={() => setIsPlaying(true)}
@@ -820,7 +831,9 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
               videoId={videoId}
               segments={segments}
               selectedSegment={selectedSegment}
+              selectedAnnotationId={selectedAnnotationId}
               plan={plan}
+              currentTime={currentTime}
               layoutSettings={layoutPreviewSettings}
               warnings={warnings}
               chapters={chapters}
@@ -828,6 +841,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
               approving={approving}
               onLayoutSettingsChange={setLayoutPreviewSettings}
               onPolishPlanUpdated={setPlan}
+              onSelectedAnnotationChange={setSelectedAnnotationId}
               onAcceptAll={handleAcceptAll}
               onCleanApplied={handleCleanApplied}
               onApprove={handleApprove}
@@ -872,6 +886,8 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
               onSelectSegment={handleSelectSegment}
               selectedSegmentId={selectedSegment?.id ?? null}
               cutIntervals={syncedCutIntervals}
+              annotations={annotations}
+              onSelectAnnotation={handleSelectAnnotation}
             />
             <div className="mt-2 flex items-center justify-between text-xs text-gray-500">
               <span>{segments.length} transcript segments</span>
@@ -937,12 +953,17 @@ type LayoutProgramPreviewProps = Pick<
 > & {
   src: string;
   settings: LayoutPreviewSettings;
+  annotations: AnnotationAction[];
+  currentTime: number;
 };
 
 const LayoutProgramPreview = forwardRef<HTMLVideoElement, LayoutProgramPreviewProps>(function LayoutProgramPreview(
-  { src, settings, ...videoProps },
+  { src, settings, annotations, currentTime, ...videoProps },
   ref,
 ) {
+  const activeAnnotations = annotations.filter(
+    (annotation) => currentTime >= annotation.start_time && currentTime <= annotation.end_time,
+  );
   const video = (
     <video
       ref={ref}
@@ -970,9 +991,35 @@ const LayoutProgramPreview = forwardRef<HTMLVideoElement, LayoutProgramPreviewPr
           )}
         </div>
       )}
+      {activeAnnotations.map((annotation) => (
+        <AnnotationPreviewOverlay key={annotation.id} annotation={annotation} />
+      ))}
     </div>
   );
 });
+
+function AnnotationPreviewOverlay({ annotation }: { annotation: AnnotationAction }) {
+  const style = annotation.style;
+  return (
+    <div
+      className="pointer-events-none absolute z-20 max-w-[42%] rounded border px-3 py-2 text-left font-semibold leading-tight shadow-xl"
+      style={{
+        left: `${annotation.x_percent}%`,
+        top: `${annotation.y_percent}%`,
+        transform: annotationPreviewTransform(annotation.position),
+        color: style.text_color,
+        backgroundColor: hexWithAlpha(style.background_color, style.opacity),
+        borderColor: style.border_color,
+        fontSize: `${Math.max(12, Math.round(style.font_size * 0.48))}px`,
+      }}
+    >
+      {annotation.pointer.enabled && annotation.annotation_type === "callout" && (
+        <span className="mr-1 text-current">{pointerGlyph(annotation.pointer.direction)}</span>
+      )}
+      {annotation.text}
+    </div>
+  );
+}
 
 function CameraPreviewSurface({ settings, variant }: { settings: LayoutPreviewSettings; variant: "inset" | "panel" }) {
   if (variant === "panel") {
@@ -1064,6 +1111,12 @@ function transcriptCutTrimRequest(decision: TranscriptCutDecision): TranscriptCu
   };
 }
 
+function annotationsFromPlan(plan: EditPlan | null): AnnotationAction[] {
+  return (plan?.polish_actions ?? []).filter((item): item is AnnotationAction => {
+    return typeof item === "object" && item != null && "kind" in item && item.kind === "annotation";
+  });
+}
+
 function formatDuration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "0:00";
   const minutes = Math.floor(seconds / 60);
@@ -1105,4 +1158,24 @@ function cameraInsetStyle(settings: LayoutPreviewSettings): CSSProperties {
   }
 
   return style;
+}
+
+function annotationPreviewTransform(position: string): string {
+  if (position.includes("center")) return "translate(-50%, 0)";
+  if (position.includes("right")) return "translate(-100%, 0)";
+  return "translate(0, 0)";
+}
+
+function hexWithAlpha(hex: string, opacity: number): string {
+  const value = hex?.startsWith("#") ? hex : "#111827";
+  const alpha = Math.round(Math.min(1, Math.max(0.2, opacity || 0.88)) * 255).toString(16).padStart(2, "0");
+  return `${value}${alpha}`;
+}
+
+function pointerGlyph(direction: string): string {
+  if (direction === "right") return "->";
+  if (direction === "up") return "^";
+  if (direction === "down") return "v";
+  if (direction === "left") return "<-";
+  return "";
 }

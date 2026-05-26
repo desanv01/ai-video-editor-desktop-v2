@@ -712,6 +712,26 @@ class FFmpegService:
         return output_path
 
     @staticmethod
+    async def burn_ass_overlay(video_path: str, ass_path: str, output_path: str) -> str:
+        """Burn an ASS overlay track into the video while preserving audio."""
+        cmd = [
+            "ffmpeg", "-i", video_path,
+            "-vf", f"subtitles={FFmpegService._escape_subtitle_path(ass_path)}",
+            "-c:a", "copy",
+            "-y",
+            output_path,
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        _, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            raise RuntimeError(f"ASS overlay burn failed: {stderr.decode()[:800]}")
+
+        return output_path
+
+    @staticmethod
     def _subtitle_force_style(font_size: int, placement: str, style: dict | None = None) -> str:
         style = dict(style or {})
         primary = FFmpegService._ass_color(style.get("primary_color"), "FFFFFF")

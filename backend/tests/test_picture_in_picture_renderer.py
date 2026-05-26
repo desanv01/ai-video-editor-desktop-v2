@@ -199,6 +199,45 @@ class LayoutModeCommandTests(unittest.TestCase):
 
         self.assertEqual(srt, "")
 
+    def test_annotation_events_map_source_timeline_to_output_ranges(self):
+        annotations = [
+            {
+                "id": "callout-1",
+                "kind": "annotation",
+                "status": "active",
+                "annotation_type": "callout",
+                "text": "Key formula",
+                "start_time": 2.0,
+                "end_time": 8.0,
+                "position": "top_right",
+                "x_percent": 78.0,
+                "y_percent": 12.0,
+                "style": {"font_size": 28},
+                "pointer": {"enabled": True, "direction": "left"},
+            },
+        ]
+        render_ranges = [
+            {
+                "source_start_time": 0.0,
+                "source_end_time": 4.0,
+                "output_start_time": 0.0,
+                "output_end_time": 4.0,
+            },
+            {
+                "source_start_time": 6.0,
+                "source_end_time": 10.0,
+                "output_start_time": 4.0,
+                "output_end_time": 8.0,
+            },
+        ]
+
+        events = renderer._annotation_events_for_render_ranges(annotations, render_ranges)
+        ass = renderer._generate_annotation_ass(events)
+
+        self.assertEqual([(event["output_start_time"], event["output_end_time"]) for event in events], [(2.0, 4.0), (4.0, 6.0)])
+        self.assertIn("<- Key formula", ass)
+        self.assertIn("\\pos(1497,129)", ass)
+
 
 class PictureInPictureRenderSelectionTests(unittest.IsolatedAsyncioTestCase):
     def test_splits_range_around_picture_in_picture_cue(self):

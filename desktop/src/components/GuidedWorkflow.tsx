@@ -7,21 +7,25 @@ import {
   Captions,
   CheckCircle2,
   Circle,
+  Crosshair,
   Download,
   FileText,
   Film,
   Layers,
   ListChecks,
   Loader2,
+  MessageSquare,
   MessageSquareOff,
   MonitorPlay,
   Palette,
+  Plus,
   RefreshCw,
   Scissors,
   SlidersHorizontal,
   Sparkles,
   SplitSquareHorizontal,
   TextSelect,
+  Trash2,
   Wand2,
   Volume2,
 } from "lucide-react";
@@ -30,6 +34,10 @@ import * as api from "../lib/api";
 import type {
   CameraCorner,
   CameraShape,
+  AnnotationAction,
+  AnnotationActionUpdate,
+  AnnotationPosition,
+  AnnotationType,
   CaptionAppearance,
   CaptionExportBehavior,
   CaptionPlacement,
@@ -99,6 +107,14 @@ const DEFAULT_CAPTION_POLICY: CaptionPolicy = {
   ranges: [],
   section_intro_seconds: 6,
   reason: "Keep captions available as SRT/VTT without forcing burn-in.",
+};
+
+const DEFAULT_ANNOTATION_STYLE = {
+  font_size: 28,
+  text_color: "#FFFFFF",
+  background_color: "#111827",
+  border_color: "#38BDF8",
+  opacity: 0.88,
 };
 
 export function layoutPreviewSettingsFromCue(cue: LayoutCue | null | undefined): LayoutPreviewSettings {
@@ -173,7 +189,9 @@ type PanelProps = StepperProps & {
   videoId: string;
   segments: Segment[];
   selectedSegment: Segment | null;
+  selectedAnnotationId: string | null;
   plan: EditPlan | null;
+  currentTime: number;
   layoutSettings: LayoutPreviewSettings;
   warnings: RevalidationResult | null;
   chapters: Chapter[];
@@ -181,6 +199,7 @@ type PanelProps = StepperProps & {
   approving: boolean;
   onLayoutSettingsChange: (settings: LayoutPreviewSettings) => void;
   onPolishPlanUpdated: (plan: EditPlan) => void;
+  onSelectedAnnotationChange: (annotationId: string | null) => void;
   onAcceptAll: () => void;
   onCleanApplied: () => Promise<void> | void;
   onApprove: () => void;
@@ -257,7 +276,9 @@ export function GuidedWorkflowPanel({
   videoId,
   segments,
   selectedSegment,
+  selectedAnnotationId,
   plan,
+  currentTime,
   layoutSettings,
   warnings,
   chapters,
@@ -265,6 +286,7 @@ export function GuidedWorkflowPanel({
   approving,
   onLayoutSettingsChange,
   onPolishPlanUpdated,
+  onSelectedAnnotationChange,
   onAcceptAll,
   onCleanApplied,
   onApprove,
@@ -283,6 +305,9 @@ export function GuidedWorkflowPanel({
   const [captionPolicy, setCaptionPolicy] = useState<CaptionPolicy>(DEFAULT_CAPTION_POLICY);
   const [captionSaving, setCaptionSaving] = useState(false);
   const [captionMessage, setCaptionMessage] = useState<string | null>(null);
+  const [annotations, setAnnotations] = useState<AnnotationAction[]>([]);
+  const [annotationSaving, setAnnotationSaving] = useState(false);
+  const [annotationMessage, setAnnotationMessage] = useState<string | null>(null);
   const [polishOptions, setPolishOptions] = useState({
     sectionLabels: true,
     titleCards: false,
@@ -318,8 +343,12 @@ export function GuidedWorkflowPanel({
   };
   useEffect(() => {
     setCaptionPolicy(captionPolicyFromPlan(plan));
+    setAnnotations(annotationsFromPlan(plan));
     setCaptionMessage(null);
+    setAnnotationMessage(null);
   }, [plan?.polish_actions]);
+
+  const selectedAnnotation = annotations.find((annotation) => annotation.id === selectedAnnotationId) ?? annotations[0] ?? null;
 
   const updateCaptionPolicyDraft = (patch: CaptionPolicyUpdate) => {
     setCaptionPolicy((prev) => ({
@@ -388,6 +417,43 @@ export function GuidedWorkflowPanel({
       setCaptionMessage(`Caption settings failed: ${error}`);
     } finally {
       setCaptionSaving(false);
+    }
+  };
+
+  const handleAddAnnotation = () => {
+    const annotation = createAnnotationDraft(currentTime, plan?.original_duration ?? currentTime + 4);
+    setAnnotations((prev) => [...prev, annotation]);
+    onSelectedAnnotationChange(annotation.id);
+    setAnnotationMessage(null);
+  };
+
+  const handleUpdateAnnotationDraft = (id: string, patch: AnnotationActionUpdate) => {
+    setAnnotations((prev) => prev.map((annotation) => (
+      annotation.id === id ? mergeAnnotationDraft(annotation, patch) : annotation
+    )));
+    setAnnotationMessage(null);
+  };
+
+  const handleDeleteAnnotation = (id: string) => {
+    setAnnotations((prev) => prev.filter((annotation) => annotation.id !== id));
+    if (selectedAnnotationId === id) {
+      onSelectedAnnotationChange(null);
+    }
+    setAnnotationMessage(null);
+  };
+
+  const handleSaveAnnotations = async () => {
+    setAnnotationSaving(true);
+    setAnnotationMessage(null);
+    try {
+      const updatedPlan = await api.updateAnnotations(videoId, annotations.map(annotationForSave));
+      onPolishPlanUpdated(updatedPlan);
+      onCompleteStep("polish");
+      setAnnotationMessage(`${annotations.length} annotations saved`);
+    } catch (error) {
+      setAnnotationMessage(`Annotation save failed: ${error}`);
+    } finally {
+      setAnnotationSaving(false);
     }
   };
 
@@ -743,6 +809,156 @@ export function GuidedWorkflowPanel({
               Save Caption Policy
             </button>
             {captionMessage && <p className="text-xs leading-5 text-gray-400">{captionMessage}</p>}
+            <WorkflowCard title="Annotations & Callouts" icon={<MessageSquare className="h-4 w-4 text-sky-300" />}>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-xs text-gray-400">{annotations.length} timeline items</div>
+                  <button
+                    type="button"
+                    onClick={handleAddAnnotation}
+                    className="flex items-center gap-1.5 rounded-md bg-surface-raised px-2.5 py-1.5 text-xs font-semibold text-gray-200 transition-colors hover:bg-surface-border"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    Add
+                  </button>
+                </div>
+
+                {annotations.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {annotations.map((annotation) => (
+                      <button
+                        key={annotation.id}
+                        type="button"
+                        onClick={() => onSelectedAnnotationChange(annotation.id)}
+                        className={`rounded px-2 py-1 text-[11px] font-semibold transition-colors ${
+                          selectedAnnotation?.id === annotation.id
+                            ? "bg-accent text-white"
+                            : "bg-surface-raised text-gray-400 hover:text-gray-200"
+                        }`}
+                      >
+                        {formatDuration(annotation.start_time)}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {selectedAnnotation ? (
+                  <div className="space-y-3 rounded-md border border-surface-border bg-surface-raised p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <OptionGroup
+                        value={selectedAnnotation.annotation_type}
+                        onChange={(value) => handleUpdateAnnotationDraft(selectedAnnotation.id, {
+                          annotation_type: value as AnnotationType,
+                          pointer: { enabled: value === "callout" },
+                        })}
+                        options={[
+                          { value: "callout", label: "Callout", icon: Crosshair },
+                          { value: "label", label: "Label", icon: MessageSquare },
+                        ]}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteAnnotation(selectedAnnotation.id)}
+                        className="rounded-md p-2 text-gray-500 transition-colors hover:bg-red-500/10 hover:text-red-300"
+                        aria-label="Delete annotation"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-gray-400">Text</span>
+                      <input
+                        value={selectedAnnotation.text}
+                        onChange={(event) => handleUpdateAnnotationDraft(selectedAnnotation.id, { text: event.target.value })}
+                        className="w-full rounded-md border border-surface-border bg-surface-overlay px-3 py-2 text-sm text-gray-100 outline-none focus:border-accent"
+                      />
+                    </label>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <NumberField
+                        label="Start"
+                        value={selectedAnnotation.start_time}
+                        min={0}
+                        step={0.5}
+                        suffix="s"
+                        onChange={(value) => handleUpdateAnnotationDraft(selectedAnnotation.id, {
+                          start_time: value,
+                          end_time: Math.max(value + 0.5, selectedAnnotation.end_time),
+                        })}
+                      />
+                      <NumberField
+                        label="End"
+                        value={selectedAnnotation.end_time}
+                        min={selectedAnnotation.start_time + 0.5}
+                        step={0.5}
+                        suffix="s"
+                        onChange={(value) => handleUpdateAnnotationDraft(selectedAnnotation.id, { end_time: value })}
+                      />
+                    </div>
+
+                    <ChoiceGrid
+                      value={selectedAnnotation.position}
+                      onChange={(value) => handleUpdateAnnotationDraft(selectedAnnotation.id, annotationPositionPatch(value as AnnotationPosition))}
+                      options={[
+                        { value: "top_left", label: "Top left", detail: "Upper slide note" },
+                        { value: "top_right", label: "Top right", detail: "Default callout" },
+                        { value: "middle_left", label: "Mid left", detail: "Side emphasis" },
+                        { value: "middle_right", label: "Mid right", detail: "Side emphasis" },
+                        { value: "bottom_left", label: "Low left", detail: "Lower note" },
+                        { value: "bottom_right", label: "Low right", detail: "Lower note" },
+                      ]}
+                    />
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <NumberField
+                        label="X"
+                        value={selectedAnnotation.x_percent}
+                        min={2}
+                        max={98}
+                        step={1}
+                        suffix="%"
+                        onChange={(value) => handleUpdateAnnotationDraft(selectedAnnotation.id, { x_percent: value })}
+                      />
+                      <NumberField
+                        label="Y"
+                        value={selectedAnnotation.y_percent}
+                        min={2}
+                        max={98}
+                        step={1}
+                        suffix="%"
+                        onChange={(value) => handleUpdateAnnotationDraft(selectedAnnotation.id, { y_percent: value })}
+                      />
+                    </div>
+
+                    <ChoiceGrid
+                      value={selectedAnnotation.pointer.direction}
+                      onChange={(value) => handleUpdateAnnotationDraft(selectedAnnotation.id, { pointer: { direction: value } })}
+                      disabled={!selectedAnnotation.pointer.enabled}
+                      options={[
+                        { value: "left", label: "Left", detail: "Points left" },
+                        { value: "right", label: "Right", detail: "Points right" },
+                        { value: "up", label: "Up", detail: "Points up" },
+                        { value: "down", label: "Down", detail: "Points down" },
+                      ]}
+                    />
+                  </div>
+                ) : (
+                  <EmptyState title="No callouts yet" detail="Add one at the current playhead time." />
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleSaveAnnotations}
+                  disabled={annotationSaving}
+                  className="flex w-full items-center justify-center gap-2 rounded-md bg-accent px-3 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {annotationSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                  Save Callouts
+                </button>
+                {annotationMessage && <p className="text-xs leading-5 text-gray-400">{annotationMessage}</p>}
+              </div>
+            </WorkflowCard>
             <ToggleRow
               label="Section labels"
               detail="Show topic names at chapter starts."
@@ -1019,6 +1235,42 @@ function SliderControl({
   );
 }
 
+function NumberField({
+  label,
+  value,
+  min,
+  max,
+  step,
+  suffix,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max?: number;
+  step: number;
+  suffix: string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="block rounded-md border border-surface-border bg-surface-overlay px-3 py-2">
+      <span className="mb-1 block text-xs font-medium text-gray-400">{label}</span>
+      <div className="flex items-center gap-2">
+        <input
+          type="number"
+          value={Number.isFinite(value) ? value : 0}
+          min={min}
+          max={max}
+          step={step}
+          onChange={(event) => onChange(Number(event.target.value))}
+          className="min-w-0 flex-1 bg-transparent font-mono text-sm text-gray-100 outline-none"
+        />
+        <span className="text-xs text-gray-500">{suffix}</span>
+      </div>
+    </label>
+  );
+}
+
 function ToggleRow({
   label,
   detail,
@@ -1088,6 +1340,93 @@ function captionPolicyFromPlan(plan: EditPlan | null): CaptionPolicy {
     style: { ...DEFAULT_CAPTION_POLICY.style, ...(policy.style ?? {}) },
     ranges: Array.isArray(policy.ranges) ? policy.ranges : [],
   };
+}
+
+function annotationsFromPlan(plan: EditPlan | null): AnnotationAction[] {
+  return (plan?.polish_actions ?? []).filter((item): item is AnnotationAction => {
+    return typeof item === "object" && item != null && "kind" in item && item.kind === "annotation";
+  }).map((annotation) => ({
+    ...annotation,
+    style: { ...DEFAULT_ANNOTATION_STYLE, ...(annotation.style ?? {}) },
+    pointer: {
+      enabled: annotation.pointer?.enabled ?? annotation.annotation_type === "callout",
+      direction: annotation.pointer?.direction ?? "left",
+    },
+  }));
+}
+
+function createAnnotationDraft(currentTime: number, duration: number): AnnotationAction {
+  const start = Math.max(0, Math.round(currentTime * 2) / 2);
+  const end = Math.min(Math.max(duration, start + 4), start + 4);
+  return {
+    id: `annotation-${Date.now()}`,
+    kind: "annotation",
+    schema_version: "phase6.edit-plan.v2",
+    status: "active",
+    annotation_type: "callout",
+    text: "Key idea",
+    start_time: start,
+    end_time: Math.max(start + 0.5, end),
+    duration: Math.max(0.5, end - start),
+    position: "top_right",
+    x_percent: 78,
+    y_percent: 12,
+    style: DEFAULT_ANNOTATION_STYLE,
+    pointer: { enabled: true, direction: "left" },
+    reason: "Teacher-added polish annotation.",
+  };
+}
+
+function mergeAnnotationDraft(annotation: AnnotationAction, patch: AnnotationActionUpdate): AnnotationAction {
+  const next = {
+    ...annotation,
+    ...patch,
+    style: { ...annotation.style, ...(patch.style ?? {}) },
+    pointer: { ...annotation.pointer, ...(patch.pointer ?? {}) },
+  };
+  const start = Math.max(0, Number(next.start_time) || 0);
+  const end = Math.max(start + 0.5, Number(next.end_time) || start + 4);
+  return {
+    ...next,
+    start_time: start,
+    end_time: end,
+    duration: end - start,
+  };
+}
+
+function annotationForSave(annotation: AnnotationAction): AnnotationActionUpdate {
+  return {
+    id: annotation.id,
+    annotation_type: annotation.annotation_type,
+    text: annotation.text,
+    start_time: annotation.start_time,
+    end_time: annotation.end_time,
+    position: annotation.position,
+    x_percent: annotation.x_percent,
+    y_percent: annotation.y_percent,
+    style: annotation.style,
+    pointer: annotation.pointer,
+    reason: annotation.reason,
+  };
+}
+
+function annotationPositionPatch(position: AnnotationPosition): AnnotationActionUpdate {
+  const [x, y] = annotationPositionPercent(position);
+  return { position, x_percent: x, y_percent: y };
+}
+
+function annotationPositionPercent(position: string): [number, number] {
+  return {
+    top_left: [10, 12],
+    top_center: [50, 12],
+    top_right: [78, 12],
+    middle_left: [10, 50],
+    middle_center: [50, 50],
+    middle_right: [78, 50],
+    bottom_left: [10, 82],
+    bottom_center: [50, 82],
+    bottom_right: [78, 82],
+  }[position] as [number, number] ?? [78, 12];
 }
 
 function normalizeCameraSize(value: unknown): CameraSize {

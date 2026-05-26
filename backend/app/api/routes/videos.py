@@ -31,6 +31,7 @@ from models.schemas import (
     TranscriptCutDecisionRequest, TranscriptCutDecisionResponse, TranscriptCutTrimUpdateRequest,
     TranscriptTimelineResponse,
     EditPlanResponse, EditPlanApproveRequest, CaptionPolicyUpdateRequest,
+    AnnotationActionsUpdateRequest,
     CourseMaterialUploadResponse, CourseMaterialResponse,
     ProcessingStatus, AppSettingsResponse, AppSettingsUpdateRequest,
     DomainTermsUpdateRequest,
@@ -50,7 +51,7 @@ from services.transcript_edit_decisions import (
     update_transcript_cut_trim,
 )
 from services.clean_tools import analyze_clean_suggestions, apply_clean_suggestions
-from services.edit_plan_payload import update_caption_policy, update_sections_payload
+from services.edit_plan_payload import update_annotations, update_caption_policy, update_sections_payload
 from services.topic_segmentation import analyze_topic_sections
 from services.progress import get_progress as get_pipeline_progress
 from services.app_settings import (
@@ -652,6 +653,29 @@ async def update_plan_captions(
     plan.plan_json = update_caption_policy(
         plan.plan_json,
         request.model_dump(exclude_none=True),
+    )
+    await db.commit()
+    await db.refresh(plan)
+    return plan
+
+
+@router.put("/videos/{video_id}/plan/annotations", response_model=EditPlanResponse, tags=["Edit Plan"])
+async def update_plan_annotations(
+    video_id: str,
+    request: AnnotationActionsUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Persist timed annotations and callouts for preview, timeline, and export."""
+    result = await db.execute(
+        select(EditPlan).where(EditPlan.video_id == video_id)
+    )
+    plan = result.scalar_one_or_none()
+    if not plan:
+        raise HTTPException(404, "Edit plan not found")
+
+    plan.plan_json = update_annotations(
+        plan.plan_json,
+        [item.model_dump(exclude_none=True) for item in request.annotations],
     )
     await db.commit()
     await db.refresh(plan)

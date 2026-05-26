@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { Segment, SegmentAction, TranscriptCutInterval } from "../types/api";
+import type { AnnotationAction, Segment, SegmentAction, TranscriptCutInterval } from "../types/api";
 
 interface Props {
   segments: Segment[];
@@ -9,6 +9,8 @@ interface Props {
   onSelectSegment: (seg: Segment) => void;
   selectedSegmentId: string | null;
   cutIntervals?: TranscriptCutInterval[];
+  annotations?: AnnotationAction[];
+  onSelectAnnotation?: (annotation: AnnotationAction) => void;
 }
 
 const ACTION_COLORS: Record<SegmentAction, string> = {
@@ -26,6 +28,8 @@ export function Timeline({
   onSelectSegment,
   selectedSegmentId,
   cutIntervals = [],
+  annotations = [],
+  onSelectAnnotation,
 }: Props) {
   const playheadPct = duration > 0 ? (currentTime / duration) * 100 : 0;
 
@@ -47,6 +51,15 @@ export function Timeline({
       return { interval, index, left, width };
     });
   }, [cutIntervals, duration]);
+
+  const annotationBars = useMemo(() => {
+    if (!duration || duration === 0) return [];
+    return annotations.map((annotation) => {
+      const left = (annotation.start_time / duration) * 100;
+      const width = Math.max(((annotation.end_time - annotation.start_time) / duration) * 100, 0.5);
+      return { annotation, left, width };
+    });
+  }, [annotations, duration]);
 
   return (
     <div className="w-full space-y-1">
@@ -81,6 +94,20 @@ export function Timeline({
           />
         ))}
 
+        {annotationBars.map(({ annotation, left, width }) => (
+          <button
+            key={annotation.id}
+            type="button"
+            className="absolute top-1 z-[6] h-3 rounded-sm border border-sky-200/50 bg-sky-400/80"
+            style={{ left: `${left}%`, width: `${width}%` }}
+            title={`${annotation.annotation_type}: ${annotation.text}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelectAnnotation?.(annotation);
+            }}
+          />
+        ))}
+
         {/* Playhead */}
         <div
           className="absolute top-0 w-0.5 h-full bg-white z-10 pointer-events-none"
@@ -96,6 +123,7 @@ export function Timeline({
           <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-action-cut inline-block" /> Cut</span>
           <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-action-shorten inline-block" /> Shorten</span>
           <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-action-highlight inline-block" /> Highlight</span>
+          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-sky-400 inline-block" /> Callout</span>
         </div>
         <span>{formatTime(duration)}</span>
       </div>

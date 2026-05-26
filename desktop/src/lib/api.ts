@@ -20,6 +20,7 @@ import type {
   ProjectAssetSyncUpdateRequest, ProjectAssetUploadType,
   ProjectCreateRequest, ProjectDetail, ProjectSourceSyncPlan,
   TopicSegmentationResult,
+  AnnotationActionUpdate,
   CaptionPolicyUpdate,
 } from "../types/api";
 
@@ -297,6 +298,13 @@ export async function updateCaptionPolicy(videoId: string, payload: CaptionPolic
   return request(`/videos/${videoId}/plan/captions`, {
     method: "PUT",
     body: JSON.stringify(payload),
+  });
+}
+
+export async function updateAnnotations(videoId: string, annotations: AnnotationActionUpdate[]): Promise<EditPlan> {
+  return request(`/videos/${videoId}/plan/annotations`, {
+    method: "PUT",
+    body: JSON.stringify({ annotations }),
   });
 }
 
