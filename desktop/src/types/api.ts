@@ -679,6 +679,45 @@ export interface EditPlan {
 
 // ── Processing Status ──
 
+export interface ExportPreset {
+  id: string;
+  group_id: string;
+  group_label: string;
+  label: string;
+  description: string;
+  target: string;
+  container: string;
+  extension: string;
+  video_codec: string | null;
+  audio_codec: string;
+  width: number | null;
+  height: number | null;
+  aspect_ratio: string | null;
+  orientation: string;
+  fps: number | null;
+  video_bitrate: string | null;
+  audio_bitrate: string;
+  audio_only: boolean;
+  caption_strategy: string;
+  delivery_notes: string[];
+  tags: string[];
+}
+
+export interface ExportPresetGroup {
+  id: "social" | "professional" | "education" | string;
+  label: string;
+  description: string;
+  presets: ExportPreset[];
+}
+
+export interface ExportPresetCatalog {
+  schema_version: string;
+  default_preset_id: string;
+  groups: ExportPresetGroup[];
+}
+
+// -- Processing Status --
+
 export interface ProcessingStatus {
   video_id: string;
   status: VideoStatus;

@@ -715,6 +715,44 @@ class EditPlanResponse(BaseModel):
 
 class EditPlanApproveRequest(BaseModel):
     teacher_notes: Optional[str] = None
+    export_preset_id: Optional[str] = Field(default=None, max_length=80)
+
+
+class ExportPresetResponse(BaseModel):
+    id: str
+    group_id: str
+    group_label: str
+    label: str
+    description: str
+    target: str
+    container: str
+    extension: str
+    video_codec: Optional[str] = None
+    audio_codec: str
+    width: Optional[int] = None
+    height: Optional[int] = None
+    aspect_ratio: Optional[str] = None
+    orientation: str
+    fps: Optional[int] = None
+    video_bitrate: Optional[str] = None
+    audio_bitrate: str
+    audio_only: bool = False
+    caption_strategy: str
+    delivery_notes: List[str] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
+
+
+class ExportPresetGroupResponse(BaseModel):
+    id: str
+    label: str
+    description: str
+    presets: List[ExportPresetResponse] = Field(default_factory=list)
+
+
+class ExportPresetCatalogResponse(BaseModel):
+    schema_version: str
+    default_preset_id: str
+    groups: List[ExportPresetGroupResponse] = Field(default_factory=list)
 
 
 class CaptionStyleRequest(BaseModel):
