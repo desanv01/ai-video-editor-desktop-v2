@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { AnnotationAction, EducationalOverlayAction, Segment, SegmentAction, TranscriptCutInterval } from "../types/api";
+import type { AnnotationAction, EducationalOverlayAction, EndCardAction, Segment, SegmentAction, TranscriptCutInterval } from "../types/api";
 
 interface Props {
   segments: Segment[];
@@ -11,6 +11,7 @@ interface Props {
   cutIntervals?: TranscriptCutInterval[];
   annotations?: AnnotationAction[];
   educationalOverlays?: EducationalOverlayAction[];
+  endCards?: EndCardAction[];
   onSelectAnnotation?: (annotation: AnnotationAction) => void;
   onSelectEducationalOverlay?: (overlay: EducationalOverlayAction) => void;
 }
@@ -32,6 +33,7 @@ export function Timeline({
   cutIntervals = [],
   annotations = [],
   educationalOverlays = [],
+  endCards = [],
   onSelectAnnotation,
   onSelectEducationalOverlay,
 }: Props) {
@@ -73,6 +75,19 @@ export function Timeline({
       return { overlay, left, width };
     });
   }, [educationalOverlays, duration]);
+
+  const endCardBars = useMemo(() => {
+    if (!duration || duration === 0) return [];
+    const enabled = endCards.filter((card) => card.enabled);
+    const totalEndCardDuration = enabled.reduce((total, card) => total + card.duration_seconds, 0);
+    let cursor = Math.max(0, duration - totalEndCardDuration);
+    return enabled.map((card) => {
+      const left = (cursor / duration) * 100;
+      const width = Math.max((card.duration_seconds / duration) * 100, 0.8);
+      cursor += card.duration_seconds;
+      return { card, left, width };
+    });
+  }, [endCards, duration]);
 
   return (
     <div className="w-full space-y-1">
@@ -135,6 +150,15 @@ export function Timeline({
           />
         ))}
 
+        {endCardBars.map(({ card, left, width }) => (
+          <div
+            key={card.id}
+            className="absolute bottom-1 z-[6] h-3 rounded-sm border border-cyan-100/60 bg-cyan-300/85"
+            style={{ left: `${left}%`, width: `${width}%` }}
+            title={`${card.card_type}: ${card.title}`}
+          />
+        ))}
+
         {/* Playhead */}
         <div
           className="absolute top-0 w-0.5 h-full bg-white z-10 pointer-events-none"
@@ -152,6 +176,7 @@ export function Timeline({
           <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-action-highlight inline-block" /> Highlight</span>
           <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-sky-400 inline-block" /> Callout</span>
           <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-amber-300 inline-block" /> Edu label</span>
+          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-cyan-300 inline-block" /> End card</span>
         </div>
         <span>{formatTime(duration)}</span>
       </div>

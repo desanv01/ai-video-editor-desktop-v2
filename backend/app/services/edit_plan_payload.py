@@ -51,6 +51,12 @@ EDUCATIONAL_OVERLAY_TYPES = {
     "chapter_label",
     "step_label",
 }
+END_CARD_TYPES = {
+    "lecture_summary",
+    "next_topic",
+    "course_link",
+    "custom_message",
+}
 EDUCATIONAL_OVERLAY_POSITIONS = {
     "center",
     "top_left",
@@ -218,10 +224,121 @@ def normalize_polish_actions(actions: Any) -> list[dict[str, Any]]:
             overlay = normalize_educational_overlay_action(action)
             if overlay:
                 normalized.append(overlay)
+        elif action.get("kind") == "end_card":
+            end_card = normalize_end_card_action(action)
+            if end_card:
+                normalized.append(end_card)
         else:
             normalized.append(dict(action))
     if not caption_seen:
         normalized.append(default_caption_policy())
+    return normalized
+
+
+def default_end_card_style() -> dict[str, Any]:
+    """Return readable defaults for appended lecture end cards."""
+    return {
+        "font_size": 42,
+        "body_font_size": 24,
+        "text_color": "#FFFFFF",
+        "body_color": "#CBD5E1",
+        "background_color": "#111827",
+        "accent_color": "#38BDF8",
+        "opacity": 1.0,
+    }
+
+
+def normalize_end_card_action(action: Any) -> dict[str, Any] | None:
+    """Normalize one appended lecture end card or CTA action."""
+    if not isinstance(action, dict):
+        return None
+
+    card_type = _choice(action.get("card_type"), END_CARD_TYPES, "lecture_summary")
+    enabled = bool(action.get("enabled", True))
+    title = str(action.get("title") or _default_end_card_title(card_type)).strip()[:140]
+    message = str(action.get("message") or _default_end_card_message(card_type)).strip()[:420]
+    summary_points = _normalize_string_list(action.get("summary_points"), max_items=5, max_chars=120)
+    next_topic = str(action.get("next_topic") or "").strip()[:160]
+    course_url = str(action.get("course_url") or "").strip()[:240]
+    button_text = str(action.get("button_text") or _default_end_card_button_text(card_type)).strip()[:80]
+
+    if not title and not message and not summary_points and not next_topic and not course_url:
+        return None
+
+    duration_seconds = _bounded_float(
+        action.get("duration_seconds"),
+        default=6.0,
+        minimum=2.0,
+        maximum=15.0,
+    )
+
+    normalized = {
+        "id": str(action.get("id") or f"end-card-{card_type}"),
+        "kind": "end_card",
+        "schema_version": EDIT_PLAN_SCHEMA_VERSION,
+        "status": str(action.get("status") or ("active" if enabled else "planned")),
+        "enabled": enabled,
+        "card_type": card_type,
+        "title": title,
+        "message": message,
+        "summary_points": summary_points,
+        "next_topic": next_topic,
+        "course_url": course_url,
+        "button_text": button_text,
+        "duration_seconds": duration_seconds,
+        "style": _normalize_end_card_style(action.get("style")),
+        "animation": _normalize_animation_settings(
+            action.get("animation"),
+            default_preset="fade",
+            default_direction="up",
+            default_duration=0.45,
+        ),
+        "source": str(action.get("source") or "teacher_polish")[:80],
+        "reason": str(action.get("reason") or "Teacher-added end card CTA.")[:500],
+    }
+    return normalized
+
+
+def get_end_cards(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Return normalized end-card CTA actions from the plan payload."""
+    normalized = normalize_plan_payload(payload or {})
+    end_cards = []
+    for action in normalized.get("polish_actions", []):
+        if isinstance(action, dict) and action.get("kind") == "end_card":
+            end_card = normalize_end_card_action(action)
+            if end_card:
+                end_cards.append(end_card)
+    return sorted(end_cards, key=lambda item: item["id"])
+
+
+def update_end_cards(payload: dict[str, Any], end_cards: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Replace the editable end-card CTA action set in the v2 polish list."""
+    normalized = normalize_plan_payload(payload)
+    next_cards = [
+        end_card for end_card in (
+            normalize_end_card_action(item) for item in list(end_cards or [])
+        )
+        if end_card is not None
+    ]
+    actions = [
+        action for action in normalized.get("polish_actions", [])
+        if not (isinstance(action, dict) and action.get("kind") == "end_card")
+    ]
+    normalized["polish_actions"] = actions + next_cards
+    enabled_cards = [item for item in next_cards if item.get("enabled")]
+    normalized["export_metadata"] = {
+        **_dict_value(normalized.get("export_metadata")),
+        "end_cards": {
+            "count": len(next_cards),
+            "enabled_count": len(enabled_cards),
+            "lecture_summary_count": sum(1 for item in next_cards if item.get("card_type") == "lecture_summary"),
+            "next_topic_count": sum(1 for item in next_cards if item.get("card_type") == "next_topic"),
+            "course_link_count": sum(1 for item in next_cards if item.get("card_type") == "course_link"),
+            "custom_message_count": sum(1 for item in next_cards if item.get("card_type") == "custom_message"),
+            "appended_to_output": len(enabled_cards) > 0,
+        },
+        "updated_at": _utc_now(),
+    }
     return normalized
 
 
@@ -745,6 +862,57 @@ def _normalize_educational_overlay_style(value: Any, overlay_type: str) -> dict[
         "accent_color": _hex_color(source.get("accent_color"), defaults["accent_color"]),
         "opacity": _bounded_float(source.get("opacity"), default=defaults["opacity"], minimum=0.2, maximum=1.0),
     }
+
+
+def _normalize_end_card_style(value: Any) -> dict[str, Any]:
+    defaults = default_end_card_style()
+    source = dict(value) if isinstance(value, dict) else {}
+    return {
+        "font_size": int(_bounded_float(source.get("font_size"), default=defaults["font_size"], minimum=24, maximum=72)),
+        "body_font_size": int(_bounded_float(source.get("body_font_size"), default=defaults["body_font_size"], minimum=16, maximum=44)),
+        "text_color": _hex_color(source.get("text_color"), defaults["text_color"]),
+        "body_color": _hex_color(source.get("body_color"), defaults["body_color"]),
+        "background_color": _hex_color(source.get("background_color"), defaults["background_color"]),
+        "accent_color": _hex_color(source.get("accent_color"), defaults["accent_color"]),
+        "opacity": _bounded_float(source.get("opacity"), default=defaults["opacity"], minimum=0.2, maximum=1.0),
+    }
+
+
+def _normalize_string_list(value: Any, *, max_items: int, max_chars: int) -> list[str]:
+    if isinstance(value, str):
+        raw_items = [line.strip() for line in value.splitlines()]
+    elif isinstance(value, list):
+        raw_items = [str(item).strip() for item in value]
+    else:
+        raw_items = []
+    return [item[:max_chars] for item in raw_items if item][:max_items]
+
+
+def _default_end_card_title(card_type: str) -> str:
+    return {
+        "lecture_summary": "Lecture Summary",
+        "next_topic": "Next Topic",
+        "course_link": "Continue Learning",
+        "custom_message": "Thanks for Watching",
+    }.get(card_type, "Lecture Summary")
+
+
+def _default_end_card_message(card_type: str) -> str:
+    return {
+        "lecture_summary": "Review the key ideas before moving on.",
+        "next_topic": "In the next lesson, we build on this concept.",
+        "course_link": "Open the course page for notes, exercises, and resources.",
+        "custom_message": "See you in the next lesson.",
+    }.get(card_type, "Review the key ideas before moving on.")
+
+
+def _default_end_card_button_text(card_type: str) -> str:
+    return {
+        "lecture_summary": "Review notes",
+        "next_topic": "Watch next",
+        "course_link": "Open course",
+        "custom_message": "Continue",
+    }.get(card_type, "Continue")
 
 
 def _position_to_percent(position: str) -> tuple[float, float]:

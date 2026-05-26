@@ -13,10 +13,12 @@ from services.edit_plan_payload import (  # noqa: E402
     get_annotations,
     get_caption_policy,
     get_educational_overlays,
+    get_end_cards,
     normalize_plan_payload,
     update_annotations,
     update_cleaning_payload,
     update_caption_policy,
+    update_end_cards,
     update_educational_overlays,
     update_export_metadata,
     update_sections_payload,
@@ -187,6 +189,43 @@ class EditPlanPayloadTests(unittest.TestCase):
         self.assertEqual(payload["export_metadata"]["educational_overlays"]["intro_card_count"], 1)
         self.assertEqual(payload["export_metadata"]["educational_overlays"]["step_label_count"], 1)
         self.assertEqual(payload["export_metadata"]["educational_overlays"]["animated_count"], 2)
+
+    def test_updates_end_cards_for_summary_next_topic_course_link_and_custom_message(self):
+        payload = update_end_cards(
+            normalize_plan_payload({"segments": []}),
+            [
+                {
+                    "id": "end-summary",
+                    "card_type": "lecture_summary",
+                    "title": "What we learned",
+                    "message": "You can now explain gradient descent.",
+                    "summary_points": ["Loss measures error", "Learning rate controls step size"],
+                    "duration_seconds": 7.5,
+                },
+                {
+                    "id": "end-next",
+                    "card_type": "next_topic",
+                    "title": "Coming up",
+                    "next_topic": "Backpropagation",
+                    "course_url": "https://example.edu/course",
+                    "button_text": "Open lesson",
+                    "style": {"accent_color": "#22D3EE", "body_font_size": 28},
+                },
+            ],
+        )
+
+        end_cards = get_end_cards(payload)
+
+        self.assertEqual([item["id"] for item in end_cards], ["end-next", "end-summary"])
+        self.assertEqual(end_cards[0]["card_type"], "next_topic")
+        self.assertEqual(end_cards[0]["next_topic"], "Backpropagation")
+        self.assertEqual(end_cards[0]["course_url"], "https://example.edu/course")
+        self.assertEqual(end_cards[0]["style"]["body_font_size"], 28)
+        self.assertEqual(end_cards[1]["summary_points"], ["Loss measures error", "Learning rate controls step size"])
+        self.assertEqual(end_cards[1]["duration_seconds"], 7.5)
+        self.assertEqual(payload["export_metadata"]["end_cards"]["enabled_count"], 2)
+        self.assertEqual(payload["export_metadata"]["end_cards"]["lecture_summary_count"], 1)
+        self.assertEqual(payload["export_metadata"]["end_cards"]["next_topic_count"], 1)
 
 
 if __name__ == "__main__":

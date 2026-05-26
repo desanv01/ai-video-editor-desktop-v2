@@ -287,6 +287,37 @@ class LayoutModeCommandTests(unittest.TestCase):
         self.assertIn("STEP 1: Install dependencies", ass)
         self.assertIn("\\an5\\pos(960,540)", ass)
 
+    def test_end_card_ass_renders_summary_next_topic_and_course_link_cta(self):
+        events = [
+            {
+                "id": "end-card-1",
+                "kind": "end_card",
+                "card_type": "course_link",
+                "title": "What we learned",
+                "message": "You can now set up the project.",
+                "summary_points": ["Install the tools", "Run the first command"],
+                "next_topic": "Data loading",
+                "course_url": "https://example.edu/course",
+                "button_text": "Open course",
+                "duration_seconds": 6.0,
+                "style": {"font_size": 42, "body_font_size": 24, "accent_color": "#22D3EE"},
+                "animation": {"preset": "fade", "duration_seconds": 0.45},
+                "output_start_time": 0.0,
+                "output_end_time": 6.0,
+                "position": "center",
+                "x_percent": 50.0,
+                "y_percent": 50.0,
+            },
+        ]
+
+        ass = renderer._generate_annotation_ass(events)
+
+        self.assertIn("What we learned", ass)
+        self.assertIn("- Install the tools", ass)
+        self.assertIn("Next: Data loading", ass)
+        self.assertIn("Open course: https://example.edu/course", ass)
+        self.assertIn("\\an5\\pos(960,540)", ass)
+
 
 class PictureInPictureRenderSelectionTests(unittest.IsolatedAsyncioTestCase):
     def test_splits_range_around_picture_in_picture_cue(self):

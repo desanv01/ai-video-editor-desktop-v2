@@ -22,6 +22,7 @@ import type {
   TopicSegmentationResult,
   AnnotationActionUpdate,
   CaptionPolicyUpdate,
+  EndCardActionUpdate,
   EducationalOverlayActionUpdate,
 } from "../types/api";
 
@@ -316,6 +317,16 @@ export async function updateEducationalOverlays(
   return request(`/videos/${videoId}/plan/educational-overlays`, {
     method: "PUT",
     body: JSON.stringify({ overlays }),
+  });
+}
+
+export async function updateEndCards(
+  videoId: string,
+  endCards: EndCardActionUpdate[],
+): Promise<EditPlan> {
+  return request(`/videos/${videoId}/plan/end-cards`, {
+    method: "PUT",
+    body: JSON.stringify({ end_cards: endCards }),
   });
 }
 

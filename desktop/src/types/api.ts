@@ -556,7 +556,40 @@ export interface EducationalOverlayAction {
   [key: string]: unknown;
 }
 
-export type PolishAction = CaptionPolicy | AnnotationAction | EducationalOverlayAction | Record<string, unknown>;
+export type EndCardType = "lecture_summary" | "next_topic" | "course_link" | "custom_message";
+
+export interface EndCardStyle {
+  font_size: number;
+  body_font_size: number;
+  text_color: string;
+  body_color: string;
+  background_color: string;
+  accent_color: string;
+  opacity: number;
+}
+
+export interface EndCardAction {
+  id: string;
+  kind: "end_card";
+  schema_version: string;
+  status: "planned" | "active" | "applied" | string;
+  enabled: boolean;
+  card_type: EndCardType | string;
+  title: string;
+  message: string;
+  summary_points: string[];
+  next_topic: string;
+  course_url: string;
+  button_text: string;
+  duration_seconds: number;
+  style: EndCardStyle;
+  animation: AnimationSettings;
+  source: string;
+  reason: string;
+  [key: string]: unknown;
+}
+
+export type PolishAction = CaptionPolicy | AnnotationAction | EducationalOverlayAction | EndCardAction | Record<string, unknown>;
 
 export type CaptionPolicyUpdate = Partial<Omit<CaptionPolicy, "id" | "kind" | "schema_version" | "status" | "style">> & {
   style?: Partial<CaptionStyle>;
@@ -570,6 +603,11 @@ export type AnnotationActionUpdate = Partial<Omit<AnnotationAction, "kind" | "sc
 
 export type EducationalOverlayActionUpdate = Partial<Omit<EducationalOverlayAction, "kind" | "schema_version" | "status" | "style" | "animation">> & {
   style?: Partial<EducationalOverlayStyle>;
+  animation?: Partial<AnimationSettings>;
+};
+
+export type EndCardActionUpdate = Partial<Omit<EndCardAction, "kind" | "schema_version" | "status" | "style" | "animation">> & {
+  style?: Partial<EndCardStyle>;
   animation?: Partial<AnimationSettings>;
 };
 

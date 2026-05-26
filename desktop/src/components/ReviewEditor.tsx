@@ -21,6 +21,7 @@ import type {
   AnnotationAction,
   AnimationSettings,
   EducationalOverlayAction,
+  EndCardAction,
   EditPlan,
   SegmentAction,
   RevalidationResult,
@@ -206,9 +207,12 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   const videoSrc = api.getVideoStreamUrl(videoId);
   const syncedCutIntervals = editDecisionSync?.cut_intervals ?? [];
   const syncedExportPlan = editDecisionSync?.export_plan ?? null;
-  const effectiveDuration = duration || plan?.original_duration || 0;
   const annotations = useMemo(() => annotationsFromPlan(plan), [plan]);
   const educationalOverlays = useMemo(() => educationalOverlaysFromPlan(plan), [plan]);
+  const endCards = useMemo(() => endCardsFromPlan(plan), [plan]);
+  const enabledEndCardDuration = endCards.reduce((total, card) => total + (card.enabled ? card.duration_seconds : 0), 0);
+  const contentDuration = duration || plan?.original_duration || 0;
+  const effectiveDuration = contentDuration + enabledEndCardDuration;
 
   const handleTimeUpdate = useCallback(() => {
     if (videoRef.current) {
@@ -815,7 +819,9 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
                 settings={layoutPreviewSettings}
                 annotations={annotations}
                 educationalOverlays={educationalOverlays}
+                endCards={endCards}
                 currentTime={currentTime}
+                contentDuration={duration || plan?.original_duration || 0}
                 onTimeUpdate={handleTimeUpdate}
                 onLoadedMetadata={handleLoadedMetadata}
                 onPlay={() => setIsPlaying(true)}
@@ -903,6 +909,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
               cutIntervals={syncedCutIntervals}
               annotations={annotations}
               educationalOverlays={educationalOverlays}
+              endCards={endCards}
               onSelectAnnotation={handleSelectAnnotation}
               onSelectEducationalOverlay={handleSelectEducationalOverlay}
             />
@@ -910,6 +917,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
               <span>{segments.length} transcript segments</span>
               <span>
                 {syncedExportPlan?.transcript_cut_count ?? 0} transcript cuts synced to preview, timeline, and export
+                {enabledEndCardDuration > 0 ? `, plus ${formatDuration(enabledEndCardDuration)} end card` : ""}
               </span>
             </div>
           </div>
@@ -972,11 +980,13 @@ type LayoutProgramPreviewProps = Pick<
   settings: LayoutPreviewSettings;
   annotations: AnnotationAction[];
   educationalOverlays: EducationalOverlayAction[];
+  endCards: EndCardAction[];
   currentTime: number;
+  contentDuration: number;
 };
 
 const LayoutProgramPreview = forwardRef<HTMLVideoElement, LayoutProgramPreviewProps>(function LayoutProgramPreview(
-  { src, settings, annotations, educationalOverlays, currentTime, ...videoProps },
+  { src, settings, annotations, educationalOverlays, endCards, currentTime, contentDuration, ...videoProps },
   ref,
 ) {
   const activeAnnotations = annotations.filter(
@@ -985,6 +995,7 @@ const LayoutProgramPreview = forwardRef<HTMLVideoElement, LayoutProgramPreviewPr
   const activeEducationalOverlays = educationalOverlays.filter(
     (overlay) => currentTime >= overlay.start_time && currentTime <= overlay.end_time,
   );
+  const activeEndCard = activeEndCardAtTime(endCards, currentTime, contentDuration);
   const video = (
     <video
       ref={ref}
@@ -1030,6 +1041,7 @@ const LayoutProgramPreview = forwardRef<HTMLVideoElement, LayoutProgramPreviewPr
       {activeEducationalOverlays.map((overlay) => (
         <EducationalOverlayPreview key={overlay.id} overlay={overlay} />
       ))}
+      {activeEndCard && <EndCardPreview card={activeEndCard} />}
     </div>
   );
 });
@@ -1086,6 +1098,51 @@ function EducationalOverlayPreview({ overlay }: { overlay: EducationalOverlayAct
           {overlay.subtitle}
         </div>
       )}
+    </div>
+  );
+}
+
+function EndCardPreview({ card }: { card: EndCardAction }) {
+  const style = card.style;
+  return (
+    <div
+      className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center px-8 text-center"
+      style={{
+        color: style.text_color,
+        backgroundColor: hexWithAlpha(style.background_color, style.opacity),
+        animation: previewAnimationCss(card.animation),
+      }}
+    >
+      <div className="w-[78%] max-w-3xl">
+        <div className="mb-3 text-[11px] font-bold uppercase tracking-wider" style={{ color: style.accent_color }}>
+          {endCardEyebrow(card.card_type)}
+        </div>
+        <div className="font-semibold leading-tight" style={{ fontSize: `${Math.max(18, Math.round(style.font_size * 0.48))}px` }}>
+          {card.title}
+        </div>
+        {card.summary_points.length > 0 && (
+          <div className="mt-3 space-y-1 text-left font-medium" style={{ color: style.body_color, fontSize: `${Math.max(11, Math.round(style.body_font_size * 0.48))}px` }}>
+            {card.summary_points.slice(0, 5).map((point, index) => (
+              <div key={`${point}-${index}`}>- {point}</div>
+            ))}
+          </div>
+        )}
+        {card.message && (
+          <div className="mt-3 font-medium leading-snug" style={{ color: style.body_color, fontSize: `${Math.max(11, Math.round(style.body_font_size * 0.48))}px` }}>
+            {card.message}
+          </div>
+        )}
+        {card.next_topic && (
+          <div className="mt-3 text-sm font-semibold" style={{ color: style.accent_color }}>
+            Next: {card.next_topic}
+          </div>
+        )}
+        {card.course_url && (
+          <div className="mx-auto mt-4 inline-flex max-w-full rounded border px-3 py-1.5 text-xs font-semibold" style={{ borderColor: style.accent_color, color: style.accent_color }}>
+            <span className="truncate">{card.button_text}: {card.course_url}</span>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1195,6 +1252,24 @@ function educationalOverlaysFromPlan(plan: EditPlan | null): EducationalOverlayA
   });
 }
 
+function endCardsFromPlan(plan: EditPlan | null): EndCardAction[] {
+  return (plan?.polish_actions ?? []).filter((item): item is EndCardAction => {
+    return typeof item === "object" && item != null && "kind" in item && item.kind === "end_card";
+  }).filter((card) => card.enabled);
+}
+
+function activeEndCardAtTime(cards: EndCardAction[], currentTime: number, contentDuration: number): EndCardAction | null {
+  let cursor = contentDuration;
+  for (const card of cards) {
+    const end = cursor + card.duration_seconds;
+    if (currentTime >= cursor && currentTime <= end) {
+      return card;
+    }
+    cursor = end;
+  }
+  return null;
+}
+
 function formatDuration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "0:00";
   const minutes = Math.floor(seconds / 60);
@@ -1257,6 +1332,13 @@ function educationalOverlayEyebrow(overlay: EducationalOverlayAction): string {
   if (overlay.overlay_type === "section_title_card") return "Section";
   if (overlay.overlay_type === "intro_card") return "Intro";
   return "Label";
+}
+
+function endCardEyebrow(cardType: string): string {
+  if (cardType === "next_topic") return "Next Topic";
+  if (cardType === "course_link") return "Course Link";
+  if (cardType === "custom_message") return "Closing";
+  return "Summary";
 }
 
 function previewAnimationCss(animation: AnimationSettings | undefined): string | undefined {

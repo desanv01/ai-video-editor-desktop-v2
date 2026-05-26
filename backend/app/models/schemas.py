@@ -817,6 +817,37 @@ class EducationalOverlayActionsUpdateRequest(BaseModel):
     overlays: List[EducationalOverlayActionRequest] = Field(default_factory=list)
 
 
+class EndCardStyleRequest(BaseModel):
+    font_size: Optional[int] = Field(default=None, ge=24, le=72)
+    body_font_size: Optional[int] = Field(default=None, ge=16, le=44)
+    text_color: Optional[str] = Field(default=None, max_length=7)
+    body_color: Optional[str] = Field(default=None, max_length=7)
+    background_color: Optional[str] = Field(default=None, max_length=7)
+    accent_color: Optional[str] = Field(default=None, max_length=7)
+    opacity: Optional[float] = Field(default=None, ge=0.2, le=1.0)
+
+
+class EndCardActionRequest(BaseModel):
+    id: Optional[str] = Field(default=None, max_length=100)
+    enabled: bool = True
+    card_type: str = Field(default="lecture_summary", max_length=40)
+    title: str = Field(default="Lecture Summary", max_length=140)
+    message: Optional[str] = Field(default=None, max_length=420)
+    summary_points: List[str] = Field(default_factory=list, max_length=5)
+    next_topic: Optional[str] = Field(default=None, max_length=160)
+    course_url: Optional[str] = Field(default=None, max_length=240)
+    button_text: Optional[str] = Field(default=None, max_length=80)
+    duration_seconds: float = Field(default=6.0, ge=2.0, le=15.0)
+    style: Optional[EndCardStyleRequest] = None
+    animation: Optional[AnimationSettingsRequest] = None
+    source: Optional[str] = Field(default=None, max_length=80)
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+class EndCardActionsUpdateRequest(BaseModel):
+    end_cards: List[EndCardActionRequest] = Field(default_factory=list)
+
+
 # ═══════════════════════════════════════════
 #  COURSE MATERIAL
 # ═══════════════════════════════════════════
