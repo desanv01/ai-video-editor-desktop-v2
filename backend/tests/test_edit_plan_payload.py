@@ -12,10 +12,12 @@ from services.edit_plan_payload import (  # noqa: E402
     build_edit_plan_payload,
     get_annotations,
     get_caption_policy,
+    get_educational_overlays,
     normalize_plan_payload,
     update_annotations,
     update_cleaning_payload,
     update_caption_policy,
+    update_educational_overlays,
     update_export_metadata,
     update_sections_payload,
 )
@@ -147,6 +149,39 @@ class EditPlanPayloadTests(unittest.TestCase):
         self.assertEqual(annotations[1]["x_percent"], 78.0)
         self.assertEqual(annotations[1]["style"]["font_size"], 34)
         self.assertEqual(payload["export_metadata"]["annotations"]["count"], 2)
+
+    def test_updates_educational_overlays_for_labels_and_title_cards(self):
+        payload = update_educational_overlays(
+            normalize_plan_payload({"segments": []}),
+            [
+                {
+                    "id": "intro-1",
+                    "overlay_type": "intro_card",
+                    "title": "Gradient Descent",
+                    "subtitle": "Learning rate and loss curves",
+                    "start_time": 0.0,
+                    "end_time": 4.5,
+                },
+                {
+                    "overlay_type": "step_label",
+                    "title": "Update parameters",
+                    "start_time": 12.0,
+                    "end_time": 16.0,
+                    "step_number": 2,
+                    "position": "top_left",
+                    "style": {"accent_color": "#FACC15", "font_size": 30},
+                },
+            ],
+        )
+
+        overlays = get_educational_overlays(payload)
+
+        self.assertEqual([item["id"] for item in overlays], ["intro-1", "step_label-12000"])
+        self.assertEqual(overlays[0]["position"], "center")
+        self.assertEqual(overlays[1]["step_number"], 2)
+        self.assertEqual(overlays[1]["style"]["font_size"], 30)
+        self.assertEqual(payload["export_metadata"]["educational_overlays"]["intro_card_count"], 1)
+        self.assertEqual(payload["export_metadata"]["educational_overlays"]["step_label_count"], 1)
 
 
 if __name__ == "__main__":

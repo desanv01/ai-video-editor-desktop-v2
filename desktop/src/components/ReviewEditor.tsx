@@ -19,6 +19,7 @@ import type {
   Chapter,
   Segment,
   AnnotationAction,
+  EducationalOverlayAction,
   EditPlan,
   SegmentAction,
   RevalidationResult,
@@ -118,6 +119,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [plan, setPlan] = useState<EditPlan | null>(null);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
+  const [selectedEducationalOverlayId, setSelectedEducationalOverlayId] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<RevalidationResult | null>(null);
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [chaptersLoading, setChaptersLoading] = useState(false);
@@ -205,6 +207,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   const syncedExportPlan = editDecisionSync?.export_plan ?? null;
   const effectiveDuration = duration || plan?.original_duration || 0;
   const annotations = useMemo(() => annotationsFromPlan(plan), [plan]);
+  const educationalOverlays = useMemo(() => educationalOverlaysFromPlan(plan), [plan]);
 
   const handleTimeUpdate = useCallback(() => {
     if (videoRef.current) {
@@ -237,8 +240,16 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
 
   const handleSelectAnnotation = useCallback((annotation: AnnotationAction) => {
     setSelectedAnnotationId(annotation.id);
+    setSelectedEducationalOverlayId(null);
     setActiveWorkflowStep("polish");
     seekTo(annotation.start_time);
+  }, [seekTo]);
+
+  const handleSelectEducationalOverlay = useCallback((overlay: EducationalOverlayAction) => {
+    setSelectedEducationalOverlayId(overlay.id);
+    setSelectedAnnotationId(null);
+    setActiveWorkflowStep("polish");
+    seekTo(overlay.start_time);
   }, [seekTo]);
 
   const pushHistory = useCallback((entry: EditHistoryEntry) => {
@@ -802,6 +813,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
                 src={videoSrc}
                 settings={layoutPreviewSettings}
                 annotations={annotations}
+                educationalOverlays={educationalOverlays}
                 currentTime={currentTime}
                 onTimeUpdate={handleTimeUpdate}
                 onLoadedMetadata={handleLoadedMetadata}
@@ -832,6 +844,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
               segments={segments}
               selectedSegment={selectedSegment}
               selectedAnnotationId={selectedAnnotationId}
+              selectedEducationalOverlayId={selectedEducationalOverlayId}
               plan={plan}
               currentTime={currentTime}
               layoutSettings={layoutPreviewSettings}
@@ -842,6 +855,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
               onLayoutSettingsChange={setLayoutPreviewSettings}
               onPolishPlanUpdated={setPlan}
               onSelectedAnnotationChange={setSelectedAnnotationId}
+              onSelectedEducationalOverlayChange={setSelectedEducationalOverlayId}
               onAcceptAll={handleAcceptAll}
               onCleanApplied={handleCleanApplied}
               onApprove={handleApprove}
@@ -887,7 +901,9 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
               selectedSegmentId={selectedSegment?.id ?? null}
               cutIntervals={syncedCutIntervals}
               annotations={annotations}
+              educationalOverlays={educationalOverlays}
               onSelectAnnotation={handleSelectAnnotation}
+              onSelectEducationalOverlay={handleSelectEducationalOverlay}
             />
             <div className="mt-2 flex items-center justify-between text-xs text-gray-500">
               <span>{segments.length} transcript segments</span>
@@ -954,15 +970,19 @@ type LayoutProgramPreviewProps = Pick<
   src: string;
   settings: LayoutPreviewSettings;
   annotations: AnnotationAction[];
+  educationalOverlays: EducationalOverlayAction[];
   currentTime: number;
 };
 
 const LayoutProgramPreview = forwardRef<HTMLVideoElement, LayoutProgramPreviewProps>(function LayoutProgramPreview(
-  { src, settings, annotations, currentTime, ...videoProps },
+  { src, settings, annotations, educationalOverlays, currentTime, ...videoProps },
   ref,
 ) {
   const activeAnnotations = annotations.filter(
     (annotation) => currentTime >= annotation.start_time && currentTime <= annotation.end_time,
+  );
+  const activeEducationalOverlays = educationalOverlays.filter(
+    (overlay) => currentTime >= overlay.start_time && currentTime <= overlay.end_time,
   );
   const video = (
     <video
@@ -994,6 +1014,9 @@ const LayoutProgramPreview = forwardRef<HTMLVideoElement, LayoutProgramPreviewPr
       {activeAnnotations.map((annotation) => (
         <AnnotationPreviewOverlay key={annotation.id} annotation={annotation} />
       ))}
+      {activeEducationalOverlays.map((overlay) => (
+        <EducationalOverlayPreview key={overlay.id} overlay={overlay} />
+      ))}
     </div>
   );
 });
@@ -1017,6 +1040,37 @@ function AnnotationPreviewOverlay({ annotation }: { annotation: AnnotationAction
         <span className="mr-1 text-current">{pointerGlyph(annotation.pointer.direction)}</span>
       )}
       {annotation.text}
+    </div>
+  );
+}
+
+function EducationalOverlayPreview({ overlay }: { overlay: EducationalOverlayAction }) {
+  const style = overlay.style;
+  const isCard = overlay.overlay_type === "intro_card" || overlay.overlay_type === "section_title_card";
+  return (
+    <div
+      className={`pointer-events-none absolute z-30 border text-left font-semibold shadow-2xl ${
+        isCard ? "w-[58%] rounded-md px-5 py-4 text-center" : "max-w-[42%] rounded px-3 py-2"
+      }`}
+      style={{
+        left: `${overlay.x_percent}%`,
+        top: `${overlay.y_percent}%`,
+        transform: educationalOverlayTransform(overlay.position),
+        color: style.text_color,
+        backgroundColor: hexWithAlpha(style.background_color, style.opacity),
+        borderColor: style.accent_color,
+        fontSize: `${Math.max(12, Math.round(style.font_size * 0.48))}px`,
+      }}
+    >
+      <div className="mb-1 text-[0.56em] font-bold uppercase tracking-wider" style={{ color: style.accent_color }}>
+        {educationalOverlayEyebrow(overlay)}
+      </div>
+      <div className="leading-tight">{overlay.title}</div>
+      {overlay.subtitle && (
+        <div className="mt-1 font-medium leading-tight" style={{ color: style.subtitle_color, fontSize: `${Math.max(10, Math.round(style.subtitle_font_size * 0.48))}px` }}>
+          {overlay.subtitle}
+        </div>
+      )}
     </div>
   );
 }
@@ -1117,6 +1171,12 @@ function annotationsFromPlan(plan: EditPlan | null): AnnotationAction[] {
   });
 }
 
+function educationalOverlaysFromPlan(plan: EditPlan | null): EducationalOverlayAction[] {
+  return (plan?.polish_actions ?? []).filter((item): item is EducationalOverlayAction => {
+    return typeof item === "object" && item != null && "kind" in item && item.kind === "educational_overlay";
+  });
+}
+
 function formatDuration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "0:00";
   const minutes = Math.floor(seconds / 60);
@@ -1164,6 +1224,21 @@ function annotationPreviewTransform(position: string): string {
   if (position.includes("center")) return "translate(-50%, 0)";
   if (position.includes("right")) return "translate(-100%, 0)";
   return "translate(0, 0)";
+}
+
+function educationalOverlayTransform(position: string): string {
+  if (position === "center") return "translate(-50%, -50%)";
+  if (position.includes("center")) return "translate(-50%, 0)";
+  if (position.includes("right")) return "translate(-100%, 0)";
+  return "translate(0, 0)";
+}
+
+function educationalOverlayEyebrow(overlay: EducationalOverlayAction): string {
+  if (overlay.overlay_type === "step_label" && overlay.step_number) return `Step ${overlay.step_number}`;
+  if (overlay.overlay_type === "chapter_label" && overlay.chapter_index != null) return `Chapter ${overlay.chapter_index + 1}`;
+  if (overlay.overlay_type === "section_title_card") return "Section";
+  if (overlay.overlay_type === "intro_card") return "Intro";
+  return "Label";
 }
 
 function hexWithAlpha(hex: string, opacity: number): string {

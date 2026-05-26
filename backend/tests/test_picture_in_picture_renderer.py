@@ -238,6 +238,55 @@ class LayoutModeCommandTests(unittest.TestCase):
         self.assertIn("<- Key formula", ass)
         self.assertIn("\\pos(1497,129)", ass)
 
+    def test_educational_overlay_events_render_title_cards_and_step_labels(self):
+        overlays = [
+            {
+                "id": "intro-1",
+                "kind": "educational_overlay",
+                "status": "active",
+                "overlay_type": "intro_card",
+                "title": "Course Setup",
+                "subtitle": "Tools and workflow",
+                "start_time": 0.0,
+                "end_time": 4.0,
+                "position": "center",
+                "x_percent": 50.0,
+                "y_percent": 50.0,
+                "style": {"font_size": 44, "subtitle_font_size": 24, "accent_color": "#FACC15"},
+            },
+            {
+                "id": "step-1",
+                "kind": "educational_overlay",
+                "status": "active",
+                "overlay_type": "step_label",
+                "title": "Install dependencies",
+                "start_time": 8.0,
+                "end_time": 12.0,
+                "position": "top_left",
+                "x_percent": 9.0,
+                "y_percent": 10.0,
+                "style": {"font_size": 28},
+                "step_number": 1,
+            },
+        ]
+        render_ranges = [
+            {
+                "source_start_time": 0.0,
+                "source_end_time": 10.0,
+                "output_start_time": 0.0,
+                "output_end_time": 10.0,
+            },
+        ]
+
+        events = renderer._annotation_events_for_render_ranges(overlays, render_ranges)
+        ass = renderer._generate_annotation_ass(events)
+
+        self.assertEqual([(event["output_start_time"], event["output_end_time"]) for event in events], [(0.0, 4.0), (8.0, 10.0)])
+        self.assertIn("Course Setup", ass)
+        self.assertIn("Tools and workflow", ass)
+        self.assertIn("STEP 1: Install dependencies", ass)
+        self.assertIn("\\an5\\pos(960,540)", ass)
+
 
 class PictureInPictureRenderSelectionTests(unittest.IsolatedAsyncioTestCase):
     def test_splits_range_around_picture_in_picture_cue(self):

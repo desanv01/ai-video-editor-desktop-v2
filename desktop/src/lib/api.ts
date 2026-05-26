@@ -22,6 +22,7 @@ import type {
   TopicSegmentationResult,
   AnnotationActionUpdate,
   CaptionPolicyUpdate,
+  EducationalOverlayActionUpdate,
 } from "../types/api";
 
 let BASE_URL = "http://localhost:8000/api/v1";
@@ -305,6 +306,16 @@ export async function updateAnnotations(videoId: string, annotations: Annotation
   return request(`/videos/${videoId}/plan/annotations`, {
     method: "PUT",
     body: JSON.stringify({ annotations }),
+  });
+}
+
+export async function updateEducationalOverlays(
+  videoId: string,
+  overlays: EducationalOverlayActionUpdate[],
+): Promise<EditPlan> {
+  return request(`/videos/${videoId}/plan/educational-overlays`, {
+    method: "PUT",
+    body: JSON.stringify({ overlays }),
   });
 }
 
