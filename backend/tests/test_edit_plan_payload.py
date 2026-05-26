@@ -10,8 +10,10 @@ if str(APP_DIR) not in sys.path:
 from services.edit_plan_payload import (  # noqa: E402
     EDIT_PLAN_SCHEMA_VERSION,
     build_edit_plan_payload,
+    get_annotations,
     get_caption_policy,
     normalize_plan_payload,
+    update_annotations,
     update_cleaning_payload,
     update_caption_policy,
     update_export_metadata,
@@ -113,6 +115,38 @@ class EditPlanPayloadTests(unittest.TestCase):
         self.assertEqual(policy["style"]["background"], "box")
         self.assertEqual(payload["polish_actions"][0]["status"], "active")
         self.assertEqual(payload["export_metadata"]["caption_policy"]["placement"], "top_center")
+
+    def test_updates_timeline_annotations_and_callouts(self):
+        payload = update_annotations(
+            normalize_plan_payload({"segments": []}),
+            [
+                {
+                    "id": "callout-1",
+                    "annotation_type": "callout",
+                    "text": "Remember this formula",
+                    "start_time": 4.0,
+                    "end_time": 9.0,
+                    "position": "middle_right",
+                    "style": {"font_size": 34, "border_color": "#22D3EE"},
+                    "pointer": {"enabled": True, "direction": "left"},
+                },
+                {
+                    "annotation_type": "label",
+                    "text": "Step 1",
+                    "start_time": 1.0,
+                    "end_time": 3.0,
+                    "position": "top_left",
+                },
+            ],
+        )
+
+        annotations = get_annotations(payload)
+
+        self.assertEqual([item["id"] for item in annotations], ["annotation-1000", "callout-1"])
+        self.assertEqual(annotations[1]["annotation_type"], "callout")
+        self.assertEqual(annotations[1]["x_percent"], 78.0)
+        self.assertEqual(annotations[1]["style"]["font_size"], 34)
+        self.assertEqual(payload["export_metadata"]["annotations"]["count"], 2)
 
 
 if __name__ == "__main__":

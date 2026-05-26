@@ -745,6 +745,37 @@ class CaptionPolicyUpdateRequest(BaseModel):
     reason: Optional[str] = Field(default=None, max_length=500)
 
 
+class AnnotationStyleRequest(BaseModel):
+    font_size: Optional[int] = Field(default=None, ge=16, le=64)
+    text_color: Optional[str] = Field(default=None, max_length=7)
+    background_color: Optional[str] = Field(default=None, max_length=7)
+    border_color: Optional[str] = Field(default=None, max_length=7)
+    opacity: Optional[float] = Field(default=None, ge=0.2, le=1.0)
+
+
+class AnnotationPointerRequest(BaseModel):
+    enabled: Optional[bool] = None
+    direction: Optional[str] = Field(default=None, max_length=20)
+
+
+class AnnotationActionRequest(BaseModel):
+    id: Optional[str] = Field(default=None, max_length=80)
+    annotation_type: Optional[str] = Field(default="callout", max_length=40)
+    text: str = Field(min_length=1, max_length=220)
+    start_time: float = Field(ge=0)
+    end_time: float = Field(ge=0)
+    position: Optional[str] = Field(default="top_right", max_length=40)
+    x_percent: Optional[float] = Field(default=None, ge=2, le=98)
+    y_percent: Optional[float] = Field(default=None, ge=2, le=98)
+    style: Optional[AnnotationStyleRequest] = None
+    pointer: Optional[AnnotationPointerRequest] = None
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+class AnnotationActionsUpdateRequest(BaseModel):
+    annotations: List[AnnotationActionRequest] = Field(default_factory=list)
+
+
 # ═══════════════════════════════════════════
 #  COURSE MATERIAL
 # ═══════════════════════════════════════════

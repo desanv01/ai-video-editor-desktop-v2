@@ -33,6 +33,18 @@ CAPTION_EXPORT_BEHAVIORS = {
     "sidecar_and_burn_in",
     "none",
 }
+ANNOTATION_TYPES = {"label", "callout", "note", "warning"}
+ANNOTATION_POSITIONS = {
+    "top_left",
+    "top_center",
+    "top_right",
+    "middle_left",
+    "middle_center",
+    "middle_right",
+    "bottom_left",
+    "bottom_center",
+    "bottom_right",
+}
 
 
 def normalize_plan_payload(plan_json: Any) -> dict[str, Any]:
@@ -171,6 +183,10 @@ def normalize_polish_actions(actions: Any) -> list[dict[str, Any]]:
         if action.get("kind") == "caption_policy":
             normalized.append(normalize_caption_policy(action))
             caption_seen = True
+        elif action.get("kind") == "annotation":
+            annotation = normalize_annotation_action(action)
+            if annotation:
+                normalized.append(annotation)
         else:
             normalized.append(dict(action))
     if not caption_seen:
@@ -259,6 +275,94 @@ def get_caption_policy(payload: dict[str, Any] | None) -> dict[str, Any]:
         if isinstance(action, dict) and action.get("kind") == "caption_policy":
             return normalize_caption_policy(action)
     return default_caption_policy()
+
+
+def default_annotation_style() -> dict[str, Any]:
+    """Return readable defaults for text annotations and callouts."""
+    return {
+        "font_size": 28,
+        "text_color": "#FFFFFF",
+        "background_color": "#111827",
+        "border_color": "#38BDF8",
+        "opacity": 0.88,
+    }
+
+
+def normalize_annotation_action(action: Any) -> dict[str, Any] | None:
+    """Normalize one timed annotation/callout polish action."""
+    if not isinstance(action, dict):
+        return None
+    text = str(action.get("text") or "").strip()[:220]
+    if not text:
+        return None
+
+    start = _bounded_float(action.get("start_time"), default=0.0, minimum=0.0, maximum=86400.0)
+    end = _bounded_float(action.get("end_time"), default=start + 4.0, minimum=0.0, maximum=86400.0)
+    if end <= start:
+        end = min(86400.0, start + 4.0)
+
+    annotation_type = _choice(action.get("annotation_type"), ANNOTATION_TYPES, "callout")
+    position = _choice(action.get("position"), ANNOTATION_POSITIONS, "top_right")
+    x_percent, y_percent = _position_to_percent(position)
+    x_percent = _bounded_float(action.get("x_percent"), default=x_percent, minimum=2.0, maximum=98.0)
+    y_percent = _bounded_float(action.get("y_percent"), default=y_percent, minimum=2.0, maximum=98.0)
+
+    normalized = {
+        "id": str(action.get("id") or f"annotation-{int(start * 1000)}"),
+        "kind": "annotation",
+        "schema_version": EDIT_PLAN_SCHEMA_VERSION,
+        "status": str(action.get("status") or "active"),
+        "annotation_type": annotation_type,
+        "text": text,
+        "start_time": start,
+        "end_time": end,
+        "position": position,
+        "x_percent": x_percent,
+        "y_percent": y_percent,
+        "style": _normalize_annotation_style(action.get("style")),
+        "pointer": _normalize_annotation_pointer(action.get("pointer"), annotation_type),
+        "reason": str(action.get("reason") or "Teacher-added polish annotation.")[:500],
+    }
+    normalized["duration"] = round(normalized["end_time"] - normalized["start_time"], 3)
+    return normalized
+
+
+def get_annotations(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Return normalized active timeline annotations from the plan payload."""
+    normalized = normalize_plan_payload(payload or {})
+    annotations = []
+    for action in normalized.get("polish_actions", []):
+        if isinstance(action, dict) and action.get("kind") == "annotation":
+            annotation = normalize_annotation_action(action)
+            if annotation:
+                annotations.append(annotation)
+    return sorted(annotations, key=lambda item: (item["start_time"], item["end_time"], item["id"]))
+
+
+def update_annotations(payload: dict[str, Any], annotations: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Replace the editable annotation/callout action set in the v2 polish list."""
+    normalized = normalize_plan_payload(payload)
+    next_annotations = [
+        annotation for annotation in (
+            normalize_annotation_action(item) for item in list(annotations or [])
+        )
+        if annotation is not None
+    ]
+    actions = [
+        action for action in normalized.get("polish_actions", [])
+        if not (isinstance(action, dict) and action.get("kind") == "annotation")
+    ]
+    normalized["polish_actions"] = actions + next_annotations
+    normalized["export_metadata"] = {
+        **_dict_value(normalized.get("export_metadata")),
+        "annotations": {
+            "count": len(next_annotations),
+            "callout_count": sum(1 for item in next_annotations if item.get("annotation_type") == "callout"),
+            "burned_in": len(next_annotations) > 0,
+        },
+        "updated_at": _utc_now(),
+    }
+    return normalized
 
 
 def update_cleaning_payload(
@@ -406,6 +510,40 @@ def _normalize_caption_ranges(value: Any) -> list[dict[str, Any]]:
             "label": str(item.get("label") or "Caption range")[:120],
         })
     return ranges
+
+
+def _normalize_annotation_style(value: Any) -> dict[str, Any]:
+    defaults = default_annotation_style()
+    source = dict(value) if isinstance(value, dict) else {}
+    return {
+        "font_size": int(_bounded_float(source.get("font_size"), default=defaults["font_size"], minimum=16, maximum=64)),
+        "text_color": _hex_color(source.get("text_color"), defaults["text_color"]),
+        "background_color": _hex_color(source.get("background_color"), defaults["background_color"]),
+        "border_color": _hex_color(source.get("border_color"), defaults["border_color"]),
+        "opacity": _bounded_float(source.get("opacity"), default=defaults["opacity"], minimum=0.2, maximum=1.0),
+    }
+
+
+def _normalize_annotation_pointer(value: Any, annotation_type: str) -> dict[str, Any]:
+    source = dict(value) if isinstance(value, dict) else {}
+    return {
+        "enabled": bool(source.get("enabled", annotation_type == "callout")),
+        "direction": _choice(source.get("direction"), {"up", "down", "left", "right", "none"}, "left"),
+    }
+
+
+def _position_to_percent(position: str) -> tuple[float, float]:
+    return {
+        "top_left": (10.0, 12.0),
+        "top_center": (50.0, 12.0),
+        "top_right": (78.0, 12.0),
+        "middle_left": (10.0, 50.0),
+        "middle_center": (50.0, 50.0),
+        "middle_right": (78.0, 50.0),
+        "bottom_left": (10.0, 82.0),
+        "bottom_center": (50.0, 82.0),
+        "bottom_right": (78.0, 82.0),
+    }.get(position, (78.0, 12.0))
 
 
 def _hex_color(value: Any, default: str) -> str:

@@ -34,7 +34,7 @@ from sqlalchemy import select
 from db.models import Video, Transcript, Segment, EditPlan, ProjectAsset, SegmentAction, VideoStatus
 from services.ffmpeg import ffmpeg_service, FFmpegService
 from services.progress import start_step, complete_step, PipelineStep
-from services.edit_plan_payload import get_caption_policy, normalize_plan_payload, update_export_metadata
+from services.edit_plan_payload import get_annotations, get_caption_policy, normalize_plan_payload, update_export_metadata
 from services.layout_model import LayoutMode
 from services.transcript_edit_decisions import build_synced_timeline_plan
 from config import settings
@@ -182,6 +182,24 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
         word_timestamps = transcript.words_json if transcript else None
 
         caption_policy = get_caption_policy(plan_payload)
+        annotations = get_annotations(plan_payload)
+        annotation_events = _annotation_events_for_render_ranges(annotations, render_ranges)
+        annotation_burned_in = False
+        if annotation_events:
+            ass_width, ass_height = _annotation_canvas_dimensions(plan_payload)
+            annotation_ass_content = _generate_annotation_ass(annotation_events, width=ass_width, height=ass_height)
+            annotation_ass_path = os.path.join(clip_dir, f"{video.id}_annotations.ass")
+            with open(annotation_ass_path, "w", encoding="utf-8") as f:
+                f.write(annotation_ass_content)
+            annotated_output_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_edited_annotated.mp4")
+            await ffmpeg_service.burn_ass_overlay(
+                video_path=output_path,
+                ass_path=annotation_ass_path,
+                output_path=annotated_output_path,
+            )
+            output_path = annotated_output_path
+            annotation_burned_in = True
+
         srt_content = _generate_word_level_srt(
             render_ranges,
             word_timestamps,
@@ -258,6 +276,11 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
                     "burned_in": burn_in_enabled,
                     "cue_count": srt_content.count(" --> "),
                 },
+                "annotations": {
+                    "count": len(annotations),
+                    "rendered_event_count": len(annotation_events),
+                    "burned_in": annotation_burned_in,
+                },
             },
             artifact_paths={
                 "edited_video": output_path,
@@ -309,6 +332,8 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
             "picture_in_picture_clips": layout_render_counts.get(LayoutMode.PICTURE_IN_PICTURE.value, 0),
             "layout_clip_count": layout_clip_count,
             "layout_render_counts": layout_render_counts,
+            "annotations_burned_in": annotation_burned_in,
+            "annotation_count": len(annotations),
         }
 
     except Exception as e:
@@ -808,6 +833,137 @@ def _caption_active_intervals(render_ranges: List[dict], caption_policy: dict) -
                 intervals.append((start, end))
         return intervals
     return []
+
+
+def _annotation_events_for_render_ranges(annotations: list[dict], render_ranges: List[dict]) -> list[dict]:
+    events = []
+    for annotation in annotations:
+        if str(annotation.get("status") or "active") not in {"active", "planned", "applied"}:
+            continue
+        start = _float_value(annotation.get("start_time"), None)
+        end = _float_value(annotation.get("end_time"), None)
+        if start is None or end is None or end <= start:
+            continue
+        for render_range in render_ranges:
+            source_start = float(render_range["source_start_time"])
+            source_end = float(render_range["source_end_time"])
+            overlap_start = max(start, source_start)
+            overlap_end = min(end, source_end)
+            if overlap_end <= overlap_start:
+                continue
+            output_start = float(render_range["output_start_time"]) + (overlap_start - source_start)
+            output_end = float(render_range["output_start_time"]) + (overlap_end - source_start)
+            events.append({
+                **annotation,
+                "output_start_time": round(output_start, 3),
+                "output_end_time": round(output_end, 3),
+            })
+    return sorted(events, key=lambda item: (item["output_start_time"], item["output_end_time"], item["id"]))
+
+
+def _generate_annotation_ass(events: list[dict], *, width: int = 1920, height: int = 1080) -> str:
+    lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        f"PlayResX: {int(width)}",
+        f"PlayResY: {int(height)}",
+        "ScaledBorderAndShadow: yes",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        "Style: Default,Arial,28,&H00FFFFFF,&H00FFFFFF,&H0038BDF8,&H66111827,0,0,0,0,100,100,0,0,3,2,0,7,20,20,20,1",
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    for event in events:
+        style = _dict_value(event.get("style"))
+        font_size = int(_float_value(style.get("font_size"), 28) or 28)
+        text_color = _ass_color(style.get("text_color"), "FFFFFF")
+        border_color = _ass_color(style.get("border_color"), "38BDF8")
+        background_color = _ass_back_color(style.get("background_color"), style.get("opacity"))
+        x = int((float(event.get("x_percent") or 50.0) / 100.0) * width)
+        y = int((float(event.get("y_percent") or 50.0) / 100.0) * height)
+        align = _ass_alignment_for_position(str(event.get("position") or "top_right"))
+        label = _annotation_label_text(event)
+        override = (
+            f"{{\\an{align}\\pos({x},{y})\\fs{font_size}\\1c{text_color}"
+            f"\\3c{border_color}\\4c{background_color}\\bord2\\shad0}}"
+        )
+        lines.append(
+            "Dialogue: 0,"
+            f"{_format_ass_time(float(event['output_start_time']))},"
+            f"{_format_ass_time(float(event['output_end_time']))},"
+            f"Default,,0,0,0,,{override}{label}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _annotation_canvas_dimensions(plan_payload: dict) -> tuple[int, int]:
+    for cue in plan_payload.get("layout_cues") or []:
+        output = _dict_value(_dict_value(cue).get("output"))
+        if output.get("aspect_ratio"):
+            return FFmpegService.output_dimensions_for_aspect_ratio(str(output["aspect_ratio"]))
+    return FFmpegService.output_dimensions_for_aspect_ratio("16:9")
+
+
+def _annotation_label_text(event: dict) -> str:
+    text = _escape_ass_text(str(event.get("text") or ""))
+    pointer = _dict_value(event.get("pointer"))
+    if bool(pointer.get("enabled")) and str(event.get("annotation_type") or "") == "callout":
+        direction = str(pointer.get("direction") or "left")
+        prefix = {"left": "<- ", "right": "-> ", "up": "^ ", "down": "v "}.get(direction, "")
+        return f"{prefix}{text}"
+    return text
+
+
+def _ass_alignment_for_position(position: str) -> int:
+    return {
+        "top_left": 7,
+        "top_center": 8,
+        "top_right": 9,
+        "middle_left": 4,
+        "middle_center": 5,
+        "middle_right": 6,
+        "bottom_left": 1,
+        "bottom_center": 2,
+        "bottom_right": 3,
+    }.get(position, 9)
+
+
+def _format_ass_time(seconds: float) -> str:
+    value = max(0.0, float(seconds or 0.0))
+    hours = int(value // 3600)
+    minutes = int((value % 3600) // 60)
+    secs = int(value % 60)
+    centis = int(round((value - int(value)) * 100))
+    return f"{hours}:{minutes:02d}:{secs:02d}.{centis:02d}"
+
+
+def _ass_color(value: object, default_rgb: str) -> str:
+    text = str(value or "").strip().lstrip("#")
+    if len(text) != 6:
+        text = default_rgb
+    try:
+        int(text, 16)
+    except ValueError:
+        text = default_rgb
+    red, green, blue = text[0:2], text[2:4], text[4:6]
+    return f"&H00{blue}{green}{red}"
+
+
+def _ass_back_color(value: object, opacity: object) -> str:
+    rgb = _ass_color(value, "111827")
+    try:
+        opacity_value = float(opacity)
+    except (TypeError, ValueError):
+        opacity_value = 0.88
+    alpha = int(round((1.0 - min(1.0, max(0.2, opacity_value))) * 255))
+    return f"&H{alpha:02X}{rgb[4:]}"
+
+
+def _escape_ass_text(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("{", "(").replace("}", ")").replace("\n", "\\N")
 
 
 def _split_into_sentences(text: str, max_chars: int = 80) -> List[str]:

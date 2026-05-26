@@ -465,10 +465,53 @@ export interface CaptionPolicy {
   [key: string]: unknown;
 }
 
-export type PolishAction = CaptionPolicy | Record<string, unknown>;
+export type AnnotationType = "label" | "callout" | "note" | "warning";
+export type AnnotationPosition =
+  | "top_left" | "top_center" | "top_right"
+  | "middle_left" | "middle_center" | "middle_right"
+  | "bottom_left" | "bottom_center" | "bottom_right";
+
+export interface AnnotationStyle {
+  font_size: number;
+  text_color: string;
+  background_color: string;
+  border_color: string;
+  opacity: number;
+}
+
+export interface AnnotationPointer {
+  enabled: boolean;
+  direction: "up" | "down" | "left" | "right" | "none" | string;
+}
+
+export interface AnnotationAction {
+  id: string;
+  kind: "annotation";
+  schema_version: string;
+  status: "planned" | "active" | "applied" | string;
+  annotation_type: AnnotationType | string;
+  text: string;
+  start_time: number;
+  end_time: number;
+  duration: number;
+  position: AnnotationPosition | string;
+  x_percent: number;
+  y_percent: number;
+  style: AnnotationStyle;
+  pointer: AnnotationPointer;
+  reason: string;
+  [key: string]: unknown;
+}
+
+export type PolishAction = CaptionPolicy | AnnotationAction | Record<string, unknown>;
 
 export type CaptionPolicyUpdate = Partial<Omit<CaptionPolicy, "id" | "kind" | "schema_version" | "status" | "style">> & {
   style?: Partial<CaptionStyle>;
+};
+
+export type AnnotationActionUpdate = Partial<Omit<AnnotationAction, "kind" | "schema_version" | "status" | "style" | "pointer">> & {
+  style?: Partial<AnnotationStyle>;
+  pointer?: Partial<AnnotationPointer>;
 };
 
 export interface Segment {
