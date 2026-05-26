@@ -142,6 +142,29 @@ class LayoutModeCommandTests(unittest.TestCase):
         self.assertIn("fade=t=in:st=0:d=0.5", video_filter)
         self.assertIn("fade=t=out:st=7.5:d=0.5", video_filter)
 
+    def test_builds_concat_transition_command_for_crossfade_and_wipe(self):
+        cmd = FFmpegService.build_concat_with_transitions_command(
+            clip_paths=["one.mp4", "two.mp4", "three.mp4"],
+            clip_durations=[4.0, 5.0, 6.0],
+            transitions=[
+                {"boundary_index": 0, "transition": "crossfade", "duration_seconds": 0.5},
+                {"boundary_index": 1, "transition": "wipe_left", "duration_seconds": 0.4},
+            ],
+            output_path="out.mp4",
+            output_width=1280,
+            output_height=720,
+        )
+
+        self.assertEqual(cmd[0], "ffmpeg")
+        self.assertEqual(cmd.count("-i"), 3)
+        filter_complex = cmd[cmd.index("-filter_complex") + 1]
+        self.assertIn("scale=1280:720", filter_complex)
+        self.assertIn("pad=1280:720", filter_complex)
+        self.assertIn("xfade=transition=fade:duration=0.5:offset=3.5", filter_complex)
+        self.assertIn("xfade=transition=wipeleft:duration=0.4:offset=8.1", filter_complex)
+        self.assertIn("acrossfade=d=0.5", filter_complex)
+        self.assertIn("acrossfade=d=0.4", filter_complex)
+
     def test_maps_supported_aspect_ratios_to_even_render_canvases(self):
         self.assertEqual(FFmpegService.output_dimensions_for_aspect_ratio("16:9"), (1920, 1080))
         self.assertEqual(FFmpegService.output_dimensions_for_aspect_ratio("4:3"), (1440, 1080))
@@ -398,7 +421,7 @@ class PictureInPictureRenderSelectionTests(unittest.IsolatedAsyncioTestCase):
                     },
                 )
 
-                clip_paths, layout_counts = await renderer._render_range_clips(
+                clip_paths, clip_durations, layout_counts = await renderer._render_range_clips(
                     video=SimpleNamespace(file_path="legacy.mp4"),
                     render_range={
                         "source_start_time": 0.0,
@@ -411,6 +434,7 @@ class PictureInPictureRenderSelectionTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertEqual(len(clip_paths), 3)
+            self.assertEqual(clip_durations, [10.0, 10.0, 10.0])
             self.assertEqual(layout_counts, {"picture_in_picture": 1})
             self.assertEqual(len(fake.trim_calls), 2)
             self.assertEqual(len(fake.pip_calls), 1)
@@ -463,7 +487,7 @@ class PictureInPictureRenderSelectionTests(unittest.IsolatedAsyncioTestCase):
                     },
                 )
 
-                _, layout_counts = await renderer._render_range_clips(
+                _, _, layout_counts = await renderer._render_range_clips(
                     video=SimpleNamespace(file_path="legacy.mp4"),
                     render_range={
                         "source_start_time": 0.0,
@@ -520,7 +544,47 @@ class PictureInPictureRenderSelectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[0]["output_time"], 3.0)
         self.assertEqual(events[0]["render_strategy"], "clip_fade")
         self.assertEqual(events[1]["output_time"], 7.0)
-        self.assertEqual(events[1]["render_strategy"], "concat_boundary")
+        self.assertEqual(events[1]["render_strategy"], "concat_compositor")
+
+    def test_concat_transition_specs_map_events_to_clip_boundaries(self):
+        events = [
+            {
+                "cue_id": "cue-transition",
+                "transition": "crossfade",
+                "duration_seconds": 0.5,
+                "output_time": 4.0,
+                "render_strategy": "concat_compositor",
+            },
+            {
+                "cue_id": "cue-transition",
+                "transition": "wipe_left",
+                "duration_seconds": 0.4,
+                "output_time": 9.0,
+                "render_strategy": "concat_compositor",
+            },
+        ]
+
+        specs = renderer._concat_transition_specs(events, [4.0, 5.0, 6.0])
+
+        self.assertEqual(
+            specs,
+            [
+                {
+                    "boundary_index": 0,
+                    "transition": "crossfade",
+                    "duration_seconds": 0.5,
+                    "output_time": 4.0,
+                    "cue_id": "cue-transition",
+                },
+                {
+                    "boundary_index": 1,
+                    "transition": "wipe_left",
+                    "duration_seconds": 0.4,
+                    "output_time": 9.0,
+                    "cue_id": "cue-transition",
+                },
+            ],
+        )
 
     async def test_renders_side_by_side_and_fullscreen_spans_with_layout_compositor(self):
         class FakeFFmpeg:
@@ -572,7 +636,7 @@ class PictureInPictureRenderSelectionTests(unittest.IsolatedAsyncioTestCase):
                     },
                 )
 
-                clip_paths, layout_counts = await renderer._render_range_clips(
+                clip_paths, _, layout_counts = await renderer._render_range_clips(
                     video=SimpleNamespace(file_path="legacy.mp4"),
                     render_range={
                         "source_start_time": 0.0,
@@ -626,7 +690,7 @@ class PictureInPictureRenderSelectionTests(unittest.IsolatedAsyncioTestCase):
                     },
                 )
 
-                _, layout_counts = await renderer._render_range_clips(
+                _, _, layout_counts = await renderer._render_range_clips(
                     video=SimpleNamespace(file_path="legacy.mp4"),
                     render_range={
                         "source_start_time": 2.0,
