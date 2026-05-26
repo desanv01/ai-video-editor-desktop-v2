@@ -647,6 +647,46 @@ class FFmpegService:
         return output_path
 
     @staticmethod
+    async def create_solid_color_clip(
+        output_path: str,
+        *,
+        duration_seconds: float,
+        width: int = 1920,
+        height: int = 1080,
+        background_color: str = "#111827",
+    ) -> str:
+        """Create a silent solid-color MP4 clip for generated title/end cards."""
+        color = FFmpegService._ffmpeg_color(background_color)
+        duration = max(0.1, float(duration_seconds or 0.1))
+        cmd = [
+            "ffmpeg",
+            "-f", "lavfi",
+            "-i", f"color=c={color}:s={int(width)}x{int(height)}:r=30",
+            "-f", "lavfi",
+            "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+            "-t", str(duration),
+            "-shortest",
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-movflags", "+faststart",
+            "-y",
+            output_path,
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        _, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            raise RuntimeError(f"Color clip generation failed: {stderr.decode()[:800]}")
+
+        return output_path
+
+    @staticmethod
     async def trim_silence_from_clip(
         input_path: str,
         output_path: str,
@@ -768,6 +808,17 @@ class FFmpegService:
             text = default_rgb
         red, green, blue = text[0:2], text[2:4], text[4:6]
         return f"&H00{blue}{green}{red}"
+
+    @staticmethod
+    def _ffmpeg_color(value: object) -> str:
+        text = str(value or "#111827").strip().lstrip("#")
+        if len(text) != 6:
+            text = "111827"
+        try:
+            int(text, 16)
+        except ValueError:
+            text = "111827"
+        return f"0x{text}"
 
     @staticmethod
     def _escape_subtitle_path(path: str) -> str:

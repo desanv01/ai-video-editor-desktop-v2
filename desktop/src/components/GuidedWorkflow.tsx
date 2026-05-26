@@ -9,6 +9,7 @@ import {
   Circle,
   Crosshair,
   Download,
+  ExternalLink,
   FileText,
   Film,
   Layers,
@@ -52,6 +53,9 @@ import type {
   EducationalOverlayActionUpdate,
   EducationalOverlayPosition,
   EducationalOverlayType,
+  EndCardAction,
+  EndCardActionUpdate,
+  EndCardType,
   EditPlan,
   LayoutAspectRatio,
   LayoutCue,
@@ -135,6 +139,16 @@ const DEFAULT_EDUCATIONAL_OVERLAY_STYLE = {
   background_color: "#111827",
   accent_color: "#FACC15",
   opacity: 0.9,
+};
+
+const DEFAULT_END_CARD_STYLE = {
+  font_size: 42,
+  body_font_size: 24,
+  text_color: "#FFFFFF",
+  body_color: "#CBD5E1",
+  background_color: "#111827",
+  accent_color: "#38BDF8",
+  opacity: 1,
 };
 
 const DEFAULT_CALLOUT_ANIMATION: AnimationSettings = {
@@ -351,6 +365,9 @@ export function GuidedWorkflowPanel({
   const [educationalOverlays, setEducationalOverlays] = useState<EducationalOverlayAction[]>([]);
   const [educationalOverlaySaving, setEducationalOverlaySaving] = useState(false);
   const [educationalOverlayMessage, setEducationalOverlayMessage] = useState<string | null>(null);
+  const [endCards, setEndCards] = useState<EndCardAction[]>([]);
+  const [endCardSaving, setEndCardSaving] = useState(false);
+  const [endCardMessage, setEndCardMessage] = useState<string | null>(null);
 
   const activeStepMeta = GUIDED_WORKFLOW_STEPS.find((step) => step.id === activeStep) ?? GUIDED_WORKFLOW_STEPS[0];
   const activeIndex = GUIDED_WORKFLOW_STEPS.findIndex((step) => step.id === activeStep);
@@ -383,14 +400,17 @@ export function GuidedWorkflowPanel({
     setCaptionPolicy(captionPolicyFromPlan(plan));
     setAnnotations(annotationsFromPlan(plan));
     setEducationalOverlays(educationalOverlaysFromPlan(plan));
+    setEndCards(endCardsFromPlan(plan));
     setCaptionMessage(null);
     setAnnotationMessage(null);
     setEducationalOverlayMessage(null);
+    setEndCardMessage(null);
   }, [plan?.polish_actions]);
 
   const selectedAnnotation = annotations.find((annotation) => annotation.id === selectedAnnotationId) ?? annotations[0] ?? null;
   const selectedEducationalOverlay =
     educationalOverlays.find((overlay) => overlay.id === selectedEducationalOverlayId) ?? educationalOverlays[0] ?? null;
+  const selectedEndCard = endCards[0] ?? null;
 
   const updateCaptionPolicyDraft = (patch: CaptionPolicyUpdate) => {
     setCaptionPolicy((prev) => ({
@@ -548,6 +568,38 @@ export function GuidedWorkflowPanel({
       setEducationalOverlayMessage(`Educational overlays failed: ${error}`);
     } finally {
       setEducationalOverlaySaving(false);
+    }
+  };
+
+  const handleCreateEndCard = (cardType: EndCardType) => {
+    setEndCards([createEndCardDraft(cardType, plan?.original_duration ?? 0)]);
+    setEndCardMessage(null);
+  };
+
+  const handleUpdateEndCardDraft = (id: string, patch: EndCardActionUpdate) => {
+    setEndCards((prev) => prev.map((card) => (
+      card.id === id ? mergeEndCardDraft(card, patch) : card
+    )));
+    setEndCardMessage(null);
+  };
+
+  const handleDeleteEndCard = (id: string) => {
+    setEndCards((prev) => prev.filter((card) => card.id !== id));
+    setEndCardMessage(null);
+  };
+
+  const handleSaveEndCards = async () => {
+    setEndCardSaving(true);
+    setEndCardMessage(null);
+    try {
+      const updatedPlan = await api.updateEndCards(videoId, endCards.map(endCardForSave));
+      onPolishPlanUpdated(updatedPlan);
+      onCompleteStep("polish");
+      setEndCardMessage(endCards.length > 0 ? "End card saved for export" : "End card removed");
+    } catch (error) {
+      setEndCardMessage(`End card save failed: ${error}`);
+    } finally {
+      setEndCardSaving(false);
     }
   };
 
@@ -1303,6 +1355,145 @@ export function GuidedWorkflowPanel({
                 {educationalOverlayMessage && <p className="text-xs leading-5 text-gray-400">{educationalOverlayMessage}</p>}
               </div>
             </WorkflowCard>
+            <WorkflowCard title="End Card / CTA" icon={<ExternalLink className="h-4 w-4 text-cyan-300" />}>
+              <div className="space-y-3">
+                <ChoiceGrid
+                  value={selectedEndCard?.card_type ?? "lecture_summary"}
+                  onChange={(value) => {
+                    if (selectedEndCard) {
+                      handleUpdateEndCardDraft(selectedEndCard.id, endCardTypePatch(value as EndCardType));
+                    } else {
+                      handleCreateEndCard(value as EndCardType);
+                    }
+                  }}
+                  options={[
+                    { value: "lecture_summary", label: "Summary", detail: "Key takeaways" },
+                    { value: "next_topic", label: "Next topic", detail: "Preview lesson" },
+                    { value: "course_link", label: "Course link", detail: "Resource CTA" },
+                    { value: "custom_message", label: "Custom", detail: "Closing note" },
+                  ]}
+                />
+
+                {!selectedEndCard ? (
+                  <button
+                    type="button"
+                    onClick={() => handleCreateEndCard("lecture_summary")}
+                    className="flex w-full items-center justify-center gap-2 rounded-md bg-surface-raised px-3 py-2 text-sm font-semibold text-gray-200 transition-colors hover:bg-surface-border"
+                  >
+                    <Plus className="h-4 w-4" />
+                    Add End Card
+                  </button>
+                ) : (
+                  <div className="space-y-3 rounded-md border border-surface-border bg-surface-raised p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <ToggleRow
+                        label="Append to export"
+                        detail="Adds a silent CTA card after the edited lecture."
+                        checked={selectedEndCard.enabled}
+                        icon={<ExternalLink className="h-4 w-4 text-cyan-300" />}
+                        onChange={(checked) => handleUpdateEndCardDraft(selectedEndCard.id, { enabled: checked })}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteEndCard(selectedEndCard.id)}
+                        className="rounded-md p-2 text-gray-500 transition-colors hover:bg-red-500/10 hover:text-red-300"
+                        aria-label="Delete end card"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-gray-400">Title</span>
+                      <input
+                        value={selectedEndCard.title}
+                        onChange={(event) => handleUpdateEndCardDraft(selectedEndCard.id, { title: event.target.value })}
+                        className="w-full rounded-md border border-surface-border bg-surface-overlay px-3 py-2 text-sm text-gray-100 outline-none focus:border-accent"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-gray-400">Message</span>
+                      <textarea
+                        value={selectedEndCard.message}
+                        onChange={(event) => handleUpdateEndCardDraft(selectedEndCard.id, { message: event.target.value })}
+                        rows={3}
+                        className="w-full resize-none rounded-md border border-surface-border bg-surface-overlay px-3 py-2 text-sm leading-5 text-gray-100 outline-none focus:border-accent"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-gray-400">Summary points</span>
+                      <textarea
+                        value={selectedEndCard.summary_points.join("\n")}
+                        onChange={(event) => handleUpdateEndCardDraft(selectedEndCard.id, {
+                          summary_points: event.target.value.split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 5),
+                        })}
+                        rows={3}
+                        className="w-full resize-none rounded-md border border-surface-border bg-surface-overlay px-3 py-2 text-sm leading-5 text-gray-100 outline-none focus:border-accent"
+                      />
+                    </label>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="block">
+                        <span className="mb-1 block text-xs font-medium text-gray-400">Next topic</span>
+                        <input
+                          value={selectedEndCard.next_topic}
+                          onChange={(event) => handleUpdateEndCardDraft(selectedEndCard.id, { next_topic: event.target.value })}
+                          className="w-full rounded-md border border-surface-border bg-surface-overlay px-3 py-2 text-sm text-gray-100 outline-none focus:border-accent"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-xs font-medium text-gray-400">Button text</span>
+                        <input
+                          value={selectedEndCard.button_text}
+                          onChange={(event) => handleUpdateEndCardDraft(selectedEndCard.id, { button_text: event.target.value })}
+                          className="w-full rounded-md border border-surface-border bg-surface-overlay px-3 py-2 text-sm text-gray-100 outline-none focus:border-accent"
+                        />
+                      </label>
+                    </div>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-gray-400">Course link</span>
+                      <input
+                        value={selectedEndCard.course_url}
+                        onChange={(event) => handleUpdateEndCardDraft(selectedEndCard.id, { course_url: event.target.value })}
+                        className="w-full rounded-md border border-surface-border bg-surface-overlay px-3 py-2 text-sm text-gray-100 outline-none focus:border-accent"
+                      />
+                    </label>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <SliderControl
+                        label="Duration"
+                        value={selectedEndCard.duration_seconds}
+                        min={2}
+                        max={15}
+                        step={0.5}
+                        suffix="s"
+                        onChange={(value) => handleUpdateEndCardDraft(selectedEndCard.id, { duration_seconds: value })}
+                      />
+                      <SliderControl
+                        label="Title size"
+                        value={selectedEndCard.style.font_size}
+                        min={28}
+                        max={60}
+                        step={2}
+                        suffix="px"
+                        onChange={(value) => handleUpdateEndCardDraft(selectedEndCard.id, { style: { font_size: value } })}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleSaveEndCards}
+                  disabled={endCardSaving}
+                  className="flex w-full items-center justify-center gap-2 rounded-md bg-accent px-3 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {endCardSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                  Save End Card
+                </button>
+                {endCardMessage && <p className="text-xs leading-5 text-gray-400">{endCardMessage}</p>}
+              </div>
+            </WorkflowCard>
           </PanelStack>
         )}
 
@@ -1692,6 +1883,126 @@ function educationalOverlaysFromPlan(plan: EditPlan | null): EducationalOverlayA
     style: { ...DEFAULT_EDUCATIONAL_OVERLAY_STYLE, ...(overlay.style ?? {}) },
     animation: normalizeAnimationSettings(overlay.animation, defaultEducationalOverlayAnimation(overlay.overlay_type)),
   }));
+}
+
+function endCardsFromPlan(plan: EditPlan | null): EndCardAction[] {
+  return (plan?.polish_actions ?? []).filter((item): item is EndCardAction => {
+    return typeof item === "object" && item != null && "kind" in item && item.kind === "end_card";
+  }).map((card) => ({
+    ...card,
+    message: card.message ?? "",
+    summary_points: Array.isArray(card.summary_points) ? card.summary_points : [],
+    next_topic: card.next_topic ?? "",
+    course_url: card.course_url ?? "",
+    button_text: card.button_text ?? defaultEndCardButtonText(card.card_type),
+    duration_seconds: normalizeEndCardDuration(card.duration_seconds),
+    style: { ...DEFAULT_END_CARD_STYLE, ...(card.style ?? {}) },
+    animation: normalizeAnimationSettings(card.animation, DEFAULT_TITLE_CARD_ANIMATION),
+  }));
+}
+
+function createEndCardDraft(cardType: EndCardType, duration: number): EndCardAction {
+  return {
+    id: `end-card-${Date.now()}`,
+    kind: "end_card",
+    schema_version: "phase6.edit-plan.v2",
+    status: "active",
+    enabled: true,
+    card_type: cardType,
+    title: defaultEndCardTitle(cardType),
+    message: defaultEndCardMessage(cardType),
+    summary_points: defaultEndCardSummaryPoints(cardType),
+    next_topic: cardType === "next_topic" ? "Next lesson topic" : "",
+    course_url: cardType === "course_link" ? "https://example.edu/course" : "",
+    button_text: defaultEndCardButtonText(cardType),
+    duration_seconds: Math.min(8, Math.max(5, duration ? Math.round(duration * 0.04) : 6)),
+    style: DEFAULT_END_CARD_STYLE,
+    animation: DEFAULT_TITLE_CARD_ANIMATION,
+    source: "teacher_polish",
+    reason: "Teacher-added end card CTA.",
+  };
+}
+
+function mergeEndCardDraft(card: EndCardAction, patch: EndCardActionUpdate): EndCardAction {
+  const nextType = (patch.card_type ?? card.card_type) as EndCardType;
+  const next = {
+    ...card,
+    ...patch,
+    style: { ...card.style, ...(patch.style ?? {}) },
+    animation: normalizeAnimationSettings({ ...card.animation, ...(patch.animation ?? {}) }, DEFAULT_TITLE_CARD_ANIMATION),
+  };
+  return {
+    ...next,
+    title: next.title || defaultEndCardTitle(nextType),
+    message: next.message ?? "",
+    summary_points: Array.isArray(next.summary_points) ? next.summary_points.slice(0, 5) : [],
+    next_topic: next.next_topic ?? "",
+    course_url: next.course_url ?? "",
+    button_text: next.button_text || defaultEndCardButtonText(nextType),
+    duration_seconds: normalizeEndCardDuration(next.duration_seconds),
+  };
+}
+
+function endCardForSave(card: EndCardAction): EndCardActionUpdate {
+  return {
+    id: card.id,
+    enabled: card.enabled,
+    card_type: card.card_type,
+    title: card.title,
+    message: card.message,
+    summary_points: card.summary_points,
+    next_topic: card.next_topic,
+    course_url: card.course_url,
+    button_text: card.button_text,
+    duration_seconds: card.duration_seconds,
+    style: card.style,
+    animation: card.animation,
+    source: card.source,
+    reason: card.reason,
+  };
+}
+
+function endCardTypePatch(cardType: EndCardType): EndCardActionUpdate {
+  return {
+    card_type: cardType,
+    title: defaultEndCardTitle(cardType),
+    message: defaultEndCardMessage(cardType),
+    button_text: defaultEndCardButtonText(cardType),
+    summary_points: defaultEndCardSummaryPoints(cardType),
+    next_topic: cardType === "next_topic" ? "Next lesson topic" : "",
+    course_url: cardType === "course_link" ? "https://example.edu/course" : "",
+  };
+}
+
+function defaultEndCardTitle(cardType: string): string {
+  if (cardType === "next_topic") return "Next Topic";
+  if (cardType === "course_link") return "Continue Learning";
+  if (cardType === "custom_message") return "Thanks for Watching";
+  return "Lecture Summary";
+}
+
+function defaultEndCardMessage(cardType: string): string {
+  if (cardType === "next_topic") return "In the next lesson, we build on this concept.";
+  if (cardType === "course_link") return "Open the course page for notes, exercises, and resources.";
+  if (cardType === "custom_message") return "See you in the next lesson.";
+  return "Review the key ideas before moving on.";
+}
+
+function defaultEndCardButtonText(cardType: string): string {
+  if (cardType === "next_topic") return "Watch next";
+  if (cardType === "course_link") return "Open course";
+  if (cardType === "custom_message") return "Continue";
+  return "Review notes";
+}
+
+function defaultEndCardSummaryPoints(cardType: string): string[] {
+  return cardType === "lecture_summary" ? ["Key idea", "Worked example", "What to review"] : [];
+}
+
+function normalizeEndCardDuration(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.min(15, Math.max(2, Math.round(value * 2) / 2))
+    : 6;
 }
 
 function createEducationalOverlayDraft(

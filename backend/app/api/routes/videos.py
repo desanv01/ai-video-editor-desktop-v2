@@ -32,6 +32,7 @@ from models.schemas import (
     TranscriptTimelineResponse,
     EditPlanResponse, EditPlanApproveRequest, CaptionPolicyUpdateRequest,
     AnnotationActionsUpdateRequest, EducationalOverlayActionsUpdateRequest,
+    EndCardActionsUpdateRequest,
     CourseMaterialUploadResponse, CourseMaterialResponse,
     ProcessingStatus, AppSettingsResponse, AppSettingsUpdateRequest,
     DomainTermsUpdateRequest,
@@ -55,6 +56,7 @@ from services.edit_plan_payload import (
     update_annotations,
     update_caption_policy,
     update_educational_overlays,
+    update_end_cards,
     update_sections_payload,
 )
 from services.topic_segmentation import analyze_topic_sections
@@ -704,6 +706,29 @@ async def update_plan_educational_overlays(
     plan.plan_json = update_educational_overlays(
         plan.plan_json,
         [item.model_dump(exclude_none=True) for item in request.overlays],
+    )
+    await db.commit()
+    await db.refresh(plan)
+    return plan
+
+
+@router.put("/videos/{video_id}/plan/end-cards", response_model=EditPlanResponse, tags=["Edit Plan"])
+async def update_plan_end_cards(
+    video_id: str,
+    request: EndCardActionsUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Persist appended end cards and CTAs for lecture summary, next topic, course link, or custom close."""
+    result = await db.execute(
+        select(EditPlan).where(EditPlan.video_id == video_id)
+    )
+    plan = result.scalar_one_or_none()
+    if not plan:
+        raise HTTPException(404, "Edit plan not found")
+
+    plan.plan_json = update_end_cards(
+        plan.plan_json,
+        [item.model_dump(exclude_none=True) for item in request.end_cards],
     )
     await db.commit()
     await db.refresh(plan)

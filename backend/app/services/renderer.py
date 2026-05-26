@@ -38,6 +38,7 @@ from services.edit_plan_payload import (
     get_annotations,
     get_caption_policy,
     get_educational_overlays,
+    get_end_cards,
     normalize_plan_payload,
     update_export_metadata,
 )
@@ -154,6 +155,9 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
         clip_paths = []
         layout_clip_count = 0
         layout_render_counts: dict[str, int] = {}
+        end_cards = get_end_cards(plan_payload)
+        enabled_end_cards = [card for card in end_cards if card.get("enabled")]
+        end_card_clip_paths: list[str] = []
         for i, render_range in enumerate(render_ranges):
             rendered_paths, rendered_layout_counts = await _render_range_clips(
                 video=video,
@@ -167,10 +171,25 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
                 layout_render_counts[layout] = layout_render_counts.get(layout, 0) + count
                 layout_clip_count += count
 
+        if enabled_end_cards:
+            width, height = _annotation_canvas_dimensions(plan_payload)
+            for index, end_card in enumerate(enabled_end_cards):
+                end_card_clip = await _render_end_card_clip(
+                    end_card=end_card,
+                    output_path=os.path.join(clip_dir, f"end_card_{index:02d}.mp4"),
+                    clip_dir=clip_dir,
+                    width=width,
+                    height=height,
+                    index=index,
+                )
+                clip_paths.append(end_card_clip)
+                end_card_clip_paths.append(end_card_clip)
+
         logger.info(
-            "  Prepared %s clips (%s rendered layout clips)",
+            "  Prepared %s clips (%s rendered layout clips, %s end cards)",
             len(clip_paths),
             layout_clip_count,
+            len(end_card_clip_paths),
         )
 
         # ── Step 3: Concatenate all clips ──
@@ -302,6 +321,14 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
                     "step_label_count": sum(1 for item in educational_overlays if item.get("overlay_type") == "step_label"),
                     "burned_in": bool(educational_overlay_events),
                 },
+                "end_cards": {
+                    "count": len(end_cards),
+                    "enabled_count": len(enabled_end_cards),
+                    "rendered_clip_count": len(end_card_clip_paths),
+                    "total_duration_seconds": round(sum(float(card.get("duration_seconds") or 0) for card in enabled_end_cards), 3),
+                    "types": [str(card.get("card_type")) for card in enabled_end_cards],
+                    "appended_to_output": len(end_card_clip_paths) > 0,
+                },
             },
             artifact_paths={
                 "edited_video": output_path,
@@ -356,6 +383,7 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
             "annotations_burned_in": annotation_burned_in,
             "annotation_count": len(annotations),
             "educational_overlay_count": len(educational_overlays),
+            "end_card_count": len(enabled_end_cards),
         }
 
     except Exception as e:
@@ -883,6 +911,43 @@ def _annotation_events_for_render_ranges(annotations: list[dict], render_ranges:
     return sorted(events, key=lambda item: (item["output_start_time"], item["output_end_time"], item["id"]))
 
 
+async def _render_end_card_clip(
+    *,
+    end_card: dict,
+    output_path: str,
+    clip_dir: str,
+    width: int,
+    height: int,
+    index: int,
+) -> str:
+    """Render one appended end-card CTA as a silent video clip."""
+    duration = max(2.0, min(15.0, float(end_card.get("duration_seconds") or 6.0)))
+    style = _dict_value(end_card.get("style"))
+    base_path = os.path.join(clip_dir, f"end_card_base_{index:02d}.mp4")
+    ass_path = os.path.join(clip_dir, f"end_card_{index:02d}.ass")
+    await ffmpeg_service.create_solid_color_clip(
+        base_path,
+        duration_seconds=duration,
+        width=width,
+        height=height,
+        background_color=str(style.get("background_color") or "#111827"),
+    )
+    ass_content = _generate_annotation_ass([
+        {
+            **end_card,
+            "output_start_time": 0.0,
+            "output_end_time": duration,
+            "position": "center",
+            "x_percent": 50.0,
+            "y_percent": 50.0,
+        }
+    ], width=width, height=height)
+    with open(ass_path, "w", encoding="utf-8") as f:
+        f.write(ass_content)
+    await ffmpeg_service.burn_ass_overlay(base_path, ass_path, output_path)
+    return output_path
+
+
 def _generate_annotation_ass(events: list[dict], *, width: int = 1920, height: int = 1080) -> str:
     lines = [
         "[Script Info]",
@@ -901,18 +966,22 @@ def _generate_annotation_ass(events: list[dict], *, width: int = 1920, height: i
     for event in events:
         style = _dict_value(event.get("style"))
         is_educational = str(event.get("kind") or "") == "educational_overlay"
+        is_end_card = str(event.get("kind") or "") == "end_card"
         font_size = int(_float_value(style.get("font_size"), 28) or 28)
         text_color = _ass_color(style.get("text_color"), "FFFFFF")
         border_color = _ass_color(
-            style.get("accent_color") if is_educational else style.get("border_color"),
+            style.get("accent_color") if (is_educational or is_end_card) else style.get("border_color"),
             "38BDF8",
         )
         background_color = _ass_back_color(style.get("background_color"), style.get("opacity"))
         x = int((float(event.get("x_percent") or 50.0) / 100.0) * width)
         y = int((float(event.get("y_percent") or 50.0) / 100.0) * height)
-        align = _ass_alignment_for_position(str(event.get("position") or ("center" if is_educational else "top_right")))
-        label = _educational_overlay_label_text(event) if is_educational else _annotation_label_text(event)
-        border_width = 3 if str(event.get("overlay_type") or "") in {"intro_card", "section_title_card"} else 2
+        align = _ass_alignment_for_position(str(event.get("position") or ("center" if (is_educational or is_end_card) else "top_right")))
+        if is_end_card:
+            label = _end_card_label_text(event)
+        else:
+            label = _educational_overlay_label_text(event) if is_educational else _annotation_label_text(event)
+        border_width = 3 if is_end_card or str(event.get("overlay_type") or "") in {"intro_card", "section_title_card"} else 2
         position_tag, animation_tags = _ass_animation_override(event, x, y)
         override = (
             f"{{\\an{align}{position_tag}\\fs{font_size}\\1c{text_color}"
@@ -968,6 +1037,35 @@ def _educational_overlay_label_text(event: dict) -> str:
         subtitle_size = int(_float_value(_dict_value(event.get("style")).get("subtitle_font_size"), 22) or 22)
         return f"{prefix}{title}\\N{{\\fs{subtitle_size}}}{subtitle}"
     return f"{prefix}{title}"
+
+
+def _end_card_label_text(event: dict) -> str:
+    style = _dict_value(event.get("style"))
+    title = _escape_ass_text(str(event.get("title") or "Lecture Summary"))
+    message = _escape_ass_text(str(event.get("message") or ""))
+    next_topic = _escape_ass_text(str(event.get("next_topic") or ""))
+    course_url = _escape_ass_text(str(event.get("course_url") or ""))
+    button_text = _escape_ass_text(str(event.get("button_text") or "Continue"))
+    body_size = int(_float_value(style.get("body_font_size"), 24) or 24)
+    body_color = _ass_color(style.get("body_color"), "CBD5E1")
+    accent_color = _ass_color(style.get("accent_color"), "38BDF8")
+
+    body_lines = []
+    for point in event.get("summary_points") or []:
+        text = _escape_ass_text(str(point))
+        if text:
+            body_lines.append(f"{{\\fs{body_size}\\1c{body_color}}}- {text}")
+    if message:
+        body_lines.append(f"{{\\fs{body_size}\\1c{body_color}}}{message}")
+    if next_topic:
+        body_lines.append(f"{{\\fs{body_size}\\1c{accent_color}}}Next: {next_topic}")
+    if course_url:
+        label = f"{button_text}: {course_url}" if button_text else course_url
+        body_lines.append(f"{{\\fs{body_size}\\1c{accent_color}}}{label}")
+
+    if body_lines:
+        return f"{title}\\N" + "\\N".join(body_lines)
+    return title
 
 
 def _ass_animation_override(event: dict, x: int, y: int) -> tuple[str, str]:
