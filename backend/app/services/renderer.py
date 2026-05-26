@@ -181,6 +181,7 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
         os.makedirs(clip_dir, exist_ok=True)
 
         clip_paths = []
+        clip_durations: list[float] = []
         layout_clip_count = 0
         layout_render_counts: dict[str, int] = {}
         end_cards = get_end_cards(plan_payload)
@@ -197,7 +198,7 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
                 f"Rendering range {i + 1} of {len(render_ranges)}",
                 {"current_range": i + 1, "total_ranges": len(render_ranges)},
             )
-            rendered_paths, rendered_layout_counts = await _render_range_clips(
+            rendered_paths, rendered_durations, rendered_layout_counts = await _render_range_clips(
                 video=video,
                 render_range=render_range,
                 range_index=i,
@@ -205,6 +206,7 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
                 layout_context=layout_render_context,
             )
             clip_paths.extend(rendered_paths)
+            clip_durations.extend(rendered_durations)
             for layout, count in rendered_layout_counts.items():
                 layout_render_counts[layout] = layout_render_counts.get(layout, 0) + count
                 layout_clip_count += count
@@ -232,6 +234,7 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
                     index=index,
                 )
                 clip_paths.append(end_card_clip)
+                clip_durations.append(float(end_card.get("duration_seconds") or 0.1))
                 end_card_clip_paths.append(end_card_clip)
 
         logger.info(
@@ -255,10 +258,29 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
         output_filename = f"{video.id}_edited.mp4"
         output_path = os.path.join(settings.VIDEO_STORAGE_PATH, output_filename)
 
-        await ffmpeg_service.concat_videos(
-            clip_paths=clip_paths,
-            output_path=output_path,
-        )
+        concat_transition_specs = _concat_transition_specs(transition_events, clip_durations)
+        if concat_transition_specs:
+            transition_width, transition_height = _annotation_canvas_dimensions(plan_payload)
+            try:
+                await ffmpeg_service.concat_videos_with_transitions(
+                    clip_paths=clip_paths,
+                    clip_durations=clip_durations,
+                    transitions=concat_transition_specs,
+                    output_path=output_path,
+                    output_width=transition_width,
+                    output_height=transition_height,
+                )
+            except Exception as exc:
+                logger.warning("Transition compositor failed; falling back to direct concat: %s", exc)
+                await ffmpeg_service.concat_videos(
+                    clip_paths=clip_paths,
+                    output_path=output_path,
+                )
+        else:
+            await ffmpeg_service.concat_videos(
+                clip_paths=clip_paths,
+                output_path=output_path,
+            )
 
         logger.info(f"  Concatenated → {output_path}")
 
@@ -381,6 +403,7 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
                 "applied_clip_transition_count": sum(
                     1 for item in transition_events if item.get("render_strategy") == "clip_fade"
                 ),
+                "applied_concat_transition_count": len(concat_transition_specs),
                 "picture_in_picture_clip_count": layout_render_counts.get(LayoutMode.PICTURE_IN_PICTURE.value, 0),
                 "side_by_side_clip_count": layout_render_counts.get(LayoutMode.SIDE_BY_SIDE.value, 0),
                 "full_screen_source_clip_count": layout_render_counts.get(LayoutMode.FULL_SCREEN_SOURCE.value, 0),
@@ -488,6 +511,7 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
             "applied_clip_transition_count": sum(
                 1 for item in transition_events if item.get("render_strategy") == "clip_fade"
             ),
+            "applied_concat_transition_count": len(concat_transition_specs),
             "annotations_burned_in": annotation_burned_in,
             "annotation_count": len(annotations),
             "educational_overlay_count": len(educational_overlays),
@@ -600,8 +624,9 @@ async def _render_range_clips(
     range_index: int,
     clip_dir: str,
     layout_context: LayoutRenderContext | None,
-) -> tuple[list[str], dict[str, int]]:
+) -> tuple[list[str], list[float], dict[str, int]]:
     clip_paths = []
+    clip_durations = []
     layout_counts: dict[str, int] = {}
     spans = _layout_spans_for_range(render_range, layout_context.cues if layout_context else [])
 
@@ -649,8 +674,9 @@ async def _render_range_clips(
             final_clip = os.path.join(clip_dir, f"clip_{range_index:04d}_{span_index:02d}.mp4")
             os.rename(raw_clip, final_clip)
         clip_paths.append(final_clip)
+        clip_durations.append(max(0.001, float(end_time) - float(start_time)))
 
-    return clip_paths, layout_counts
+    return clip_paths, clip_durations, layout_counts
 
 
 async def _render_layout_span(
@@ -1048,7 +1074,13 @@ def _layout_transition_events_for_render_ranges(cues: list[dict], render_ranges:
                 source_end = float(render_range["source_end_time"])
                 if source_start <= source_time <= source_end:
                     output_time = float(render_range["output_start_time"]) + (source_time - source_start)
-                    render_strategy = "clip_fade" if transition in {"fade", "dip_to_black"} else "concat_boundary"
+                    render_strategy = (
+                        "clip_fade"
+                        if transition in {"fade", "dip_to_black"}
+                        else "concat_compositor"
+                        if _is_supported_concat_transition(transition)
+                        else "metadata_only"
+                    )
                     events.append({
                         "cue_id": cue.get("id"),
                         "layout": cue.get("layout"),
@@ -1061,6 +1093,64 @@ def _layout_transition_events_for_render_ranges(cues: list[dict], render_ranges:
                     })
                     break
     return sorted(events, key=lambda item: (item["output_time"], item["cue_id"] or "", item["edge"]))
+
+
+def _concat_transition_specs(
+    transition_events: list[dict],
+    clip_durations: list[float],
+) -> list[dict]:
+    """Map source/output transition metadata to concrete clip boundaries."""
+    supported_events = [
+        event
+        for event in transition_events
+        if event.get("render_strategy") == "concat_compositor"
+        and _is_supported_concat_transition(str(event.get("transition") or ""))
+    ]
+    if not supported_events or len(clip_durations) < 2:
+        return []
+
+    specs: list[dict] = []
+    used_boundaries: set[int] = set()
+    cumulative = 0.0
+    boundaries = []
+    for index, duration in enumerate(clip_durations[:-1]):
+        cumulative += max(0.001, float(duration or 0.001))
+        boundaries.append((index, cumulative))
+
+    for event in supported_events:
+        output_time = _float_value(event.get("output_time"), None)
+        if output_time is None:
+            continue
+        nearest = min(boundaries, key=lambda item: abs(item[1] - output_time), default=None)
+        if not nearest:
+            continue
+        boundary_index, boundary_time = nearest
+        if boundary_index in used_boundaries:
+            continue
+        tolerance = max(0.05, float(event.get("duration_seconds") or 0.0) + 0.05)
+        if abs(boundary_time - output_time) > tolerance:
+            continue
+        specs.append({
+            "boundary_index": boundary_index,
+            "transition": str(event.get("transition") or "crossfade").lower(),
+            "duration_seconds": event.get("duration_seconds") or 0.35,
+            "output_time": output_time,
+            "cue_id": event.get("cue_id"),
+        })
+        used_boundaries.add(boundary_index)
+
+    return specs
+
+
+def _is_supported_concat_transition(transition: str) -> bool:
+    return str(transition or "").lower() in {
+        "crossfade",
+        "wipe",
+        "wipe_left",
+        "wipe_right",
+        "wipe_up",
+        "wipe_down",
+    }
 
 
 def _cue_sync_offset(cue: dict | None, role: str, asset: ProjectAsset | None) -> float:

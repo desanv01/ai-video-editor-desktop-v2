@@ -7,7 +7,7 @@ import asyncio
 import json
 import os
 import subprocess
-from typing import List, Tuple, Optional
+from typing import Any, List, Tuple, Optional
 from config import settings
 
 
@@ -666,6 +666,19 @@ class FFmpegService:
         ]
 
     @staticmethod
+    def _xfade_transition_name(transition: str) -> str:
+        value = str(transition or "").lower()
+        return {
+            "crossfade": "fade",
+            "fade": "fade",
+            "wipe": "wipeleft",
+            "wipe_left": "wipeleft",
+            "wipe_right": "wiperight",
+            "wipe_up": "wipeup",
+            "wipe_down": "wipedown",
+        }.get(value, "fade")
+
+    @staticmethod
     async def concat_videos(clip_paths: List[str], output_path: str) -> str:
         """
         Concatenate multiple video clips into one.
@@ -714,6 +727,136 @@ class FFmpegService:
             os.remove(list_path)
 
         return output_path
+
+    @staticmethod
+    async def concat_videos_with_transitions(
+        *,
+        clip_paths: List[str],
+        clip_durations: List[float],
+        transitions: List[dict[str, Any]],
+        output_path: str,
+        output_width: int = 1920,
+        output_height: int = 1080,
+    ) -> str:
+        """Concatenate clips through FFmpeg xfade/acrossfade visual transitions."""
+        cmd = FFmpegService.build_concat_with_transitions_command(
+            clip_paths=clip_paths,
+            clip_durations=clip_durations,
+            transitions=transitions,
+            output_path=output_path,
+            output_width=output_width,
+            output_height=output_height,
+        )
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        _, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            raise RuntimeError(f"Transition concat failed: {stderr.decode()[:800]}")
+
+        return output_path
+
+    @staticmethod
+    def build_concat_with_transitions_command(
+        *,
+        clip_paths: List[str],
+        clip_durations: List[float],
+        transitions: List[dict[str, Any]],
+        output_path: str,
+        output_width: int = 1920,
+        output_height: int = 1080,
+    ) -> list[str]:
+        """Build an FFmpeg filter graph that renders crossfade/wipe boundaries."""
+        if len(clip_paths) < 2:
+            raise ValueError("At least two clips are required for transition concat")
+        if len(clip_durations) != len(clip_paths):
+            raise ValueError("clip_durations must match clip_paths")
+
+        transitions_by_boundary = {
+            int(item["boundary_index"]): item
+            for item in transitions
+            if item.get("boundary_index") is not None
+        }
+        inputs: list[str] = ["ffmpeg"]
+        for path in clip_paths:
+            inputs.extend(["-i", path])
+
+        filter_parts: list[str] = []
+        output_width = max(2, int(output_width or 1920))
+        output_height = max(2, int(output_height or 1080))
+        for index in range(len(clip_paths)):
+            filter_parts.append(
+                f"[{index}:v]setpts=PTS-STARTPTS,"
+                f"scale={output_width}:{output_height}:force_original_aspect_ratio=decrease,"
+                f"pad={output_width}:{output_height}:(ow-iw)/2:(oh-ih)/2,"
+                f"setsar=1,format=yuv420p[v{index}]"
+            )
+            filter_parts.append(f"[{index}:a]asetpts=PTS-STARTPTS[a{index}]")
+
+        current_video = "v0"
+        current_audio = "a0"
+        current_duration = max(0.001, float(clip_durations[0] or 0.001))
+
+        for index in range(1, len(clip_paths)):
+            boundary_index = index - 1
+            transition = transitions_by_boundary.get(boundary_index)
+            next_duration = max(0.001, float(clip_durations[index] or 0.001))
+            out_video = f"vx{boundary_index}"
+            out_audio = f"ax{boundary_index}"
+
+            if transition:
+                duration = min(
+                    max(0.001, float(transition.get("duration_seconds") or 0.001)),
+                    current_duration / 2,
+                    next_duration / 2,
+                )
+                offset = max(0.0, current_duration - duration)
+                xfade_name = FFmpegService._xfade_transition_name(
+                    str(transition.get("transition") or "fade")
+                )
+                filter_parts.append(
+                    f"[{current_video}][v{index}]xfade=transition={xfade_name}:"
+                    f"duration={round(duration, 3)}:offset={round(offset, 3)}[{out_video}]"
+                )
+                filter_parts.append(
+                    f"[{current_audio}][a{index}]acrossfade=d={round(duration, 3)}:"
+                    f"c1=tri:c2=tri[{out_audio}]"
+                )
+                current_duration = current_duration + next_duration - duration
+            else:
+                filter_parts.append(
+                    f"[{current_video}][{current_audio}][v{index}][a{index}]"
+                    f"concat=n=2:v=1:a=1[{out_video}][{out_audio}]"
+                )
+                current_duration = current_duration + next_duration
+
+            current_video = out_video
+            current_audio = out_audio
+
+        return [
+            *inputs,
+            "-filter_complex",
+            ";".join(filter_parts),
+            "-map",
+            f"[{current_video}]",
+            "-map",
+            f"[{current_audio}]",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "23",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-movflags",
+            "+faststart",
+            "-y",
+            output_path,
+        ]
 
     @staticmethod
     async def create_solid_color_clip(
