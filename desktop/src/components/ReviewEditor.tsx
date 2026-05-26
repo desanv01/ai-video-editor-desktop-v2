@@ -1,6 +1,6 @@
 import { forwardRef, useState, useEffect, useCallback, useMemo } from "react";
 import type { CSSProperties, VideoHTMLAttributes } from "react";
-import { useSegments, usePlaybackSync } from "../hooks/useApi";
+import { useSegments, usePlaybackSync, useProcessingStatus } from "../hooks/useApi";
 import { useCommandShortcuts } from "../hooks/useCommandShortcuts";
 import { Timeline } from "./Timeline";
 import { TranscriptPanel } from "./TranscriptPanel";
@@ -133,7 +133,10 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   const [redoStack, setRedoStack] = useState<EditHistoryEntry[]>([]);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [approving, setApproving] = useState(false);
+  const [renderCancelling, setRenderCancelling] = useState(false);
+  const [renderPollVersion, setRenderPollVersion] = useState(0);
   const [duration, setDuration] = useState(0);
+  const { status: processingStatus } = useProcessingStatus(videoId, 1500, renderPollVersion);
 
   useEffect(() => {
     api.getEditPlan(videoId).then(setPlan).catch(() => {});
@@ -434,6 +437,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
     setApproving(true);
     try {
       await api.approvePlan(videoId, undefined, exportPresetId);
+      setRenderPollVersion(value => value + 1);
       const updatedPlan = await api.getEditPlan(videoId);
       setPlan(updatedPlan);
       setCompletedWorkflowSteps(prev => new Set(prev).add("export"));
@@ -441,6 +445,18 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
       alert(`Approval failed: ${e}`);
     } finally {
       setApproving(false);
+    }
+  }, [videoId]);
+
+  const handleCancelRender = useCallback(async () => {
+    setRenderCancelling(true);
+    try {
+      await api.cancelRender(videoId);
+      setRenderPollVersion(value => value + 1);
+    } catch (e) {
+      alert(`Cancel failed: ${e}`);
+    } finally {
+      setRenderCancelling(false);
     }
   }, [videoId]);
 
@@ -859,6 +875,8 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
               chapters={chapters}
               chaptersLoading={chaptersLoading}
               approving={approving}
+              renderStatus={processingStatus}
+              renderCancelling={renderCancelling}
               onLayoutSettingsChange={setLayoutPreviewSettings}
               onPolishPlanUpdated={setPlan}
               onSelectedAnnotationChange={setSelectedAnnotationId}
@@ -866,6 +884,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
               onAcceptAll={handleAcceptAll}
               onCleanApplied={handleCleanApplied}
               onApprove={handleApprove}
+              onCancelRender={handleCancelRender}
               onRefreshChapters={() => void loadChapters()}
               onSeekToTime={seekTo}
               onUpdateAction={handleUpdateAction}

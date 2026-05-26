@@ -34,6 +34,7 @@ from sqlalchemy import select
 from db.models import Video, Transcript, Segment, EditPlan, ProjectAsset, SegmentAction, VideoStatus
 from services.ffmpeg import ffmpeg_service, FFmpegService
 from services.progress import start_step, complete_step, PipelineStep
+from services.render_jobs import RenderCancelled, ensure_not_cancelled, update_render_job
 from services.edit_plan_payload import (
     get_annotations,
     get_caption_policy,
@@ -67,7 +68,7 @@ class LayoutRenderContext:
 #  MAIN RENDER FUNCTION
 # ═══════════════════════════════════════════
 
-async def render_final_video(video_id: str, db: AsyncSession) -> dict:
+async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str | None = None) -> dict:
     """
     Render the final edited video based on the approved edit plan.
 
@@ -121,10 +122,19 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
 
     video.status = VideoStatus.RENDERING
     await db.flush()
+    _render_progress(
+        render_job_id,
+        video_id,
+        4,
+        "preparing",
+        "Preparing render inputs",
+        "Loading approved edit plan, transcript, and segment decisions",
+    )
 
     logger.info(f"Renderer: Starting render for video {video_id} ({len(segments)} segments)")
 
     try:
+        _check_render_cancel(render_job_id, video_id)
         # ── Step 1: Determine playable ranges from segment and transcript edits ──
         sync_plan = build_synced_timeline_plan(
             plan=plan,
@@ -141,6 +151,15 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
 
         if not render_ranges:
             raise ValueError("No playable ranges to render after edit decisions")
+        _render_progress(
+            render_job_id,
+            video_id,
+            10,
+            "timeline",
+            "Building render timeline",
+            f"{len(render_ranges)} playable ranges queued for export",
+            {"playable_ranges": len(render_ranges), "segments_total": len(segments)},
+        )
 
         logger.info(
             "  Keeping %s/%s segments across %s ranges after %s transcript cuts",
@@ -168,6 +187,16 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
         enabled_end_cards = [card for card in end_cards if card.get("enabled")]
         end_card_clip_paths: list[str] = []
         for i, render_range in enumerate(render_ranges):
+            _check_render_cancel(render_job_id, video_id)
+            _render_progress(
+                render_job_id,
+                video_id,
+                _range_progress(i, len(render_ranges)),
+                "rendering_clips",
+                "Rendering timeline clips",
+                f"Rendering range {i + 1} of {len(render_ranges)}",
+                {"current_range": i + 1, "total_ranges": len(render_ranges)},
+            )
             rendered_paths, rendered_layout_counts = await _render_range_clips(
                 video=video,
                 render_range=render_range,
@@ -181,8 +210,19 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
                 layout_clip_count += count
 
         if enabled_end_cards:
+            _check_render_cancel(render_job_id, video_id)
+            _render_progress(
+                render_job_id,
+                video_id,
+                58,
+                "end_cards",
+                "Rendering end cards",
+                f"Rendering {len(enabled_end_cards)} end card clips",
+                {"end_card_count": len(enabled_end_cards)},
+            )
             width, height = _annotation_canvas_dimensions(plan_payload)
             for index, end_card in enumerate(enabled_end_cards):
+                _check_render_cancel(render_job_id, video_id)
                 end_card_clip = await _render_end_card_clip(
                     end_card=end_card,
                     output_path=os.path.join(clip_dir, f"end_card_{index:02d}.mp4"),
@@ -202,6 +242,16 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
         )
 
         # ── Step 3: Concatenate all clips ──
+        _check_render_cancel(render_job_id, video_id)
+        _render_progress(
+            render_job_id,
+            video_id,
+            64,
+            "concatenating",
+            "Concatenating clips",
+            f"Combining {len(clip_paths)} clips into the final video",
+            {"clip_count": len(clip_paths)},
+        )
         output_filename = f"{video.id}_edited.mp4"
         output_path = os.path.join(settings.VIDEO_STORAGE_PATH, output_filename)
 
@@ -213,6 +263,15 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
         logger.info(f"  Concatenated → {output_path}")
 
         # ── Step 4: Generate subtitles ──
+        _check_render_cancel(render_job_id, video_id)
+        _render_progress(
+            render_job_id,
+            video_id,
+            72,
+            "captions_overlays",
+            "Rendering captions and overlays",
+            "Generating sidecar captions and burn-in overlays",
+        )
         word_timestamps = transcript.words_json if transcript else None
 
         caption_policy = get_caption_policy(plan_payload)
@@ -222,6 +281,7 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
         educational_overlay_events = _annotation_events_for_render_ranges(educational_overlays, render_ranges)
         annotation_burned_in = False
         if annotation_events or educational_overlay_events:
+            _check_render_cancel(render_job_id, video_id)
             ass_width, ass_height = _annotation_canvas_dimensions(plan_payload)
             annotation_ass_content = _generate_annotation_ass(
                 annotation_events + educational_overlay_events,
@@ -262,6 +322,7 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
             _remove_file(vtt_path)
 
         if burn_in_enabled and srt_content.strip():
+            _check_render_cancel(render_job_id, video_id)
             burn_srt_path = srt_path if sidecar_enabled else os.path.join(clip_dir, f"{video.id}_burn_subtitles.srt")
             if not sidecar_enabled:
                 with open(burn_srt_path, "w", encoding="utf-8") as f:
@@ -284,6 +345,15 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
         )
 
         # ── Step 5: Generate chapter markers ──
+        _check_render_cancel(render_job_id, video_id)
+        _render_progress(
+            render_job_id,
+            video_id,
+            84,
+            "exporting_artifacts",
+            "Writing export artifacts",
+            "Writing chapters and reproducible edit plan JSON",
+        )
         chapters = _generate_chapter_file(render_ranges)
         chapters_filename = f"{video.id}_chapters.txt"
         chapters_path = os.path.join(settings.VIDEO_STORAGE_PATH, chapters_filename)
@@ -361,6 +431,15 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
         logger.info(f"  Exported chapters + plan JSON")
 
         # ── Step 7: Get output metadata ──
+        _check_render_cancel(render_job_id, video_id)
+        _render_progress(
+            render_job_id,
+            video_id,
+            94,
+            "finalizing",
+            "Finalizing render",
+            "Reading output metadata and updating the project record",
+        )
         metadata = await ffmpeg_service.get_video_metadata(output_path)
         output_duration = metadata.get("duration", 0)
 
@@ -379,6 +458,14 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
             f"Render complete: {output_duration:.1f}s output, "
             f"{len(included_segment_ids)} segments included, "
             f"{len(segments) - len(included_segment_ids)} removed"
+        )
+        _render_progress(
+            render_job_id,
+            video_id,
+            100,
+            "completed",
+            "Render complete",
+            "Export files are ready",
         )
 
         return {
@@ -407,6 +494,13 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
             "end_card_count": len(enabled_end_cards),
         }
 
+    except RenderCancelled:
+        video.status = VideoStatus.AWAITING_REVIEW
+        video.error_message = "Render cancelled by user"
+        await db.flush()
+        logger.info("Render cancelled for video %s", video_id)
+        raise
+
     except Exception as e:
         video.status = VideoStatus.FAILED
         video.error_message = f"Render failed: {str(e)}"
@@ -418,6 +512,36 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
 # ═══════════════════════════════════════════
 #  SUBTITLE GENERATION
 # ═══════════════════════════════════════════
+
+def _render_progress(
+    render_job_id: str | None,
+    video_id: str,
+    progress_percent: float,
+    phase: str,
+    phase_label: str,
+    message: str,
+    details: dict | None = None,
+) -> None:
+    update_render_job(
+        render_job_id,
+        video_id,
+        progress_percent=progress_percent,
+        phase=phase,
+        phase_label=phase_label,
+        message=message,
+        details=details,
+    )
+
+
+def _check_render_cancel(render_job_id: str | None, video_id: str) -> None:
+    ensure_not_cancelled(render_job_id, video_id)
+
+
+def _range_progress(index: int, total: int) -> float:
+    if total <= 0:
+        return 14.0
+    return 14.0 + (float(index) / float(total)) * 40.0
+
 
 async def _build_layout_render_context(
     video: Video,

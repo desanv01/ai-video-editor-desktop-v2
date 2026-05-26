@@ -716,6 +716,44 @@ export interface ExportPresetCatalog {
   groups: ExportPresetGroup[];
 }
 
+export type RenderJobStatus = "queued" | "running" | "cancel_requested" | "completed" | "failed" | "cancelled" | string;
+
+export interface RenderJob {
+  job_id: string;
+  video_id: string;
+  preset_id: string | null;
+  status: RenderJobStatus;
+  phase: string;
+  phase_label: string;
+  message: string;
+  progress_percent: number;
+  started_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  elapsed_seconds: number;
+  cancel_requested: boolean;
+  cancelled_at: string | null;
+  cancellable: boolean;
+  error: string | null;
+  result: Record<string, unknown> | null;
+  details: Record<string, unknown>;
+}
+
+export interface ApprovePlanResponse {
+  status: string;
+  message: string;
+  video_id: string;
+  export_preset_id: string;
+  render_job: RenderJob;
+}
+
+export interface RenderCancelResponse {
+  status: "cancel_requested" | string;
+  message: string;
+  video_id: string;
+  render_job: RenderJob;
+}
+
 // -- Processing Status --
 
 export interface ProcessingStatus {
@@ -728,6 +766,7 @@ export interface ProcessingStatus {
   steps_timing: Record<string, { elapsed_seconds: number; summary?: Record<string, unknown> }>;
   total_elapsed_seconds: number;
   error_message: string | null;
+  render_job?: RenderJob | null;
 }
 
 // ── Quality Report ──

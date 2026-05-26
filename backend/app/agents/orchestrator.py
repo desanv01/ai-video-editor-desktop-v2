@@ -34,6 +34,13 @@ from services.renderer import render_final_video
 from services.progress import (
     PipelineStep, init_progress, start_step, complete_step, fail_step,
 )
+from services.render_jobs import (
+    RenderCancelled,
+    cancel_render_job,
+    complete_render_job,
+    fail_render_job,
+    start_render_job,
+)
 from rag.vector_store import rag_service
 from db.models import Video, VideoStatus
 from db.database import async_session
@@ -161,7 +168,7 @@ async def run_processing_pipeline(video_id: str, db_session) -> dict:
         return {"status": "failed", "error": error_msg}
 
 
-async def run_render_pipeline(video_id: str, db_session) -> dict:
+async def run_render_pipeline(video_id: str, db_session, render_job_id: str | None = None) -> dict:
     """
     Run the render phase (after teacher approval).
 
@@ -169,12 +176,15 @@ async def run_render_pipeline(video_id: str, db_session) -> dict:
     by the teacher clicking "Approve" in the desktop app.
     """
     start_step(video_id, PipelineStep.RENDERING)
+    start_render_job(render_job_id, video_id)
 
     try:
         result = await render_final_video(
             video_id=video_id,
             db=db_session,
+            render_job_id=render_job_id,
         )
+        complete_render_job(render_job_id, video_id, result)
         complete_step(video_id, PipelineStep.RENDERING, result)
         start_step(video_id, PipelineStep.COMPLETED)
         complete_step(video_id, PipelineStep.COMPLETED)
@@ -182,9 +192,25 @@ async def run_render_pipeline(video_id: str, db_session) -> dict:
         logger.info(f"Render complete for {video_id}")
         return {"status": "completed", **result}
 
+    except RenderCancelled as e:
+        cancel_render_job(render_job_id, video_id, str(e))
+        logger.info("Render cancelled for %s", video_id)
+
+        try:
+            video = await db_session.get(Video, video_id)
+            if video:
+                video.status = VideoStatus.AWAITING_REVIEW
+                video.error_message = "Render cancelled by user"
+                await db_session.flush()
+        except Exception:
+            pass
+
+        return {"status": "cancelled", "error": str(e)}
+
     except Exception as e:
         error_msg = f"Render failed: {str(e)}"
         logger.error(f"{error_msg}\n{traceback.format_exc()}")
+        fail_render_job(render_job_id, video_id, error_msg)
         fail_step(video_id, PipelineStep.RENDERING, str(e))
 
         try:

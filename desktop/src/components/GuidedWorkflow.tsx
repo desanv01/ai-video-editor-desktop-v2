@@ -4,6 +4,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   ArrowLeft,
   ArrowRight,
+  AlertTriangle,
   Captions,
   CheckCircle2,
   Circle,
@@ -29,6 +30,7 @@ import {
   Trash2,
   Wand2,
   Volume2,
+  XCircle,
 } from "lucide-react";
 import { SegmentDetail } from "./SegmentDetail";
 import * as api from "../lib/api";
@@ -62,6 +64,7 @@ import type {
   LayoutAspectRatio,
   LayoutCue,
   LayoutMode,
+  ProcessingStatus,
   RevalidationResult,
   Segment,
 } from "../types/api";
@@ -250,6 +253,8 @@ type PanelProps = StepperProps & {
   chapters: Chapter[];
   chaptersLoading: boolean;
   approving: boolean;
+  renderStatus: ProcessingStatus | null;
+  renderCancelling: boolean;
   onLayoutSettingsChange: (settings: LayoutPreviewSettings) => void;
   onPolishPlanUpdated: (plan: EditPlan) => void;
   onSelectedAnnotationChange: (annotationId: string | null) => void;
@@ -257,6 +262,7 @@ type PanelProps = StepperProps & {
   onAcceptAll: () => void;
   onCleanApplied: () => Promise<void> | void;
   onApprove: (exportPresetId?: string) => void;
+  onCancelRender: () => void;
   onRefreshChapters: () => void;
   onSeekToTime: (time: number) => void;
   onUpdateAction: (segId: string, action: Segment["action"], note?: string) => void;
@@ -339,6 +345,8 @@ export function GuidedWorkflowPanel({
   chapters,
   chaptersLoading,
   approving,
+  renderStatus,
+  renderCancelling,
   onLayoutSettingsChange,
   onPolishPlanUpdated,
   onSelectedAnnotationChange,
@@ -346,6 +354,7 @@ export function GuidedWorkflowPanel({
   onAcceptAll,
   onCleanApplied,
   onApprove,
+  onCancelRender,
   onRefreshChapters,
   onSeekToTime,
   onUpdateAction,
@@ -400,6 +409,11 @@ export function GuidedWorkflowPanel({
   const exportPresets = useMemo(() => exportPresetCatalog?.groups.flatMap((group) => group.presets) ?? [], [exportPresetCatalog]);
   const selectedExportPreset =
     exportPresets.find((preset) => preset.id === selectedExportPresetId) ?? exportPresets[0] ?? null;
+  const renderJob = renderStatus?.render_job ?? null;
+  const renderActive = Boolean(renderJob && ["queued", "running", "cancel_requested"].includes(renderJob.status));
+  const renderFailed = renderJob?.status === "failed";
+  const renderCancelled = renderJob?.status === "cancelled";
+  const renderComplete = renderJob?.status === "completed" || renderStatus?.status === "completed";
   const cameraEnabled = layoutUsesCamera(layoutSettings.layout);
   const updateLayoutSettings = (patch: Partial<LayoutPreviewSettings>) => {
     onLayoutSettingsChange({ ...layoutSettings, ...patch });
@@ -1579,6 +1593,13 @@ export function GuidedWorkflowPanel({
                 {exportPresetMessage && <p className="text-xs leading-5 text-yellow-200">{exportPresetMessage}</p>}
               </div>
             </WorkflowCard>
+            {(renderActive || renderFailed || renderCancelled) && (
+              <RenderProgressCard
+                status={renderStatus}
+                onCancel={onCancelRender}
+                cancelling={renderCancelling}
+              />
+            )}
             {!plan?.is_approved ? (
               <button
                 type="button"
@@ -1589,13 +1610,28 @@ export function GuidedWorkflowPanel({
                 {approving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
                 {approving ? "Rendering..." : `Approve & Render ${selectedExportPreset?.label ?? "Video"}`}
               </button>
-            ) : (
+            ) : renderComplete ? (
               <div className="space-y-2">
                 <DownloadLink href={api.getVideoDownloadUrl(videoId)} label="Edited Video (MP4)" primary />
                 <DownloadLink href={api.getSubtitleDownloadUrl(videoId)} label="Subtitles (SRT)" />
                 <DownloadLink href={api.getSubtitleVttUrl(videoId)} label="Subtitles (VTT)" />
                 <DownloadLink href={api.getChaptersDownloadUrl(videoId)} label="Chapter Markers" />
                 <DownloadLink href={api.getPlanExportUrl(videoId)} label="Edit Plan (JSON)" />
+              </div>
+            ) : renderActive ? null : (
+              <button
+                type="button"
+                onClick={() => onApprove(selectedExportPreset?.id ?? selectedExportPresetId)}
+                disabled={approving || !plan}
+                className="flex w-full items-center justify-center gap-2 rounded-md bg-accent px-3 py-3 text-sm font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {approving ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                {approving ? "Starting render..." : `Render ${selectedExportPreset?.label ?? "Video"}`}
+              </button>
+            )}
+            {plan?.is_approved && !renderActive && !renderFailed && !renderCancelled && !renderComplete && (
+              <div className="rounded-md border border-surface-border bg-surface-overlay px-3 py-2 text-xs leading-5 text-gray-300">
+                Render status is unavailable. Start a new render when ready.
               </div>
             )}
           </PanelStack>
@@ -1926,6 +1962,61 @@ function ExportPresetButton({
         <span className="mt-1 block text-[11px] text-gray-500">{exportPresetSummary(preset)}</span>
       </span>
     </button>
+  );
+}
+
+function RenderProgressCard({
+  status,
+  onCancel,
+  cancelling,
+}: {
+  status: ProcessingStatus | null;
+  onCancel: () => void;
+  cancelling: boolean;
+}) {
+  const job = status?.render_job ?? null;
+  const progress = Math.round(job?.progress_percent ?? status?.progress_percent ?? 0);
+  const active = Boolean(job && ["queued", "running", "cancel_requested"].includes(job.status));
+  const failed = job?.status === "failed";
+  const cancelled = job?.status === "cancelled";
+  const title = failed ? "Render Failed" : cancelled ? "Render Cancelled" : "Render Progress";
+  const icon = failed || cancelled
+    ? <AlertTriangle className="h-4 w-4 text-yellow-300" />
+    : <Loader2 className="h-4 w-4 animate-spin text-accent" />;
+
+  return (
+    <WorkflowCard title={title} icon={icon}>
+      <div className="space-y-3">
+        <div>
+          <div className="mb-1 flex items-center justify-between gap-3 text-xs">
+            <span className="truncate font-semibold text-gray-200">{job?.phase_label ?? status?.current_step_label ?? "Rendering final video"}</span>
+            <span className="font-semibold text-gray-300">{progress}%</span>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-surface-overlay">
+            <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${Math.max(0, Math.min(100, progress))}%` }} />
+          </div>
+        </div>
+        <p className="text-xs leading-5 text-gray-400">
+          {job?.message ?? "Preparing render status"}
+        </p>
+        {(job?.error || status?.error_message) && (
+          <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs leading-5 text-red-200">
+            {job?.error ?? status?.error_message}
+          </div>
+        )}
+        {active && (
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={cancelling || job?.status === "cancel_requested"}
+            className="flex w-full items-center justify-center gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-200 transition-colors hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {cancelling ? <Loader2 className="h-4 w-4 animate-spin" /> : <XCircle className="h-4 w-4" />}
+            {job?.status === "cancel_requested" ? "Cancelling..." : "Cancel Render"}
+          </button>
+        )}
+      </div>
+    </WorkflowCard>
   );
 }
 
