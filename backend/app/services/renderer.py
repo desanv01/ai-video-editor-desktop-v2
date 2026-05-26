@@ -26,7 +26,7 @@ import json
 import uuid
 import shutil
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,6 +53,11 @@ logger = logging.getLogger(__name__)
 class LayoutRenderContext:
     cues: list[dict]
     assets_by_id: dict[str, ProjectAsset]
+    assets_by_track: dict[str, ProjectAsset] = field(default_factory=dict)
+    assets_by_role: dict[str, ProjectAsset] = field(default_factory=dict)
+    timeline_tracks: list[dict] = field(default_factory=list)
+    source_manifest: list[dict] = field(default_factory=list)
+    transition_events: list[dict] = field(default_factory=list)
     fallback_screen_asset: ProjectAsset | None = None
     fallback_camera_asset: ProjectAsset | None = None
     fallback_audio_asset: ProjectAsset | None = None
@@ -148,6 +153,10 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
         # ── Step 2: Trim clips ──
         plan_payload = normalize_plan_payload(plan.plan_json)
         layout_render_context = await _build_layout_render_context(video, plan_payload, db)
+        transition_events = _layout_transition_events_for_render_ranges(
+            layout_render_context.cues if layout_render_context else [],
+            render_ranges,
+        )
 
         clip_dir = os.path.join(settings.TEMP_PATH, f"clips_{video.id}")
         os.makedirs(clip_dir, exist_ok=True)
@@ -292,8 +301,16 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
             sync_plan,
             render_metadata_extra={
                 "layout_renderer": "phase7_layouts" if layout_clip_count else "single_source",
+                "renderer_schema_version": "phase9.multitrack-renderer.v1",
                 "layout_clip_count": layout_clip_count,
                 "layout_render_counts": layout_render_counts,
+                "timeline_tracks": layout_render_context.timeline_tracks if layout_render_context else [],
+                "source_manifest": layout_render_context.source_manifest if layout_render_context else [],
+                "transition_events": transition_events,
+                "transition_count": len(transition_events),
+                "applied_clip_transition_count": sum(
+                    1 for item in transition_events if item.get("render_strategy") == "clip_fade"
+                ),
                 "picture_in_picture_clip_count": layout_render_counts.get(LayoutMode.PICTURE_IN_PICTURE.value, 0),
                 "side_by_side_clip_count": layout_render_counts.get(LayoutMode.SIDE_BY_SIDE.value, 0),
                 "full_screen_source_clip_count": layout_render_counts.get(LayoutMode.FULL_SCREEN_SOURCE.value, 0),
@@ -380,6 +397,10 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
             "picture_in_picture_clips": layout_render_counts.get(LayoutMode.PICTURE_IN_PICTURE.value, 0),
             "layout_clip_count": layout_clip_count,
             "layout_render_counts": layout_render_counts,
+            "transition_count": len(transition_events),
+            "applied_clip_transition_count": sum(
+                1 for item in transition_events if item.get("render_strategy") == "clip_fade"
+            ),
             "annotations_burned_in": annotation_burned_in,
             "annotation_count": len(annotations),
             "educational_overlay_count": len(educational_overlays),
@@ -404,19 +425,44 @@ async def _build_layout_render_context(
     db: AsyncSession,
 ) -> LayoutRenderContext | None:
     cues = list(plan_payload.get("layout_cues") or [])
-    if not any(_is_renderable_layout_cue(cue) for cue in cues):
-        return None
     if not video.project_id:
-        return None
+        return (
+            LayoutRenderContext(
+                cues=cues,
+                assets_by_id={},
+                assets_by_track={},
+                assets_by_role={},
+                timeline_tracks=_timeline_tracks_from_plan(plan_payload, []),
+                source_manifest=[],
+                transition_events=[],
+            )
+            if any(_is_renderable_layout_cue(cue) for cue in cues)
+            else None
+        )
 
     result = await db.execute(
         select(ProjectAsset).where(ProjectAsset.project_id == video.project_id)
     )
     assets = list(result.scalars().all())
     assets_by_id = {str(asset.id): asset for asset in assets}
+    assets_by_track = _assets_by_track(assets)
+    assets_by_role = _assets_by_role(assets)
+    timeline_tracks = _timeline_tracks_from_plan(plan_payload, assets)
+
+    if not cues and assets:
+        cues = _implicit_full_source_cues(video, assets)
+
+    if not any(_is_renderable_layout_cue(cue) for cue in cues) and not timeline_tracks:
+        return None
+
     return LayoutRenderContext(
         cues=cues,
         assets_by_id=assets_by_id,
+        assets_by_track=assets_by_track,
+        assets_by_role=assets_by_role,
+        timeline_tracks=timeline_tracks,
+        source_manifest=_source_manifest(assets, timeline_tracks),
+        transition_events=[],
         fallback_screen_asset=_first_asset_with_role(assets, {"screen", "primary"}),
         fallback_camera_asset=_first_asset_with_role(assets, {"camera"}),
         fallback_audio_asset=_first_asset_with_role(assets, {"audio"}),
@@ -452,6 +498,16 @@ async def _render_range_clips(
             layout_counts[rendered_layout] = layout_counts.get(rendered_layout, 0) + 1
         else:
             await _trim_single_source_clip(video.file_path, raw_clip, start_time, end_time)
+
+        raw_clip = await _apply_span_transition_polish(
+            cue=cue,
+            input_path=raw_clip,
+            range_index=range_index,
+            span_index=span_index,
+            clip_dir=clip_dir,
+            start_time=start_time,
+            end_time=end_time,
+        )
 
         if render_range["action"] == SegmentAction.SHORTEN.value:
             final_clip = os.path.join(clip_dir, f"clip_{range_index:04d}_{span_index:02d}.mp4")
@@ -583,6 +639,42 @@ async def _trim_single_source_clip(
     )
 
 
+async def _apply_span_transition_polish(
+    *,
+    cue: dict | None,
+    input_path: str,
+    range_index: int,
+    span_index: int,
+    clip_dir: str,
+    start_time: float,
+    end_time: float,
+) -> str:
+    timing = _dict_value(_dict_value(cue).get("timing"))
+    duration = min(
+        _float_value(timing.get("transition_duration_seconds"), 0.0) or 0.0,
+        max(0.0, (float(end_time) - float(start_time)) / 2),
+    )
+    if duration <= 0:
+        return input_path
+
+    fade_in = str(timing.get("transition_in") or "").lower() in {"fade", "dip_to_black"}
+    fade_out = str(timing.get("transition_out") or "").lower() in {"fade", "dip_to_black"}
+    if not fade_in and not fade_out:
+        return input_path
+
+    output_path = os.path.join(clip_dir, f"transition_{range_index:04d}_{span_index:02d}.mp4")
+    await ffmpeg_service.apply_clip_fades(
+        input_path=input_path,
+        output_path=output_path,
+        clip_duration_seconds=max(0.001, float(end_time) - float(start_time)),
+        fade_duration_seconds=duration,
+        fade_in=fade_in,
+        fade_out=fade_out,
+    )
+    _remove_file(input_path)
+    return output_path
+
+
 def _layout_spans_for_range(
     render_range: dict,
     cues: list[dict],
@@ -646,8 +738,205 @@ def _cue_asset(
         return None
     asset_id = source_dict.get("asset_id")
     if asset_id:
-        return context.assets_by_id.get(str(asset_id))
-    return None
+        asset = context.assets_by_id.get(str(asset_id))
+        if asset:
+            return asset
+    track = str(source_dict.get("track") or "").strip().lower()
+    if track and track in context.assets_by_track:
+        return context.assets_by_track[track]
+    source_role = str(source_dict.get("role") or role).strip().lower()
+    return context.assets_by_role.get(source_role)
+
+
+def _assets_by_track(assets: list[ProjectAsset]) -> dict[str, ProjectAsset]:
+    tracked: dict[str, ProjectAsset] = {}
+    for asset in sorted(assets, key=_asset_sort_key):
+        for track in _asset_track_keys(asset):
+            tracked.setdefault(track, asset)
+    return tracked
+
+
+def _assets_by_role(assets: list[ProjectAsset]) -> dict[str, ProjectAsset]:
+    by_role: dict[str, ProjectAsset] = {}
+    for asset in sorted(assets, key=_asset_sort_key):
+        role = _enum_value(getattr(asset, "role", None))
+        if role:
+            by_role.setdefault(role, asset)
+        sync_role = _enum_value(getattr(asset, "sync_role", None))
+        if sync_role:
+            by_role.setdefault(sync_role, asset)
+    return by_role
+
+
+def _asset_track_keys(asset: ProjectAsset) -> list[str]:
+    metadata = _dict_value(getattr(asset, "metadata_json", None))
+    candidates = [
+        metadata.get("track"),
+        metadata.get("timeline_track"),
+        _enum_value(getattr(asset, "role", None)),
+        _enum_value(getattr(asset, "sync_role", None)),
+        _enum_value(getattr(asset, "source_type", None)),
+    ]
+    role = _enum_value(getattr(asset, "role", None))
+    sync_role = _enum_value(getattr(asset, "sync_role", None))
+    if role == "screen" or sync_role == "screen_reference":
+        candidates.append("screen")
+    if role == "camera" or sync_role == "camera_overlay":
+        candidates.append("camera")
+    if role == "audio" or sync_role in {"audio_master", "audio_reference"}:
+        candidates.append("audio")
+    if role == "primary" or sync_role == "primary_timeline":
+        candidates.append("primary_timeline")
+    return [str(item).strip().lower() for item in candidates if str(item or "").strip()]
+
+
+def _asset_sort_key(asset: ProjectAsset) -> tuple[int, int, datetime]:
+    return (
+        0 if bool(getattr(asset, "is_primary", False)) else 1,
+        0 if _enum_value(getattr(asset, "status", None)) == "ready" else 1,
+        getattr(asset, "created_at", None) or datetime.min,
+    )
+
+
+def _timeline_tracks_from_plan(plan_payload: dict, assets: list[ProjectAsset]) -> list[dict]:
+    tracks = []
+    raw_tracks = plan_payload.get("timeline_tracks")
+    if isinstance(raw_tracks, list):
+        for index, raw_track in enumerate(raw_tracks):
+            if not isinstance(raw_track, dict):
+                continue
+            track_id = str(raw_track.get("id") or raw_track.get("track") or f"track-{index + 1}")
+            tracks.append({
+                **raw_track,
+                "id": track_id,
+                "role": str(raw_track.get("role") or raw_track.get("kind") or track_id).lower(),
+                "enabled": bool(raw_track.get("enabled", True)),
+                "asset_id": raw_track.get("asset_id"),
+            })
+
+    existing_ids = {str(track.get("id")).lower() for track in tracks}
+    for asset in assets:
+        for track in _asset_track_keys(asset):
+            if track in existing_ids:
+                continue
+            tracks.append({
+                "id": track,
+                "role": _enum_value(getattr(asset, "role", None)) or track,
+                "enabled": True,
+                "asset_id": str(asset.id),
+                "source_type": _enum_value(getattr(asset, "source_type", None)),
+                "sync_role": _enum_value(getattr(asset, "sync_role", None)),
+            })
+            existing_ids.add(track)
+    return tracks
+
+
+def _source_manifest(assets: list[ProjectAsset], timeline_tracks: list[dict]) -> list[dict]:
+    tracks_by_asset: dict[str, list[str]] = {}
+    for track in timeline_tracks:
+        asset_id = track.get("asset_id")
+        if asset_id:
+            tracks_by_asset.setdefault(str(asset_id), []).append(str(track.get("id")))
+    return [
+        {
+            "asset_id": str(asset.id),
+            "filename": getattr(asset, "original_filename", None) or getattr(asset, "filename", None),
+            "role": _enum_value(getattr(asset, "role", None)),
+            "source_type": _enum_value(getattr(asset, "source_type", None)),
+            "sync_role": _enum_value(getattr(asset, "sync_role", None)),
+            "sync_offset_seconds": float(getattr(asset, "sync_offset_seconds", 0.0) or 0.0),
+            "tracks": sorted(set(tracks_by_asset.get(str(asset.id), _asset_track_keys(asset)))),
+        }
+        for asset in sorted(assets, key=_asset_sort_key)
+    ]
+
+
+def _implicit_full_source_cues(video: Video, assets: list[ProjectAsset]) -> list[dict]:
+    screen_asset = _first_asset_with_role(assets, {"screen", "primary"})
+    audio_asset = _first_asset_with_role(assets, {"audio"})
+    if not screen_asset and not audio_asset:
+        return []
+    return [
+        {
+            "id": "renderer-implicit-full-source",
+            "kind": "layout_cue",
+            "schema_version": "phase9.multitrack-renderer.v1",
+            "status": "planned",
+            "layout": LayoutMode.FULL_SCREEN_SOURCE.value,
+            "start_time": 0.0,
+            "end_time": video.duration_seconds,
+            "timing": {
+                "start_time": 0.0,
+                "end_time": video.duration_seconds,
+                "duration_seconds": video.duration_seconds,
+                "transition_in": "cut",
+                "transition_out": "cut",
+                "transition_duration_seconds": 0.0,
+            },
+            "sources": {
+                "screen": {
+                    "role": "screen",
+                    "asset_id": str(screen_asset.id) if screen_asset else None,
+                    "enabled": True,
+                    "track": "screen" if screen_asset else "primary_timeline",
+                    "sync_offset_seconds": 0.0,
+                },
+                "camera": {
+                    "role": "camera",
+                    "asset_id": None,
+                    "enabled": False,
+                    "track": "camera",
+                    "sync_offset_seconds": 0.0,
+                },
+                "audio": {
+                    "role": "audio",
+                    "asset_id": str(audio_asset.id) if audio_asset else None,
+                    "enabled": True,
+                    "track": "audio",
+                    "sync_offset_seconds": 0.0,
+                },
+            },
+            "output": {"aspect_ratio": "16:9"},
+            "camera": {"enabled": False, "shape": "rounded_rectangle", "corner": "bottom_right", "size": "medium", "margin_percent": 4},
+            "reason": "Implicit renderer cue for multi-source project assets.",
+        }
+    ]
+
+
+def _layout_transition_events_for_render_ranges(cues: list[dict], render_ranges: List[dict]) -> list[dict]:
+    events = []
+    for cue in cues:
+        if not _is_renderable_layout_cue(cue):
+            continue
+        timing = _dict_value(cue.get("timing"))
+        transition_duration = _float_value(timing.get("transition_duration_seconds"), 0.0) or 0.0
+        if transition_duration <= 0:
+            continue
+        for edge, field in (("in", "transition_in"), ("out", "transition_out")):
+            transition = str(timing.get(field) or "cut").lower()
+            if transition == "cut":
+                continue
+            source_time = _float_value(cue.get("start_time") if edge == "in" else cue.get("end_time"), None)
+            if source_time is None:
+                continue
+            for render_range in render_ranges:
+                source_start = float(render_range["source_start_time"])
+                source_end = float(render_range["source_end_time"])
+                if source_start <= source_time <= source_end:
+                    output_time = float(render_range["output_start_time"]) + (source_time - source_start)
+                    render_strategy = "clip_fade" if transition in {"fade", "dip_to_black"} else "concat_boundary"
+                    events.append({
+                        "cue_id": cue.get("id"),
+                        "layout": cue.get("layout"),
+                        "edge": edge,
+                        "transition": transition,
+                        "duration_seconds": round(min(transition_duration, float(render_range["duration"]) / 2), 3),
+                        "source_time": round(source_time, 3),
+                        "output_time": round(output_time, 3),
+                        "render_strategy": render_strategy,
+                    })
+                    break
+    return sorted(events, key=lambda item: (item["output_time"], item["cue_id"] or "", item["edge"]))
 
 
 def _cue_sync_offset(cue: dict | None, role: str, asset: ProjectAsset | None) -> float:

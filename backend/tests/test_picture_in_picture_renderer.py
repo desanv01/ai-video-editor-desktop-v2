@@ -126,6 +126,22 @@ class LayoutModeCommandTests(unittest.TestCase):
         self.assertIn("scale=1440:1080", filter_complex)
         self.assertIn("pad=1440:1080", filter_complex)
 
+    def test_builds_clip_fade_command_for_transition_polish(self):
+        cmd = FFmpegService.build_clip_fade_command(
+            input_path="clip.mp4",
+            output_path="faded.mp4",
+            clip_duration_seconds=8.0,
+            fade_duration_seconds=0.5,
+            fade_in=True,
+            fade_out=True,
+        )
+
+        self.assertEqual(cmd[0], "ffmpeg")
+        self.assertIn("clip.mp4", cmd)
+        video_filter = cmd[cmd.index("-vf") + 1]
+        self.assertIn("fade=t=in:st=0:d=0.5", video_filter)
+        self.assertIn("fade=t=out:st=7.5:d=0.5", video_filter)
+
     def test_maps_supported_aspect_ratios_to_even_render_canvases(self):
         self.assertEqual(FFmpegService.output_dimensions_for_aspect_ratio("16:9"), (1920, 1080))
         self.assertEqual(FFmpegService.output_dimensions_for_aspect_ratio("4:3"), (1440, 1080))
@@ -404,6 +420,107 @@ class PictureInPictureRenderSelectionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(fake.pip_calls[0]["camera_shape"], "rounded_rectangle")
         finally:
             renderer.ffmpeg_service = original_ffmpeg
+
+    async def test_resolves_layout_sources_from_track_names_and_applies_fades(self):
+        class FakeFFmpeg:
+            def __init__(self):
+                self.full_source_calls = []
+                self.fade_calls = []
+
+            async def trim_video(self, **kwargs):
+                Path(kwargs["output_path"]).write_text("trim", encoding="utf-8")
+
+            async def render_full_source_clip(self, **kwargs):
+                self.full_source_calls.append(kwargs)
+                Path(kwargs["output_path"]).write_text("full", encoding="utf-8")
+
+            async def apply_clip_fades(self, **kwargs):
+                self.fade_calls.append(kwargs)
+                Path(kwargs["output_path"]).write_text("fade", encoding="utf-8")
+
+        fake = FakeFFmpeg()
+        original_ffmpeg = renderer.ffmpeg_service
+        renderer.ffmpeg_service = fake
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                cue = build_layout_cue(
+                    cue_id="screen-fade",
+                    layout="full_screen_source",
+                    start_time=0.0,
+                    end_time=5.0,
+                )
+                cue["sources"]["screen"]["track"] = "screen"
+                cue["sources"]["audio"]["track"] = "audio"
+                cue["timing"]["transition_in"] = "fade"
+                cue["timing"]["transition_out"] = "fade"
+                cue["timing"]["transition_duration_seconds"] = 0.4
+                context = renderer.LayoutRenderContext(
+                    cues=[cue],
+                    assets_by_id={},
+                    assets_by_track={
+                        "screen": SimpleNamespace(file_path="screen.mp4", sync_offset_seconds=0.2),
+                        "audio": SimpleNamespace(file_path="voice.wav", sync_offset_seconds=0.1),
+                    },
+                )
+
+                _, layout_counts = await renderer._render_range_clips(
+                    video=SimpleNamespace(file_path="legacy.mp4"),
+                    render_range={
+                        "source_start_time": 0.0,
+                        "source_end_time": 5.0,
+                        "duration": 5.0,
+                        "output_start_time": 0.0,
+                        "output_end_time": 5.0,
+                        "action": "keep",
+                    },
+                    range_index=0,
+                    clip_dir=temp_dir,
+                    layout_context=context,
+                )
+
+            self.assertEqual(layout_counts, {"full_screen_source": 1})
+            self.assertEqual(fake.full_source_calls[0]["source_path"], "screen.mp4")
+            self.assertEqual(fake.full_source_calls[0]["audio_path"], "voice.wav")
+            self.assertEqual(fake.full_source_calls[0]["source_sync_offset"], 0.2)
+            self.assertEqual(fake.fade_calls[0]["fade_in"], True)
+            self.assertEqual(fake.fade_calls[0]["fade_out"], True)
+        finally:
+            renderer.ffmpeg_service = original_ffmpeg
+
+    def test_transition_events_map_layout_cues_to_edited_output_time(self):
+        cue = build_layout_cue(
+            cue_id="cue-transition",
+            layout="full_screen_source",
+            start_time=8.0,
+            end_time=12.0,
+        )
+        cue["timing"]["transition_in"] = "fade"
+        cue["timing"]["transition_out"] = "wipe_left"
+        cue["timing"]["transition_duration_seconds"] = 0.5
+        render_ranges = [
+            {
+                "source_start_time": 5.0,
+                "source_end_time": 10.0,
+                "output_start_time": 0.0,
+                "output_end_time": 5.0,
+                "duration": 5.0,
+            },
+            {
+                "source_start_time": 10.0,
+                "source_end_time": 15.0,
+                "output_start_time": 5.0,
+                "output_end_time": 10.0,
+                "duration": 5.0,
+            },
+        ]
+
+        events = renderer._layout_transition_events_for_render_ranges([cue], render_ranges)
+
+        self.assertEqual([event["edge"] for event in events], ["in", "out"])
+        self.assertEqual(events[0]["output_time"], 3.0)
+        self.assertEqual(events[0]["render_strategy"], "clip_fade")
+        self.assertEqual(events[1]["output_time"], 7.0)
+        self.assertEqual(events[1]["render_strategy"], "concat_boundary")
 
     async def test_renders_side_by_side_and_fullscreen_spans_with_layout_compositor(self):
         class FakeFFmpeg:

@@ -281,6 +281,35 @@ class FFmpegService:
         return output_path
 
     @staticmethod
+    async def apply_clip_fades(
+        *,
+        input_path: str,
+        output_path: str,
+        clip_duration_seconds: float,
+        fade_duration_seconds: float,
+        fade_in: bool = False,
+        fade_out: bool = False,
+    ) -> str:
+        """Apply simple fade-in/out polish to a rendered clip."""
+        cmd = FFmpegService.build_clip_fade_command(
+            input_path=input_path,
+            output_path=output_path,
+            clip_duration_seconds=clip_duration_seconds,
+            fade_duration_seconds=fade_duration_seconds,
+            fade_in=fade_in,
+            fade_out=fade_out,
+        )
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        _, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            raise RuntimeError(f"Clip fade render failed: {stderr.decode()[:800]}")
+
+        return output_path
+
+    @staticmethod
     def build_picture_in_picture_command(
         *,
         screen_path: str,
@@ -487,6 +516,46 @@ class FFmpegService:
         audio_map = "1:a?" if uses_separate_audio else "0:a?"
         cmd.extend(FFmpegService._encoded_video_output_args(filter_complex, audio_map, output_path))
         return cmd
+
+    @staticmethod
+    def build_clip_fade_command(
+        *,
+        input_path: str,
+        output_path: str,
+        clip_duration_seconds: float,
+        fade_duration_seconds: float,
+        fade_in: bool = False,
+        fade_out: bool = False,
+    ) -> list[str]:
+        """Build an ffmpeg command for per-clip fade transitions."""
+        duration = max(0.001, float(clip_duration_seconds or 0.001))
+        fade_duration = min(max(0.0, float(fade_duration_seconds or 0.0)), duration / 2)
+        filters = []
+        if fade_in and fade_duration > 0:
+            filters.append(f"fade=t=in:st=0:d={round(fade_duration, 3)}")
+        if fade_out and fade_duration > 0:
+            start = max(0.0, duration - fade_duration)
+            filters.append(f"fade=t=out:st={round(start, 3)}:d={round(fade_duration, 3)}")
+        video_filter = ",".join(filters) if filters else "null"
+        return [
+            "ffmpeg",
+            "-i",
+            input_path,
+            "-vf",
+            video_filter,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "23",
+            "-c:a",
+            "copy",
+            "-movflags",
+            "+faststart",
+            "-y",
+            output_path,
+        ]
 
     @staticmethod
     def output_dimensions_for_aspect_ratio(aspect_ratio: str | None) -> tuple[int, int]:
