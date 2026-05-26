@@ -64,6 +64,11 @@ from services.edit_plan_payload import (
 from services.export_presets import get_export_preset, list_grouped_export_presets
 from services.topic_segmentation import analyze_topic_sections
 from services.progress import get_progress as get_pipeline_progress
+from services.render_jobs import (
+    get_latest_render_job,
+    create_render_job,
+    request_render_cancel,
+)
 from services.app_settings import (
     get_or_create_ai_settings,
     settings_response,
@@ -267,20 +272,30 @@ async def get_processing_status(video_id: str, db: AsyncSession = Depends(get_db
     if not video:
         raise HTTPException(404, "Video not found")
 
-    # Get live pipeline progress (in-memory, detailed)
+    # Get live pipeline/render progress (in-memory, detailed)
     progress = get_pipeline_progress(str(video_id))
+    render_job = get_latest_render_job(str(video_id))
+    render_active = bool(render_job and render_job.get("status") in {"queued", "running", "cancel_requested"})
+    current_step = progress.get("current_step", video.status.value)
+    current_step_label = progress.get("current_step_label", video.status.value)
+    progress_percent = progress.get("progress_percent", 0)
+    if render_active or video.status == VideoStatus.RENDERING:
+        current_step = "rendering"
+        current_step_label = (render_job or {}).get("phase_label") or "Rendering final video..."
+        progress_percent = (render_job or {}).get("progress_percent", progress_percent)
 
     return {
         "video_id": str(video.id),
         "status": video.status.value,
         "error_message": video.error_message,
         # Live pipeline progress
-        "current_step": progress.get("current_step", video.status.value),
-        "current_step_label": progress.get("current_step_label", video.status.value),
-        "progress_percent": progress.get("progress_percent", 0),
+        "current_step": current_step,
+        "current_step_label": current_step_label,
+        "progress_percent": progress_percent,
         "steps_completed": progress.get("steps_completed", []),
         "steps_timing": progress.get("steps_timing", {}),
         "total_elapsed_seconds": progress.get("total_elapsed_seconds", 0),
+        "render_job": render_job,
     }
 
 
@@ -772,16 +787,41 @@ async def approve_edit_plan(
         target_presets=[selected_preset["id"]],
     )
     plan.plan_json["export_metadata"]["selected_preset"] = selected_preset
+    video = await db.get(Video, video_id)
+    if video:
+        video.status = VideoStatus.RENDERING
+        video.error_message = None
+    render_job = create_render_job(video_id, selected_preset["id"])
     await db.commit()
 
     # Start rendering in background
-    background_tasks.add_task(_render_video_bg, video_id)
+    background_tasks.add_task(_render_video_bg, video_id, render_job["job_id"])
 
     return {
         "status": "approved",
         "message": "Edit plan approved. Rendering started.",
         "video_id": video_id,
         "export_preset_id": selected_preset["id"],
+        "render_job": render_job,
+    }
+
+
+@router.post("/videos/{video_id}/render/cancel", tags=["Export"])
+async def cancel_render(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Request cancellation for an active render job."""
+    video = await db.get(Video, video_id)
+    if not video:
+        raise HTTPException(404, "Video not found")
+
+    render_job = request_render_cancel(video_id)
+    if not render_job:
+        raise HTTPException(409, "No active render job to cancel")
+
+    return {
+        "status": "cancel_requested",
+        "message": "Render cancellation requested.",
+        "video_id": video_id,
+        "render_job": render_job,
     }
 
 
@@ -1269,7 +1309,7 @@ async def _process_video_bg(video_id: str):
                 logger.error("Failed to update video status after crash")
 
 
-async def _render_video_bg(video_id: str):
+async def _render_video_bg(video_id: str, render_job_id: str | None = None):
     """
     Background task: render final video after teacher approval.
 
@@ -1280,21 +1320,25 @@ async def _render_video_bg(video_id: str):
     logger = logging.getLogger("pipeline")
 
     from db.database import async_session
+    from services.render_jobs import fail_render_job
 
     logger.info(f"🎬 Starting render for video {video_id}")
 
     async with async_session() as db:
         try:
-            result = await run_render_pipeline(video_id, db)
+            result = await run_render_pipeline(video_id, db, render_job_id=render_job_id)
             await db.commit()
 
             if result.get("status") == "completed":
                 logger.info(f"✅ Render complete for {video_id}")
+            elif result.get("status") == "cancelled":
+                logger.info(f"Render cancelled for {video_id}")
             else:
                 logger.warning(f"Render ended with status: {result.get('status')}")
 
         except Exception as e:
             error_msg = f"Render crashed: {str(e)}"
+            fail_render_job(render_job_id, video_id, error_msg)
             logger.error(f"❌ {error_msg}\n{tb.format_exc()}")
 
             try:

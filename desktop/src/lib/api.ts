@@ -25,6 +25,8 @@ import type {
   EndCardActionUpdate,
   EducationalOverlayActionUpdate,
   ExportPresetCatalog,
+  ApprovePlanResponse,
+  RenderCancelResponse,
 } from "../types/api";
 
 let BASE_URL = "http://localhost:8000/api/v1";
@@ -335,11 +337,15 @@ export async function getExportPresets(): Promise<ExportPresetCatalog> {
   return request("/export/presets");
 }
 
-export async function approvePlan(videoId: string, notes?: string, exportPresetId?: string): Promise<void> {
-  await request(`/videos/${videoId}/plan/approve`, {
+export async function approvePlan(videoId: string, notes?: string, exportPresetId?: string): Promise<ApprovePlanResponse> {
+  return request(`/videos/${videoId}/plan/approve`, {
     method: "POST",
     body: JSON.stringify({ teacher_notes: notes || null, export_preset_id: exportPresetId || null }),
   });
+}
+
+export async function cancelRender(videoId: string): Promise<RenderCancelResponse> {
+  return request(`/videos/${videoId}/render/cancel`, { method: "POST" });
 }
 
 export async function revalidatePlan(videoId: string): Promise<RevalidationResult> {
