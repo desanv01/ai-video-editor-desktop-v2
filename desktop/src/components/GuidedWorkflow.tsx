@@ -1621,6 +1621,10 @@ export function GuidedWorkflowPanel({
                 <DownloadLink href={api.getSubtitleVttUrl(videoId)} label="Subtitles (VTT)" />
                 <DownloadLink href={api.getChaptersDownloadUrl(videoId)} label="Chapter Markers" />
                 <DownloadLink href={api.getPlanExportUrl(videoId)} label="Edit Plan (JSON)" />
+                <DownloadLink href={api.getQualityReportExportUrl(videoId)} label="Quality Report (JSON)" />
+                <DownloadLink href={api.getAcademicEvidenceExportUrl(videoId)} label="Academic Evidence (JSON)" />
+                <DownloadLink href={api.getAcademicEvidenceSummaryUrl(videoId)} label="Evidence Summary (Markdown)" />
+                <DownloadLink href={api.getAcademicEvidenceBundleUrl(videoId)} label="Evidence Bundle (ZIP)" />
               </div>
             ) : renderActive ? null : (
               <button

@@ -22,7 +22,6 @@ HIGHLIGHT action:
 """
 
 import os
-import json
 import uuid
 import shutil
 import logging
@@ -42,6 +41,13 @@ from services.edit_plan_payload import (
     get_end_cards,
     normalize_plan_payload,
     update_export_metadata,
+)
+from services.export_artifacts import (
+    artifact_records,
+    build_academic_evidence_artifact,
+    build_evidence_markdown,
+    write_json_artifact,
+    write_text_artifact,
 )
 from services.layout_model import LayoutMode
 from services.transcript_edit_decisions import build_synced_timeline_plan
@@ -188,6 +194,7 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
                 layout_context=layout_render_context,
                 render_job_id=render_job_id,
                 video_id=video_id,
+                db=db,
             )
             await db.flush()
             return result
@@ -412,6 +419,19 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
         # ── Step 6: Export edit plan JSON ──
         plan_filename = f"{video.id}_edit_plan.json"
         plan_path = os.path.join(settings.VIDEO_STORAGE_PATH, plan_filename)
+        quality_report_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_quality_report.json")
+        evidence_json_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_academic_evidence.json")
+        evidence_markdown_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_academic_evidence.md")
+        artifact_paths = {
+            "edited_video": output_path,
+            "subtitles_srt": srt_path if sidecar_enabled else None,
+            "subtitles_vtt": vtt_path if sidecar_enabled else None,
+            "chapters": chapters_path,
+            "plan_json": plan_path,
+            "quality_report": quality_report_path,
+            "academic_evidence_json": evidence_json_path,
+            "academic_evidence_markdown": evidence_markdown_path,
+        }
         plan_export = _export_plan_json(
             video,
             plan,
@@ -467,16 +487,9 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
                     "appended_to_output": len(end_card_clip_paths) > 0,
                 },
             },
-            artifact_paths={
-                "edited_video": output_path,
-                "subtitles_srt": srt_path if sidecar_enabled else None,
-                "subtitles_vtt": vtt_path if sidecar_enabled else None,
-                "chapters": chapters_path,
-                "plan_json": plan_path,
-            },
+            artifact_paths=artifact_paths,
         )
-        with open(plan_path, "w", encoding="utf-8") as f:
-            json.dump(plan_export, f, indent=2, default=str)
+        write_json_artifact(plan_path, plan_export)
 
         logger.info(f"  Exported chapters + plan JSON")
 
@@ -497,6 +510,17 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
         video.processed_video_path = output_path
         video.status = VideoStatus.COMPLETED
         await db.flush()
+        evaluation_artifacts = await _write_evaluation_artifacts(
+            video=video,
+            plan=plan,
+            segments=segments,
+            transcript=transcript,
+            db=db,
+            plan_export=plan_export,
+            plan_path=plan_path,
+            artifact_paths=artifact_paths,
+            render_metadata=plan_export.get("export_metadata", {}).get("render", {}),
+        )
 
         # ── Cleanup temp clips ──
         try:
@@ -543,6 +567,10 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
             "annotation_count": len(annotations),
             "educational_overlay_count": len(educational_overlays),
             "end_card_count": len(enabled_end_cards),
+            "quality_report_path": quality_report_path,
+            "academic_evidence_path": evidence_json_path,
+            "academic_evidence_markdown_path": evidence_markdown_path,
+            "artifact_count": len(evaluation_artifacts["artifact_manifest"]),
         }
 
     except RenderCancelled:
@@ -728,6 +756,7 @@ async def _render_audio_only_export(
     layout_context: LayoutRenderContext | None,
     render_job_id: str | None,
     video_id: str,
+    db: AsyncSession | None = None,
 ) -> dict:
     """Render a podcast/lecture audio-only output from the cleaned edit timeline."""
     clip_dir = os.path.join(settings.TEMP_PATH, f"audio_clips_{video.id}")
@@ -848,6 +877,19 @@ async def _render_audio_only_export(
             {"output_kind": "audio_only"},
         )
         plan_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_edit_plan.json")
+        quality_report_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_quality_report.json")
+        evidence_json_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_academic_evidence.json")
+        evidence_markdown_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_academic_evidence.md")
+        artifact_paths = {
+            "audio_only": output_path,
+            "transcript_srt": srt_path,
+            "transcript_vtt": vtt_path,
+            "chapters": chapters_path,
+            "plan_json": plan_path,
+            "quality_report": quality_report_path,
+            "academic_evidence_json": evidence_json_path,
+            "academic_evidence_markdown": evidence_markdown_path,
+        }
         metadata = await ffmpeg_service.get_video_metadata(output_path)
         output_duration = float(metadata.get("duration") or sum(clip_durations))
         plan_export = _export_plan_json(
@@ -874,19 +916,27 @@ async def _render_audio_only_export(
                     "cue_count": srt_content.count(" --> "),
                 },
             },
-            artifact_paths={
-                "audio_only": output_path,
-                "transcript_srt": srt_path,
-                "transcript_vtt": vtt_path,
-                "chapters": chapters_path,
-                "plan_json": plan_path,
-            },
+            artifact_paths=artifact_paths,
         )
-        with open(plan_path, "w", encoding="utf-8") as f:
-            json.dump(plan_export, f, indent=2, default=str)
+        write_json_artifact(plan_path, plan_export)
 
         video.processed_video_path = output_path
         video.status = VideoStatus.COMPLETED
+        if db is not None:
+            await db.flush()
+            evaluation_artifacts = await _write_evaluation_artifacts(
+                video=video,
+                plan=plan,
+                segments=segments,
+                transcript=transcript,
+                db=db,
+                plan_export=plan_export,
+                plan_path=plan_path,
+                artifact_paths=artifact_paths,
+                render_metadata=plan_export.get("export_metadata", {}).get("render", {}),
+            )
+        else:
+            evaluation_artifacts = {"artifact_manifest": artifact_records(artifact_paths)}
 
         _render_progress(
             render_job_id,
@@ -915,6 +965,10 @@ async def _render_audio_only_export(
             "transcript_cuts_applied": sync_plan["export_plan"]["transcript_cut_count"],
             "audio_clip_count": len(clip_paths),
             "audio_source": audio_source,
+            "quality_report_path": quality_report_path,
+            "academic_evidence_path": evidence_json_path,
+            "academic_evidence_markdown_path": evidence_markdown_path,
+            "artifact_count": len(evaluation_artifacts["artifact_manifest"]),
         }
     finally:
         try:
@@ -2085,10 +2139,7 @@ def _export_plan_json(
             "action": render_range["action"],
         })
 
-    artifacts = [
-        {"kind": kind, "path": path, "available": bool(path and os.path.exists(path))}
-        for kind, path in (artifact_paths or {}).items()
-    ]
+    artifacts = artifact_records(artifact_paths or {})
     render_metadata = {
         "playable_range_count": len(render_ranges),
         "transcript_cuts_applied": sync_plan.get("export_plan", {}).get("transcript_cut_count", 0),
@@ -2170,6 +2221,66 @@ def _export_plan_json(
 # ═══════════════════════════════════════════
 #  QUALITY REPORT
 # ═══════════════════════════════════════════
+
+async def _write_evaluation_artifacts(
+    *,
+    video: Video,
+    plan: EditPlan,
+    segments: List[Segment],
+    transcript: Transcript | None,
+    db: AsyncSession,
+    plan_export: dict,
+    plan_path: str,
+    artifact_paths: dict[str, str | None],
+    render_metadata: dict | None,
+) -> dict:
+    quality_report_path = artifact_paths.get("quality_report")
+    evidence_json_path = artifact_paths.get("academic_evidence_json")
+    evidence_markdown_path = artifact_paths.get("academic_evidence_markdown")
+
+    quality_report = await generate_quality_report(str(video.id), db)
+    if quality_report_path:
+        write_json_artifact(quality_report_path, quality_report)
+
+    manifest = artifact_records(artifact_paths)
+    evidence = build_academic_evidence_artifact(
+        video=video,
+        plan=plan,
+        segments=segments,
+        transcript=transcript,
+        plan_payload=plan_export.get("edit_plan_payload", {}),
+        quality_report=quality_report,
+        artifact_manifest=manifest,
+        render_metadata=render_metadata,
+    )
+    if evidence_json_path:
+        write_json_artifact(evidence_json_path, evidence)
+    if evidence_markdown_path:
+        write_text_artifact(evidence_markdown_path, build_evidence_markdown(evidence))
+
+    final_manifest = artifact_records(artifact_paths)
+    evidence["artifact_manifest"] = final_manifest
+    if evidence_json_path:
+        write_json_artifact(evidence_json_path, evidence)
+    if evidence_markdown_path:
+        write_text_artifact(evidence_markdown_path, build_evidence_markdown(evidence))
+
+    plan_payload = update_export_metadata(
+        plan_export.get("edit_plan_payload", {}),
+        artifacts=final_manifest,
+        render=render_metadata,
+    )
+    plan.plan_json = plan_payload
+    plan_export["edit_plan_payload"] = plan_payload
+    plan_export["export_metadata"] = plan_payload.get("export_metadata", {})
+    write_json_artifact(plan_path, plan_export)
+
+    return {
+        "quality_report": quality_report,
+        "academic_evidence": evidence,
+        "artifact_manifest": final_manifest,
+    }
+
 
 async def generate_quality_report(video_id: str, db: AsyncSession) -> dict:
     """
@@ -2274,5 +2385,8 @@ async def generate_quality_report(video_id: str, db: AsyncSession) -> dict:
             "vtt": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_subtitles.vtt"),
             "chapters": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_chapters.txt"),
             "plan_json": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_edit_plan.json"),
+            "quality_report": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_quality_report.json"),
+            "academic_evidence_json": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_academic_evidence.json"),
+            "academic_evidence_markdown": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_academic_evidence.md"),
         },
     }

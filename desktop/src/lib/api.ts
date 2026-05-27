@@ -466,6 +466,22 @@ export function getPlanExportUrl(videoId: string): string {
   return `${BASE_URL}/videos/${videoId}/plan/export`;
 }
 
+export function getQualityReportExportUrl(videoId: string): string {
+  return `${BASE_URL}/videos/${videoId}/report/export`;
+}
+
+export function getAcademicEvidenceExportUrl(videoId: string): string {
+  return `${BASE_URL}/videos/${videoId}/evidence/export`;
+}
+
+export function getAcademicEvidenceSummaryUrl(videoId: string): string {
+  return `${BASE_URL}/videos/${videoId}/evidence/summary`;
+}
+
+export function getAcademicEvidenceBundleUrl(videoId: string): string {
+  return `${BASE_URL}/videos/${videoId}/evidence/bundle`;
+}
+
 export function getVideoStreamUrl(videoId: string): string {
   return `${BASE_URL}/videos/${videoId}/stream`;
 }

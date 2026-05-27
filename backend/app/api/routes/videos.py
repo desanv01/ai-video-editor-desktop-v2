@@ -54,12 +54,21 @@ from services.transcript_edit_decisions import (
 )
 from services.clean_tools import analyze_clean_suggestions, apply_clean_suggestions
 from services.edit_plan_payload import (
+    normalize_plan_payload,
     update_annotations,
     update_caption_policy,
     update_educational_overlays,
     update_end_cards,
     update_export_metadata,
     update_sections_payload,
+)
+from services.export_artifacts import (
+    artifact_records,
+    build_academic_evidence_artifact,
+    build_evidence_markdown,
+    create_artifact_bundle,
+    write_json_artifact,
+    write_text_artifact,
 )
 from services.export_presets import get_export_preset, list_grouped_export_presets
 from services.topic_segmentation import analyze_topic_sections
@@ -1179,6 +1188,76 @@ async def download_plan_export(video_id: str):
     )
 
 
+@router.get("/videos/{video_id}/report/export", tags=["Export"])
+async def download_quality_report_export(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Download the persisted quality report JSON used for evaluation."""
+    from fastapi.responses import FileResponse
+
+    paths = await _ensure_evaluation_exports(video_id, db)
+    path = paths["quality_report"]
+    if not os.path.exists(path):
+        raise HTTPException(404, "Quality report export not available yet")
+
+    return FileResponse(
+        path=path,
+        media_type="application/json",
+        filename=f"{video_id}_quality_report.json",
+    )
+
+
+@router.get("/videos/{video_id}/evidence/export", tags=["Export"])
+async def download_academic_evidence_export(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Download academic evidence JSON for thesis evaluation and demos."""
+    from fastapi.responses import FileResponse
+
+    paths = await _ensure_evaluation_exports(video_id, db)
+    path = paths["academic_evidence_json"]
+    if not os.path.exists(path):
+        raise HTTPException(404, "Academic evidence export not available yet")
+
+    return FileResponse(
+        path=path,
+        media_type="application/json",
+        filename=f"{video_id}_academic_evidence.json",
+    )
+
+
+@router.get("/videos/{video_id}/evidence/summary", tags=["Export"])
+async def download_academic_evidence_summary(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Download a human-readable academic evidence summary."""
+    from fastapi.responses import FileResponse
+
+    paths = await _ensure_evaluation_exports(video_id, db)
+    path = paths["academic_evidence_markdown"]
+    if not os.path.exists(path):
+        raise HTTPException(404, "Academic evidence summary not available yet")
+
+    return FileResponse(
+        path=path,
+        media_type="text/markdown",
+        filename=f"{video_id}_academic_evidence.md",
+    )
+
+
+@router.get("/videos/{video_id}/evidence/bundle", tags=["Export"])
+async def download_academic_evidence_bundle(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Download a ZIP bundle of edit-plan, caption, chapter, quality, and evidence artifacts."""
+    from fastapi.responses import FileResponse
+
+    paths = await _ensure_evaluation_exports(video_id, db)
+    bundle_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_academic_evidence_bundle.zip")
+    records = artifact_records(paths)
+    bundle = create_artifact_bundle(bundle_path, records)
+    if not bundle["available"]:
+        raise HTTPException(404, "Academic evidence bundle could not be created")
+
+    return FileResponse(
+        path=bundle_path,
+        media_type="application/zip",
+        filename=f"{video_id}_academic_evidence_bundle.zip",
+    )
+
+
 @router.get("/videos/{video_id}/exports", tags=["Export"])
 async def list_exports(video_id: str, db: AsyncSession = Depends(get_db)):
     """List all available export files for a video."""
@@ -1211,6 +1290,33 @@ async def list_exports(video_id: str, db: AsyncSession = Depends(get_db)):
             "path": f"/api/v1/videos/{video_id}/plan/export",
             "available": os.path.exists(os.path.join(base, f"{video_id}_edit_plan.json")),
         },
+        "quality_report_json": {
+            "path": f"/api/v1/videos/{video_id}/report/export",
+            "available": os.path.exists(os.path.join(base, f"{video_id}_quality_report.json")),
+        },
+        "academic_evidence_json": {
+            "path": f"/api/v1/videos/{video_id}/evidence/export",
+            "available": os.path.exists(os.path.join(base, f"{video_id}_academic_evidence.json")),
+        },
+        "academic_evidence_markdown": {
+            "path": f"/api/v1/videos/{video_id}/evidence/summary",
+            "available": os.path.exists(os.path.join(base, f"{video_id}_academic_evidence.md")),
+        },
+        "academic_evidence_bundle": {
+            "path": f"/api/v1/videos/{video_id}/evidence/bundle",
+            "available": any(
+                os.path.exists(os.path.join(base, f"{video_id}_{suffix}"))
+                for suffix in [
+                    "edit_plan.json",
+                    "subtitles.srt",
+                    "subtitles.vtt",
+                    "chapters.txt",
+                    "quality_report.json",
+                    "academic_evidence.json",
+                    "academic_evidence.md",
+                ]
+            ),
+        },
     }
 
     return {
@@ -1223,6 +1329,84 @@ async def list_exports(video_id: str, db: AsyncSession = Depends(get_db)):
 # ═══════════════════════════════════════════
 #  BACKGROUND TASK HELPERS
 # ═══════════════════════════════════════════
+
+async def _ensure_evaluation_exports(video_id: str, db: AsyncSession) -> dict[str, str | None]:
+    result = await db.execute(
+        select(Video)
+        .options(selectinload(Video.transcript), selectinload(Video.segments), selectinload(Video.edit_plan))
+        .where(Video.id == video_id)
+    )
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(404, "Video not found")
+    if not video.edit_plan or not video.segments:
+        raise HTTPException(404, "Edit plan and segment data are required before exporting evidence")
+
+    paths = _evaluation_artifact_paths(video)
+    quality_report = await generate_quality_report(video_id, db)
+    if "error" in quality_report:
+        raise HTTPException(404, quality_report["error"])
+    write_json_artifact(paths["quality_report"], quality_report)
+
+    plan_payload = normalize_plan_payload(video.edit_plan.plan_json)
+    manifest = artifact_records(paths)
+    evidence = build_academic_evidence_artifact(
+        video=video,
+        plan=video.edit_plan,
+        segments=video.segments,
+        transcript=video.transcript,
+        plan_payload=plan_payload,
+        quality_report=quality_report,
+        artifact_manifest=manifest,
+    )
+    write_json_artifact(paths["academic_evidence_json"], evidence)
+    write_text_artifact(paths["academic_evidence_markdown"], build_evidence_markdown(evidence))
+
+    manifest = artifact_records(paths)
+    evidence["artifact_manifest"] = manifest
+    write_json_artifact(paths["academic_evidence_json"], evidence)
+    write_text_artifact(paths["academic_evidence_markdown"], build_evidence_markdown(evidence))
+
+    video.edit_plan.plan_json = update_export_metadata(
+        plan_payload,
+        artifacts=manifest,
+        render=plan_payload.get("export_metadata", {}).get("render"),
+    )
+    plan_path = paths["plan_json"]
+    if plan_path and os.path.exists(plan_path):
+        try:
+            import json as json_module
+
+            with open(plan_path, "r", encoding="utf-8") as handle:
+                plan_export = json_module.load(handle)
+            if isinstance(plan_export, dict):
+                plan_export["edit_plan_payload"] = video.edit_plan.plan_json
+                plan_export["export_metadata"] = video.edit_plan.plan_json.get("export_metadata", {})
+                write_json_artifact(plan_path, plan_export)
+        except Exception:
+            logger.warning("Could not refresh plan export artifact metadata for %s", video_id)
+    await db.commit()
+    return paths
+
+
+def _evaluation_artifact_paths(video: Video) -> dict[str, str | None]:
+    video_id = str(video.id)
+    output_kind = (
+        "audio_only"
+        if str(video.processed_video_path or "").lower().endswith((".m4a", ".mp3", ".wav"))
+        else "edited_video"
+    )
+    return {
+        output_kind: video.processed_video_path,
+        "subtitles_srt": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_subtitles.srt"),
+        "subtitles_vtt": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_subtitles.vtt"),
+        "chapters": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_chapters.txt"),
+        "plan_json": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_edit_plan.json"),
+        "quality_report": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_quality_report.json"),
+        "academic_evidence_json": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_academic_evidence.json"),
+        "academic_evidence_markdown": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_academic_evidence.md"),
+    }
+
 
 async def _embed_material_bg(material_id: str, filename: str, pages: list[dict]):
     """Embed an uploaded material after the HTTP upload response returns."""
