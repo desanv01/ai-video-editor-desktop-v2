@@ -418,7 +418,21 @@ async def create_project(
     db.add(project)
     await db.commit()
     await db.refresh(project)
-    return project
+    return ProjectDetailResponse.model_validate(
+        {
+            "id": project.id,
+            "title": project.title,
+            "description": project.description,
+            "status": project.status,
+            "source_mode": project.source_mode,
+            "project_type": project.project_type,
+            "metadata_json": project.metadata_json or {},
+            "error_message": project.error_message,
+            "created_at": project.created_at,
+            "updated_at": project.updated_at,
+            "assets": [],
+        }
+    )
 
 
 @router.get("", response_model=list[ProjectResponse], tags=["Projects"])

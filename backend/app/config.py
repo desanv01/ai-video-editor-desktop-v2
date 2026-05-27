@@ -98,7 +98,7 @@ class Settings(BaseSettings):
     # ── App ──
     APP_ENV: str = "development"
     APP_DEBUG: bool = True
-    CORS_ORIGINS: str = '["http://localhost:3000","http://localhost:5173","tauri://localhost"]'
+    CORS_ORIGINS: str = '["http://localhost:3000","http://localhost:5173","http://localhost:1420","http://127.0.0.1:1420","tauri://localhost"]'
 
     @property
     def cors_origins_list(self) -> List[str]:
