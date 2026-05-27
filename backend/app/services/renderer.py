@@ -27,7 +27,7 @@ import shutil
 import logging
 from dataclasses import dataclass, field
 from typing import List
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from db.models import Video, Transcript, Segment, EditPlan, ProjectAsset, SegmentAction, VideoStatus
@@ -55,6 +55,10 @@ from services.export_presets import get_export_preset
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 @dataclass(frozen=True)
@@ -2157,7 +2161,7 @@ def _export_plan_json(
 
     return {
         "export_version": "2.0",
-        "exported_at": datetime.utcnow().isoformat(),
+        "exported_at": _utc_now_iso(),
         "video": {
             "id": str(video.id),
             "filename": video.original_filename,

@@ -142,7 +142,8 @@ def write_media_fixtures(output_dir: Path, *, force: bool = False, ffmpeg_bin: s
     if force or not audio_path.exists():
         write_synthetic_audio(audio_path, duration)
 
-    if not shutil.which(ffmpeg_bin):
+    resolved_ffmpeg = resolve_ffmpeg_binary(ffmpeg_bin)
+    if not resolved_ffmpeg:
         raise RuntimeError(
             f"FFmpeg binary '{ffmpeg_bin}' was not found. Re-run with --metadata-only "
             "or install FFmpeg to generate MP4 media."
@@ -151,7 +152,7 @@ def write_media_fixtures(output_dir: Path, *, force: bool = False, ffmpeg_bin: s
     if force or not screen_path.exists():
         _run_ffmpeg(
             [
-                ffmpeg_bin,
+                resolved_ffmpeg,
                 "-y",
                 "-f",
                 "lavfi",
@@ -175,7 +176,7 @@ def write_media_fixtures(output_dir: Path, *, force: bool = False, ffmpeg_bin: s
     if force or not camera_path.exists():
         _run_ffmpeg(
             [
-                ffmpeg_bin,
+                resolved_ffmpeg,
                 "-y",
                 "-f",
                 "lavfi",
@@ -199,7 +200,7 @@ def write_media_fixtures(output_dir: Path, *, force: bool = False, ffmpeg_bin: s
     if force or not lecture_path.exists():
         _run_ffmpeg(
             [
-                ffmpeg_bin,
+                resolved_ffmpeg,
                 "-y",
                 "-i",
                 str(screen_path),
@@ -264,6 +265,25 @@ def write_synthetic_audio(path: Path, duration_seconds: float, sample_rate: int 
             frames.extend(struct.pack("<h", sample))
 
         audio.writeframes(frames)
+
+
+def resolve_ffmpeg_binary(ffmpeg_bin: str = "ffmpeg") -> str | None:
+    """Find FFmpeg on PATH or in common Winget install locations."""
+    if shutil.which(ffmpeg_bin):
+        return ffmpeg_bin
+
+    candidate = Path(ffmpeg_bin)
+    if candidate.exists():
+        return str(candidate)
+
+    local_app_data = Path.home() / "AppData" / "Local"
+    winget_packages = local_app_data / "Microsoft" / "WinGet" / "Packages"
+    if winget_packages.exists():
+        matches = sorted(winget_packages.glob("Gyan.FFmpeg_*/*/bin/ffmpeg.exe"))
+        if matches:
+            return str(matches[-1])
+
+    return None
 
 
 def write_slide_svgs(slides: dict[str, Any], slides_dir: Path, *, force: bool = False) -> list[Path]:
@@ -409,6 +429,7 @@ def _write_text(path: Path, content: str, *, force: bool) -> None:
 
 
 def _run_ffmpeg(args: list[str]) -> None:
+    args = [args[0], "-hide_banner", "-loglevel", "error", *args[1:]]
     subprocess.run(args, check=True)
 
 

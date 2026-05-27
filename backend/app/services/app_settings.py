@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any, Optional
 
@@ -47,7 +47,11 @@ API_KEY_SETTINGS_FIELDS = {
 
 
 def _utc_now() -> str:
-    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _utc_now_naive() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _mask_secret(value: str, fallback_last_four: Optional[str] = None) -> Optional[str]:
@@ -424,7 +428,7 @@ async def update_ai_settings(
     if request.domain_terms is not None:
         record.domain_terms_json = request.domain_terms[:100]
 
-    record.updated_at = datetime.utcnow()
+    record.updated_at = _utc_now_naive()
     await db.flush()
     apply_settings_record(record)
     reset_provider_registry_cache()

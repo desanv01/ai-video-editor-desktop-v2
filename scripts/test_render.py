@@ -26,6 +26,7 @@ import argparse
 import os
 import sys
 import time
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend", "app"))
 
@@ -91,9 +92,8 @@ async def main():
         # ── Force-approve if needed ──
         if not plan.is_approved:
             print(f"\n  ℹ️  Auto-approving plan for test...")
-            from datetime import datetime
             plan.is_approved = True
-            plan.approved_at = datetime.utcnow()
+            plan.approved_at = datetime.now(timezone.utc).replace(tzinfo=None)
             plan.teacher_notes = "Auto-approved for Phase H test"
             await db.commit()
 

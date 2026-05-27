@@ -6,7 +6,7 @@ import os
 import uuid
 import shutil
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks
@@ -789,7 +789,7 @@ async def approve_edit_plan(
         raise HTTPException(400, str(exc)) from exc
 
     plan.is_approved = True
-    plan.approved_at = datetime.utcnow()
+    plan.approved_at = datetime.now(timezone.utc).replace(tzinfo=None)
     plan.teacher_notes = request.teacher_notes
     plan.plan_json = update_export_metadata(
         plan.plan_json,
