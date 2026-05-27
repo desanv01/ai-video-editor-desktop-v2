@@ -62,6 +62,13 @@ class SyntheticMediaFixtureTests(unittest.TestCase):
         self.assertIn("synthetic_lecture_slides.pptx", planned)
         self.assertIn("synthetic_lecture_transcript.json", planned)
 
+    def test_ffmpeg_resolver_accepts_explicit_binary_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_ffmpeg = Path(temp_dir) / "ffmpeg.exe"
+            fake_ffmpeg.write_text("stub", encoding="utf-8")
+
+            self.assertEqual(synthetic_media.resolve_ffmpeg_binary(str(fake_ffmpeg)), str(fake_ffmpeg))
+
 
 if __name__ == "__main__":
     unittest.main()

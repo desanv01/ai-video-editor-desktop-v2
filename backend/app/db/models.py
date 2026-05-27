@@ -3,7 +3,7 @@ Database ORM models — represents the core data entities.
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import (
     Column, String, Text, Float, Integer, Boolean,
     DateTime, ForeignKey, Enum, JSON
@@ -18,6 +18,11 @@ import enum
 
 def enum_values(enum_class):
     return [item.value for item in enum_class]
+
+
+def utc_now_naive():
+    """Return UTC as a naive datetime for existing DateTime columns."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class VideoStatus(str, enum.Enum):
@@ -144,8 +149,8 @@ class Project(Base):
     metadata_json = Column(JSON, default=dict)
     error_message = Column(Text)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now_naive)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive)
 
     assets = relationship("ProjectAsset", back_populates="project", cascade="all, delete-orphan", order_by="ProjectAsset.created_at")
     videos = relationship("Video", back_populates="project")
@@ -176,8 +181,8 @@ class ProjectAsset(Base):
     metadata_json = Column(JSON, default=dict)
     error_message = Column(Text)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now_naive)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive)
 
     project = relationship("Project", back_populates="assets")
     legacy_video = relationship("Video", back_populates="project_asset", foreign_keys="Video.project_asset_id", uselist=False)
@@ -203,8 +208,8 @@ class Video(Base):
     audio_path = Column(String(500))
     processed_video_path = Column(String(500))   # final rendered output
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now_naive)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive)
 
     # Relationships
     project = relationship("Project", back_populates="videos")
@@ -239,7 +244,7 @@ class Transcript(Base):
     # Which ASR provider was used
     asr_provider = Column(String(30))  # "voxtral", "whisper", "whisper_fallback"
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now_naive)
 
     video = relationship("Video", back_populates="transcript")
 
@@ -289,8 +294,8 @@ class Segment(Base):
     teacher_note = Column(Text)
     is_teacher_modified = Column(Boolean, default=False)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now_naive)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive)
 
     video = relationship("Video", back_populates="segments")
 
@@ -308,7 +313,7 @@ class Scene(Base):
     thumbnail_path = Column(String(500))
     confidence = Column(Float)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now_naive)
 
     video = relationship("Video", back_populates="scenes")
 
@@ -339,8 +344,8 @@ class EditPlan(Base):
     approved_at = Column(DateTime)
     teacher_notes = Column(Text)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now_naive)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive)
 
     video = relationship("Video", back_populates="edit_plan")
 
@@ -357,7 +362,7 @@ class CourseMaterial(Base):
     chunk_count = Column(Integer, default=0)
     is_embedded = Column(Boolean, default=False)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now_naive)
 
 
 class AppAISettings(Base):
@@ -383,5 +388,5 @@ class AppAISettings(Base):
     # Domain terms are persisted here instead of mutating process memory only.
     domain_terms_json = Column(JSON, nullable=False, default=list)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now_naive)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive)

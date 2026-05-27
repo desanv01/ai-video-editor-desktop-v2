@@ -1,7 +1,7 @@
 import sys
 import types
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -354,7 +354,7 @@ class ProjectModelTests(unittest.TestCase):
 
     def test_source_sync_plan_marks_manual_adjustment_and_waveform_readiness(self):
         project_id = uuid4()
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         screen = ProjectAsset(
             id=uuid4(),
             project_id=project_id,

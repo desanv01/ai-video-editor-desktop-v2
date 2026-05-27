@@ -24,6 +24,7 @@ import sys
 import json
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -318,9 +319,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 if not plan:
                     return [TextContent(type="text", text=json.dumps({"error": "No edit plan found"}))]
 
-                from datetime import datetime
                 plan.is_approved = True
-                plan.approved_at = datetime.utcnow()
+                plan.approved_at = datetime.now(timezone.utc).replace(tzinfo=None)
                 plan.teacher_notes = arguments.get("teacher_notes")
                 await db.commit()
 
