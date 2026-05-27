@@ -102,6 +102,8 @@ def build_academic_evidence_artifact(
 
     export_metadata = dict_value(plan_payload.get("export_metadata"))
     selected_preset = dict_value(export_metadata.get("selected_preset"))
+    evaluation_metrics = dict_value(quality_report.get("evaluation_metrics"))
+    evaluation_summary = dict_value(evaluation_metrics.get("summary"))
 
     return {
         "schema_version": EXPORT_ARTIFACT_SCHEMA_VERSION,
@@ -133,7 +135,15 @@ def build_academic_evidence_artifact(
             "teacher_overrides": teacher_overrides,
             "teacher_override_rate": override_rate,
             "transcript_cut_count": dict_value(quality_report.get("transcript_edit_sync")).get("transcript_cut_count"),
+            "transcription_accuracy_proxy_score": evaluation_summary.get("transcription_accuracy_proxy_score"),
+            "processing_time_seconds": evaluation_summary.get("processing_time_seconds"),
+            "estimated_cost_usd": evaluation_summary.get("estimated_cost_usd"),
+            "filler_removal_rate": evaluation_summary.get("filler_removal_rate"),
+            "dead_air_removal_rate": evaluation_summary.get("dead_air_removal_rate"),
+            "segment_quality_score": evaluation_summary.get("segment_quality_score"),
+            "layout_correctness_score": evaluation_summary.get("layout_correctness_score"),
         },
+        "evaluation_metrics": evaluation_metrics,
         "decision_audit": [
             {
                 "segment_index": getattr(segment, "segment_index", None),
@@ -197,6 +207,11 @@ def build_evidence_markdown(evidence: dict[str, Any]) -> str:
         f"- Reduction: {metrics.get('reduction_percent', 0)}%",
         f"- Teacher overrides: {metrics.get('teacher_overrides', 0)} of {metrics.get('total_segments', 0)} segments",
         f"- Transcript cuts: {metrics.get('transcript_cut_count') or 0}",
+        f"- Transcription accuracy proxy: {format_score(metrics.get('transcription_accuracy_proxy_score'))}",
+        f"- Processing time: {format_seconds(metrics.get('processing_time_seconds'))}",
+        f"- Estimated cost: {format_usd(metrics.get('estimated_cost_usd'))}",
+        f"- Segment quality score: {format_score(metrics.get('segment_quality_score'))}",
+        f"- Layout correctness score: {format_score(metrics.get('layout_correctness_score'))}",
         "",
         "## AI Trace",
         "",
@@ -271,6 +286,20 @@ def format_seconds(value: Any) -> str:
     minutes = int(seconds // 60)
     remaining = int(round(seconds % 60))
     return f"{minutes}:{remaining:02d}"
+
+
+def format_score(value: Any) -> str:
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
+def format_usd(value: Any) -> str:
+    try:
+        return f"${float(value):.5f}"
+    except (TypeError, ValueError):
+        return "n/a"
 
 
 def utc_now() -> str:

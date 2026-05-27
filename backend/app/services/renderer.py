@@ -49,6 +49,7 @@ from services.export_artifacts import (
     write_json_artifact,
     write_text_artifact,
 )
+from services.evaluation_metrics import build_evaluation_metrics
 from services.layout_model import LayoutMode
 from services.transcript_edit_decisions import build_synced_timeline_plan
 from services.export_presets import get_export_preset
@@ -2304,6 +2305,11 @@ async def generate_quality_report(video_id: str, db: AsyncSession) -> dict:
     )
     segments = list(result.scalars().all())
 
+    result = await db.execute(
+        select(Transcript).where(Transcript.video_id == video_id)
+    )
+    transcript = result.scalar_one_or_none()
+
     if not plan or not segments:
         return {"error": "No data available"}
 
@@ -2312,6 +2318,7 @@ async def generate_quality_report(video_id: str, db: AsyncSession) -> dict:
         segments=segments,
         duration_seconds=video.duration_seconds if video else None,
     )
+    plan_payload = normalize_plan_payload(plan.plan_json)
 
     # ── Compute metrics ──
     total_fillers = sum(s.filler_count or 0 for s in segments)
@@ -2360,6 +2367,16 @@ async def generate_quality_report(video_id: str, db: AsyncSession) -> dict:
         except Exception:
             pass
 
+    evaluation_metrics = build_evaluation_metrics(
+        video=video,
+        plan=plan,
+        segments=segments,
+        transcript=transcript,
+        plan_payload=plan_payload,
+        actual_output_duration_seconds=output_duration,
+    )
+    evaluation_summary = evaluation_metrics["summary"]
+
     return {
         "video_id": str(video_id),
         "video_filename": video.original_filename if video else None,
@@ -2381,6 +2398,10 @@ async def generate_quality_report(video_id: str, db: AsyncSession) -> dict:
         "action_distribution": action_dist,
         "teacher_modifications": teacher_modified,
         "teacher_overrides": teacher_overrides,
+        "teacher_override_rate": evaluation_summary["teacher_override_rate"],
+        "processing_time_seconds": evaluation_summary["processing_time_seconds"],
+        "estimated_cost_usd": evaluation_summary["estimated_cost_usd"],
+        "evaluation_metrics": evaluation_metrics,
         "transcript_edit_sync": sync_plan["export_plan"],
         "is_rendered": video.status == VideoStatus.COMPLETED if video else False,
         "output_files": {

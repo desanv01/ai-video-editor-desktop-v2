@@ -74,6 +74,17 @@ class ExportArtifactTests(unittest.TestCase):
             "time_saved_seconds": 45.0,
             "reduction_percent": 37.5,
             "transcript_edit_sync": {"transcript_cut_count": 2},
+            "evaluation_metrics": {
+                "summary": {
+                    "transcription_accuracy_proxy_score": 0.91,
+                    "processing_time_seconds": 83.5,
+                    "estimated_cost_usd": 0.0,
+                    "filler_removal_rate": 0.8,
+                    "dead_air_removal_rate": 0.75,
+                    "segment_quality_score": 0.86,
+                    "layout_correctness_score": 1.0,
+                }
+            },
         }
 
         evidence = build_academic_evidence_artifact(
@@ -91,12 +102,16 @@ class ExportArtifactTests(unittest.TestCase):
         self.assertEqual(evidence["provider_trace"]["transcription_provider"], "whisper-cpp")
         self.assertEqual(evidence["metrics_summary"]["teacher_overrides"], 1)
         self.assertEqual(evidence["metrics_summary"]["teacher_override_rate"], 0.5)
+        self.assertEqual(evidence["metrics_summary"]["segment_quality_score"], 0.86)
+        self.assertEqual(evidence["evaluation_metrics"]["summary"]["layout_correctness_score"], 1.0)
         self.assertEqual(evidence["decision_audit"][1]["final_action"], "cut")
         self.assertEqual(evidence["chapters"][0]["label"], "Intro")
 
         markdown = build_evidence_markdown(evidence)
         self.assertIn("AI Video Editor Evidence Summary", markdown)
         self.assertIn("Teacher overrides: 1 of 2 segments", markdown)
+        self.assertIn("Transcription accuracy proxy: 0.91", markdown)
+        self.assertIn("Estimated cost: $0.00000", markdown)
 
     def test_artifact_records_and_bundle_include_available_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:
