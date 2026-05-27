@@ -42,6 +42,10 @@ from agents.orchestrator import run_processing_pipeline, run_render_pipeline
 from agents.edit_planner import revalidate_edit_plan
 from services.ffmpeg import ffmpeg_service
 from services.lecture_structure import build_structure_references_from_assets
+from services.mode_comparison import (
+    build_mode_comparison_markdown,
+    build_mode_comparison_report,
+)
 from services.renderer import generate_quality_report
 from services.text_extraction import text_extractor
 from services.transcript_timeline import build_transcript_timeline
@@ -921,6 +925,12 @@ async def get_quality_report(video_id: str, db: AsyncSession = Depends(get_db)):
     return report
 
 
+@router.get("/videos/{video_id}/mode-comparison", tags=["Reports"])
+async def get_mode_comparison_report(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Compare API, local, and hybrid mode tradeoffs for the processed video."""
+    return await _build_mode_comparison_for_video(video_id, db)
+
+
 # ═══════════════════════════════════════════
 #  COURSE MATERIALS
 # ═══════════════════════════════════════════
@@ -1205,6 +1215,40 @@ async def download_quality_report_export(video_id: str, db: AsyncSession = Depen
     )
 
 
+@router.get("/videos/{video_id}/mode-comparison/export", tags=["Export"])
+async def download_mode_comparison_export(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Download the API/local/hybrid comparison report JSON."""
+    from fastapi.responses import FileResponse
+
+    paths = await _ensure_evaluation_exports(video_id, db)
+    path = paths["mode_comparison_json"]
+    if not path or not os.path.exists(path):
+        raise HTTPException(404, "Mode comparison export not available yet")
+
+    return FileResponse(
+        path=path,
+        media_type="application/json",
+        filename=f"{video_id}_mode_comparison.json",
+    )
+
+
+@router.get("/videos/{video_id}/mode-comparison/summary", tags=["Export"])
+async def download_mode_comparison_summary(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Download a Markdown API/local/hybrid comparison summary."""
+    from fastapi.responses import FileResponse
+
+    paths = await _ensure_evaluation_exports(video_id, db)
+    path = paths["mode_comparison_markdown"]
+    if not path or not os.path.exists(path):
+        raise HTTPException(404, "Mode comparison summary not available yet")
+
+    return FileResponse(
+        path=path,
+        media_type="text/markdown",
+        filename=f"{video_id}_mode_comparison.md",
+    )
+
+
 @router.get("/videos/{video_id}/evidence/export", tags=["Export"])
 async def download_academic_evidence_export(video_id: str, db: AsyncSession = Depends(get_db)):
     """Download academic evidence JSON for thesis evaluation and demos."""
@@ -1294,6 +1338,14 @@ async def list_exports(video_id: str, db: AsyncSession = Depends(get_db)):
             "path": f"/api/v1/videos/{video_id}/report/export",
             "available": os.path.exists(os.path.join(base, f"{video_id}_quality_report.json")),
         },
+        "mode_comparison_json": {
+            "path": f"/api/v1/videos/{video_id}/mode-comparison/export",
+            "available": os.path.exists(os.path.join(base, f"{video_id}_mode_comparison.json")),
+        },
+        "mode_comparison_markdown": {
+            "path": f"/api/v1/videos/{video_id}/mode-comparison/summary",
+            "available": os.path.exists(os.path.join(base, f"{video_id}_mode_comparison.md")),
+        },
         "academic_evidence_json": {
             "path": f"/api/v1/videos/{video_id}/evidence/export",
             "available": os.path.exists(os.path.join(base, f"{video_id}_academic_evidence.json")),
@@ -1312,6 +1364,8 @@ async def list_exports(video_id: str, db: AsyncSession = Depends(get_db)):
                     "subtitles.vtt",
                     "chapters.txt",
                     "quality_report.json",
+                    "mode_comparison.json",
+                    "mode_comparison.md",
                     "academic_evidence.json",
                     "academic_evidence.md",
                 ]
@@ -1330,6 +1384,35 @@ async def list_exports(video_id: str, db: AsyncSession = Depends(get_db)):
 #  BACKGROUND TASK HELPERS
 # ═══════════════════════════════════════════
 
+async def _build_mode_comparison_for_video(video_id: str, db: AsyncSession) -> dict:
+    result = await db.execute(
+        select(Video)
+        .options(selectinload(Video.transcript), selectinload(Video.segments), selectinload(Video.edit_plan))
+        .where(Video.id == video_id)
+    )
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(404, "Video not found")
+    if not video.edit_plan or not video.segments:
+        raise HTTPException(404, "Edit plan and segment data are required before comparing provider modes")
+
+    quality_report = await generate_quality_report(video_id, db)
+    if "error" in quality_report:
+        raise HTTPException(404, quality_report["error"])
+
+    settings_record = await get_or_create_ai_settings(db)
+    return build_mode_comparison_report(
+        video=video,
+        plan=video.edit_plan,
+        segments=video.segments,
+        transcript=video.transcript,
+        plan_payload=normalize_plan_payload(video.edit_plan.plan_json),
+        quality_report=quality_report,
+        settings_record=settings_record,
+        render_job=get_latest_render_job(video_id),
+    )
+
+
 async def _ensure_evaluation_exports(video_id: str, db: AsyncSession) -> dict[str, str | None]:
     result = await db.execute(
         select(Video)
@@ -1347,8 +1430,21 @@ async def _ensure_evaluation_exports(video_id: str, db: AsyncSession) -> dict[st
     if "error" in quality_report:
         raise HTTPException(404, quality_report["error"])
     write_json_artifact(paths["quality_report"], quality_report)
-
+    settings_record = await get_or_create_ai_settings(db)
     plan_payload = normalize_plan_payload(video.edit_plan.plan_json)
+    mode_comparison = build_mode_comparison_report(
+        video=video,
+        plan=video.edit_plan,
+        segments=video.segments,
+        transcript=video.transcript,
+        plan_payload=plan_payload,
+        quality_report=quality_report,
+        settings_record=settings_record,
+        render_job=get_latest_render_job(video_id),
+    )
+    write_json_artifact(paths["mode_comparison_json"], mode_comparison)
+    write_text_artifact(paths["mode_comparison_markdown"], build_mode_comparison_markdown(mode_comparison))
+
     manifest = artifact_records(paths)
     evidence = build_academic_evidence_artifact(
         video=video,
@@ -1403,6 +1499,8 @@ def _evaluation_artifact_paths(video: Video) -> dict[str, str | None]:
         "chapters": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_chapters.txt"),
         "plan_json": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_edit_plan.json"),
         "quality_report": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_quality_report.json"),
+        "mode_comparison_json": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_mode_comparison.json"),
+        "mode_comparison_markdown": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_mode_comparison.md"),
         "academic_evidence_json": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_academic_evidence.json"),
         "academic_evidence_markdown": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_academic_evidence.md"),
     }

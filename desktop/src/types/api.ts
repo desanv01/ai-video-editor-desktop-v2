@@ -846,6 +846,89 @@ export interface EvaluationMetrics {
   summary: Record<string, number | null>;
 }
 
+// -- Mode Comparison --
+
+export interface ModeComparisonReport {
+  schema_version: "phase10.mode-comparison.v1" | string;
+  generated_at: string;
+  video_id: string;
+  project_id: string | null;
+  current_mode: AIProcessingMode | string;
+  baseline: {
+    duration_seconds: number;
+    estimated_output_duration_seconds: number;
+    segment_count: number;
+    transcript_provider: string | null;
+    quality_summary: Record<string, number | null>;
+    render_job?: RenderJob | null;
+  };
+  workflow: {
+    step: string;
+    title: string;
+    status: string;
+    modes: string[];
+    output: string;
+  }[];
+  stage_matrix: Record<string, Record<string, {
+    provider_strategy: string;
+    provider: Record<string, unknown>;
+  }>>;
+  modes: ModeComparisonProfile[];
+  comparison: {
+    fastest_mode: string;
+    lowest_cost_mode: string;
+    highest_quality_mode: string;
+    recommended_mode: string;
+    ranking: {
+      mode: string;
+      label: string;
+      score: number;
+      readiness: string;
+      estimated_total_runtime_seconds: number;
+      estimated_total_cost_usd: number;
+      estimated_quality_score: number;
+    }[];
+    delta_vs_current_mode: Record<string, {
+      runtime_seconds: number;
+      cost_usd: number;
+      quality_score: number;
+    }>;
+  };
+}
+
+export interface ModeComparisonProfile {
+  mode: AIProcessingMode | string;
+  label: string;
+  summary: {
+    estimated_total_runtime_seconds: number;
+    estimated_total_cost_usd: number;
+    estimated_quality_score: number;
+    privacy_score: number;
+    readiness: string;
+    stage_count: number;
+  };
+  stages: ModeComparisonStage[];
+  tradeoffs: string[];
+}
+
+export interface ModeComparisonStage {
+  stage: "transcription" | "analysis" | "edit_planning" | "rendering" | string;
+  label: string;
+  mode: AIProcessingMode | "local" | string;
+  provider_strategy: string;
+  provider: Record<string, unknown>;
+  estimated_runtime_seconds: number;
+  estimated_cost_usd: number;
+  estimated_quality_score: number;
+  privacy_score: number;
+  readiness: {
+    status: string;
+    issues: string[];
+    checks: string[];
+  };
+  notes: string;
+}
+
 // ── Chapters ──
 
 export interface Chapter {

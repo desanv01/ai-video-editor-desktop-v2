@@ -141,6 +141,10 @@ export function StatsPanel({ videoId, plan, onApprove, approving }: Props) {
             className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
             <Download className="w-3 h-3" /> Quality Report
           </a>
+          <a href={api.getModeComparisonSummaryUrl(videoId)} target="_blank" rel="noreferrer"
+            className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
+            <Download className="w-3 h-3" /> Mode Comparison
+          </a>
           <a href={api.getAcademicEvidenceBundleUrl(videoId)} target="_blank" rel="noreferrer"
             className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
             <Download className="w-3 h-3" /> Evidence Bundle

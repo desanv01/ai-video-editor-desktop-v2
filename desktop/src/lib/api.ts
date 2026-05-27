@@ -8,6 +8,7 @@
 import type {
   Video, VideoUploadResponse, Segment, EditPlan,
   ProcessingStatus, QualityReport,
+  ModeComparisonReport,
   RevalidationResult, SegmentAction, BackendAISettings,
   BackendAISettingsUpdate,
   TranscriptTimeline,
@@ -364,6 +365,10 @@ export async function getQualityReport(videoId: string): Promise<QualityReport> 
   return request(`/videos/${videoId}/report`);
 }
 
+export async function getModeComparisonReport(videoId: string): Promise<ModeComparisonReport> {
+  return request(`/videos/${videoId}/mode-comparison`);
+}
+
 // ═══════════════════════════════════════════
 //  COURSE MATERIALS
 // ═══════════════════════════════════════════
@@ -468,6 +473,14 @@ export function getPlanExportUrl(videoId: string): string {
 
 export function getQualityReportExportUrl(videoId: string): string {
   return `${BASE_URL}/videos/${videoId}/report/export`;
+}
+
+export function getModeComparisonExportUrl(videoId: string): string {
+  return `${BASE_URL}/videos/${videoId}/mode-comparison/export`;
+}
+
+export function getModeComparisonSummaryUrl(videoId: string): string {
+  return `${BASE_URL}/videos/${videoId}/mode-comparison/summary`;
 }
 
 export function getAcademicEvidenceExportUrl(videoId: string): string {
