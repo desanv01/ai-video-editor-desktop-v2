@@ -45,7 +45,15 @@ from services.edit_plan_payload import (
 from services.export_artifacts import (
     artifact_records,
     build_academic_evidence_artifact,
+    build_before_after_comparison,
     build_evidence_markdown,
+    build_generated_evidence_index,
+    build_metrics_summary_artifact,
+    build_provider_mode_trace,
+    build_timeline_decision_rows,
+    build_timeline_decisions_artifact,
+    TIMELINE_DECISION_CSV_FIELDS,
+    write_csv_artifact,
     write_json_artifact,
     write_text_artifact,
 )
@@ -427,6 +435,12 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
         quality_report_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_quality_report.json")
         evidence_json_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_academic_evidence.json")
         evidence_markdown_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_academic_evidence.md")
+        before_after_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_before_after_comparison.json")
+        timeline_json_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_timeline_decisions.json")
+        timeline_csv_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_timeline_decisions.csv")
+        provider_mode_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_provider_mode_trace.json")
+        metrics_summary_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_metrics_summary.json")
+        evidence_index_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_generated_evidence_index.json")
         artifact_paths = {
             "edited_video": output_path,
             "subtitles_srt": srt_path if sidecar_enabled else None,
@@ -436,6 +450,12 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
             "quality_report": quality_report_path,
             "academic_evidence_json": evidence_json_path,
             "academic_evidence_markdown": evidence_markdown_path,
+            "before_after_comparison_json": before_after_path,
+            "timeline_decisions_json": timeline_json_path,
+            "timeline_decisions_csv": timeline_csv_path,
+            "provider_mode_trace_json": provider_mode_path,
+            "metrics_summary_json": metrics_summary_path,
+            "generated_evidence_index_json": evidence_index_path,
         }
         plan_export = _export_plan_json(
             video,
@@ -885,6 +905,12 @@ async def _render_audio_only_export(
         quality_report_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_quality_report.json")
         evidence_json_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_academic_evidence.json")
         evidence_markdown_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_academic_evidence.md")
+        before_after_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_before_after_comparison.json")
+        timeline_json_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_timeline_decisions.json")
+        timeline_csv_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_timeline_decisions.csv")
+        provider_mode_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_provider_mode_trace.json")
+        metrics_summary_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_metrics_summary.json")
+        evidence_index_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_generated_evidence_index.json")
         artifact_paths = {
             "audio_only": output_path,
             "transcript_srt": srt_path,
@@ -894,6 +920,12 @@ async def _render_audio_only_export(
             "quality_report": quality_report_path,
             "academic_evidence_json": evidence_json_path,
             "academic_evidence_markdown": evidence_markdown_path,
+            "before_after_comparison_json": before_after_path,
+            "timeline_decisions_json": timeline_json_path,
+            "timeline_decisions_csv": timeline_csv_path,
+            "provider_mode_trace_json": provider_mode_path,
+            "metrics_summary_json": metrics_summary_path,
+            "generated_evidence_index_json": evidence_index_path,
         }
         metadata = await ffmpeg_service.get_video_metadata(output_path)
         output_duration = float(metadata.get("duration") or sum(clip_durations))
@@ -2247,13 +2279,65 @@ async def _write_evaluation_artifacts(
     if quality_report_path:
         write_json_artifact(quality_report_path, quality_report)
 
+    plan_payload = plan_export.get("edit_plan_payload", {})
+    before_after_path = artifact_paths.get("before_after_comparison_json")
+    timeline_json_path = artifact_paths.get("timeline_decisions_json")
+    timeline_csv_path = artifact_paths.get("timeline_decisions_csv")
+    provider_mode_path = artifact_paths.get("provider_mode_trace_json")
+    metrics_summary_path = artifact_paths.get("metrics_summary_json")
+    evidence_index_path = artifact_paths.get("generated_evidence_index_json")
+    if before_after_path:
+        write_json_artifact(
+            before_after_path,
+            build_before_after_comparison(
+                video=video,
+                plan=plan,
+                segments=segments,
+                plan_payload=plan_payload,
+                quality_report=quality_report,
+            ),
+        )
+    if timeline_json_path:
+        write_json_artifact(
+            timeline_json_path,
+            build_timeline_decisions_artifact(
+                segments=segments,
+                plan_payload=plan_payload,
+                quality_report=quality_report,
+            ),
+        )
+    if timeline_csv_path:
+        write_csv_artifact(
+            timeline_csv_path,
+            build_timeline_decision_rows(
+                segments=segments,
+                plan_payload=plan_payload,
+                quality_report=quality_report,
+            ),
+            TIMELINE_DECISION_CSV_FIELDS,
+        )
+    if provider_mode_path:
+        write_json_artifact(
+            provider_mode_path,
+            build_provider_mode_trace(
+                transcript=transcript,
+                plan_payload=plan_payload,
+                quality_report=quality_report,
+            ),
+        )
+    if metrics_summary_path:
+        write_json_artifact(metrics_summary_path, build_metrics_summary_artifact(quality_report))
+
     manifest = artifact_records(artifact_paths)
+    if evidence_index_path:
+        write_json_artifact(evidence_index_path, build_generated_evidence_index(manifest))
+        manifest = artifact_records(artifact_paths)
     evidence = build_academic_evidence_artifact(
         video=video,
         plan=plan,
         segments=segments,
         transcript=transcript,
-        plan_payload=plan_export.get("edit_plan_payload", {}),
+        plan_payload=plan_payload,
         quality_report=quality_report,
         artifact_manifest=manifest,
         render_metadata=render_metadata,
@@ -2264,7 +2348,11 @@ async def _write_evaluation_artifacts(
         write_text_artifact(evidence_markdown_path, build_evidence_markdown(evidence))
 
     final_manifest = artifact_records(artifact_paths)
+    if evidence_index_path:
+        write_json_artifact(evidence_index_path, build_generated_evidence_index(final_manifest))
+        final_manifest = artifact_records(artifact_paths)
     evidence["artifact_manifest"] = final_manifest
+    evidence["generated_evidence_files"] = build_generated_evidence_index(final_manifest)
     if evidence_json_path:
         write_json_artifact(evidence_json_path, evidence)
     if evidence_markdown_path:
@@ -2413,5 +2501,11 @@ async def generate_quality_report(video_id: str, db: AsyncSession) -> dict:
             "quality_report": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_quality_report.json"),
             "academic_evidence_json": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_academic_evidence.json"),
             "academic_evidence_markdown": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_academic_evidence.md"),
+            "before_after_comparison": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_before_after_comparison.json"),
+            "timeline_decisions_json": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_timeline_decisions.json"),
+            "timeline_decisions_csv": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_timeline_decisions.csv"),
+            "provider_mode_trace": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_provider_mode_trace.json"),
+            "metrics_summary": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_metrics_summary.json"),
+            "generated_evidence_index": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_generated_evidence_index.json"),
         },
     }

@@ -495,6 +495,22 @@ export function getAcademicEvidenceBundleUrl(videoId: string): string {
   return `${BASE_URL}/videos/${videoId}/evidence/bundle`;
 }
 
+export function getBeforeAfterComparisonUrl(videoId: string): string {
+  return `${BASE_URL}/videos/${videoId}/evidence/before-after`;
+}
+
+export function getTimelineDecisionsUrl(videoId: string): string {
+  return `${BASE_URL}/videos/${videoId}/evidence/timeline-decisions`;
+}
+
+export function getProviderModeTraceUrl(videoId: string): string {
+  return `${BASE_URL}/videos/${videoId}/evidence/provider-mode`;
+}
+
+export function getMetricsSummaryUrl(videoId: string): string {
+  return `${BASE_URL}/videos/${videoId}/evidence/metrics-summary`;
+}
+
 export function getVideoStreamUrl(videoId: string): string {
   return `${BASE_URL}/videos/${videoId}/stream`;
 }
