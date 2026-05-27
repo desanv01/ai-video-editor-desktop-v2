@@ -22,6 +22,8 @@ ARTIFACT_LABELS = {
     "chapters": "Chapter markers",
     "plan_json": "Edit plan JSON",
     "quality_report": "Quality report JSON",
+    "mode_comparison_json": "API/local/hybrid comparison JSON",
+    "mode_comparison_markdown": "API/local/hybrid comparison summary",
     "academic_evidence_json": "Academic evidence JSON",
     "academic_evidence_markdown": "Academic evidence summary",
 }
