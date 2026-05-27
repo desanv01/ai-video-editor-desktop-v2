@@ -145,6 +145,22 @@ export function StatsPanel({ videoId, plan, onApprove, approving }: Props) {
             className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
             <Download className="w-3 h-3" /> Mode Comparison
           </a>
+          <a href={api.getBeforeAfterComparisonUrl(videoId)} target="_blank" rel="noreferrer"
+            className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
+            <Download className="w-3 h-3" /> Before/After
+          </a>
+          <a href={api.getTimelineDecisionsUrl(videoId)} target="_blank" rel="noreferrer"
+            className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
+            <Download className="w-3 h-3" /> Timeline Decisions
+          </a>
+          <a href={api.getProviderModeTraceUrl(videoId)} target="_blank" rel="noreferrer"
+            className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
+            <Download className="w-3 h-3" /> Provider Mode
+          </a>
+          <a href={api.getMetricsSummaryUrl(videoId)} target="_blank" rel="noreferrer"
+            className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
+            <Download className="w-3 h-3" /> Metrics Summary
+          </a>
           <a href={api.getAcademicEvidenceBundleUrl(videoId)} target="_blank" rel="noreferrer"
             className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
             <Download className="w-3 h-3" /> Evidence Bundle

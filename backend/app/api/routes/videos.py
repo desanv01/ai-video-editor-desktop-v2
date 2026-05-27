@@ -69,8 +69,16 @@ from services.edit_plan_payload import (
 from services.export_artifacts import (
     artifact_records,
     build_academic_evidence_artifact,
+    build_before_after_comparison,
     build_evidence_markdown,
+    build_generated_evidence_index,
+    build_metrics_summary_artifact,
+    build_provider_mode_trace,
+    build_timeline_decision_rows,
+    build_timeline_decisions_artifact,
     create_artifact_bundle,
+    TIMELINE_DECISION_CSV_FIELDS,
+    write_csv_artifact,
     write_json_artifact,
     write_text_artifact,
 )
@@ -1283,6 +1291,74 @@ async def download_academic_evidence_summary(video_id: str, db: AsyncSession = D
     )
 
 
+@router.get("/videos/{video_id}/evidence/before-after", tags=["Export"])
+async def download_before_after_comparison(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Download a before/after duration and editing outcome comparison."""
+    from fastapi.responses import FileResponse
+
+    paths = await _ensure_evaluation_exports(video_id, db)
+    path = paths["before_after_comparison_json"]
+    if not path or not os.path.exists(path):
+        raise HTTPException(404, "Before/after comparison export not available yet")
+
+    return FileResponse(
+        path=path,
+        media_type="application/json",
+        filename=f"{video_id}_before_after_comparison.json",
+    )
+
+
+@router.get("/videos/{video_id}/evidence/timeline-decisions", tags=["Export"])
+async def download_timeline_decisions(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Download timeline decisions as a CSV table for thesis appendices."""
+    from fastapi.responses import FileResponse
+
+    paths = await _ensure_evaluation_exports(video_id, db)
+    path = paths["timeline_decisions_csv"]
+    if not path or not os.path.exists(path):
+        raise HTTPException(404, "Timeline decisions export not available yet")
+
+    return FileResponse(
+        path=path,
+        media_type="text/csv",
+        filename=f"{video_id}_timeline_decisions.csv",
+    )
+
+
+@router.get("/videos/{video_id}/evidence/provider-mode", tags=["Export"])
+async def download_provider_mode_trace(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Download the AI provider mode trace used for this processed video."""
+    from fastapi.responses import FileResponse
+
+    paths = await _ensure_evaluation_exports(video_id, db)
+    path = paths["provider_mode_trace_json"]
+    if not path or not os.path.exists(path):
+        raise HTTPException(404, "Provider mode trace export not available yet")
+
+    return FileResponse(
+        path=path,
+        media_type="application/json",
+        filename=f"{video_id}_provider_mode_trace.json",
+    )
+
+
+@router.get("/videos/{video_id}/evidence/metrics-summary", tags=["Export"])
+async def download_metrics_summary(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Download a compact thesis metrics summary JSON."""
+    from fastapi.responses import FileResponse
+
+    paths = await _ensure_evaluation_exports(video_id, db)
+    path = paths["metrics_summary_json"]
+    if not path or not os.path.exists(path):
+        raise HTTPException(404, "Metrics summary export not available yet")
+
+    return FileResponse(
+        path=path,
+        media_type="application/json",
+        filename=f"{video_id}_metrics_summary.json",
+    )
+
+
 @router.get("/videos/{video_id}/evidence/bundle", tags=["Export"])
 async def download_academic_evidence_bundle(video_id: str, db: AsyncSession = Depends(get_db)):
     """Download a ZIP bundle of edit-plan, caption, chapter, quality, and evidence artifacts."""
@@ -1354,6 +1430,22 @@ async def list_exports(video_id: str, db: AsyncSession = Depends(get_db)):
             "path": f"/api/v1/videos/{video_id}/evidence/summary",
             "available": os.path.exists(os.path.join(base, f"{video_id}_academic_evidence.md")),
         },
+        "before_after_comparison_json": {
+            "path": f"/api/v1/videos/{video_id}/evidence/before-after",
+            "available": os.path.exists(os.path.join(base, f"{video_id}_before_after_comparison.json")),
+        },
+        "timeline_decisions_csv": {
+            "path": f"/api/v1/videos/{video_id}/evidence/timeline-decisions",
+            "available": os.path.exists(os.path.join(base, f"{video_id}_timeline_decisions.csv")),
+        },
+        "provider_mode_trace_json": {
+            "path": f"/api/v1/videos/{video_id}/evidence/provider-mode",
+            "available": os.path.exists(os.path.join(base, f"{video_id}_provider_mode_trace.json")),
+        },
+        "metrics_summary_json": {
+            "path": f"/api/v1/videos/{video_id}/evidence/metrics-summary",
+            "available": os.path.exists(os.path.join(base, f"{video_id}_metrics_summary.json")),
+        },
         "academic_evidence_bundle": {
             "path": f"/api/v1/videos/{video_id}/evidence/bundle",
             "available": any(
@@ -1368,6 +1460,11 @@ async def list_exports(video_id: str, db: AsyncSession = Depends(get_db)):
                     "mode_comparison.md",
                     "academic_evidence.json",
                     "academic_evidence.md",
+                    "before_after_comparison.json",
+                    "timeline_decisions.csv",
+                    "provider_mode_trace.json",
+                    "metrics_summary.json",
+                    "generated_evidence_index.json",
                 ]
             ),
         },
@@ -1444,7 +1541,41 @@ async def _ensure_evaluation_exports(video_id: str, db: AsyncSession) -> dict[st
     )
     write_json_artifact(paths["mode_comparison_json"], mode_comparison)
     write_text_artifact(paths["mode_comparison_markdown"], build_mode_comparison_markdown(mode_comparison))
+    before_after = build_before_after_comparison(
+        video=video,
+        plan=video.edit_plan,
+        segments=video.segments,
+        plan_payload=plan_payload,
+        quality_report=quality_report,
+    )
+    timeline_decisions = build_timeline_decisions_artifact(
+        segments=video.segments,
+        plan_payload=plan_payload,
+        quality_report=quality_report,
+    )
+    provider_trace = build_provider_mode_trace(
+        transcript=video.transcript,
+        plan_payload=plan_payload,
+        quality_report=quality_report,
+        mode_comparison=mode_comparison,
+    )
+    metrics_summary = build_metrics_summary_artifact(quality_report)
+    write_json_artifact(paths["before_after_comparison_json"], before_after)
+    write_json_artifact(paths["timeline_decisions_json"], timeline_decisions)
+    write_csv_artifact(
+        paths["timeline_decisions_csv"],
+        build_timeline_decision_rows(
+            segments=video.segments,
+            plan_payload=plan_payload,
+            quality_report=quality_report,
+        ),
+        TIMELINE_DECISION_CSV_FIELDS,
+    )
+    write_json_artifact(paths["provider_mode_trace_json"], provider_trace)
+    write_json_artifact(paths["metrics_summary_json"], metrics_summary)
 
+    manifest = artifact_records(paths)
+    write_json_artifact(paths["generated_evidence_index_json"], build_generated_evidence_index(manifest))
     manifest = artifact_records(paths)
     evidence = build_academic_evidence_artifact(
         video=video,
@@ -1454,12 +1585,16 @@ async def _ensure_evaluation_exports(video_id: str, db: AsyncSession) -> dict[st
         plan_payload=plan_payload,
         quality_report=quality_report,
         artifact_manifest=manifest,
+        mode_comparison=mode_comparison,
     )
     write_json_artifact(paths["academic_evidence_json"], evidence)
     write_text_artifact(paths["academic_evidence_markdown"], build_evidence_markdown(evidence))
 
     manifest = artifact_records(paths)
+    write_json_artifact(paths["generated_evidence_index_json"], build_generated_evidence_index(manifest))
+    manifest = artifact_records(paths)
     evidence["artifact_manifest"] = manifest
+    evidence["generated_evidence_files"] = build_generated_evidence_index(manifest)
     write_json_artifact(paths["academic_evidence_json"], evidence)
     write_text_artifact(paths["academic_evidence_markdown"], build_evidence_markdown(evidence))
 
@@ -1503,6 +1638,12 @@ def _evaluation_artifact_paths(video: Video) -> dict[str, str | None]:
         "mode_comparison_markdown": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_mode_comparison.md"),
         "academic_evidence_json": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_academic_evidence.json"),
         "academic_evidence_markdown": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_academic_evidence.md"),
+        "before_after_comparison_json": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_before_after_comparison.json"),
+        "timeline_decisions_json": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_timeline_decisions.json"),
+        "timeline_decisions_csv": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_timeline_decisions.csv"),
+        "provider_mode_trace_json": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_provider_mode_trace.json"),
+        "metrics_summary_json": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_metrics_summary.json"),
+        "generated_evidence_index_json": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_generated_evidence_index.json"),
     }
 
 
