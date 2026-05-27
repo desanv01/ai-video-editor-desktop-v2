@@ -18,6 +18,24 @@ import services.renderer as renderer  # noqa: E402
 
 
 class PictureInPictureCommandTests(unittest.TestCase):
+    def test_builds_trim_audio_command_with_sync_offset_and_podcast_bitrate(self):
+        cmd = FFmpegService.build_trim_audio_command(
+            input_path="voice.wav",
+            output_path="lecture.m4a",
+            start_time=12.0,
+            end_time=20.0,
+            sync_offset=0.5,
+            audio_codec="aac",
+            audio_bitrate="192 kbps",
+        )
+
+        self.assertEqual(cmd[0], "ffmpeg")
+        self.assertIn("11.5", cmd)
+        self.assertIn("8.0", cmd)
+        self.assertIn("-vn", cmd)
+        self.assertIn("0:a?", cmd)
+        self.assertIn("192k", cmd)
+
     def test_builds_pip_command_with_separate_audio_and_sync_offsets(self):
         cmd = FFmpegService.build_picture_in_picture_command(
             screen_path="screen.mp4",
@@ -397,6 +415,130 @@ class FFmpegProcessCancellationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PictureInPictureRenderSelectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_audio_only_export_uses_cleaned_ranges_and_audio_asset(self):
+        class FakeFFmpeg:
+            def __init__(self):
+                self.trim_audio_calls = []
+                self.silence_calls = []
+                self.concat_calls = []
+
+            async def trim_audio(self, **kwargs):
+                self.trim_audio_calls.append(kwargs)
+                Path(kwargs["output_path"]).write_text("audio", encoding="utf-8")
+
+            async def trim_silence_from_audio(self, **kwargs):
+                self.silence_calls.append(kwargs)
+                Path(kwargs["output_path"]).write_text("short", encoding="utf-8")
+
+            async def concat_audio(self, **kwargs):
+                self.concat_calls.append(kwargs)
+                Path(kwargs["output_path"]).write_text("final", encoding="utf-8")
+
+            async def get_video_metadata(self, path):
+                return {"duration": 4.0, "audio_codec": "aac"}
+
+        fake = FakeFFmpeg()
+        original_ffmpeg = renderer.ffmpeg_service
+        original_video_path = renderer.settings.VIDEO_STORAGE_PATH
+        original_temp_path = renderer.settings.TEMP_PATH
+        renderer.ffmpeg_service = fake
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                renderer.settings.VIDEO_STORAGE_PATH = temp_dir
+                renderer.settings.TEMP_PATH = temp_dir
+                segment_one = _renderer_segment("seg-1", 0, 0.0, 6.0, action="keep")
+                segment_two = _renderer_segment("seg-2", 1, 6.0, 10.0, action="shorten")
+                plan = SimpleNamespace(
+                    id="plan-1",
+                    plan_json={"export_metadata": {"selected_preset": {"id": "podcast_audio", "container": "m4a", "extension": ".m4a", "audio_codec": "aac", "audio_bitrate": "192 kbps", "audio_only": True}}},
+                    original_duration=10.0,
+                    estimated_duration=4.0,
+                    segments_total=2,
+                    segments_keep=2,
+                    segments_cut=0,
+                    segments_highlight=0,
+                    filler_words_removed=0,
+                    silence_removed_seconds=0,
+                    approved_at=None,
+                    teacher_notes=None,
+                )
+                video = SimpleNamespace(
+                    id="video-1",
+                    file_path="legacy.mp4",
+                    original_filename="lecture.mp4",
+                    duration_seconds=10.0,
+                    resolution="1920x1080",
+                    fps=30,
+                    project_asset_id="primary",
+                    processed_video_path=None,
+                    status=None,
+                )
+                context = renderer.LayoutRenderContext(
+                    cues=[],
+                    assets_by_id={},
+                    assets_by_track={
+                        "audio": SimpleNamespace(id="audio-1", file_path="voice.wav", sync_offset_seconds=0.25),
+                    },
+                )
+                render_ranges = [
+                    {
+                        "segment_id": "seg-1",
+                        "segment_index": 0,
+                        "source_start_time": 0.0,
+                        "source_end_time": 2.0,
+                        "duration": 2.0,
+                        "output_start_time": 0.0,
+                        "output_end_time": 2.0,
+                        "action": "keep",
+                        "segment": segment_one,
+                    },
+                    {
+                        "segment_id": "seg-2",
+                        "segment_index": 1,
+                        "source_start_time": 6.0,
+                        "source_end_time": 8.0,
+                        "duration": 2.0,
+                        "output_start_time": 2.0,
+                        "output_end_time": 4.0,
+                        "action": "shorten",
+                        "segment": segment_two,
+                    },
+                ]
+
+                result = await renderer._render_audio_only_export(
+                    video=video,
+                    plan=plan,
+                    segments=[segment_one, segment_two],
+                    transcript=SimpleNamespace(words_json=[]),
+                    render_ranges=render_ranges,
+                    included_segment_ids={"seg-1", "seg-2"},
+                    sync_plan={
+                        "schema_version": "phase5.transcript-decisions.v1",
+                        "cut_intervals": [],
+                        "export_plan": {"transcript_cut_count": 1, "estimated_output_duration_seconds": 4.0},
+                    },
+                    plan_payload=plan.plan_json,
+                    selected_preset=plan.plan_json["export_metadata"]["selected_preset"],
+                    layout_context=context,
+                    render_job_id=None,
+                    video_id="video-1",
+                )
+
+            self.assertEqual(result["output_kind"], "audio_only")
+            self.assertTrue(result["output_path"].endswith("_audio.m4a"))
+            self.assertEqual(video.processed_video_path, result["output_path"])
+            self.assertEqual(fake.trim_audio_calls[0]["input_path"], "voice.wav")
+            self.assertEqual(fake.trim_audio_calls[0]["sync_offset"], 0.25)
+            self.assertEqual(len(fake.trim_audio_calls), 2)
+            self.assertEqual(len(fake.silence_calls), 1)
+            self.assertEqual(len(fake.concat_calls[0]["clip_paths"]), 2)
+            self.assertEqual(plan.plan_json["export_metadata"]["render"]["output_kind"], "audio_only")
+            self.assertEqual(plan.plan_json["export_metadata"]["artifacts"][0]["kind"], "audio_only")
+        finally:
+            renderer.ffmpeg_service = original_ffmpeg
+            renderer.settings.VIDEO_STORAGE_PATH = original_video_path
+            renderer.settings.TEMP_PATH = original_temp_path
+
     def test_splits_range_around_picture_in_picture_cue(self):
         cue = build_layout_cue(
             cue_id="pip-1",
@@ -745,6 +887,32 @@ class PictureInPictureRenderSelectionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(fake.full_source_calls[0]["source_sync_offset"], 0.75)
         finally:
             renderer.ffmpeg_service = original_ffmpeg
+
+
+def _renderer_segment(segment_id, segment_index, start, end, action="keep"):
+    return SimpleNamespace(
+        id=segment_id,
+        segment_index=segment_index,
+        start_time=start,
+        end_time=end,
+        duration=end - start,
+        topic_label="Topic",
+        text="Rendered segment text.",
+        summary="Summary",
+        segment_type=None,
+        speaker=None,
+        importance_score=0.8,
+        fluency_score=0.9,
+        filler_count=0,
+        pause_duration_total=0,
+        has_slide_change=False,
+        action=SimpleNamespace(value=action),
+        action_confidence=0.9,
+        action_reason="test",
+        teacher_action=None,
+        teacher_note=None,
+        is_teacher_modified=False,
+    )
 
 
 if __name__ == "__main__":

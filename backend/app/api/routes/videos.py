@@ -1090,19 +1090,28 @@ async def stream_original_video(video_id: str, db: AsyncSession = Depends(get_db
 
 @router.get("/videos/{video_id}/download", tags=["Videos"])
 async def download_rendered_video(video_id: str, db: AsyncSession = Depends(get_db)):
-    """Get download path for the rendered video."""
+    """Get download path for the rendered video or audio-only export."""
     from fastapi.responses import FileResponse
 
     video = await db.get(Video, video_id)
     if not video:
         raise HTTPException(404, "Video not found")
     if not video.processed_video_path or not os.path.exists(video.processed_video_path):
-        raise HTTPException(404, "Rendered video not available yet")
+        raise HTTPException(404, "Rendered output not available yet")
+
+    extension = os.path.splitext(video.processed_video_path)[1].lower() or ".mp4"
+    media_type = {
+        ".m4a": "audio/mp4",
+        ".mp3": "audio/mpeg",
+        ".wav": "audio/wav",
+    }.get(extension, "video/mp4")
+    suffix = "_audio" if media_type.startswith("audio/") else "_edited"
+    base_name = video.original_filename.rsplit(".", 1)[0]
 
     return FileResponse(
         path=video.processed_video_path,
-        media_type="video/mp4",
-        filename=f"{video.original_filename.rsplit('.', 1)[0]}_edited.mp4",
+        media_type=media_type,
+        filename=f"{base_name}{suffix}{extension}",
     )
 
 
@@ -1178,11 +1187,14 @@ async def list_exports(video_id: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(404, "Video not found")
 
     base = settings.VIDEO_STORAGE_PATH
+    rendered_output = {
+        "path": f"/api/v1/videos/{video_id}/download",
+        "available": bool(video.processed_video_path and os.path.exists(video.processed_video_path)),
+        "kind": "audio_only" if str(video.processed_video_path or "").lower().endswith((".m4a", ".mp3", ".wav")) else "video",
+    }
     files = {
-        "edited_video": {
-            "path": f"/api/v1/videos/{video_id}/download",
-            "available": bool(video.processed_video_path and os.path.exists(video.processed_video_path)),
-        },
+        "edited_video": rendered_output,
+        "rendered_output": rendered_output,
         "subtitles_srt": {
             "path": f"/api/v1/videos/{video_id}/subtitles",
             "available": os.path.exists(os.path.join(base, f"{video_id}_subtitles.srt")),
