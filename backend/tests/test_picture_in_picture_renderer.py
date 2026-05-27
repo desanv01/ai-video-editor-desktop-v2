@@ -1,8 +1,10 @@
+import asyncio
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 
 APP_DIR = Path(__file__).resolve().parents[1] / "app"
@@ -11,6 +13,7 @@ if str(APP_DIR) not in sys.path:
 
 from services.ffmpeg import FFmpegService  # noqa: E402
 from services.layout_model import build_layout_cue  # noqa: E402
+from services.render_jobs import RenderCancelled  # noqa: E402
 import services.renderer as renderer  # noqa: E402
 
 
@@ -356,6 +359,41 @@ class LayoutModeCommandTests(unittest.TestCase):
         self.assertIn("Next: Data loading", ass)
         self.assertIn("Open course: https://example.edu/course", ass)
         self.assertIn("\\an5\\pos(960,540)", ass)
+
+
+class FFmpegProcessCancellationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_run_process_kills_active_subprocess_when_cancelled(self):
+        class FakeProcess:
+            def __init__(self):
+                self.returncode = None
+                self.killed = False
+
+            async def communicate(self):
+                while self.returncode is None:
+                    await asyncio.sleep(0.01)
+                return b"", b"killed"
+
+            def kill(self):
+                self.killed = True
+                self.returncode = -9
+
+        process = FakeProcess()
+
+        async def create_process(*_args, **_kwargs):
+            return process
+
+        def cancel_check():
+            raise RenderCancelled("Render cancelled by user")
+
+        with patch("asyncio.create_subprocess_exec", new=create_process):
+            with self.assertRaises(RenderCancelled):
+                await FFmpegService._run_process(
+                    ["ffmpeg", "-i", "input.mp4", "output.mp4"],
+                    error_prefix="Render failed",
+                    cancel_check=cancel_check,
+                )
+
+        self.assertTrue(process.killed)
 
 
 class PictureInPictureRenderSelectionTests(unittest.IsolatedAsyncioTestCase):

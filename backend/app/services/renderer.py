@@ -204,6 +204,7 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
                 range_index=i,
                 clip_dir=clip_dir,
                 layout_context=layout_render_context,
+                cancel_check=_cancel_check_callback(render_job_id, video_id),
             )
             clip_paths.extend(rendered_paths)
             clip_durations.extend(rendered_durations)
@@ -232,6 +233,7 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
                     width=width,
                     height=height,
                     index=index,
+                    cancel_check=_cancel_check_callback(render_job_id, video_id),
                 )
                 clip_paths.append(end_card_clip)
                 clip_durations.append(float(end_card.get("duration_seconds") or 0.1))
@@ -269,17 +271,20 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
                     output_path=output_path,
                     output_width=transition_width,
                     output_height=transition_height,
+                    cancel_check=_cancel_check_callback(render_job_id, video_id),
                 )
             except Exception as exc:
                 logger.warning("Transition compositor failed; falling back to direct concat: %s", exc)
                 await ffmpeg_service.concat_videos(
                     clip_paths=clip_paths,
                     output_path=output_path,
+                    cancel_check=_cancel_check_callback(render_job_id, video_id),
                 )
         else:
             await ffmpeg_service.concat_videos(
                 clip_paths=clip_paths,
                 output_path=output_path,
+                cancel_check=_cancel_check_callback(render_job_id, video_id),
             )
 
         logger.info(f"  Concatenated → {output_path}")
@@ -318,6 +323,7 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
                 video_path=output_path,
                 ass_path=annotation_ass_path,
                 output_path=annotated_output_path,
+                cancel_check=_cancel_check_callback(render_job_id, video_id),
             )
             output_path = annotated_output_path
             annotation_burned_in = True
@@ -357,6 +363,7 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
                 font_size=int(_dict_value(caption_policy.get("style")).get("font_size") or 24),
                 placement=str(caption_policy.get("placement") or "bottom_center"),
                 style=_dict_value(caption_policy.get("style")),
+                cancel_check=_cancel_check_callback(render_job_id, video_id),
             )
             output_path = burned_output_path
 
@@ -561,6 +568,10 @@ def _check_render_cancel(render_job_id: str | None, video_id: str) -> None:
     ensure_not_cancelled(render_job_id, video_id)
 
 
+def _cancel_check_callback(render_job_id: str | None, video_id: str):
+    return lambda: ensure_not_cancelled(render_job_id, video_id)
+
+
 def _range_progress(index: int, total: int) -> float:
     if total <= 0:
         return 14.0
@@ -624,6 +635,7 @@ async def _render_range_clips(
     range_index: int,
     clip_dir: str,
     layout_context: LayoutRenderContext | None,
+    cancel_check=None,
 ) -> tuple[list[str], list[float], dict[str, int]]:
     clip_paths = []
     clip_durations = []
@@ -641,12 +653,13 @@ async def _render_range_clips(
                 fallback_video_path=video.file_path,
                 start_time=start_time,
                 end_time=end_time,
+                cancel_check=cancel_check,
             )
 
         if rendered_layout:
             layout_counts[rendered_layout] = layout_counts.get(rendered_layout, 0) + 1
         else:
-            await _trim_single_source_clip(video.file_path, raw_clip, start_time, end_time)
+            await _trim_single_source_clip(video.file_path, raw_clip, start_time, end_time, cancel_check=cancel_check)
 
         raw_clip = await _apply_span_transition_polish(
             cue=cue,
@@ -656,6 +669,7 @@ async def _render_range_clips(
             clip_dir=clip_dir,
             start_time=start_time,
             end_time=end_time,
+            cancel_check=cancel_check,
         )
 
         if render_range["action"] == SegmentAction.SHORTEN.value:
@@ -665,6 +679,7 @@ async def _render_range_clips(
                 output_path=final_clip,
                 threshold_db=settings.SILENCE_THRESHOLD_DB,
                 min_silence=0.8,
+                cancel_check=cancel_check,
             )
             try:
                 os.remove(raw_clip)
@@ -687,6 +702,7 @@ async def _render_layout_span(
     fallback_video_path: str,
     start_time: float,
     end_time: float,
+    cancel_check=None,
 ) -> str | None:
     layout = str(_dict_value(cue).get("layout") or "")
     output_width, output_height = FFmpegService.output_dimensions_for_aspect_ratio(
@@ -713,6 +729,7 @@ async def _render_layout_span(
             camera_shape=str(_dict_value(cue.get("camera")).get("shape") or "rounded_rectangle"),
             camera_size=str(_dict_value(cue.get("camera")).get("size") or "medium"),
             margin_percent=_float_value(_dict_value(cue.get("camera")).get("margin_percent"), 4.0),
+            cancel_check=cancel_check,
         )
         return layout
 
@@ -729,6 +746,7 @@ async def _render_layout_span(
             audio_sync_offset=_cue_sync_offset(cue, "audio", audio_asset),
             output_width=output_width,
             output_height=output_height,
+            cancel_check=cancel_check,
         )
         return layout
 
@@ -745,6 +763,7 @@ async def _render_layout_span(
                 audio_sync_offset=_cue_sync_offset(cue, "audio", audio_asset),
                 output_width=output_width,
                 output_height=output_height,
+                cancel_check=cancel_check,
             )
             return layout
         if not screen_asset:
@@ -755,6 +774,7 @@ async def _render_layout_span(
                 end_time=end_time,
                 output_width=output_width,
                 output_height=output_height,
+                cancel_check=cancel_check,
             )
             return layout
 
@@ -769,6 +789,7 @@ async def _render_layout_span(
             audio_sync_offset=_cue_sync_offset(cue, "audio", audio_asset),
             output_width=output_width,
             output_height=output_height,
+            cancel_check=cancel_check,
         )
         return layout
 
@@ -780,12 +801,14 @@ async def _trim_single_source_clip(
     output_path: str,
     start_time: float,
     end_time: float,
+    cancel_check=None,
 ) -> None:
     await ffmpeg_service.trim_video(
         video_path=video_path,
         output_path=output_path,
         start_time=start_time,
         end_time=end_time,
+        cancel_check=cancel_check,
     )
 
 
@@ -798,6 +821,7 @@ async def _apply_span_transition_polish(
     clip_dir: str,
     start_time: float,
     end_time: float,
+    cancel_check=None,
 ) -> str:
     timing = _dict_value(_dict_value(cue).get("timing"))
     duration = min(
@@ -820,6 +844,7 @@ async def _apply_span_transition_polish(
         fade_duration_seconds=duration,
         fade_in=fade_in,
         fade_out=fade_out,
+        cancel_check=cancel_check,
     )
     _remove_file(input_path)
     return output_path
@@ -1422,6 +1447,7 @@ async def _render_end_card_clip(
     width: int,
     height: int,
     index: int,
+    cancel_check=None,
 ) -> str:
     """Render one appended end-card CTA as a silent video clip."""
     duration = max(2.0, min(15.0, float(end_card.get("duration_seconds") or 6.0)))
@@ -1434,6 +1460,7 @@ async def _render_end_card_clip(
         width=width,
         height=height,
         background_color=str(style.get("background_color") or "#111827"),
+        cancel_check=cancel_check,
     )
     ass_content = _generate_annotation_ass([
         {
@@ -1447,7 +1474,7 @@ async def _render_end_card_clip(
     ], width=width, height=height)
     with open(ass_path, "w", encoding="utf-8") as f:
         f.write(ass_content)
-    await ffmpeg_service.burn_ass_overlay(base_path, ass_path, output_path)
+    await ffmpeg_service.burn_ass_overlay(base_path, ass_path, output_path, cancel_check=cancel_check)
     return output_path
 
 

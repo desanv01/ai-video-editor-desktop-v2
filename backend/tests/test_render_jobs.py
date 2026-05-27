@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -12,10 +13,13 @@ from services.render_jobs import (  # noqa: E402
     RenderCancelled,
     cancel_render_job,
     complete_render_job,
+    configure_render_job_store,
     create_render_job,
     ensure_not_cancelled,
     get_active_render_job,
     get_latest_render_job,
+    get_render_job,
+    load_render_jobs_from_store,
     request_render_cancel,
     start_render_job,
     update_render_job,
@@ -23,6 +27,14 @@ from services.render_jobs import (  # noqa: E402
 
 
 class RenderJobTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.store_path = Path(self.temp_dir.name) / "render_jobs.json"
+        configure_render_job_store(self.store_path)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
     def test_render_job_tracks_progress_and_completion(self):
         video_id = "render-progress-test-complete"
         job = create_render_job(video_id, "youtube_1080p")
@@ -30,6 +42,7 @@ class RenderJobTests(unittest.TestCase):
         self.assertEqual(job["status"], "queued")
         self.assertEqual(job["progress_percent"], 0.0)
         self.assertEqual(job["preset_id"], "youtube_1080p")
+        self.assertTrue(job["started_at"].endswith("+00:00"))
 
         running = start_render_job(job["job_id"], video_id)
         self.assertEqual(running["status"], "running")
@@ -70,6 +83,33 @@ class RenderJobTests(unittest.TestCase):
         self.assertEqual(cancelled["status"], "cancelled")
         self.assertFalse(cancelled["cancellable"])
         self.assertIsNone(get_active_render_job(video_id))
+
+    def test_active_job_survives_store_reload_as_interrupted_failure(self):
+        video_id = "render-progress-test-restart"
+        job = create_render_job(video_id, "youtube_720p")
+        start_render_job(job["job_id"], video_id)
+        update_render_job(
+            job["job_id"],
+            video_id,
+            progress_percent=58.0,
+            phase="rendering_clips",
+            phase_label="Rendering timeline clips",
+            message="Rendering range 3 of 5",
+        )
+
+        self.assertTrue(self.store_path.exists())
+
+        load_render_jobs_from_store()
+
+        interrupted = get_render_job(job["job_id"])
+        self.assertIsNotNone(interrupted)
+        self.assertEqual(interrupted["status"], "failed")
+        self.assertEqual(interrupted["phase"], "interrupted")
+        self.assertEqual(interrupted["error"], "Render interrupted by backend restart")
+        self.assertIn("backend restarted", interrupted["message"])
+        self.assertFalse(interrupted["cancellable"])
+        self.assertIsNone(get_active_render_job(video_id))
+        self.assertEqual(get_latest_render_job(video_id)["job_id"], job["job_id"])
 
 
 if __name__ == "__main__":

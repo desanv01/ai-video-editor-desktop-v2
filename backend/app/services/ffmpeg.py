@@ -7,12 +7,47 @@ import asyncio
 import json
 import os
 import subprocess
-from typing import Any, List, Tuple, Optional
+from typing import Any, Callable, List, Tuple, Optional
 from config import settings
 
 
 class FFmpegService:
     """All ffmpeg operations used by the pipeline."""
+
+    @staticmethod
+    async def _run_process(
+        cmd: list[str],
+        *,
+        error_prefix: str,
+        stderr_limit: int | None = None,
+        cancel_check: Callable[[], None] | None = None,
+        allow_failure: bool = False,
+    ) -> tuple[bytes, bytes, int]:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        communicate_task = asyncio.create_task(proc.communicate())
+
+        while not communicate_task.done():
+            await asyncio.wait({communicate_task}, timeout=0.2)
+            if communicate_task.done():
+                break
+            if cancel_check:
+                try:
+                    cancel_check()
+                except Exception:
+                    if proc.returncode is None:
+                        proc.kill()
+                    await communicate_task
+                    raise
+
+        stdout, stderr = await communicate_task
+        if proc.returncode != 0 and not allow_failure:
+            message = stderr.decode()
+            if stderr_limit is not None:
+                message = message[:stderr_limit]
+            raise RuntimeError(f"{error_prefix}: {message}")
+        return stdout, stderr, int(proc.returncode or 0)
 
     @staticmethod
     async def get_video_metadata(video_path: str) -> dict:
@@ -131,7 +166,8 @@ class FFmpegService:
         video_path: str,
         output_path: str,
         start_time: float,
-        end_time: float
+        end_time: float,
+        cancel_check: Callable[[], None] | None = None,
     ) -> str:
         """Trim a segment from the video without re-encoding (fast)."""
         cmd = [
@@ -144,14 +180,11 @@ class FFmpegService:
             "-y",
             output_path
         ]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        await FFmpegService._run_process(
+            cmd,
+            error_prefix="Trim failed",
+            cancel_check=cancel_check,
         )
-        _, stderr = await proc.communicate()
-
-        if proc.returncode != 0:
-            raise RuntimeError(f"Trim failed: {stderr.decode()}")
-
         return output_path
 
     @staticmethod
@@ -172,6 +205,7 @@ class FFmpegService:
         camera_shape: str = "rounded_rectangle",
         camera_size: str = "medium",
         margin_percent: float = 4.0,
+        cancel_check: Callable[[], None] | None = None,
     ) -> str:
         """
         Render one timeline range as screen-first picture-in-picture.
@@ -196,14 +230,12 @@ class FFmpegService:
             camera_size=camera_size,
             margin_percent=margin_percent,
         )
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        await FFmpegService._run_process(
+            cmd,
+            error_prefix="Picture-in-picture render failed",
+            stderr_limit=800,
+            cancel_check=cancel_check,
         )
-        _, stderr = await proc.communicate()
-
-        if proc.returncode != 0:
-            raise RuntimeError(f"Picture-in-picture render failed: {stderr.decode()[:800]}")
-
         return output_path
 
     @staticmethod
@@ -220,6 +252,7 @@ class FFmpegService:
         audio_sync_offset: float = 0.0,
         output_width: int = 1920,
         output_height: int = 1080,
+        cancel_check: Callable[[], None] | None = None,
     ) -> str:
         """Render one timeline range as equal-width screen and camera panels."""
         cmd = FFmpegService.build_side_by_side_command(
@@ -235,14 +268,12 @@ class FFmpegService:
             output_width=output_width,
             output_height=output_height,
         )
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        await FFmpegService._run_process(
+            cmd,
+            error_prefix="Side-by-side render failed",
+            stderr_limit=800,
+            cancel_check=cancel_check,
         )
-        _, stderr = await proc.communicate()
-
-        if proc.returncode != 0:
-            raise RuntimeError(f"Side-by-side render failed: {stderr.decode()[:800]}")
-
         return output_path
 
     @staticmethod
@@ -257,6 +288,7 @@ class FFmpegService:
         audio_sync_offset: float = 0.0,
         output_width: int = 1920,
         output_height: int = 1080,
+        cancel_check: Callable[[], None] | None = None,
     ) -> str:
         """Render one source full-frame on the target canvas, with optional separate audio."""
         cmd = FFmpegService.build_full_source_command(
@@ -270,14 +302,12 @@ class FFmpegService:
             output_width=output_width,
             output_height=output_height,
         )
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        await FFmpegService._run_process(
+            cmd,
+            error_prefix="Full-source render failed",
+            stderr_limit=800,
+            cancel_check=cancel_check,
         )
-        _, stderr = await proc.communicate()
-
-        if proc.returncode != 0:
-            raise RuntimeError(f"Full-source render failed: {stderr.decode()[:800]}")
-
         return output_path
 
     @staticmethod
@@ -289,6 +319,7 @@ class FFmpegService:
         fade_duration_seconds: float,
         fade_in: bool = False,
         fade_out: bool = False,
+        cancel_check: Callable[[], None] | None = None,
     ) -> str:
         """Apply simple fade-in/out polish to a rendered clip."""
         cmd = FFmpegService.build_clip_fade_command(
@@ -299,14 +330,12 @@ class FFmpegService:
             fade_in=fade_in,
             fade_out=fade_out,
         )
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        await FFmpegService._run_process(
+            cmd,
+            error_prefix="Clip fade render failed",
+            stderr_limit=800,
+            cancel_check=cancel_check,
         )
-        _, stderr = await proc.communicate()
-
-        if proc.returncode != 0:
-            raise RuntimeError(f"Clip fade render failed: {stderr.decode()[:800]}")
-
         return output_path
 
     @staticmethod
@@ -679,7 +708,11 @@ class FFmpegService:
         }.get(value, "fade")
 
     @staticmethod
-    async def concat_videos(clip_paths: List[str], output_path: str) -> str:
+    async def concat_videos(
+        clip_paths: List[str],
+        output_path: str,
+        cancel_check: Callable[[], None] | None = None,
+    ) -> str:
         """
         Concatenate multiple video clips into one.
         Tries stream copy first (fast), falls back to re-encode if codecs mismatch.
@@ -689,42 +722,46 @@ class FFmpegService:
             for clip in clip_paths:
                 f.write(f"file '{clip}'\n")
 
-        # Attempt 1: stream copy (fast, no quality loss)
-        cmd = [
-            "ffmpeg",
-            "-f", "concat", "-safe", "0",
-            "-i", list_path,
-            "-c", "copy",
-            "-movflags", "+faststart",
-            "-y", output_path,
-        ]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        _, stderr = await proc.communicate()
-
-        if proc.returncode != 0:
-            # Attempt 2: re-encode (handles codec mismatches between clips)
-            cmd_reencode = [
+        try:
+            # Attempt 1: stream copy (fast, no quality loss)
+            cmd = [
                 "ffmpeg",
                 "-f", "concat", "-safe", "0",
                 "-i", list_path,
-                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                "-c:a", "aac", "-b:a", "128k",
+                "-c", "copy",
                 "-movflags", "+faststart",
                 "-y", output_path,
             ]
-            proc2 = await asyncio.create_subprocess_exec(
-                *cmd_reencode, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            _, stderr, returncode = await FFmpegService._run_process(
+                cmd,
+                error_prefix="Concat failed",
+                cancel_check=cancel_check,
+                allow_failure=True,
             )
-            _, stderr2 = await proc2.communicate()
 
-            os.remove(list_path)
+            if returncode != 0:
+                # Attempt 2: re-encode (handles codec mismatches between clips)
+                cmd_reencode = [
+                    "ffmpeg",
+                    "-f", "concat", "-safe", "0",
+                    "-i", list_path,
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                    "-c:a", "aac", "-b:a", "128k",
+                    "-movflags", "+faststart",
+                    "-y", output_path,
+                ]
+                _, stderr2, returncode2 = await FFmpegService._run_process(
+                    cmd_reencode,
+                    error_prefix="Concat failed",
+                    cancel_check=cancel_check,
+                    allow_failure=True,
+                )
 
-            if proc2.returncode != 0:
-                raise RuntimeError(f"Concat failed (both copy and re-encode): {stderr2.decode()[:500]}")
-        else:
-            os.remove(list_path)
+                if returncode2 != 0:
+                    raise RuntimeError(f"Concat failed (both copy and re-encode): {stderr2.decode()[:500]}")
+        finally:
+            if os.path.exists(list_path):
+                os.remove(list_path)
 
         return output_path
 
@@ -737,6 +774,7 @@ class FFmpegService:
         output_path: str,
         output_width: int = 1920,
         output_height: int = 1080,
+        cancel_check: Callable[[], None] | None = None,
     ) -> str:
         """Concatenate clips through FFmpeg xfade/acrossfade visual transitions."""
         cmd = FFmpegService.build_concat_with_transitions_command(
@@ -747,14 +785,12 @@ class FFmpegService:
             output_width=output_width,
             output_height=output_height,
         )
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        await FFmpegService._run_process(
+            cmd,
+            error_prefix="Transition concat failed",
+            stderr_limit=800,
+            cancel_check=cancel_check,
         )
-        _, stderr = await proc.communicate()
-
-        if proc.returncode != 0:
-            raise RuntimeError(f"Transition concat failed: {stderr.decode()[:800]}")
-
         return output_path
 
     @staticmethod
@@ -866,6 +902,7 @@ class FFmpegService:
         width: int = 1920,
         height: int = 1080,
         background_color: str = "#111827",
+        cancel_check: Callable[[], None] | None = None,
     ) -> str:
         """Create a silent solid-color MP4 clip for generated title/end cards."""
         color = FFmpegService._ffmpeg_color(background_color)
@@ -888,14 +925,12 @@ class FFmpegService:
             "-y",
             output_path,
         ]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        await FFmpegService._run_process(
+            cmd,
+            error_prefix="Color clip generation failed",
+            stderr_limit=800,
+            cancel_check=cancel_check,
         )
-        _, stderr = await proc.communicate()
-
-        if proc.returncode != 0:
-            raise RuntimeError(f"Color clip generation failed: {stderr.decode()[:800]}")
-
         return output_path
 
     @staticmethod
@@ -904,6 +939,7 @@ class FFmpegService:
         output_path: str,
         threshold_db: int = -40,
         min_silence: float = 0.8,
+        cancel_check: Callable[[], None] | None = None,
     ) -> str:
         """
         Remove silence from a clip (used for SHORTEN action).
@@ -919,12 +955,14 @@ class FFmpegService:
             "-c:v", "copy",
             "-y", output_path,
         ]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        _, _, returncode = await FFmpegService._run_process(
+            cmd,
+            error_prefix="Silence trim failed",
+            cancel_check=cancel_check,
+            allow_failure=True,
         )
-        _, stderr = await proc.communicate()
 
-        if proc.returncode != 0:
+        if returncode != 0:
             # Fallback: just copy without silence removal
             import shutil
             shutil.copy2(input_path, output_path)
@@ -939,6 +977,7 @@ class FFmpegService:
         font_size: int = 24,
         placement: str = "bottom_center",
         style: dict | None = None,
+        cancel_check: Callable[[], None] | None = None,
     ) -> str:
         """Burn SRT subtitles into the video (requires re-encoding)."""
         force_style = FFmpegService._subtitle_force_style(
@@ -953,18 +992,20 @@ class FFmpegService:
             "-y",
             output_path
         ]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        await FFmpegService._run_process(
+            cmd,
+            error_prefix="Subtitle burn failed",
+            cancel_check=cancel_check,
         )
-        _, stderr = await proc.communicate()
-
-        if proc.returncode != 0:
-            raise RuntimeError(f"Subtitle burn failed: {stderr.decode()}")
-
         return output_path
 
     @staticmethod
-    async def burn_ass_overlay(video_path: str, ass_path: str, output_path: str) -> str:
+    async def burn_ass_overlay(
+        video_path: str,
+        ass_path: str,
+        output_path: str,
+        cancel_check: Callable[[], None] | None = None,
+    ) -> str:
         """Burn an ASS overlay track into the video while preserving audio."""
         cmd = [
             "ffmpeg", "-i", video_path,
@@ -973,14 +1014,12 @@ class FFmpegService:
             "-y",
             output_path,
         ]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        await FFmpegService._run_process(
+            cmd,
+            error_prefix="ASS overlay burn failed",
+            stderr_limit=800,
+            cancel_check=cancel_check,
         )
-        _, stderr = await proc.communicate()
-
-        if proc.returncode != 0:
-            raise RuntimeError(f"ASS overlay burn failed: {stderr.decode()[:800]}")
-
         return output_path
 
     @staticmethod
