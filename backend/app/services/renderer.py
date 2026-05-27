@@ -45,6 +45,7 @@ from services.edit_plan_payload import (
 )
 from services.layout_model import LayoutMode
 from services.transcript_edit_decisions import build_synced_timeline_plan
+from services.export_presets import get_export_preset
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -172,6 +173,25 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
         # ── Step 2: Trim clips ──
         plan_payload = normalize_plan_payload(plan.plan_json)
         layout_render_context = await _build_layout_render_context(video, plan_payload, db)
+        selected_preset = _selected_export_preset(plan_payload)
+        if _is_audio_only_export(selected_preset):
+            result = await _render_audio_only_export(
+                video=video,
+                plan=plan,
+                segments=segments,
+                transcript=transcript,
+                render_ranges=render_ranges,
+                included_segment_ids=included_segment_ids,
+                sync_plan=sync_plan,
+                plan_payload=plan_payload,
+                selected_preset=selected_preset,
+                layout_context=layout_render_context,
+                render_job_id=render_job_id,
+                video_id=video_id,
+            )
+            await db.flush()
+            return result
+
         transition_events = _layout_transition_events_for_render_ranges(
             layout_render_context.cues if layout_render_context else [],
             render_ranges,
@@ -694,6 +714,215 @@ async def _render_range_clips(
     return clip_paths, clip_durations, layout_counts
 
 
+async def _render_audio_only_export(
+    *,
+    video: Video,
+    plan: EditPlan,
+    segments: List[Segment],
+    transcript: Transcript | None,
+    render_ranges: List[dict],
+    included_segment_ids: set[str],
+    sync_plan: dict,
+    plan_payload: dict,
+    selected_preset: dict,
+    layout_context: LayoutRenderContext | None,
+    render_job_id: str | None,
+    video_id: str,
+) -> dict:
+    """Render a podcast/lecture audio-only output from the cleaned edit timeline."""
+    clip_dir = os.path.join(settings.TEMP_PATH, f"audio_clips_{video.id}")
+    os.makedirs(clip_dir, exist_ok=True)
+
+    audio_source = _audio_export_source(video, layout_context)
+    audio_codec = str(selected_preset.get("audio_codec") or "aac")
+    audio_bitrate = _ffmpeg_audio_bitrate(selected_preset.get("audio_bitrate"))
+    output_extension = _audio_output_extension(selected_preset)
+    output_filename = f"{video.id}_audio{output_extension}"
+    output_path = os.path.join(settings.VIDEO_STORAGE_PATH, output_filename)
+    clip_paths: list[str] = []
+    clip_durations: list[float] = []
+
+    try:
+        for index, render_range in enumerate(render_ranges):
+            _check_render_cancel(render_job_id, video_id)
+            _render_progress(
+                render_job_id,
+                video_id,
+                _range_progress(index, len(render_ranges)),
+                "rendering_audio",
+                "Rendering cleaned audio",
+                f"Rendering audio range {index + 1} of {len(render_ranges)}",
+                {
+                    "current_range": index + 1,
+                    "total_ranges": len(render_ranges),
+                    "output_kind": "audio_only",
+                    "source": audio_source["source"],
+                },
+            )
+            raw_clip = os.path.join(clip_dir, f"raw_audio_{index:04d}{output_extension}")
+            await ffmpeg_service.trim_audio(
+                input_path=audio_source["path"],
+                output_path=raw_clip,
+                start_time=render_range["source_start_time"],
+                end_time=render_range["source_end_time"],
+                sync_offset=audio_source["sync_offset_seconds"],
+                audio_codec=audio_codec,
+                audio_bitrate=audio_bitrate,
+                cancel_check=_cancel_check_callback(render_job_id, video_id),
+            )
+
+            final_clip = os.path.join(clip_dir, f"audio_{index:04d}{output_extension}")
+            if render_range["action"] == SegmentAction.SHORTEN.value:
+                await ffmpeg_service.trim_silence_from_audio(
+                    input_path=raw_clip,
+                    output_path=final_clip,
+                    threshold_db=settings.SILENCE_THRESHOLD_DB,
+                    min_silence=0.8,
+                    audio_codec=audio_codec,
+                    audio_bitrate=audio_bitrate,
+                    cancel_check=_cancel_check_callback(render_job_id, video_id),
+                )
+                _remove_file(raw_clip)
+            else:
+                os.rename(raw_clip, final_clip)
+            clip_paths.append(final_clip)
+            clip_durations.append(float(render_range["duration"]))
+
+        _check_render_cancel(render_job_id, video_id)
+        _render_progress(
+            render_job_id,
+            video_id,
+            64,
+            "concatenating_audio",
+            "Concatenating cleaned audio",
+            f"Combining {len(clip_paths)} audio clips into the final podcast file",
+            {"clip_count": len(clip_paths), "output_kind": "audio_only"},
+        )
+        await ffmpeg_service.concat_audio(
+            clip_paths=clip_paths,
+            output_path=output_path,
+            audio_codec=audio_codec,
+            audio_bitrate=audio_bitrate,
+            cancel_check=_cancel_check_callback(render_job_id, video_id),
+        )
+
+        _check_render_cancel(render_job_id, video_id)
+        _render_progress(
+            render_job_id,
+            video_id,
+            78,
+            "transcript_artifacts",
+            "Writing transcript artifacts",
+            "Generating transcript sidecars and chapter markers for the audio export",
+            {"output_kind": "audio_only"},
+        )
+        srt_content = _generate_word_level_srt(
+            render_ranges,
+            transcript.words_json if transcript else None,
+            caption_policy={
+                "enabled": True,
+                "appearance": "always",
+                "export_behavior": "sidecar",
+            },
+        )
+        srt_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_subtitles.srt")
+        vtt_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_subtitles.vtt")
+        with open(srt_path, "w", encoding="utf-8") as f:
+            f.write(srt_content)
+        with open(vtt_path, "w", encoding="utf-8") as f:
+            f.write(_srt_to_vtt(srt_content))
+
+        chapters = _generate_chapter_file(render_ranges)
+        chapters_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_chapters.txt")
+        with open(chapters_path, "w", encoding="utf-8") as f:
+            f.write(chapters)
+
+        _check_render_cancel(render_job_id, video_id)
+        _render_progress(
+            render_job_id,
+            video_id,
+            92,
+            "exporting_audio_plan",
+            "Writing audio export plan",
+            "Recording audio-only export metadata and artifact paths",
+            {"output_kind": "audio_only"},
+        )
+        plan_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_edit_plan.json")
+        metadata = await ffmpeg_service.get_video_metadata(output_path)
+        output_duration = float(metadata.get("duration") or sum(clip_durations))
+        plan_export = _export_plan_json(
+            video,
+            plan,
+            segments,
+            render_ranges,
+            sync_plan,
+            render_metadata_extra={
+                "renderer_schema_version": "phase9.audio-only-export.v1",
+                "output_kind": "audio_only",
+                "selected_preset_id": selected_preset.get("id"),
+                "container": selected_preset.get("container"),
+                "audio_codec": audio_codec,
+                "audio_bitrate": audio_bitrate,
+                "audio_source": audio_source,
+                "audio_clip_count": len(clip_paths),
+                "caption_policy": {
+                    "enabled": True,
+                    "appearance": "always",
+                    "export_behavior": "transcript_export",
+                    "sidecar_files": True,
+                    "burned_in": False,
+                    "cue_count": srt_content.count(" --> "),
+                },
+            },
+            artifact_paths={
+                "audio_only": output_path,
+                "transcript_srt": srt_path,
+                "transcript_vtt": vtt_path,
+                "chapters": chapters_path,
+                "plan_json": plan_path,
+            },
+        )
+        with open(plan_path, "w", encoding="utf-8") as f:
+            json.dump(plan_export, f, indent=2, default=str)
+
+        video.processed_video_path = output_path
+        video.status = VideoStatus.COMPLETED
+
+        _render_progress(
+            render_job_id,
+            video_id,
+            100,
+            "completed",
+            "Audio export complete",
+            "Podcast audio and transcript files are ready",
+            {"output_kind": "audio_only"},
+        )
+
+        return {
+            "status": "success",
+            "output_path": output_path,
+            "output_kind": "audio_only",
+            "audio_path": output_path,
+            "subtitle_path": srt_path,
+            "vtt_path": vtt_path,
+            "chapters_path": chapters_path,
+            "plan_export_path": plan_path,
+            "output_duration": round(output_duration, 2),
+            "original_duration": round(video.duration_seconds or 0, 2),
+            "segments_included": len(included_segment_ids),
+            "segments_removed": len(segments) - len(included_segment_ids),
+            "playable_ranges": len(render_ranges),
+            "transcript_cuts_applied": sync_plan["export_plan"]["transcript_cut_count"],
+            "audio_clip_count": len(clip_paths),
+            "audio_source": audio_source,
+        }
+    finally:
+        try:
+            shutil.rmtree(clip_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
 async def _render_layout_span(
     *,
     cue: dict | None,
@@ -1185,6 +1414,76 @@ def _cue_sync_offset(cue: dict | None, role: str, asset: ProjectAsset | None) ->
     if asset_offset:
         return asset_offset
     return source_offset or 0.0
+
+
+def _selected_export_preset(plan_payload: dict) -> dict:
+    metadata = _dict_value(plan_payload.get("export_metadata"))
+    selected = _dict_value(metadata.get("selected_preset"))
+    if selected:
+        return selected
+
+    target_presets = metadata.get("target_presets") or []
+    if isinstance(target_presets, list) and target_presets:
+        try:
+            return get_export_preset(str(target_presets[0]))
+        except ValueError:
+            return {}
+    return {}
+
+
+def _is_audio_only_export(selected_preset: dict) -> bool:
+    return bool(_dict_value(selected_preset).get("audio_only"))
+
+
+def _audio_export_source(video: Video, layout_context: LayoutRenderContext | None) -> dict:
+    if layout_context:
+        for cue in layout_context.cues:
+            asset = _cue_asset(cue, "audio", layout_context)
+            if asset:
+                return _audio_source_payload(asset, "layout_audio")
+
+        for key in ("audio", "audio_master", "audio_reference", "separate_audio"):
+            asset = layout_context.assets_by_track.get(key) or layout_context.assets_by_role.get(key)
+            if asset:
+                return _audio_source_payload(asset, "project_audio_asset")
+
+        if layout_context.fallback_audio_asset:
+            return _audio_source_payload(layout_context.fallback_audio_asset, "project_audio_asset")
+
+    return {
+        "source": "legacy_video_audio",
+        "path": video.file_path,
+        "asset_id": str(video.project_asset_id) if getattr(video, "project_asset_id", None) else None,
+        "sync_offset_seconds": 0.0,
+    }
+
+
+def _audio_source_payload(asset: ProjectAsset, source: str) -> dict:
+    return {
+        "source": source,
+        "path": asset.file_path,
+        "asset_id": str(asset.id) if getattr(asset, "id", None) else None,
+        "sync_offset_seconds": round(float(getattr(asset, "sync_offset_seconds", 0.0) or 0.0), 3),
+    }
+
+
+def _ffmpeg_audio_bitrate(value: object) -> str:
+    text = str(value or "192k").strip().lower().replace(" ", "")
+    if text.endswith("kbps"):
+        return f"{text[:-4]}k"
+    if text.endswith("k"):
+        return text
+    if text.isdigit():
+        return f"{text}k"
+    return "192k"
+
+
+def _audio_output_extension(selected_preset: dict) -> str:
+    extension = str(selected_preset.get("extension") or "").strip()
+    if extension.startswith(".") and len(extension) <= 8:
+        return extension
+    container = str(selected_preset.get("container") or "m4a").strip().lower()
+    return ".mp3" if container == "mp3" else ".m4a"
 
 
 def _first_asset_with_role(assets: list[ProjectAsset], roles: set[str]) -> ProjectAsset | None:

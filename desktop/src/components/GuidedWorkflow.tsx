@@ -1612,7 +1612,11 @@ export function GuidedWorkflowPanel({
               </button>
             ) : renderComplete ? (
               <div className="space-y-2">
-                <DownloadLink href={api.getVideoDownloadUrl(videoId)} label="Edited Video (MP4)" primary />
+                <DownloadLink
+                  href={api.getVideoDownloadUrl(videoId)}
+                  label={selectedExportPreset?.audio_only ? "Lecture Audio (M4A)" : "Edited Video (MP4)"}
+                  primary
+                />
                 <DownloadLink href={api.getSubtitleDownloadUrl(videoId)} label="Subtitles (SRT)" />
                 <DownloadLink href={api.getSubtitleVttUrl(videoId)} label="Subtitles (VTT)" />
                 <DownloadLink href={api.getChaptersDownloadUrl(videoId)} label="Chapter Markers" />

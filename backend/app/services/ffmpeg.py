@@ -188,6 +188,171 @@ class FFmpegService:
         return output_path
 
     @staticmethod
+    async def trim_audio(
+        *,
+        input_path: str,
+        output_path: str,
+        start_time: float,
+        end_time: float,
+        sync_offset: float = 0.0,
+        audio_codec: str = "aac",
+        audio_bitrate: str = "192k",
+        cancel_check: Callable[[], None] | None = None,
+    ) -> str:
+        """Trim an audio-only range, accepting either audio files or media with audio tracks."""
+        cmd = FFmpegService.build_trim_audio_command(
+            input_path=input_path,
+            output_path=output_path,
+            start_time=start_time,
+            end_time=end_time,
+            sync_offset=sync_offset,
+            audio_codec=audio_codec,
+            audio_bitrate=audio_bitrate,
+        )
+        await FFmpegService._run_process(
+            cmd,
+            error_prefix="Audio trim failed",
+            stderr_limit=800,
+            cancel_check=cancel_check,
+        )
+        return output_path
+
+    @staticmethod
+    def build_trim_audio_command(
+        *,
+        input_path: str,
+        output_path: str,
+        start_time: float,
+        end_time: float,
+        sync_offset: float = 0.0,
+        audio_codec: str = "aac",
+        audio_bitrate: str = "192k",
+    ) -> list[str]:
+        """Build the ffmpeg command for one podcast/audio-only export range."""
+        duration = max(0.001, float(end_time) - float(start_time))
+        codec = _ffmpeg_audio_codec(audio_codec)
+        return [
+            "ffmpeg",
+            "-ss",
+            str(FFmpegService._source_timestamp(start_time, sync_offset)),
+            "-t",
+            str(duration),
+            "-i",
+            input_path,
+            "-vn",
+            "-map",
+            "0:a?",
+            "-c:a",
+            codec,
+            "-b:a",
+            _normalize_audio_bitrate(audio_bitrate),
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            "-y",
+            output_path,
+        ]
+
+    @staticmethod
+    async def trim_silence_from_audio(
+        *,
+        input_path: str,
+        output_path: str,
+        threshold_db: int = -40,
+        min_silence: float = 0.8,
+        audio_codec: str = "aac",
+        audio_bitrate: str = "192k",
+        cancel_check: Callable[[], None] | None = None,
+    ) -> str:
+        """Compress long pauses inside an audio-only clip."""
+        cmd = [
+            "ffmpeg",
+            "-i",
+            input_path,
+            "-vn",
+            "-af",
+            (
+                f"silenceremove=start_periods=1:start_duration=0.1:start_threshold={threshold_db}dB"
+                f":stop_periods=-1:stop_duration={min_silence}:stop_threshold={threshold_db}dB"
+            ),
+            "-c:a",
+            _ffmpeg_audio_codec(audio_codec),
+            "-b:a",
+            _normalize_audio_bitrate(audio_bitrate),
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            "-y",
+            output_path,
+        ]
+        _, _, returncode = await FFmpegService._run_process(
+            cmd,
+            error_prefix="Audio silence trim failed",
+            stderr_limit=800,
+            cancel_check=cancel_check,
+            allow_failure=True,
+        )
+
+        if returncode != 0:
+            import shutil
+
+            shutil.copy2(input_path, output_path)
+
+        return output_path
+
+    @staticmethod
+    async def concat_audio(
+        *,
+        clip_paths: List[str],
+        output_path: str,
+        audio_codec: str = "aac",
+        audio_bitrate: str = "192k",
+        cancel_check: Callable[[], None] | None = None,
+    ) -> str:
+        """Concatenate audio-only clips into one podcast/lecture audio file."""
+        list_path = output_path + ".txt"
+        with open(list_path, "w", encoding="utf-8") as f:
+            for clip in clip_paths:
+                f.write(f"file '{clip}'\n")
+
+        try:
+            cmd = [
+                "ffmpeg",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                list_path,
+                "-vn",
+                "-c:a",
+                _ffmpeg_audio_codec(audio_codec),
+                "-b:a",
+                _normalize_audio_bitrate(audio_bitrate),
+                "-ar",
+                "48000",
+                "-ac",
+                "2",
+                "-movflags",
+                "+faststart",
+                "-y",
+                output_path,
+            ]
+            await FFmpegService._run_process(
+                cmd,
+                error_prefix="Audio concat failed",
+                stderr_limit=800,
+                cancel_check=cancel_check,
+            )
+        finally:
+            if os.path.exists(list_path):
+                os.remove(list_path)
+
+        return output_path
+
+    @staticmethod
     async def render_picture_in_picture_clip(
         *,
         screen_path: str,
@@ -1156,6 +1321,28 @@ def _even_int(value: float) -> int:
 
 def _escape_ffmpeg_expr(expression: str) -> str:
     return expression.replace(",", r"\,")
+
+
+def _ffmpeg_audio_codec(value: str | None) -> str:
+    codec = str(value or "aac").strip().lower()
+    return {
+        "aac": "aac",
+        "mp3": "libmp3lame",
+        "libmp3lame": "libmp3lame",
+        "opus": "libopus",
+        "libopus": "libopus",
+    }.get(codec, "aac")
+
+
+def _normalize_audio_bitrate(value: str | None) -> str:
+    text = str(value or "192k").strip().lower().replace(" ", "")
+    if text.endswith("kbps"):
+        return f"{text[:-4]}k"
+    if text.endswith("k"):
+        return text
+    if text.isdigit():
+        return f"{text}k"
+    return "192k"
 
 
 # Singleton
