@@ -28,6 +28,8 @@ config_defaults = {
     "EMBEDDING_MODEL": "text-embedding-3-small",
     "EMBEDDING_DIMENSIONS": 1536,
     "TEMP_PATH": "/tmp",
+    "VIDEO_STORAGE_PATH": "/tmp/videos",
+    "SILENCE_THRESHOLD_DB": -35,
     "LOCAL_MODEL_STORAGE_PATH": "/tmp/models",
     "LOCAL_TRANSCRIPTION_MODEL_PATH": "",
     "LOCAL_TRANSCRIPTION_MODEL_ID": "small",

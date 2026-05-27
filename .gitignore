@@ -45,3 +45,4 @@ desktop/src-tauri/target/
 *.log
 *.tmp
 outputs/
+fixtures/synthetic_media/generated/

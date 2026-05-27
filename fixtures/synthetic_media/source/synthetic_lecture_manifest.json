@@ -1,0 +1,156 @@
+{
+  "schema_version": "phase10.synthetic-media.v1",
+  "fixture_id": "synthetic-mooc-lecture-001",
+  "title": "Synthetic MOOC Lecture: Building a Tiny AI Video Editor",
+  "duration_seconds": 72.0,
+  "language": "en-MY",
+  "privacy": {
+    "contains_private_recordings": false,
+    "contains_real_student_data": false,
+    "license": "project-test-fixture"
+  },
+  "project": {
+    "source_mode": "multi_source",
+    "course_code": "FYP-DEMO",
+    "week": 10,
+    "topic": "AI-assisted lecture editing workflow"
+  },
+  "assets": [
+    {
+      "id": "lecture-video",
+      "kind": "mixed_video",
+      "role": "primary",
+      "source_type": "mixed_video",
+      "sync_role": "primary_timeline",
+      "relative_path": "media/lecture_video.mp4",
+      "duration_seconds": 72.0,
+      "metadata": {
+        "description": "Combined demo video with screen, camera, and audio."
+      }
+    },
+    {
+      "id": "screen-source",
+      "kind": "screen_video",
+      "role": "screen",
+      "source_type": "screen_recording",
+      "sync_role": "screen_reference",
+      "relative_path": "media/screen_recording.mp4",
+      "duration_seconds": 72.0,
+      "sync_offset_seconds": 0.0,
+      "metadata": {
+        "recording_started_at": "2026-05-27T10:00:00.000Z",
+        "capture_resolution": "1280x720"
+      }
+    },
+    {
+      "id": "camera-source",
+      "kind": "camera_video",
+      "role": "camera",
+      "source_type": "webcam_recording",
+      "sync_role": "camera_overlay",
+      "relative_path": "media/webcam_recording.mp4",
+      "duration_seconds": 72.0,
+      "sync_offset_seconds": 0.35,
+      "metadata": {
+        "recording_started_at": "2026-05-27T10:00:00.350Z",
+        "capture_resolution": "640x360"
+      }
+    },
+    {
+      "id": "audio-source",
+      "kind": "audio",
+      "role": "audio",
+      "source_type": "separate_audio",
+      "sync_role": "audio_master",
+      "relative_path": "media/separate_audio.wav",
+      "duration_seconds": 72.0,
+      "sync_offset_seconds": 0.18,
+      "metadata": {
+        "recording_started_at": "2026-05-27T10:00:00.180Z",
+        "sample_rate": 44100,
+        "channels": 1
+      }
+    },
+    {
+      "id": "slide-deck",
+      "kind": "slide_deck",
+      "role": "slides",
+      "source_type": "slide_deck",
+      "sync_role": "structure_reference",
+      "relative_path": "slides/synthetic_lecture_slides.pptx",
+      "metadata": {
+        "slide_count": 5,
+        "structure_reference_role": "slide_sequence"
+      }
+    },
+    {
+      "id": "transcript",
+      "kind": "transcript",
+      "role": "transcript",
+      "source_type": "transcript",
+      "sync_role": "structure_reference",
+      "relative_path": "transcripts/synthetic_lecture_transcript.json",
+      "metadata": {
+        "transcript_schema_version": "phase10.synthetic-transcript.v1",
+        "word_level": true
+      }
+    }
+  ],
+  "layout_cues": [
+    {
+      "id": "layout-intro-side-by-side",
+      "layout": "side_by_side",
+      "start_time": 0.0,
+      "end_time": 12.0,
+      "screen_source_id": "screen-source",
+      "camera_source_id": "camera-source",
+      "audio_source_id": "audio-source",
+      "reason": "Introduce the presenter and the lesson goal."
+    },
+    {
+      "id": "layout-demo-full-screen",
+      "layout": "full_screen_source",
+      "start_time": 12.0,
+      "end_time": 42.0,
+      "screen_source_id": "screen-source",
+      "audio_source_id": "audio-source",
+      "reason": "Prioritize screen details during the walkthrough."
+    },
+    {
+      "id": "layout-cleanup-pip",
+      "layout": "picture_in_picture",
+      "start_time": 42.0,
+      "end_time": 60.0,
+      "screen_source_id": "screen-source",
+      "camera_source_id": "camera-source",
+      "audio_source_id": "audio-source",
+      "camera_corner": "bottom_right",
+      "reason": "Keep presenter presence while reviewing edit decisions."
+    },
+    {
+      "id": "layout-summary-camera",
+      "layout": "full_camera_source",
+      "start_time": 60.0,
+      "end_time": 72.0,
+      "camera_source_id": "camera-source",
+      "audio_source_id": "audio-source",
+      "reason": "Return to camera for the closing summary."
+    }
+  ],
+  "expected_evaluation_signals": {
+    "filler_words": ["um", "actually"],
+    "dead_air_intervals": [
+      {"start_time": 44.4, "end_time": 48.2}
+    ],
+    "false_start_intervals": [
+      {"start_time": 15.2, "end_time": 18.0}
+    ],
+    "chapter_markers": [
+      {"time": "00:00", "label": "Learning Goal"},
+      {"time": "00:12", "label": "Import Sources"},
+      {"time": "00:26", "label": "Clean Transcript"},
+      {"time": "00:42", "label": "Review Decision"},
+      {"time": "01:00", "label": "Export Evidence"}
+    ]
+  }
+}
