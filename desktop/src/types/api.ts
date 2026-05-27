@@ -775,6 +775,7 @@ export interface QualityReport {
   video_id: string;
   original_duration_seconds: number;
   estimated_duration_seconds: number;
+  actual_output_duration_seconds?: number | null;
   time_saved_seconds: number;
   reduction_percent: number;
   total_segments: number;
@@ -787,6 +788,62 @@ export interface QualityReport {
   average_fluency_score: number;
   topic_distribution: Record<string, { count: number; total_duration: number }>;
   segment_type_distribution: Record<string, number>;
+  action_distribution?: Record<string, number>;
+  teacher_modifications?: number;
+  teacher_overrides?: number;
+  teacher_override_rate?: number;
+  processing_time_seconds?: number | null;
+  estimated_cost_usd?: number | null;
+  evaluation_metrics?: EvaluationMetrics;
+}
+
+export interface EvaluationMetrics {
+  schema_version: "phase10.evaluation-metrics.v1" | string;
+  transcription_accuracy_proxy: {
+    score: number;
+    is_proxy: boolean;
+    ground_truth_required_for_true_accuracy: boolean;
+    word_timestamp_coverage: number | null;
+    segment_text_coverage: number | null;
+    segment_timing_coverage: number | null;
+    transcript_word_count: number;
+    segment_text_word_count: number;
+    asr_provider: string | null;
+    notes: string;
+  };
+  processing_time: {
+    started_at: string | null;
+    ended_at: string | null;
+    total_seconds: number | null;
+    source: string;
+  };
+  cost: {
+    estimated_total_usd: number;
+    currency: string;
+    processing_mode: string;
+    duration_minutes: number;
+    breakdown: Record<string, unknown>;
+  };
+  duration_reduction: Record<string, number | null>;
+  filler_dead_air_removal: Record<string, number>;
+  segment_quality: Record<string, number | null>;
+  layout_correctness: {
+    score: number;
+    cue_count: number;
+    timeline_coverage_rate: number;
+    valid_timing_rate: number;
+    enabled_source_reference_rate: number | null;
+    layout_modes?: string[];
+    warnings: string[];
+  };
+  user_override_rate: {
+    total_segments: number;
+    teacher_modifications: number;
+    teacher_overrides: number;
+    override_rate: number;
+    modification_rate: number;
+  };
+  summary: Record<string, number | null>;
 }
 
 // ── Chapters ──
