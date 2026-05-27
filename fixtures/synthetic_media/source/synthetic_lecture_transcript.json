@@ -1,0 +1,115 @@
+{
+  "schema_version": "phase10.synthetic-transcript.v1",
+  "fixture_id": "synthetic-mooc-lecture-001",
+  "language": "en-MY",
+  "asr_provider": "synthetic",
+  "duration_seconds": 72.0,
+  "segments": [
+    {
+      "id": "seg-001",
+      "segment_index": 0,
+      "start_time": 0.0,
+      "end_time": 12.0,
+      "topic_label": "Learning Goal",
+      "speaker": "lecturer",
+      "text": "Welcome to this short demo. We will turn raw teaching sources into an editable lecture plan.",
+      "action": "keep",
+      "action_confidence": 0.95,
+      "action_reason": "Clear introduction and learning objective.",
+      "slide_number": 1,
+      "filler_count": 0,
+      "pause_duration_total": 0.4,
+      "importance_score": 0.9,
+      "fluency_score": 0.94
+    },
+    {
+      "id": "seg-002",
+      "segment_index": 1,
+      "start_time": 12.0,
+      "end_time": 26.0,
+      "topic_label": "Import Sources",
+      "speaker": "lecturer",
+      "text": "First we import the screen recording, um, actually let me restart that. The screen is the timing reference.",
+      "action": "shorten",
+      "action_confidence": 0.88,
+      "action_reason": "Contains a filler word and a false start before the useful instruction.",
+      "slide_number": 2,
+      "filler_count": 2,
+      "pause_duration_total": 1.1,
+      "importance_score": 0.82,
+      "fluency_score": 0.68,
+      "detections": [
+        {
+          "type": "filler",
+          "text": "um",
+          "start_time": 16.1,
+          "end_time": 16.35
+        },
+        {
+          "type": "false_start",
+          "text": "actually let me restart that",
+          "start_time": 16.45,
+          "end_time": 18.35
+        }
+      ]
+    },
+    {
+      "id": "seg-003",
+      "segment_index": 2,
+      "start_time": 26.0,
+      "end_time": 42.0,
+      "topic_label": "Clean Transcript",
+      "speaker": "lecturer",
+      "text": "The clean step highlights filler words, silence, and repeated phrases, then asks the teacher to approve each change.",
+      "action": "highlight",
+      "action_confidence": 0.91,
+      "action_reason": "Key explanation of the review workflow.",
+      "slide_number": 3,
+      "filler_count": 0,
+      "pause_duration_total": 0.6,
+      "importance_score": 0.94,
+      "fluency_score": 0.9
+    },
+    {
+      "id": "seg-004",
+      "segment_index": 3,
+      "start_time": 42.0,
+      "end_time": 54.0,
+      "topic_label": "Review Decision",
+      "speaker": "lecturer",
+      "text": "Here is a bad take with a long pause before the corrected explanation continues.",
+      "action": "cut",
+      "action_confidence": 0.86,
+      "action_reason": "Mostly bad take and dead air; useful content is repeated in the next segment.",
+      "slide_number": 4,
+      "filler_count": 0,
+      "pause_duration_total": 3.8,
+      "importance_score": 0.28,
+      "fluency_score": 0.42,
+      "detections": [
+        {
+          "type": "dead_air",
+          "start_time": 44.4,
+          "end_time": 48.2
+        }
+      ]
+    },
+    {
+      "id": "seg-005",
+      "segment_index": 4,
+      "start_time": 54.0,
+      "end_time": 72.0,
+      "topic_label": "Export Evidence",
+      "speaker": "lecturer",
+      "text": "Finally we export the edited video, captions, chapters, edit plan JSON, and a compact evidence report for evaluation.",
+      "action": "keep",
+      "action_confidence": 0.93,
+      "action_reason": "Strong closing summary and evidence checklist.",
+      "slide_number": 5,
+      "filler_count": 0,
+      "pause_duration_total": 0.7,
+      "importance_score": 0.92,
+      "fluency_score": 0.88
+    }
+  ]
+}
