@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
 import { Clock, Scissors, MessageSquareOff, Volume2, CheckCircle2, Download } from "lucide-react";
 import * as api from "../lib/api";
-import type { EditPlan, QualityReport, Chapter } from "../types/api";
+import type { EditPlan, Chapter } from "../types/api";
 
 interface Props {
   videoId: string;
@@ -136,6 +136,34 @@ export function StatsPanel({ videoId, plan, onApprove, approving }: Props) {
           <a href={api.getPlanExportUrl(videoId)} target="_blank" rel="noreferrer"
             className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
             <Download className="w-3 h-3" /> Edit Plan (JSON)
+          </a>
+          <a href={api.getQualityReportExportUrl(videoId)} target="_blank" rel="noreferrer"
+            className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
+            <Download className="w-3 h-3" /> Quality Report
+          </a>
+          <a href={api.getModeComparisonSummaryUrl(videoId)} target="_blank" rel="noreferrer"
+            className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
+            <Download className="w-3 h-3" /> Mode Comparison
+          </a>
+          <a href={api.getBeforeAfterComparisonUrl(videoId)} target="_blank" rel="noreferrer"
+            className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
+            <Download className="w-3 h-3" /> Before/After
+          </a>
+          <a href={api.getTimelineDecisionsUrl(videoId)} target="_blank" rel="noreferrer"
+            className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
+            <Download className="w-3 h-3" /> Timeline Decisions
+          </a>
+          <a href={api.getProviderModeTraceUrl(videoId)} target="_blank" rel="noreferrer"
+            className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
+            <Download className="w-3 h-3" /> Provider Mode
+          </a>
+          <a href={api.getMetricsSummaryUrl(videoId)} target="_blank" rel="noreferrer"
+            className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
+            <Download className="w-3 h-3" /> Metrics Summary
+          </a>
+          <a href={api.getAcademicEvidenceBundleUrl(videoId)} target="_blank" rel="noreferrer"
+            className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
+            <Download className="w-3 h-3" /> Evidence Bundle
           </a>
         </div>
       )}

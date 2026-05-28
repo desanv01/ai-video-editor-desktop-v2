@@ -10,10 +10,123 @@ export type SegmentType =
   | "core_content" | "example" | "filler" | "pause"
   | "repetition" | "intro_outro" | "qa" | "transition";
 
+export type ProjectStatus =
+  | "draft" | "importing" | "ready" | "processing"
+  | "awaiting_review" | "completed" | "archived" | "failed";
+
+export type ProjectSourceMode = "single_video" | "multi_source";
+
+export type ProjectAssetKind =
+  | "mixed_video" | "screen_video" | "camera_video" | "audio"
+  | "slide_deck" | "pdf_notes" | "text_notes" | "image"
+  | "b_roll" | "transcript" | "course_material" | "other";
+
+export type ProjectAssetRole =
+  | "primary" | "screen" | "camera" | "audio" | "slides"
+  | "notes" | "supporting_material" | "b_roll" | "transcript" | "other";
+
+export type ProjectMediaSourceType =
+  | "mixed_video" | "screen_recording" | "camera_recording" | "webcam_recording" | "phone_camera_recording"
+  | "separate_audio" | "slide_deck" | "pdf_notes" | "text_notes"
+  | "course_material" | "image" | "b_roll" | "transcript" | "other";
+
+export type ProjectAssetSyncRole =
+  | "primary_timeline" | "screen_reference" | "camera_overlay" | "audio_master"
+  | "audio_reference" | "structure_reference" | "none";
+
+export type ProjectAssetStatus = "uploaded" | "ready" | "processing" | "failed" | "archived";
+
+export type ProjectAssetUploadType =
+  | "video" | "screen" | "camera" | "webcam" | "phone_camera" | "audio" | "slides" | "notes" | "materials";
+
+export interface Project {
+  id: string;
+  title: string;
+  description: string | null;
+  status: ProjectStatus;
+  source_mode: ProjectSourceMode;
+  project_type: string | null;
+  metadata_json: Record<string, unknown>;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectAsset {
+  id: string;
+  project_id: string;
+  kind: ProjectAssetKind;
+  role: ProjectAssetRole;
+  source_type: ProjectMediaSourceType;
+  sync_role: ProjectAssetSyncRole;
+  status: ProjectAssetStatus;
+  is_primary: boolean;
+  filename: string;
+  original_filename: string;
+  file_path: string;
+  file_size_bytes: number | null;
+  mime_type: string | null;
+  duration_seconds: number | null;
+  sync_offset_seconds: number;
+  metadata_json: Record<string, unknown>;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  structure_reference_role?: string | null;
+  document_format?: string | null;
+  structure_inference_ready?: boolean;
+}
+
+export interface ProjectDetail extends Project {
+  assets: ProjectAsset[];
+}
+
+export interface ProjectCreateRequest {
+  title: string;
+  description?: string | null;
+  source_mode?: ProjectSourceMode;
+  project_type?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ProjectAssetUploadResponse extends ProjectAsset {
+  file_size_mb: number | null;
+  message: string;
+}
+
+export interface ProjectSourceSyncAsset {
+  asset: ProjectAsset;
+  reference_asset_id: string;
+  recommended_offset_seconds: number;
+  current_offset_seconds: number;
+  manual_adjustment_seconds: number;
+  confidence: number;
+  method: string;
+  reason: string;
+  needs_user_review: boolean;
+  waveform_sync_ready: boolean;
+  metadata_anchor: Record<string, unknown> | null;
+}
+
+export interface ProjectSourceSyncPlan {
+  project_id: string;
+  reference_asset_id: string | null;
+  sync_basis: "metadata" | string;
+  assets: ProjectSourceSyncAsset[];
+  warnings: string[];
+}
+
+export interface ProjectAssetSyncUpdateRequest {
+  sync_offset_seconds: number;
+  note?: string | null;
+}
+
 // ── Video ──
 
 export interface Video {
   id: string;
+  project_id: string | null;
+  project_asset_id: string | null;
   original_filename: string;
   duration_seconds: number | null;
   resolution: string | null;
@@ -25,6 +138,8 @@ export interface Video {
 
 export interface VideoUploadResponse {
   id: string;
+  project_id: string | null;
+  project_asset_id: string | null;
   filename: string;
   status: VideoStatus;
   duration_seconds: number | null;
@@ -49,7 +164,452 @@ export interface Transcript {
   speakers: SpeakerInfo[] | null;
 }
 
+export interface TranscriptTimelineWord {
+  word_index: number;
+  text: string;
+  start_time: number;
+  end_time: number;
+  duration: number;
+  speaker: string | null;
+  confidence: number | null;
+  is_estimated: boolean;
+  source: "asr_word" | "transcript_segment_estimate" | string;
+  transcript_segment_index: number | null;
+  segment_id: string | null;
+  segment_index: number | null;
+}
+
+export interface TranscriptTimelineSegment {
+  segment_id: string;
+  segment_index: number;
+  start_time: number;
+  end_time: number;
+  duration: number | null;
+  text: string | null;
+  speaker: string | null;
+  word_start_index: number | null;
+  word_end_index: number | null;
+  word_count: number;
+}
+
+export interface TranscriptTimeline {
+  video_id: string;
+  transcript_id: string;
+  full_text: string | null;
+  language: string | null;
+  asr_provider: string | null;
+  duration_seconds: number | null;
+  word_count: number;
+  words: TranscriptTimelineWord[];
+  segments: TranscriptTimelineSegment[];
+}
+
+export interface TranscriptCutDecision {
+  id: string;
+  kind: "transcript_cut" | string;
+  action: "cut" | string;
+  source: "manual_text_selection" | string;
+  status: "active" | string;
+  text: string;
+  word_start_time: number | null;
+  word_end_time: number | null;
+  start_time: number;
+  end_time: number;
+  duration: number;
+  pre_roll_seconds: number;
+  post_roll_seconds: number;
+  trim_source: "word_bounds" | "manual_trim" | string;
+  word_start_index: number;
+  word_end_index: number;
+  segment_ids: string[];
+  segment_indexes: number[];
+  teacher_note: string | null;
+  created_at: string;
+  updated_at: string | null;
+}
+
+export interface TranscriptCutDecisionRequest {
+  word_start_index: number;
+  word_end_index: number;
+  teacher_note?: string | null;
+}
+
+export interface TranscriptCutTrimUpdateRequest {
+  start_time?: number;
+  end_time?: number;
+  pre_roll_seconds?: number;
+  post_roll_seconds?: number;
+  teacher_note?: string | null;
+}
+
+export interface TranscriptCutInterval {
+  start_time: number;
+  end_time: number;
+  duration: number;
+  decision_ids: string[];
+  texts: string[];
+  word_start_index: number | null;
+  word_end_index: number | null;
+  source: "transcript_cut" | string;
+}
+
+export interface EditDecisionPlayableRange {
+  segment_id: string;
+  segment_index: number;
+  source_start_time: number;
+  source_end_time: number;
+  duration: number;
+  output_start_time: number;
+  output_end_time: number;
+  action: SegmentAction | string;
+}
+
+export interface EditDecisionSegmentOverlay {
+  segment_id: string;
+  segment_index: number;
+  cut_intervals: TranscriptCutInterval[];
+  covered_duration: number;
+}
+
+export interface EditDecisionExportPlan {
+  source_duration_seconds: number | null;
+  estimated_output_duration_seconds: number;
+  transcript_cut_count: number;
+  merged_cut_interval_count: number;
+  transcript_cut_duration_seconds: number;
+  playable_range_count: number;
+}
+
+export interface EditDecisionSync {
+  schema_version: string;
+  cut_intervals: TranscriptCutInterval[];
+  playable_ranges: EditDecisionPlayableRange[];
+  segment_overlays: EditDecisionSegmentOverlay[];
+  export_plan: EditDecisionExportPlan;
+}
+
+export type CleanProfileId = "conservative" | "aggressive";
+export type CleanSuggestionType =
+  | "filler_word" | "dead_air" | "bad_take"
+  | "false_start" | "repeated_phrase" | "restarted_sentence" | "repeated_explanation";
+
+export interface CleanProfile {
+  id: CleanProfileId | string;
+  label: string;
+  description: string;
+}
+
+export interface CleanSummary {
+  suggestions_total: number;
+  filler_word_count: number;
+  dead_air_count: number;
+  bad_take_count: number;
+  false_start_count: number;
+  repeated_phrase_count: number;
+  restarted_sentence_count: number;
+  repeated_explanation_count: number;
+  repetition_suggestion_count: number;
+  estimated_time_saved_seconds: number;
+}
+
+export interface CleanSuggestion {
+  id: string;
+  type: CleanSuggestionType | string;
+  title: string;
+  text: string;
+  reason: string;
+  confidence: number;
+  start_time: number;
+  end_time: number;
+  duration: number;
+  word_start_index: number | null;
+  word_end_index: number | null;
+  segment_id: string | null;
+  segment_index: number | null;
+  target_action: SegmentAction | string;
+  apply_kind: "transcript_cut" | "segment_override" | string;
+  padding_seconds: number | null;
+  matched_text?: string | null;
+  duplicate_of_segment_id?: string | null;
+  duplicate_of_segment_index?: number | null;
+}
+
+export interface CleanAnalyzeResult {
+  schema_version: string;
+  profile: CleanProfileId | string;
+  profiles: CleanProfile[];
+  summary: CleanSummary;
+  suggestions: CleanSuggestion[];
+}
+
+export interface CleanApplyResult {
+  schema_version: string;
+  profile: CleanProfileId | string;
+  summary: CleanSummary;
+  created_transcript_cuts: TranscriptCutDecision[];
+  updated_segments: {
+    segment_id: string;
+    segment_index: number;
+    teacher_action: SegmentAction | string;
+    teacher_note: string | null;
+  }[];
+  suggestions: CleanSuggestion[];
+}
+
+// ── Layout Cues ──
+
+export type LayoutSourceRole = "screen" | "camera" | "audio" | "primary_timeline";
+export type LayoutMode =
+  | "picture_in_picture"
+  | "side_by_side"
+  | "full_screen_source"
+  | "full_camera_source";
+export type LayoutAspectRatio = "16:9" | "4:3" | "1:1" | "9:16";
+export type CameraShape = "rectangle" | "rounded_rectangle" | "circle";
+export type CameraCorner = "top_left" | "top_right" | "bottom_left" | "bottom_right";
+
+export interface LayoutSourceRef {
+  role: LayoutSourceRole;
+  asset_id: string | null;
+  enabled: boolean;
+  track: string;
+  sync_offset_seconds: number;
+  [key: string]: unknown;
+}
+
+export interface LayoutCueSources {
+  screen: LayoutSourceRef;
+  camera: LayoutSourceRef;
+  audio: LayoutSourceRef;
+  [key: string]: unknown;
+}
+
+export interface LayoutCueTiming {
+  start_time: number;
+  end_time: number | null;
+  duration_seconds: number | null;
+  transition_in: string;
+  transition_out: string;
+  transition_duration_seconds: number;
+  [key: string]: unknown;
+}
+
+export interface LayoutCueOutput {
+  aspect_ratio: LayoutAspectRatio;
+  [key: string]: unknown;
+}
+
+export interface LayoutCueCamera {
+  enabled: boolean;
+  shape: CameraShape;
+  corner: CameraCorner;
+  size: string;
+  margin_percent: number;
+  [key: string]: unknown;
+}
+
+export interface LayoutCue {
+  id: string;
+  kind: "layout_cue" | string;
+  schema_version: string;
+  status: "planned" | "suggested" | "active" | "applied" | string;
+  layout: LayoutMode;
+  start_time: number;
+  end_time: number | null;
+  timing: LayoutCueTiming;
+  sources: LayoutCueSources;
+  output: LayoutCueOutput;
+  camera: LayoutCueCamera;
+  reason: string;
+  [key: string]: unknown;
+}
+
 // ── Segment ──
+
+export type CaptionAppearance = "always" | "highlight_segments" | "section_starts" | "manual_ranges" | "off";
+export type CaptionPlacement =
+  | "bottom_center" | "bottom_left" | "bottom_right"
+  | "top_center" | "top_left" | "top_right";
+export type CaptionExportBehavior = "sidecar" | "burn_in" | "sidecar_and_burn_in" | "none";
+
+export interface CaptionStyle {
+  font_size: number;
+  font_family: string;
+  primary_color: string;
+  outline_color: string;
+  outline_width: number;
+  background: "transparent" | "box" | string;
+  max_chars_per_line: number;
+  max_duration_per_cue: number;
+}
+
+export interface CaptionRange {
+  id: string;
+  start_time: number;
+  end_time: number;
+  label: string;
+}
+
+export interface CaptionPolicy {
+  id: string;
+  kind: "caption_policy";
+  schema_version: string;
+  status: "planned" | "active" | string;
+  enabled: boolean;
+  appearance: CaptionAppearance;
+  placement: CaptionPlacement;
+  export_behavior: CaptionExportBehavior;
+  style: CaptionStyle;
+  ranges: CaptionRange[];
+  section_intro_seconds: number;
+  reason: string;
+  [key: string]: unknown;
+}
+
+export type AnnotationType = "label" | "callout" | "note" | "warning";
+export type AnnotationPosition =
+  | "top_left" | "top_center" | "top_right"
+  | "middle_left" | "middle_center" | "middle_right"
+  | "bottom_left" | "bottom_center" | "bottom_right";
+
+export interface AnnotationStyle {
+  font_size: number;
+  text_color: string;
+  background_color: string;
+  border_color: string;
+  opacity: number;
+}
+
+export interface AnnotationPointer {
+  enabled: boolean;
+  direction: "up" | "down" | "left" | "right" | "none" | string;
+}
+
+export type AnimationPreset =
+  | "none" | "fade" | "pop" | "zoom"
+  | "slide_up" | "slide_down" | "slide_left" | "slide_right";
+export type AnimationEasing = "linear" | "ease_in" | "ease_out" | "ease_in_out";
+
+export interface AnimationSettings {
+  preset: AnimationPreset | string;
+  direction: "none" | "up" | "down" | "left" | "right" | string;
+  duration_seconds: number;
+  easing: AnimationEasing | string;
+}
+
+export interface AnnotationAction {
+  id: string;
+  kind: "annotation";
+  schema_version: string;
+  status: "planned" | "active" | "applied" | string;
+  annotation_type: AnnotationType | string;
+  text: string;
+  start_time: number;
+  end_time: number;
+  duration: number;
+  position: AnnotationPosition | string;
+  x_percent: number;
+  y_percent: number;
+  style: AnnotationStyle;
+  pointer: AnnotationPointer;
+  animation: AnimationSettings;
+  reason: string;
+  [key: string]: unknown;
+}
+
+export type EducationalOverlayType = "intro_card" | "section_title_card" | "chapter_label" | "step_label";
+export type EducationalOverlayPosition =
+  | "center"
+  | "top_left" | "top_center" | "top_right"
+  | "bottom_left" | "bottom_center" | "bottom_right";
+
+export interface EducationalOverlayStyle {
+  font_size: number;
+  subtitle_font_size: number;
+  text_color: string;
+  subtitle_color: string;
+  background_color: string;
+  accent_color: string;
+  opacity: number;
+}
+
+export interface EducationalOverlayAction {
+  id: string;
+  kind: "educational_overlay";
+  schema_version: string;
+  status: "planned" | "active" | "applied" | string;
+  overlay_type: EducationalOverlayType | string;
+  title: string;
+  subtitle: string;
+  start_time: number;
+  end_time: number;
+  duration: number;
+  position: EducationalOverlayPosition | string;
+  x_percent: number;
+  y_percent: number;
+  style: EducationalOverlayStyle;
+  animation: AnimationSettings;
+  chapter_index: number | null;
+  step_number: number | null;
+  source: string;
+  reason: string;
+  [key: string]: unknown;
+}
+
+export type EndCardType = "lecture_summary" | "next_topic" | "course_link" | "custom_message";
+
+export interface EndCardStyle {
+  font_size: number;
+  body_font_size: number;
+  text_color: string;
+  body_color: string;
+  background_color: string;
+  accent_color: string;
+  opacity: number;
+}
+
+export interface EndCardAction {
+  id: string;
+  kind: "end_card";
+  schema_version: string;
+  status: "planned" | "active" | "applied" | string;
+  enabled: boolean;
+  card_type: EndCardType | string;
+  title: string;
+  message: string;
+  summary_points: string[];
+  next_topic: string;
+  course_url: string;
+  button_text: string;
+  duration_seconds: number;
+  style: EndCardStyle;
+  animation: AnimationSettings;
+  source: string;
+  reason: string;
+  [key: string]: unknown;
+}
+
+export type PolishAction = CaptionPolicy | AnnotationAction | EducationalOverlayAction | EndCardAction | Record<string, unknown>;
+
+export type CaptionPolicyUpdate = Partial<Omit<CaptionPolicy, "id" | "kind" | "schema_version" | "status" | "style">> & {
+  style?: Partial<CaptionStyle>;
+};
+
+export type AnnotationActionUpdate = Partial<Omit<AnnotationAction, "kind" | "schema_version" | "status" | "style" | "pointer" | "animation">> & {
+  style?: Partial<AnnotationStyle>;
+  pointer?: Partial<AnnotationPointer>;
+  animation?: Partial<AnimationSettings>;
+};
+
+export type EducationalOverlayActionUpdate = Partial<Omit<EducationalOverlayAction, "kind" | "schema_version" | "status" | "style" | "animation">> & {
+  style?: Partial<EducationalOverlayStyle>;
+  animation?: Partial<AnimationSettings>;
+};
+
+export type EndCardActionUpdate = Partial<Omit<EndCardAction, "kind" | "schema_version" | "status" | "style" | "animation">> & {
+  style?: Partial<EndCardStyle>;
+  animation?: Partial<AnimationSettings>;
+};
 
 export interface Segment {
   id: string;
@@ -92,6 +652,19 @@ export interface Segment {
 
 export interface EditPlan {
   id: string;
+  schema_version: string;
+  metadata: Record<string, unknown>;
+  segments: Record<string, unknown>[];
+  edit_decisions: Record<string, unknown>[];
+  transcript_edit_summary: Record<string, unknown>;
+  cleaning_suggestions: Record<string, unknown>[];
+  clean_summary: Record<string, unknown>;
+  sections: Record<string, unknown>[];
+  chapters: Record<string, unknown>[];
+  section_summary: Record<string, unknown>;
+  layout_cues: LayoutCue[];
+  polish_actions: PolishAction[];
+  export_metadata: Record<string, unknown>;
   original_duration: number | null;
   estimated_duration: number | null;
   segments_total: number | null;
@@ -106,6 +679,83 @@ export interface EditPlan {
 
 // ── Processing Status ──
 
+export interface ExportPreset {
+  id: string;
+  group_id: string;
+  group_label: string;
+  label: string;
+  description: string;
+  target: string;
+  container: string;
+  extension: string;
+  video_codec: string | null;
+  audio_codec: string;
+  width: number | null;
+  height: number | null;
+  aspect_ratio: string | null;
+  orientation: string;
+  fps: number | null;
+  video_bitrate: string | null;
+  audio_bitrate: string;
+  audio_only: boolean;
+  caption_strategy: string;
+  delivery_notes: string[];
+  tags: string[];
+}
+
+export interface ExportPresetGroup {
+  id: "social" | "professional" | "education" | string;
+  label: string;
+  description: string;
+  presets: ExportPreset[];
+}
+
+export interface ExportPresetCatalog {
+  schema_version: string;
+  default_preset_id: string;
+  groups: ExportPresetGroup[];
+}
+
+export type RenderJobStatus = "queued" | "running" | "cancel_requested" | "completed" | "failed" | "cancelled" | string;
+
+export interface RenderJob {
+  job_id: string;
+  video_id: string;
+  preset_id: string | null;
+  status: RenderJobStatus;
+  phase: string;
+  phase_label: string;
+  message: string;
+  progress_percent: number;
+  started_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  elapsed_seconds: number;
+  cancel_requested: boolean;
+  cancelled_at: string | null;
+  cancellable: boolean;
+  error: string | null;
+  result: Record<string, unknown> | null;
+  details: Record<string, unknown>;
+}
+
+export interface ApprovePlanResponse {
+  status: string;
+  message: string;
+  video_id: string;
+  export_preset_id: string;
+  render_job: RenderJob;
+}
+
+export interface RenderCancelResponse {
+  status: "cancel_requested" | string;
+  message: string;
+  video_id: string;
+  render_job: RenderJob;
+}
+
+// -- Processing Status --
+
 export interface ProcessingStatus {
   video_id: string;
   status: VideoStatus;
@@ -116,6 +766,7 @@ export interface ProcessingStatus {
   steps_timing: Record<string, { elapsed_seconds: number; summary?: Record<string, unknown> }>;
   total_elapsed_seconds: number;
   error_message: string | null;
+  render_job?: RenderJob | null;
 }
 
 // ── Quality Report ──
@@ -124,6 +775,7 @@ export interface QualityReport {
   video_id: string;
   original_duration_seconds: number;
   estimated_duration_seconds: number;
+  actual_output_duration_seconds?: number | null;
   time_saved_seconds: number;
   reduction_percent: number;
   total_segments: number;
@@ -136,6 +788,145 @@ export interface QualityReport {
   average_fluency_score: number;
   topic_distribution: Record<string, { count: number; total_duration: number }>;
   segment_type_distribution: Record<string, number>;
+  action_distribution?: Record<string, number>;
+  teacher_modifications?: number;
+  teacher_overrides?: number;
+  teacher_override_rate?: number;
+  processing_time_seconds?: number | null;
+  estimated_cost_usd?: number | null;
+  evaluation_metrics?: EvaluationMetrics;
+}
+
+export interface EvaluationMetrics {
+  schema_version: "phase10.evaluation-metrics.v1" | string;
+  transcription_accuracy_proxy: {
+    score: number;
+    is_proxy: boolean;
+    ground_truth_required_for_true_accuracy: boolean;
+    word_timestamp_coverage: number | null;
+    segment_text_coverage: number | null;
+    segment_timing_coverage: number | null;
+    transcript_word_count: number;
+    segment_text_word_count: number;
+    asr_provider: string | null;
+    notes: string;
+  };
+  processing_time: {
+    started_at: string | null;
+    ended_at: string | null;
+    total_seconds: number | null;
+    source: string;
+  };
+  cost: {
+    estimated_total_usd: number;
+    currency: string;
+    processing_mode: string;
+    duration_minutes: number;
+    breakdown: Record<string, unknown>;
+  };
+  duration_reduction: Record<string, number | null>;
+  filler_dead_air_removal: Record<string, number>;
+  segment_quality: Record<string, number | null>;
+  layout_correctness: {
+    score: number;
+    cue_count: number;
+    timeline_coverage_rate: number;
+    valid_timing_rate: number;
+    enabled_source_reference_rate: number | null;
+    layout_modes?: string[];
+    warnings: string[];
+  };
+  user_override_rate: {
+    total_segments: number;
+    teacher_modifications: number;
+    teacher_overrides: number;
+    override_rate: number;
+    modification_rate: number;
+  };
+  summary: Record<string, number | null>;
+}
+
+// -- Mode Comparison --
+
+export interface ModeComparisonReport {
+  schema_version: "phase10.mode-comparison.v1" | string;
+  generated_at: string;
+  video_id: string;
+  project_id: string | null;
+  current_mode: AIProcessingMode | string;
+  baseline: {
+    duration_seconds: number;
+    estimated_output_duration_seconds: number;
+    segment_count: number;
+    transcript_provider: string | null;
+    quality_summary: Record<string, number | null>;
+    render_job?: RenderJob | null;
+  };
+  workflow: {
+    step: string;
+    title: string;
+    status: string;
+    modes: string[];
+    output: string;
+  }[];
+  stage_matrix: Record<string, Record<string, {
+    provider_strategy: string;
+    provider: Record<string, unknown>;
+  }>>;
+  modes: ModeComparisonProfile[];
+  comparison: {
+    fastest_mode: string;
+    lowest_cost_mode: string;
+    highest_quality_mode: string;
+    recommended_mode: string;
+    ranking: {
+      mode: string;
+      label: string;
+      score: number;
+      readiness: string;
+      estimated_total_runtime_seconds: number;
+      estimated_total_cost_usd: number;
+      estimated_quality_score: number;
+    }[];
+    delta_vs_current_mode: Record<string, {
+      runtime_seconds: number;
+      cost_usd: number;
+      quality_score: number;
+    }>;
+  };
+}
+
+export interface ModeComparisonProfile {
+  mode: AIProcessingMode | string;
+  label: string;
+  summary: {
+    estimated_total_runtime_seconds: number;
+    estimated_total_cost_usd: number;
+    estimated_quality_score: number;
+    privacy_score: number;
+    readiness: string;
+    stage_count: number;
+  };
+  stages: ModeComparisonStage[];
+  tradeoffs: string[];
+}
+
+export interface ModeComparisonStage {
+  stage: "transcription" | "analysis" | "edit_planning" | "rendering" | string;
+  label: string;
+  mode: AIProcessingMode | "local" | string;
+  provider_strategy: string;
+  provider: Record<string, unknown>;
+  estimated_runtime_seconds: number;
+  estimated_cost_usd: number;
+  estimated_quality_score: number;
+  privacy_score: number;
+  readiness: {
+    status: string;
+    issues: string[];
+    checks: string[];
+  };
+  notes: string;
 }
 
 // ── Chapters ──
@@ -145,6 +936,59 @@ export interface Chapter {
   formatted: string;
   label: string;
   segment_index: number;
+  duration?: number | null;
+  confidence?: number | null;
+  boundary_reason?: string | null;
+  keywords?: string[];
+  segment_count?: number | null;
+}
+
+export interface TopicSectionSignals {
+  topic_change: boolean;
+  long_pause: boolean;
+  content_shift: boolean;
+  transition_cue: boolean;
+  pause_seconds: number;
+  content_shift_score: number;
+}
+
+export interface LectureSection {
+  id: string;
+  chapter_index: number;
+  timestamp: number;
+  formatted: string;
+  label: string;
+  title: string;
+  summary: string;
+  start_time: number;
+  end_time: number;
+  duration: number;
+  segment_start_index: number;
+  segment_end_index: number;
+  segment_index: number;
+  segment_indexes: number[];
+  segment_count: number;
+  keywords: string[];
+  confidence: number;
+  boundary_reason: string;
+  source_signals: TopicSectionSignals;
+}
+
+export interface TopicSegmentationSummary {
+  sections_total: number;
+  chapters_total: number;
+  average_confidence: number;
+  estimated_total_duration_seconds: number;
+}
+
+export interface TopicSegmentationResult {
+  video_id: string;
+  schema_version: string;
+  summary: TopicSegmentationSummary;
+  sections: LectureSection[];
+  chapters: Chapter[];
+  chapters_count: number;
+  youtube_format: string;
 }
 
 // ── Revalidation ──
@@ -156,9 +1000,120 @@ export interface RevalidationResult {
 
 // ── App Settings ──
 
+export type AIProcessingMode = "api" | "local" | "hybrid";
+export type AIProviderKind = "transcription" | "chat" | "embedding" | "vision" | "local_runtime";
+
+export interface AICapabilitySettings {
+  mode: AIProcessingMode;
+  api_provider_id: string | null;
+  local_provider_id: string | null;
+  fallback_enabled: boolean;
+  hybrid_fallback_order: AIProcessingMode[];
+}
+
+export interface APIKeyStatus {
+  provider: string;
+  source: "env" | "encrypted_db";
+  env_var: string | null;
+  has_key: boolean;
+  display_value: string | null;
+  updated_at: string | null;
+}
+
+export interface APIKeyUpdate {
+  api_key?: string | null;
+  clear?: boolean;
+  use_env?: boolean;
+  env_var?: string | null;
+}
+
+export interface BackendAISettings {
+  asr_provider: string;
+  agent2_model: string;
+  agent3_model: string;
+  agent5_model: string;
+  embedding_model: string;
+  domain_terms: string[];
+  preferred_processing_mode: AIProcessingMode;
+  fallback_enabled: boolean;
+  capabilities: Record<AIProviderKind, AICapabilitySettings>;
+  api_keys: Record<string, APIKeyStatus>;
+  local_model_paths: Record<AIProviderKind, string | null>;
+}
+
+export type AICapabilitySettingsUpdate = Partial<AICapabilitySettings>;
+
+export interface BackendAISettingsUpdate {
+  preferred_processing_mode?: AIProcessingMode;
+  fallback_enabled?: boolean;
+  capabilities?: Partial<Record<AIProviderKind, AICapabilitySettingsUpdate>>;
+  api_keys?: Partial<Record<string, APIKeyUpdate>>;
+  local_model_paths?: Partial<Record<AIProviderKind, string | null>>;
+  domain_terms?: string[];
+}
+
+export type LocalTranscriptionModelStatus =
+  | "not_downloaded" | "queued" | "downloading" | "downloaded" | "completed" | "failed";
+
+export interface LocalTranscriptionModel {
+  model_id: string;
+  provider_id: "whisper-cpp";
+  tier: "fast" | "balanced" | "accurate" | string;
+  label: string;
+  expected_filename: string;
+  download_url: string;
+  description: string;
+  size: string;
+  size_mb: number;
+  speed: string;
+  quality: string;
+  active: boolean;
+  downloaded: boolean;
+  managed: boolean;
+  status: LocalTranscriptionModelStatus;
+  can_download: boolean;
+  can_remove: boolean;
+  download_progress_percent: number | null;
+  file_path: string | null;
+}
+
+export interface LocalTranscriptionModelCatalog {
+  provider_id: "whisper-cpp";
+  active_model_id: string;
+  models: LocalTranscriptionModel[];
+}
+
+export interface LocalTranscriptionModelDownload {
+  job_id: string;
+  provider_id: "whisper-cpp";
+  model_id: string;
+  status: "queued" | "downloading" | "completed" | "failed" | string;
+  file_path: string;
+  download_url: string;
+  total_bytes: number | null;
+  bytes_downloaded: number;
+  progress_percent: number;
+  message: string;
+  error: string | null;
+  active: boolean;
+}
+
+export interface LocalTranscriptionModelRemoveResult {
+  provider_id: "whisper-cpp";
+  model_id: string;
+  removed: boolean;
+  file_path: string | null;
+  message: string;
+}
+
 export interface AppSettings {
   backend_url: string;
   asr_provider: string;
   domain_terms: string[];
   auto_accept_threshold: number;
+  export_folder?: string | null;
+  appearance_theme?: "dark" | "system" | "light" | string;
+  interface_density?: "comfortable" | "compact" | string;
+  guided_tours_enabled?: boolean;
+  guided_hints_enabled?: boolean;
 }

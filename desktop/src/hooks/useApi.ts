@@ -10,7 +10,7 @@ import type { ProcessingStatus, Segment, SegmentAction } from "../types/api";
  * Poll processing status every N seconds.
  * Stops polling when status is terminal (awaiting_review, completed, failed).
  */
-export function useProcessingStatus(videoId: string | null, intervalMs = 2500) {
+export function useProcessingStatus(videoId: string | null, intervalMs = 2500, pollKey = 0) {
   const [status, setStatus] = useState<ProcessingStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -27,9 +27,10 @@ export function useProcessingStatus(videoId: string | null, intervalMs = 2500) {
           setError(null);
         }
 
+        const renderJobActive = s.render_job && ["queued", "running", "cancel_requested"].includes(s.render_job.status);
         // Stop polling on terminal states
         const terminal = ["awaiting_review", "completed", "failed"];
-        if (terminal.includes(s.status)) return;
+        if (terminal.includes(s.status) && !renderJobActive) return;
 
         // Continue polling
         if (active) setTimeout(poll, intervalMs);
@@ -41,7 +42,7 @@ export function useProcessingStatus(videoId: string | null, intervalMs = 2500) {
 
     poll();
     return () => { active = false; };
-  }, [videoId, intervalMs]);
+  }, [videoId, intervalMs, pollKey]);
 
   return { status, error };
 }
@@ -72,13 +73,35 @@ export function useSegments(videoId: string | null) {
     note?: string,
   ) => {
     if (!videoId) return;
-    await api.updateSegment(videoId, segmentId, action, note);
+    await api.updateSegment(videoId, segmentId, action, note, true);
 
-    // Optimistic update
     setSegments(prev =>
       prev.map(s =>
         s.id === segmentId
           ? { ...s, teacher_action: action, teacher_note: note || null, is_teacher_modified: true }
+          : s
+      )
+    );
+  }, [videoId]);
+
+  const applySegmentOverride = useCallback(async (
+    segmentId: string,
+    teacherAction: SegmentAction | null,
+    teacherNote: string | null,
+    isTeacherModified: boolean,
+  ) => {
+    if (!videoId) return;
+    await api.updateSegment(videoId, segmentId, teacherAction, teacherNote, isTeacherModified);
+
+    setSegments(prev =>
+      prev.map(s =>
+        s.id === segmentId
+          ? {
+              ...s,
+              teacher_action: teacherAction,
+              teacher_note: teacherNote,
+              is_teacher_modified: isTeacherModified,
+            }
           : s
       )
     );
@@ -102,7 +125,7 @@ export function useSegments(videoId: string | null) {
     return updates.length;
   }, [videoId, segments, load]);
 
-  return { segments, loading, reload: load, updateAction, acceptAllHighConfidence };
+  return { segments, loading, reload: load, updateAction, applySegmentOverride, acceptAllHighConfidence };
 }
 
 /**

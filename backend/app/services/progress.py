@@ -13,12 +13,16 @@ Uses a combination of:
 import time
 import logging
 from typing import Optional, Dict
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
 # In-memory progress store (keyed by video_id)
 _progress: Dict[str, dict] = {}
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class PipelineStep:
@@ -73,7 +77,7 @@ def init_progress(video_id: str):
         "current_step": PipelineStep.QUEUED,
         "steps_completed": [],
         "steps_timing": {},
-        "started_at": datetime.utcnow().isoformat(),
+        "started_at": _utc_now_iso(),
         "error": None,
         "_step_start_time": None,
     }
@@ -105,7 +109,7 @@ def complete_step(video_id: str, step: str, result: Optional[dict] = None):
     prog["steps_completed"].append(step)
     prog["steps_timing"][step] = {
         "elapsed_seconds": elapsed,
-        "completed_at": datetime.utcnow().isoformat(),
+        "completed_at": _utc_now_iso(),
     }
 
     # Attach key metrics from result if available

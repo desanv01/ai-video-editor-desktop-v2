@@ -1,25 +1,28 @@
 """
-LLM service — wraps DeepSeek API for all reasoning tasks.
-DeepSeek uses OpenAI-compatible API format, so we use the OpenAI client.
+LLM service - compatibility wrapper around the provider registry.
 """
 
 import json
-from openai import AsyncOpenAI
-from typing import Optional, List
-from config import settings
+from typing import List, Optional
+
+from providers import (
+    ChatProvider,
+    ChatRequest,
+    EmbeddingProvider,
+    EmbeddingRequest,
+    ProviderKind,
+    get_provider_registry,
+)
 
 
 class LLMService:
-    """Handles all LLM calls (DeepSeek for reasoning, OpenAI for embeddings)."""
+    """Handles existing LLM calls while delegating to typed AI providers."""
 
-    def __init__(self):
-        # DeepSeek client (OpenAI-compatible API)
-        self.deepseek = AsyncOpenAI(
-            api_key=settings.DEEPSEEK_API_KEY,
-            base_url=settings.DEEPSEEK_BASE_URL,
-        )
-        # OpenAI client (for embeddings)
-        self.openai = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    def _provider_for_kind(self, kind: ProviderKind):
+        registry = get_provider_registry()
+        mode_config = registry.processing_mode_for(kind)
+        provider_id = mode_config.api_provider_id or registry.default_provider_id(kind)
+        return registry.get(kind, provider_id)
 
     async def chat(
         self,
@@ -30,7 +33,7 @@ class LLMService:
         response_format: Optional[dict] = None,
     ) -> str:
         """
-        Send a chat completion request to DeepSeek.
+        Send a chat completion request through the default chat provider.
 
         Args:
             messages: [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}]
@@ -41,17 +44,20 @@ class LLMService:
         Returns:
             The assistant's response text.
         """
-        kwargs = {
-            "model": model or settings.AGENT2_MODEL,  # default to Agent 2's model; agents override as needed
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        if response_format:
-            kwargs["response_format"] = response_format
+        provider = self._provider_for_kind(ProviderKind.CHAT)
+        if not isinstance(provider, ChatProvider):
+            raise TypeError("Default chat provider does not implement ChatProvider")
 
-        response = await self.deepseek.chat.completions.create(**kwargs)
-        return response.choices[0].message.content
+        response = await provider.chat(
+            ChatRequest(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format=response_format,
+            )
+        )
+        return response.text
 
     async def chat_json(
         self,
@@ -75,7 +81,7 @@ class LLMService:
         try:
             return json.loads(result)
         except json.JSONDecodeError:
-            # Try to extract JSON from markdown code blocks
+            # Try to extract JSON from markdown code blocks.
             if "```json" in result:
                 json_str = result.split("```json")[1].split("```")[0].strip()
                 return json.loads(json_str)
@@ -86,7 +92,7 @@ class LLMService:
 
     async def embed(self, texts: List[str]) -> List[List[float]]:
         """
-        Generate embeddings using OpenAI API.
+        Generate embeddings through the default embedding provider.
 
         Args:
             texts: List of strings to embed
@@ -94,12 +100,12 @@ class LLMService:
         Returns:
             List of embedding vectors
         """
-        response = await self.openai.embeddings.create(
-            model=settings.EMBEDDING_MODEL,
-            input=texts,
-            dimensions=settings.EMBEDDING_DIMENSIONS,
-        )
-        return [item.embedding for item in response.data]
+        provider = self._provider_for_kind(ProviderKind.EMBEDDING)
+        if not isinstance(provider, EmbeddingProvider):
+            raise TypeError("Default embedding provider does not implement EmbeddingProvider")
+
+        response = await provider.embed(EmbeddingRequest(texts=texts))
+        return response.embeddings
 
     async def embed_single(self, text: str) -> List[float]:
         """Embed a single text string."""

@@ -7,8 +7,27 @@
 
 import type {
   Video, VideoUploadResponse, Segment, EditPlan,
-  ProcessingStatus, QualityReport, Chapter,
-  RevalidationResult, SegmentAction,
+  ProcessingStatus, QualityReport,
+  ModeComparisonReport,
+  RevalidationResult, SegmentAction, BackendAISettings,
+  BackendAISettingsUpdate,
+  TranscriptTimeline,
+  TranscriptCutDecision, TranscriptCutDecisionRequest, TranscriptCutTrimUpdateRequest,
+  EditDecisionSync,
+  CleanAnalyzeResult, CleanApplyResult, CleanProfileId,
+  LocalTranscriptionModelCatalog, LocalTranscriptionModelDownload,
+  LocalTranscriptionModelRemoveResult,
+  Project, ProjectAsset, ProjectAssetUploadResponse,
+  ProjectAssetSyncUpdateRequest, ProjectAssetUploadType,
+  ProjectCreateRequest, ProjectDetail, ProjectSourceSyncPlan,
+  TopicSegmentationResult,
+  AnnotationActionUpdate,
+  CaptionPolicyUpdate,
+  EndCardActionUpdate,
+  EducationalOverlayActionUpdate,
+  ExportPresetCatalog,
+  ApprovePlanResponse,
+  RenderCancelResponse,
 } from "../types/api";
 
 let BASE_URL = "http://localhost:8000/api/v1";
@@ -56,6 +75,95 @@ async function errorFromResponse(prefix: string, res: Response): Promise<Error> 
   return new Error(`${prefix}: ${res.status}${body ? ` - ${body.slice(0, 300)}` : ""}`);
 }
 
+export async function createProject(requestBody: ProjectCreateRequest): Promise<ProjectDetail> {
+  return request("/projects", {
+    method: "POST",
+    body: JSON.stringify(requestBody),
+  });
+}
+
+export async function listProjects(): Promise<Project[]> {
+  return request("/projects");
+}
+
+export async function getProject(projectId: string): Promise<ProjectDetail> {
+  return request(`/projects/${projectId}`);
+}
+
+export async function listProjectAssets(projectId: string): Promise<ProjectAsset[]> {
+  return request(`/projects/${projectId}/assets`);
+}
+
+export async function getProjectSourceSyncPlan(projectId: string): Promise<ProjectSourceSyncPlan> {
+  return request(`/projects/${projectId}/source-sync`);
+}
+
+export async function applyProjectSourceSyncMetadata(projectId: string, force = false): Promise<ProjectSourceSyncPlan> {
+  return request(`/projects/${projectId}/source-sync/apply-metadata`, {
+    method: "POST",
+    body: JSON.stringify({ force }),
+  });
+}
+
+export async function updateProjectAssetSyncOffset(
+  projectId: string,
+  assetId: string,
+  payload: ProjectAssetSyncUpdateRequest,
+): Promise<ProjectAsset> {
+  return request(`/projects/${projectId}/assets/${assetId}/sync`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function uploadProjectAsset(
+  projectId: string,
+  assetType: ProjectAssetUploadType,
+  file: File,
+  isPrimary = false,
+  metadata?: Record<string, unknown>,
+): Promise<ProjectAssetUploadResponse> {
+  const form = new FormData();
+  form.append("asset_type", assetType);
+  form.append("is_primary", String(isPrimary));
+  if (metadata) {
+    form.append("metadata", JSON.stringify(metadata));
+  }
+  form.append("file", file);
+
+  const res = await fetchWithTimeout(
+    `${BASE_URL}/projects/${projectId}/assets/upload`,
+    { method: "POST", body: form },
+    VIDEO_UPLOAD_TIMEOUT_MS,
+  );
+  if (!res.ok) throw await errorFromResponse("Project asset upload failed", res);
+  return res.json();
+}
+
+export async function uploadProjectPrimaryVideo(
+  projectId: string,
+  file: File,
+): Promise<VideoUploadResponse> {
+  const form = new FormData();
+  form.append("file", file);
+
+  const res = await fetchWithTimeout(
+    `${BASE_URL}/projects/${projectId}/videos/upload`,
+    { method: "POST", body: form },
+    VIDEO_UPLOAD_TIMEOUT_MS,
+  );
+  if (!res.ok) throw await errorFromResponse("Project video upload failed", res);
+  return res.json();
+}
+
+export async function deleteProjectAsset(projectId: string, assetId: string): Promise<void> {
+  await request(`/projects/${projectId}/assets/${assetId}`, { method: "DELETE" });
+}
+
+export function getProjectAssetDownloadUrl(projectId: string, assetId: string): string {
+  return `${BASE_URL}/projects/${projectId}/assets/${assetId}/download`;
+}
+
 // ═══════════════════════════════════════════
 //  VIDEO
 // ═══════════════════════════════════════════
@@ -89,9 +197,69 @@ export async function getProcessingStatus(id: string): Promise<ProcessingStatus>
   return request(`/videos/${id}/status`);
 }
 
+export async function getTranscriptTimeline(videoId: string): Promise<TranscriptTimeline> {
+  return request(`/videos/${videoId}/transcript/timeline`);
+}
+
+export async function getTranscriptCutDecisions(videoId: string): Promise<TranscriptCutDecision[]> {
+  return request(`/videos/${videoId}/transcript/cuts`);
+}
+
+export async function createTranscriptCutDecision(
+  videoId: string,
+  payload: TranscriptCutDecisionRequest,
+): Promise<TranscriptCutDecision> {
+  return request(`/videos/${videoId}/transcript/cuts`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteTranscriptCutDecision(videoId: string, decisionId: string): Promise<void> {
+  await request(`/videos/${videoId}/transcript/cuts/${decisionId}`, {
+    method: "DELETE",
+  });
+}
+
+export async function updateTranscriptCutTrim(
+  videoId: string,
+  decisionId: string,
+  payload: TranscriptCutTrimUpdateRequest,
+): Promise<TranscriptCutDecision> {
+  return request(`/videos/${videoId}/transcript/cuts/${decisionId}/trim`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getEditDecisionSync(videoId: string): Promise<EditDecisionSync> {
+  return request(`/videos/${videoId}/edit-decision-sync`);
+}
+
 // ═══════════════════════════════════════════
 //  SEGMENTS
 // ═══════════════════════════════════════════
+
+export async function analyzeCleanSuggestions(
+  videoId: string,
+  profile: CleanProfileId | string = "conservative",
+): Promise<CleanAnalyzeResult> {
+  return request(`/videos/${videoId}/clean/analyze?profile=${encodeURIComponent(profile)}`);
+}
+
+export async function applyCleanSuggestions(
+  videoId: string,
+  profile: CleanProfileId | string = "conservative",
+  suggestionIds?: string[],
+): Promise<CleanApplyResult> {
+  return request(`/videos/${videoId}/clean/apply`, {
+    method: "POST",
+    body: JSON.stringify({
+      profile,
+      suggestion_ids: suggestionIds && suggestionIds.length > 0 ? suggestionIds : null,
+    }),
+  });
+}
 
 export async function getSegments(videoId: string): Promise<Segment[]> {
   return request(`/videos/${videoId}/segments`);
@@ -100,12 +268,17 @@ export async function getSegments(videoId: string): Promise<Segment[]> {
 export async function updateSegment(
   videoId: string,
   segmentId: string,
-  action: SegmentAction,
-  note?: string,
+  action: SegmentAction | null,
+  note?: string | null,
+  isTeacherModified?: boolean,
 ): Promise<void> {
   await request(`/videos/${videoId}/segments/${segmentId}`, {
     method: "PUT",
-    body: JSON.stringify({ teacher_action: action, teacher_note: note || null }),
+    body: JSON.stringify({
+      teacher_action: action,
+      teacher_note: note || null,
+      is_teacher_modified: isTeacherModified,
+    }),
   });
 }
 
@@ -127,18 +300,60 @@ export async function getEditPlan(videoId: string): Promise<EditPlan> {
   return request(`/videos/${videoId}/plan`);
 }
 
-export async function approvePlan(videoId: string, notes?: string): Promise<void> {
-  await request(`/videos/${videoId}/plan/approve`, {
-    method: "POST",
-    body: JSON.stringify({ teacher_notes: notes || null }),
+export async function updateCaptionPolicy(videoId: string, payload: CaptionPolicyUpdate): Promise<EditPlan> {
+  return request(`/videos/${videoId}/plan/captions`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
   });
+}
+
+export async function updateAnnotations(videoId: string, annotations: AnnotationActionUpdate[]): Promise<EditPlan> {
+  return request(`/videos/${videoId}/plan/annotations`, {
+    method: "PUT",
+    body: JSON.stringify({ annotations }),
+  });
+}
+
+export async function updateEducationalOverlays(
+  videoId: string,
+  overlays: EducationalOverlayActionUpdate[],
+): Promise<EditPlan> {
+  return request(`/videos/${videoId}/plan/educational-overlays`, {
+    method: "PUT",
+    body: JSON.stringify({ overlays }),
+  });
+}
+
+export async function updateEndCards(
+  videoId: string,
+  endCards: EndCardActionUpdate[],
+): Promise<EditPlan> {
+  return request(`/videos/${videoId}/plan/end-cards`, {
+    method: "PUT",
+    body: JSON.stringify({ end_cards: endCards }),
+  });
+}
+
+export async function getExportPresets(): Promise<ExportPresetCatalog> {
+  return request("/export/presets");
+}
+
+export async function approvePlan(videoId: string, notes?: string, exportPresetId?: string): Promise<ApprovePlanResponse> {
+  return request(`/videos/${videoId}/plan/approve`, {
+    method: "POST",
+    body: JSON.stringify({ teacher_notes: notes || null, export_preset_id: exportPresetId || null }),
+  });
+}
+
+export async function cancelRender(videoId: string): Promise<RenderCancelResponse> {
+  return request(`/videos/${videoId}/render/cancel`, { method: "POST" });
 }
 
 export async function revalidatePlan(videoId: string): Promise<RevalidationResult> {
   return request(`/videos/${videoId}/plan/revalidate`, { method: "POST" });
 }
 
-export async function getChapters(videoId: string): Promise<{ chapters: Chapter[]; youtube_format: string }> {
+export async function getChapters(videoId: string): Promise<TopicSegmentationResult> {
   return request(`/videos/${videoId}/chapters`);
 }
 
@@ -148,6 +363,10 @@ export async function getChapters(videoId: string): Promise<{ chapters: Chapter[
 
 export async function getQualityReport(videoId: string): Promise<QualityReport> {
   return request(`/videos/${videoId}/report`);
+}
+
+export async function getModeComparisonReport(videoId: string): Promise<ModeComparisonReport> {
+  return request(`/videos/${videoId}/mode-comparison`);
 }
 
 // ═══════════════════════════════════════════
@@ -179,14 +398,52 @@ export async function deleteMaterial(id: string): Promise<void> {
 //  SETTINGS
 // ═══════════════════════════════════════════
 
-export async function getSettings(): Promise<Record<string, unknown>> {
+export async function getSettings(): Promise<BackendAISettings> {
   return request("/settings");
+}
+
+export async function getAISettings(): Promise<BackendAISettings> {
+  return request("/settings/ai");
+}
+
+export async function updateAISettings(settings: BackendAISettingsUpdate): Promise<BackendAISettings> {
+  return request("/settings/ai", {
+    method: "PUT",
+    body: JSON.stringify(settings),
+  });
 }
 
 export async function updateDomainTerms(terms: string[]): Promise<void> {
   await request("/settings/domain-terms", {
     method: "PUT",
     body: JSON.stringify({ terms }),
+  });
+}
+export async function getLocalTranscriptionModels(): Promise<LocalTranscriptionModelCatalog> {
+  return request("/settings/models/local-transcription");
+}
+
+export async function downloadLocalTranscriptionModel(
+  modelId: string,
+  makeActive = true,
+): Promise<LocalTranscriptionModelDownload> {
+  return request(`/settings/models/local-transcription/${modelId}/download`, {
+    method: "POST",
+    body: JSON.stringify({ make_active: makeActive }),
+  });
+}
+
+export async function getLocalTranscriptionModelDownload(
+  modelId: string,
+): Promise<LocalTranscriptionModelDownload> {
+  return request(`/settings/models/local-transcription/${modelId}/download`);
+}
+
+export async function removeLocalTranscriptionModel(
+  modelId: string,
+): Promise<LocalTranscriptionModelRemoveResult> {
+  return request(`/settings/models/local-transcription/${modelId}`, {
+    method: "DELETE",
   });
 }
 
@@ -212,6 +469,46 @@ export function getChaptersDownloadUrl(videoId: string): string {
 
 export function getPlanExportUrl(videoId: string): string {
   return `${BASE_URL}/videos/${videoId}/plan/export`;
+}
+
+export function getQualityReportExportUrl(videoId: string): string {
+  return `${BASE_URL}/videos/${videoId}/report/export`;
+}
+
+export function getModeComparisonExportUrl(videoId: string): string {
+  return `${BASE_URL}/videos/${videoId}/mode-comparison/export`;
+}
+
+export function getModeComparisonSummaryUrl(videoId: string): string {
+  return `${BASE_URL}/videos/${videoId}/mode-comparison/summary`;
+}
+
+export function getAcademicEvidenceExportUrl(videoId: string): string {
+  return `${BASE_URL}/videos/${videoId}/evidence/export`;
+}
+
+export function getAcademicEvidenceSummaryUrl(videoId: string): string {
+  return `${BASE_URL}/videos/${videoId}/evidence/summary`;
+}
+
+export function getAcademicEvidenceBundleUrl(videoId: string): string {
+  return `${BASE_URL}/videos/${videoId}/evidence/bundle`;
+}
+
+export function getBeforeAfterComparisonUrl(videoId: string): string {
+  return `${BASE_URL}/videos/${videoId}/evidence/before-after`;
+}
+
+export function getTimelineDecisionsUrl(videoId: string): string {
+  return `${BASE_URL}/videos/${videoId}/evidence/timeline-decisions`;
+}
+
+export function getProviderModeTraceUrl(videoId: string): string {
+  return `${BASE_URL}/videos/${videoId}/evidence/provider-mode`;
+}
+
+export function getMetricsSummaryUrl(videoId: string): string {
+  return `${BASE_URL}/videos/${videoId}/evidence/metrics-summary`;
 }
 
 export function getVideoStreamUrl(videoId: string): string {

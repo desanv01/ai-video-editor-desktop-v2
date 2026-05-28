@@ -31,7 +31,8 @@ import logging
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from db.models import Video, Segment, EditPlan, SegmentAction, SegmentType, VideoStatus
+from db.models import Video, Segment, EditPlan, ProjectAsset, SegmentAction, SegmentType, VideoStatus
+from services.edit_plan_payload import build_edit_plan_payload
 from services.llm import llm_service
 from config import settings
 
@@ -111,6 +112,7 @@ async def run_edit_planner_agent(video_id: str, db: AsyncSession) -> dict:
         .order_by(Segment.segment_index)
     )
     segments = list(result.scalars().all())
+    project_assets = await _load_layout_source_assets(video, db)
 
     if not segments:
         return {"status": "error", "message": "No segments found. Run Agents 2-4 first."}
@@ -251,6 +253,15 @@ async def run_edit_planner_agent(video_id: str, db: AsyncSession) -> dict:
             "has_slide_change": seg.has_slide_change,
         })
 
+    plan_payload = build_edit_plan_payload(
+        segments=plan_entries,
+        original_duration=original_duration,
+        estimated_duration=round(estimated_duration, 1),
+        warnings=all_warnings,
+        source_assets=project_assets or None,
+        layout_segments=segments,
+    )
+
     # ── Step 7: Create or update EditPlan ──
     existing_plan = await db.execute(
         select(EditPlan).where(EditPlan.video_id == video_id)
@@ -259,7 +270,7 @@ async def run_edit_planner_agent(video_id: str, db: AsyncSession) -> dict:
 
     if plan:
         # Update existing plan (re-run scenario)
-        plan.plan_json = plan_entries
+        plan.plan_json = plan_payload
         plan.original_duration = original_duration
         plan.estimated_duration = round(estimated_duration, 1)
         plan.segments_total = len(segments)
@@ -274,7 +285,7 @@ async def run_edit_planner_agent(video_id: str, db: AsyncSession) -> dict:
         plan = EditPlan(
             id=uuid.uuid4(),
             video_id=video.id,
-            plan_json=plan_entries,
+            plan_json=plan_payload,
             original_duration=original_duration,
             estimated_duration=round(estimated_duration, 1),
             segments_total=len(segments),
@@ -317,6 +328,26 @@ async def run_edit_planner_agent(video_id: str, db: AsyncSession) -> dict:
         "chapters": chapters,
         "warnings": all_warnings,
     }
+
+
+async def _load_layout_source_assets(video: Video, db: AsyncSession) -> list[ProjectAsset]:
+    """Load project assets usable by the layout planner, preserving legacy fallback."""
+    if video.project_id:
+        result = await db.execute(
+            select(ProjectAsset)
+            .where(ProjectAsset.project_id == video.project_id)
+            .order_by(ProjectAsset.created_at)
+        )
+        assets = list(result.scalars().all())
+        if assets:
+            return assets
+
+    if video.project_asset_id:
+        asset = await db.get(ProjectAsset, video.project_asset_id)
+        if asset:
+            return [asset]
+
+    return []
 
 
 # ═══════════════════════════════════════════

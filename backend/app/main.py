@@ -9,9 +9,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from config import settings
-from db.database import init_db
+from db.database import async_session, init_db
 from rag.vector_store import rag_service
+from api.routes.models import router as model_router
+from api.routes.projects import router as project_router
 from api.routes.videos import router as video_router
+from services.app_settings import load_and_apply_persisted_ai_settings
 
 
 @asynccontextmanager
@@ -20,6 +23,9 @@ async def lifespan(app: FastAPI):
     # ── Startup ──
     print("🚀 Starting AI Video Editing Agent...")
     await init_db()
+    async with async_session() as db:
+        await load_and_apply_persisted_ai_settings(db)
+        await db.commit()
     print("✅ Database tables created")
 
     await rag_service.ensure_collection()
@@ -62,6 +68,8 @@ app.add_middleware(
 
 # ── Routes ──
 app.include_router(video_router, prefix="/api/v1")
+app.include_router(project_router, prefix="/api/v1")
+app.include_router(model_router, prefix="/api/v1")
 
 # ── Debug routes (only when APP_DEBUG=true) ──
 if settings.APP_DEBUG:

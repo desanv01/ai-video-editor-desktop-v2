@@ -7,6 +7,7 @@ import os
 import uuid
 import shutil
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query
@@ -219,6 +220,9 @@ async def debug_config():
             "provider": settings.ASR_PROVIDER,
             "voxtral_model": settings.VOXTRAL_MODEL,
             "whisper_model": settings.WHISPER_MODEL,
+            "whisper_cpp_binary_path": settings.WHISPER_CPP_BINARY_PATH,
+            "whisper_cpp_model_id": settings.WHISPER_CPP_MODEL_ID,
+            "whisper_cpp_model_path_set": bool(settings.WHISPER_CPP_MODEL_PATH or settings.LOCAL_TRANSCRIPTION_MODEL_PATH),
             "mistral_api_key_set": bool(settings.MISTRAL_API_KEY) and settings.MISTRAL_API_KEY != "...",
             "openai_api_key_set": bool(settings.OPENAI_API_KEY) and settings.OPENAI_API_KEY != "sk-...",
         },
@@ -537,8 +541,6 @@ async def debug_force_approve(video_id: str):
     from db.database import async_session
     from db.models import EditPlan
     from sqlalchemy import select
-    from datetime import datetime
-
     async with async_session() as db:
         result = await db.execute(
             select(EditPlan).where(EditPlan.video_id == video_id)
@@ -548,7 +550,7 @@ async def debug_force_approve(video_id: str):
             raise HTTPException(404, "No edit plan found")
 
         plan.is_approved = True
-        plan.approved_at = datetime.utcnow()
+        plan.approved_at = datetime.now(timezone.utc).replace(tzinfo=None)
         plan.teacher_notes = "Debug: force-approved"
         await db.commit()
 

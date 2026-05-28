@@ -22,27 +22,73 @@ HIGHLIGHT action:
 """
 
 import os
-import json
 import uuid
 import shutil
 import logging
+from dataclasses import dataclass, field
 from typing import List
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from db.models import Video, Transcript, Segment, EditPlan, SegmentAction, VideoStatus
+from db.models import Video, Transcript, Segment, EditPlan, ProjectAsset, SegmentAction, VideoStatus
 from services.ffmpeg import ffmpeg_service, FFmpegService
 from services.progress import start_step, complete_step, PipelineStep
+from services.render_jobs import RenderCancelled, ensure_not_cancelled, update_render_job
+from services.edit_plan_payload import (
+    get_annotations,
+    get_caption_policy,
+    get_educational_overlays,
+    get_end_cards,
+    normalize_plan_payload,
+    update_export_metadata,
+)
+from services.export_artifacts import (
+    artifact_records,
+    build_academic_evidence_artifact,
+    build_before_after_comparison,
+    build_evidence_markdown,
+    build_generated_evidence_index,
+    build_metrics_summary_artifact,
+    build_provider_mode_trace,
+    build_timeline_decision_rows,
+    build_timeline_decisions_artifact,
+    TIMELINE_DECISION_CSV_FIELDS,
+    write_csv_artifact,
+    write_json_artifact,
+    write_text_artifact,
+)
+from services.evaluation_metrics import build_evaluation_metrics
+from services.layout_model import LayoutMode
+from services.transcript_edit_decisions import build_synced_timeline_plan
+from services.export_presets import get_export_preset
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+@dataclass(frozen=True)
+class LayoutRenderContext:
+    cues: list[dict]
+    assets_by_id: dict[str, ProjectAsset]
+    assets_by_track: dict[str, ProjectAsset] = field(default_factory=dict)
+    assets_by_role: dict[str, ProjectAsset] = field(default_factory=dict)
+    timeline_tracks: list[dict] = field(default_factory=list)
+    source_manifest: list[dict] = field(default_factory=list)
+    transition_events: list[dict] = field(default_factory=list)
+    fallback_screen_asset: ProjectAsset | None = None
+    fallback_camera_asset: ProjectAsset | None = None
+    fallback_audio_asset: ProjectAsset | None = None
 
 
 # ═══════════════════════════════════════════
 #  MAIN RENDER FUNCTION
 # ═══════════════════════════════════════════
 
-async def render_final_video(video_id: str, db: AsyncSession) -> dict:
+async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str | None = None) -> dict:
     """
     Render the final edited video based on the approved edit plan.
 
@@ -96,107 +142,392 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
 
     video.status = VideoStatus.RENDERING
     await db.flush()
+    _render_progress(
+        render_job_id,
+        video_id,
+        4,
+        "preparing",
+        "Preparing render inputs",
+        "Loading approved edit plan, transcript, and segment decisions",
+    )
 
     logger.info(f"Renderer: Starting render for video {video_id} ({len(segments)} segments)")
 
     try:
-        # ── Step 1: Determine kept segments ──
-        kept_segments: List[Segment] = []
-        for seg in segments:
-            action = seg.teacher_action if seg.is_teacher_modified else seg.action
-            if action in (SegmentAction.KEEP, SegmentAction.HIGHLIGHT, SegmentAction.SHORTEN):
-                kept_segments.append(seg)
+        _check_render_cancel(render_job_id, video_id)
+        # ── Step 1: Determine playable ranges from segment and transcript edits ──
+        sync_plan = build_synced_timeline_plan(
+            plan=plan,
+            segments=segments,
+            duration_seconds=video.duration_seconds,
+        )
+        segment_by_id = {str(segment.id): segment for segment in segments}
+        render_ranges = [
+            {**playable_range, "segment": segment_by_id[playable_range["segment_id"]]}
+            for playable_range in sync_plan["playable_ranges"]
+            if playable_range["segment_id"] in segment_by_id
+        ]
+        included_segment_ids = {item["segment_id"] for item in render_ranges}
 
-        if not kept_segments:
-            raise ValueError("No segments to keep — nothing to render")
+        if not render_ranges:
+            raise ValueError("No playable ranges to render after edit decisions")
+        _render_progress(
+            render_job_id,
+            video_id,
+            10,
+            "timeline",
+            "Building render timeline",
+            f"{len(render_ranges)} playable ranges queued for export",
+            {"playable_ranges": len(render_ranges), "segments_total": len(segments)},
+        )
 
-        logger.info(f"  Keeping {len(kept_segments)}/{len(segments)} segments")
+        logger.info(
+            "  Keeping %s/%s segments across %s ranges after %s transcript cuts",
+            len(included_segment_ids),
+            len(segments),
+            len(render_ranges),
+            sync_plan["export_plan"]["transcript_cut_count"],
+        )
 
         # ── Step 2: Trim clips ──
+        plan_payload = normalize_plan_payload(plan.plan_json)
+        layout_render_context = await _build_layout_render_context(video, plan_payload, db)
+        selected_preset = _selected_export_preset(plan_payload)
+        if _is_audio_only_export(selected_preset):
+            result = await _render_audio_only_export(
+                video=video,
+                plan=plan,
+                segments=segments,
+                transcript=transcript,
+                render_ranges=render_ranges,
+                included_segment_ids=included_segment_ids,
+                sync_plan=sync_plan,
+                plan_payload=plan_payload,
+                selected_preset=selected_preset,
+                layout_context=layout_render_context,
+                render_job_id=render_job_id,
+                video_id=video_id,
+                db=db,
+            )
+            await db.flush()
+            return result
+
+        transition_events = _layout_transition_events_for_render_ranges(
+            layout_render_context.cues if layout_render_context else [],
+            render_ranges,
+        )
+
         clip_dir = os.path.join(settings.TEMP_PATH, f"clips_{video.id}")
         os.makedirs(clip_dir, exist_ok=True)
 
         clip_paths = []
-        for i, seg in enumerate(kept_segments):
-            action = seg.teacher_action if seg.is_teacher_modified else seg.action
-            raw_clip = os.path.join(clip_dir, f"raw_{i:04d}.mp4")
-
-            # Trim the segment from the original video
-            await ffmpeg_service.trim_video(
-                video_path=video.file_path,
-                output_path=raw_clip,
-                start_time=seg.start_time,
-                end_time=seg.end_time,
+        clip_durations: list[float] = []
+        layout_clip_count = 0
+        layout_render_counts: dict[str, int] = {}
+        end_cards = get_end_cards(plan_payload)
+        enabled_end_cards = [card for card in end_cards if card.get("enabled")]
+        end_card_clip_paths: list[str] = []
+        for i, render_range in enumerate(render_ranges):
+            _check_render_cancel(render_job_id, video_id)
+            _render_progress(
+                render_job_id,
+                video_id,
+                _range_progress(i, len(render_ranges)),
+                "rendering_clips",
+                "Rendering timeline clips",
+                f"Rendering range {i + 1} of {len(render_ranges)}",
+                {"current_range": i + 1, "total_ranges": len(render_ranges)},
             )
+            rendered_paths, rendered_durations, rendered_layout_counts = await _render_range_clips(
+                video=video,
+                render_range=render_range,
+                range_index=i,
+                clip_dir=clip_dir,
+                layout_context=layout_render_context,
+                cancel_check=_cancel_check_callback(render_job_id, video_id),
+            )
+            clip_paths.extend(rendered_paths)
+            clip_durations.extend(rendered_durations)
+            for layout, count in rendered_layout_counts.items():
+                layout_render_counts[layout] = layout_render_counts.get(layout, 0) + count
+                layout_clip_count += count
 
-            if action == SegmentAction.SHORTEN:
-                # Additional silence removal for SHORTEN segments
-                shortened_clip = os.path.join(clip_dir, f"clip_{i:04d}.mp4")
-                await ffmpeg_service.trim_silence_from_clip(
-                    input_path=raw_clip,
-                    output_path=shortened_clip,
-                    threshold_db=settings.SILENCE_THRESHOLD_DB,
-                    min_silence=0.8,
+        if enabled_end_cards:
+            _check_render_cancel(render_job_id, video_id)
+            _render_progress(
+                render_job_id,
+                video_id,
+                58,
+                "end_cards",
+                "Rendering end cards",
+                f"Rendering {len(enabled_end_cards)} end card clips",
+                {"end_card_count": len(enabled_end_cards)},
+            )
+            width, height = _annotation_canvas_dimensions(plan_payload)
+            for index, end_card in enumerate(enabled_end_cards):
+                _check_render_cancel(render_job_id, video_id)
+                end_card_clip = await _render_end_card_clip(
+                    end_card=end_card,
+                    output_path=os.path.join(clip_dir, f"end_card_{index:02d}.mp4"),
+                    clip_dir=clip_dir,
+                    width=width,
+                    height=height,
+                    index=index,
+                    cancel_check=_cancel_check_callback(render_job_id, video_id),
                 )
-                clip_paths.append(shortened_clip)
-                # Clean raw clip
-                try:
-                    os.remove(raw_clip)
-                except OSError:
-                    pass
-            else:
-                # Rename raw to final clip
-                final_clip = os.path.join(clip_dir, f"clip_{i:04d}.mp4")
-                os.rename(raw_clip, final_clip)
-                clip_paths.append(final_clip)
+                clip_paths.append(end_card_clip)
+                clip_durations.append(float(end_card.get("duration_seconds") or 0.1))
+                end_card_clip_paths.append(end_card_clip)
 
-        logger.info(f"  Trimmed {len(clip_paths)} clips")
+        logger.info(
+            "  Prepared %s clips (%s rendered layout clips, %s end cards)",
+            len(clip_paths),
+            layout_clip_count,
+            len(end_card_clip_paths),
+        )
 
         # ── Step 3: Concatenate all clips ──
+        _check_render_cancel(render_job_id, video_id)
+        _render_progress(
+            render_job_id,
+            video_id,
+            64,
+            "concatenating",
+            "Concatenating clips",
+            f"Combining {len(clip_paths)} clips into the final video",
+            {"clip_count": len(clip_paths)},
+        )
         output_filename = f"{video.id}_edited.mp4"
         output_path = os.path.join(settings.VIDEO_STORAGE_PATH, output_filename)
 
-        await ffmpeg_service.concat_videos(
-            clip_paths=clip_paths,
-            output_path=output_path,
-        )
+        concat_transition_specs = _concat_transition_specs(transition_events, clip_durations)
+        if concat_transition_specs:
+            transition_width, transition_height = _annotation_canvas_dimensions(plan_payload)
+            try:
+                await ffmpeg_service.concat_videos_with_transitions(
+                    clip_paths=clip_paths,
+                    clip_durations=clip_durations,
+                    transitions=concat_transition_specs,
+                    output_path=output_path,
+                    output_width=transition_width,
+                    output_height=transition_height,
+                    cancel_check=_cancel_check_callback(render_job_id, video_id),
+                )
+            except Exception as exc:
+                logger.warning("Transition compositor failed; falling back to direct concat: %s", exc)
+                await ffmpeg_service.concat_videos(
+                    clip_paths=clip_paths,
+                    output_path=output_path,
+                    cancel_check=_cancel_check_callback(render_job_id, video_id),
+                )
+        else:
+            await ffmpeg_service.concat_videos(
+                clip_paths=clip_paths,
+                output_path=output_path,
+                cancel_check=_cancel_check_callback(render_job_id, video_id),
+            )
 
         logger.info(f"  Concatenated → {output_path}")
 
         # ── Step 4: Generate subtitles ──
+        _check_render_cancel(render_job_id, video_id)
+        _render_progress(
+            render_job_id,
+            video_id,
+            72,
+            "captions_overlays",
+            "Rendering captions and overlays",
+            "Generating sidecar captions and burn-in overlays",
+        )
         word_timestamps = transcript.words_json if transcript else None
 
-        srt_content = _generate_word_level_srt(kept_segments, word_timestamps)
+        caption_policy = get_caption_policy(plan_payload)
+        annotations = get_annotations(plan_payload)
+        educational_overlays = get_educational_overlays(plan_payload)
+        annotation_events = _annotation_events_for_render_ranges(annotations, render_ranges)
+        educational_overlay_events = _annotation_events_for_render_ranges(educational_overlays, render_ranges)
+        annotation_burned_in = False
+        if annotation_events or educational_overlay_events:
+            _check_render_cancel(render_job_id, video_id)
+            ass_width, ass_height = _annotation_canvas_dimensions(plan_payload)
+            annotation_ass_content = _generate_annotation_ass(
+                annotation_events + educational_overlay_events,
+                width=ass_width,
+                height=ass_height,
+            )
+            annotation_ass_path = os.path.join(clip_dir, f"{video.id}_annotations.ass")
+            with open(annotation_ass_path, "w", encoding="utf-8") as f:
+                f.write(annotation_ass_content)
+            annotated_output_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_edited_annotated.mp4")
+            await ffmpeg_service.burn_ass_overlay(
+                video_path=output_path,
+                ass_path=annotation_ass_path,
+                output_path=annotated_output_path,
+                cancel_check=_cancel_check_callback(render_job_id, video_id),
+            )
+            output_path = annotated_output_path
+            annotation_burned_in = True
+
+        srt_content = _generate_word_level_srt(
+            render_ranges,
+            word_timestamps,
+            caption_policy=caption_policy,
+        )
         srt_filename = f"{video.id}_subtitles.srt"
         srt_path = os.path.join(settings.VIDEO_STORAGE_PATH, srt_filename)
-        with open(srt_path, "w", encoding="utf-8") as f:
-            f.write(srt_content)
-
-        vtt_content = _srt_to_vtt(srt_content)
         vtt_filename = f"{video.id}_subtitles.vtt"
         vtt_path = os.path.join(settings.VIDEO_STORAGE_PATH, vtt_filename)
-        with open(vtt_path, "w", encoding="utf-8") as f:
-            f.write(vtt_content)
+        sidecar_enabled = _caption_sidecar_enabled(caption_policy)
+        burn_in_enabled = _caption_burn_in_enabled(caption_policy)
 
-        logger.info(f"  Generated SRT + VTT subtitles")
+        if sidecar_enabled:
+            with open(srt_path, "w", encoding="utf-8") as f:
+                f.write(srt_content)
+            with open(vtt_path, "w", encoding="utf-8") as f:
+                f.write(_srt_to_vtt(srt_content))
+        else:
+            _remove_file(srt_path)
+            _remove_file(vtt_path)
+
+        if burn_in_enabled and srt_content.strip():
+            _check_render_cancel(render_job_id, video_id)
+            burn_srt_path = srt_path if sidecar_enabled else os.path.join(clip_dir, f"{video.id}_burn_subtitles.srt")
+            if not sidecar_enabled:
+                with open(burn_srt_path, "w", encoding="utf-8") as f:
+                    f.write(srt_content)
+            burned_output_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_edited_burned.mp4")
+            await ffmpeg_service.burn_subtitles(
+                video_path=output_path,
+                srt_path=burn_srt_path,
+                output_path=burned_output_path,
+                font_size=int(_dict_value(caption_policy.get("style")).get("font_size") or 24),
+                placement=str(caption_policy.get("placement") or "bottom_center"),
+                style=_dict_value(caption_policy.get("style")),
+                cancel_check=_cancel_check_callback(render_job_id, video_id),
+            )
+            output_path = burned_output_path
+
+        logger.info(
+            "  Caption export policy: %s (%s cues)",
+            caption_policy.get("export_behavior"),
+            srt_content.count(" --> "),
+        )
 
         # ── Step 5: Generate chapter markers ──
-        chapters = _generate_chapter_file(kept_segments)
+        _check_render_cancel(render_job_id, video_id)
+        _render_progress(
+            render_job_id,
+            video_id,
+            84,
+            "exporting_artifacts",
+            "Writing export artifacts",
+            "Writing chapters and reproducible edit plan JSON",
+        )
+        chapters = _generate_chapter_file(render_ranges)
         chapters_filename = f"{video.id}_chapters.txt"
         chapters_path = os.path.join(settings.VIDEO_STORAGE_PATH, chapters_filename)
         with open(chapters_path, "w", encoding="utf-8") as f:
             f.write(chapters)
 
         # ── Step 6: Export edit plan JSON ──
-        plan_export = _export_plan_json(video, plan, segments, kept_segments)
         plan_filename = f"{video.id}_edit_plan.json"
         plan_path = os.path.join(settings.VIDEO_STORAGE_PATH, plan_filename)
-        with open(plan_path, "w", encoding="utf-8") as f:
-            json.dump(plan_export, f, indent=2, default=str)
+        quality_report_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_quality_report.json")
+        evidence_json_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_academic_evidence.json")
+        evidence_markdown_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_academic_evidence.md")
+        before_after_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_before_after_comparison.json")
+        timeline_json_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_timeline_decisions.json")
+        timeline_csv_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_timeline_decisions.csv")
+        provider_mode_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_provider_mode_trace.json")
+        metrics_summary_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_metrics_summary.json")
+        evidence_index_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_generated_evidence_index.json")
+        artifact_paths = {
+            "edited_video": output_path,
+            "subtitles_srt": srt_path if sidecar_enabled else None,
+            "subtitles_vtt": vtt_path if sidecar_enabled else None,
+            "chapters": chapters_path,
+            "plan_json": plan_path,
+            "quality_report": quality_report_path,
+            "academic_evidence_json": evidence_json_path,
+            "academic_evidence_markdown": evidence_markdown_path,
+            "before_after_comparison_json": before_after_path,
+            "timeline_decisions_json": timeline_json_path,
+            "timeline_decisions_csv": timeline_csv_path,
+            "provider_mode_trace_json": provider_mode_path,
+            "metrics_summary_json": metrics_summary_path,
+            "generated_evidence_index_json": evidence_index_path,
+        }
+        plan_export = _export_plan_json(
+            video,
+            plan,
+            segments,
+            render_ranges,
+            sync_plan,
+            render_metadata_extra={
+                "layout_renderer": "phase7_layouts" if layout_clip_count else "single_source",
+                "renderer_schema_version": "phase9.multitrack-renderer.v1",
+                "layout_clip_count": layout_clip_count,
+                "layout_render_counts": layout_render_counts,
+                "timeline_tracks": layout_render_context.timeline_tracks if layout_render_context else [],
+                "source_manifest": layout_render_context.source_manifest if layout_render_context else [],
+                "transition_events": transition_events,
+                "transition_count": len(transition_events),
+                "applied_clip_transition_count": sum(
+                    1 for item in transition_events if item.get("render_strategy") == "clip_fade"
+                ),
+                "applied_concat_transition_count": len(concat_transition_specs),
+                "picture_in_picture_clip_count": layout_render_counts.get(LayoutMode.PICTURE_IN_PICTURE.value, 0),
+                "side_by_side_clip_count": layout_render_counts.get(LayoutMode.SIDE_BY_SIDE.value, 0),
+                "full_screen_source_clip_count": layout_render_counts.get(LayoutMode.FULL_SCREEN_SOURCE.value, 0),
+                "full_camera_source_clip_count": layout_render_counts.get(LayoutMode.FULL_CAMERA_SOURCE.value, 0),
+                "caption_policy": {
+                    "enabled": bool(caption_policy.get("enabled")),
+                    "appearance": caption_policy.get("appearance"),
+                    "placement": caption_policy.get("placement"),
+                    "export_behavior": caption_policy.get("export_behavior"),
+                    "sidecar_files": sidecar_enabled,
+                    "burned_in": burn_in_enabled,
+                    "cue_count": srt_content.count(" --> "),
+                },
+                "annotations": {
+                    "count": len(annotations),
+                    "rendered_event_count": len(annotation_events),
+                    "burned_in": annotation_burned_in,
+                },
+                "educational_overlays": {
+                    "count": len(educational_overlays),
+                    "rendered_event_count": len(educational_overlay_events),
+                    "intro_card_count": sum(1 for item in educational_overlays if item.get("overlay_type") == "intro_card"),
+                    "section_title_card_count": sum(1 for item in educational_overlays if item.get("overlay_type") == "section_title_card"),
+                    "chapter_label_count": sum(1 for item in educational_overlays if item.get("overlay_type") == "chapter_label"),
+                    "step_label_count": sum(1 for item in educational_overlays if item.get("overlay_type") == "step_label"),
+                    "burned_in": bool(educational_overlay_events),
+                },
+                "end_cards": {
+                    "count": len(end_cards),
+                    "enabled_count": len(enabled_end_cards),
+                    "rendered_clip_count": len(end_card_clip_paths),
+                    "total_duration_seconds": round(sum(float(card.get("duration_seconds") or 0) for card in enabled_end_cards), 3),
+                    "types": [str(card.get("card_type")) for card in enabled_end_cards],
+                    "appended_to_output": len(end_card_clip_paths) > 0,
+                },
+            },
+            artifact_paths=artifact_paths,
+        )
+        write_json_artifact(plan_path, plan_export)
 
         logger.info(f"  Exported chapters + plan JSON")
 
         # ── Step 7: Get output metadata ──
+        _check_render_cancel(render_job_id, video_id)
+        _render_progress(
+            render_job_id,
+            video_id,
+            94,
+            "finalizing",
+            "Finalizing render",
+            "Reading output metadata and updating the project record",
+        )
         metadata = await ffmpeg_service.get_video_metadata(output_path)
         output_duration = metadata.get("duration", 0)
 
@@ -204,6 +535,17 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
         video.processed_video_path = output_path
         video.status = VideoStatus.COMPLETED
         await db.flush()
+        evaluation_artifacts = await _write_evaluation_artifacts(
+            video=video,
+            plan=plan,
+            segments=segments,
+            transcript=transcript,
+            db=db,
+            plan_export=plan_export,
+            plan_path=plan_path,
+            artifact_paths=artifact_paths,
+            render_metadata=plan_export.get("export_metadata", {}).get("render", {}),
+        )
 
         # ── Cleanup temp clips ──
         try:
@@ -213,8 +555,16 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
 
         logger.info(
             f"Render complete: {output_duration:.1f}s output, "
-            f"{len(kept_segments)} segments included, "
-            f"{len(segments) - len(kept_segments)} removed"
+            f"{len(included_segment_ids)} segments included, "
+            f"{len(segments) - len(included_segment_ids)} removed"
+        )
+        _render_progress(
+            render_job_id,
+            video_id,
+            100,
+            "completed",
+            "Render complete",
+            "Export files are ready",
         )
 
         return {
@@ -226,9 +576,34 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
             "plan_export_path": plan_path,
             "output_duration": round(output_duration, 2),
             "original_duration": round(video.duration_seconds or 0, 2),
-            "segments_included": len(kept_segments),
-            "segments_removed": len(segments) - len(kept_segments),
+            "segments_included": len(included_segment_ids),
+            "segments_removed": len(segments) - len(included_segment_ids),
+            "playable_ranges": len(render_ranges),
+            "transcript_cuts_applied": sync_plan["export_plan"]["transcript_cut_count"],
+            "picture_in_picture_clips": layout_render_counts.get(LayoutMode.PICTURE_IN_PICTURE.value, 0),
+            "layout_clip_count": layout_clip_count,
+            "layout_render_counts": layout_render_counts,
+            "transition_count": len(transition_events),
+            "applied_clip_transition_count": sum(
+                1 for item in transition_events if item.get("render_strategy") == "clip_fade"
+            ),
+            "applied_concat_transition_count": len(concat_transition_specs),
+            "annotations_burned_in": annotation_burned_in,
+            "annotation_count": len(annotations),
+            "educational_overlay_count": len(educational_overlays),
+            "end_card_count": len(enabled_end_cards),
+            "quality_report_path": quality_report_path,
+            "academic_evidence_path": evidence_json_path,
+            "academic_evidence_markdown_path": evidence_markdown_path,
+            "artifact_count": len(evaluation_artifacts["artifact_manifest"]),
         }
+
+    except RenderCancelled:
+        video.status = VideoStatus.AWAITING_REVIEW
+        video.error_message = "Render cancelled by user"
+        await db.flush()
+        logger.info("Render cancelled for video %s", video_id)
+        raise
 
     except Exception as e:
         video.status = VideoStatus.FAILED
@@ -242,11 +617,1013 @@ async def render_final_video(video_id: str, db: AsyncSession) -> dict:
 #  SUBTITLE GENERATION
 # ═══════════════════════════════════════════
 
+def _render_progress(
+    render_job_id: str | None,
+    video_id: str,
+    progress_percent: float,
+    phase: str,
+    phase_label: str,
+    message: str,
+    details: dict | None = None,
+) -> None:
+    update_render_job(
+        render_job_id,
+        video_id,
+        progress_percent=progress_percent,
+        phase=phase,
+        phase_label=phase_label,
+        message=message,
+        details=details,
+    )
+
+
+def _check_render_cancel(render_job_id: str | None, video_id: str) -> None:
+    ensure_not_cancelled(render_job_id, video_id)
+
+
+def _cancel_check_callback(render_job_id: str | None, video_id: str):
+    return lambda: ensure_not_cancelled(render_job_id, video_id)
+
+
+def _range_progress(index: int, total: int) -> float:
+    if total <= 0:
+        return 14.0
+    return 14.0 + (float(index) / float(total)) * 40.0
+
+
+async def _build_layout_render_context(
+    video: Video,
+    plan_payload: dict,
+    db: AsyncSession,
+) -> LayoutRenderContext | None:
+    cues = list(plan_payload.get("layout_cues") or [])
+    if not video.project_id:
+        return (
+            LayoutRenderContext(
+                cues=cues,
+                assets_by_id={},
+                assets_by_track={},
+                assets_by_role={},
+                timeline_tracks=_timeline_tracks_from_plan(plan_payload, []),
+                source_manifest=[],
+                transition_events=[],
+            )
+            if any(_is_renderable_layout_cue(cue) for cue in cues)
+            else None
+        )
+
+    result = await db.execute(
+        select(ProjectAsset).where(ProjectAsset.project_id == video.project_id)
+    )
+    assets = list(result.scalars().all())
+    assets_by_id = {str(asset.id): asset for asset in assets}
+    assets_by_track = _assets_by_track(assets)
+    assets_by_role = _assets_by_role(assets)
+    timeline_tracks = _timeline_tracks_from_plan(plan_payload, assets)
+
+    if not cues and assets:
+        cues = _implicit_full_source_cues(video, assets)
+
+    if not any(_is_renderable_layout_cue(cue) for cue in cues) and not timeline_tracks:
+        return None
+
+    return LayoutRenderContext(
+        cues=cues,
+        assets_by_id=assets_by_id,
+        assets_by_track=assets_by_track,
+        assets_by_role=assets_by_role,
+        timeline_tracks=timeline_tracks,
+        source_manifest=_source_manifest(assets, timeline_tracks),
+        transition_events=[],
+        fallback_screen_asset=_first_asset_with_role(assets, {"screen", "primary"}),
+        fallback_camera_asset=_first_asset_with_role(assets, {"camera"}),
+        fallback_audio_asset=_first_asset_with_role(assets, {"audio"}),
+    )
+
+
+async def _render_range_clips(
+    *,
+    video: Video,
+    render_range: dict,
+    range_index: int,
+    clip_dir: str,
+    layout_context: LayoutRenderContext | None,
+    cancel_check=None,
+) -> tuple[list[str], list[float], dict[str, int]]:
+    clip_paths = []
+    clip_durations = []
+    layout_counts: dict[str, int] = {}
+    spans = _layout_spans_for_range(render_range, layout_context.cues if layout_context else [])
+
+    for span_index, (start_time, end_time, cue) in enumerate(spans):
+        raw_clip = os.path.join(clip_dir, f"raw_{range_index:04d}_{span_index:02d}.mp4")
+        rendered_layout = None
+        if layout_context and _is_renderable_layout_cue(cue):
+            rendered_layout = await _render_layout_span(
+                cue=cue,
+                layout_context=layout_context,
+                output_path=raw_clip,
+                fallback_video_path=video.file_path,
+                start_time=start_time,
+                end_time=end_time,
+                cancel_check=cancel_check,
+            )
+
+        if rendered_layout:
+            layout_counts[rendered_layout] = layout_counts.get(rendered_layout, 0) + 1
+        else:
+            await _trim_single_source_clip(video.file_path, raw_clip, start_time, end_time, cancel_check=cancel_check)
+
+        raw_clip = await _apply_span_transition_polish(
+            cue=cue,
+            input_path=raw_clip,
+            range_index=range_index,
+            span_index=span_index,
+            clip_dir=clip_dir,
+            start_time=start_time,
+            end_time=end_time,
+            cancel_check=cancel_check,
+        )
+
+        if render_range["action"] == SegmentAction.SHORTEN.value:
+            final_clip = os.path.join(clip_dir, f"clip_{range_index:04d}_{span_index:02d}.mp4")
+            await ffmpeg_service.trim_silence_from_clip(
+                input_path=raw_clip,
+                output_path=final_clip,
+                threshold_db=settings.SILENCE_THRESHOLD_DB,
+                min_silence=0.8,
+                cancel_check=cancel_check,
+            )
+            try:
+                os.remove(raw_clip)
+            except OSError:
+                pass
+        else:
+            final_clip = os.path.join(clip_dir, f"clip_{range_index:04d}_{span_index:02d}.mp4")
+            os.rename(raw_clip, final_clip)
+        clip_paths.append(final_clip)
+        clip_durations.append(max(0.001, float(end_time) - float(start_time)))
+
+    return clip_paths, clip_durations, layout_counts
+
+
+async def _render_audio_only_export(
+    *,
+    video: Video,
+    plan: EditPlan,
+    segments: List[Segment],
+    transcript: Transcript | None,
+    render_ranges: List[dict],
+    included_segment_ids: set[str],
+    sync_plan: dict,
+    plan_payload: dict,
+    selected_preset: dict,
+    layout_context: LayoutRenderContext | None,
+    render_job_id: str | None,
+    video_id: str,
+    db: AsyncSession | None = None,
+) -> dict:
+    """Render a podcast/lecture audio-only output from the cleaned edit timeline."""
+    clip_dir = os.path.join(settings.TEMP_PATH, f"audio_clips_{video.id}")
+    os.makedirs(clip_dir, exist_ok=True)
+
+    audio_source = _audio_export_source(video, layout_context)
+    audio_codec = str(selected_preset.get("audio_codec") or "aac")
+    audio_bitrate = _ffmpeg_audio_bitrate(selected_preset.get("audio_bitrate"))
+    output_extension = _audio_output_extension(selected_preset)
+    output_filename = f"{video.id}_audio{output_extension}"
+    output_path = os.path.join(settings.VIDEO_STORAGE_PATH, output_filename)
+    clip_paths: list[str] = []
+    clip_durations: list[float] = []
+
+    try:
+        for index, render_range in enumerate(render_ranges):
+            _check_render_cancel(render_job_id, video_id)
+            _render_progress(
+                render_job_id,
+                video_id,
+                _range_progress(index, len(render_ranges)),
+                "rendering_audio",
+                "Rendering cleaned audio",
+                f"Rendering audio range {index + 1} of {len(render_ranges)}",
+                {
+                    "current_range": index + 1,
+                    "total_ranges": len(render_ranges),
+                    "output_kind": "audio_only",
+                    "source": audio_source["source"],
+                },
+            )
+            raw_clip = os.path.join(clip_dir, f"raw_audio_{index:04d}{output_extension}")
+            await ffmpeg_service.trim_audio(
+                input_path=audio_source["path"],
+                output_path=raw_clip,
+                start_time=render_range["source_start_time"],
+                end_time=render_range["source_end_time"],
+                sync_offset=audio_source["sync_offset_seconds"],
+                audio_codec=audio_codec,
+                audio_bitrate=audio_bitrate,
+                cancel_check=_cancel_check_callback(render_job_id, video_id),
+            )
+
+            final_clip = os.path.join(clip_dir, f"audio_{index:04d}{output_extension}")
+            if render_range["action"] == SegmentAction.SHORTEN.value:
+                await ffmpeg_service.trim_silence_from_audio(
+                    input_path=raw_clip,
+                    output_path=final_clip,
+                    threshold_db=settings.SILENCE_THRESHOLD_DB,
+                    min_silence=0.8,
+                    audio_codec=audio_codec,
+                    audio_bitrate=audio_bitrate,
+                    cancel_check=_cancel_check_callback(render_job_id, video_id),
+                )
+                _remove_file(raw_clip)
+            else:
+                os.rename(raw_clip, final_clip)
+            clip_paths.append(final_clip)
+            clip_durations.append(float(render_range["duration"]))
+
+        _check_render_cancel(render_job_id, video_id)
+        _render_progress(
+            render_job_id,
+            video_id,
+            64,
+            "concatenating_audio",
+            "Concatenating cleaned audio",
+            f"Combining {len(clip_paths)} audio clips into the final podcast file",
+            {"clip_count": len(clip_paths), "output_kind": "audio_only"},
+        )
+        await ffmpeg_service.concat_audio(
+            clip_paths=clip_paths,
+            output_path=output_path,
+            audio_codec=audio_codec,
+            audio_bitrate=audio_bitrate,
+            cancel_check=_cancel_check_callback(render_job_id, video_id),
+        )
+
+        _check_render_cancel(render_job_id, video_id)
+        _render_progress(
+            render_job_id,
+            video_id,
+            78,
+            "transcript_artifacts",
+            "Writing transcript artifacts",
+            "Generating transcript sidecars and chapter markers for the audio export",
+            {"output_kind": "audio_only"},
+        )
+        srt_content = _generate_word_level_srt(
+            render_ranges,
+            transcript.words_json if transcript else None,
+            caption_policy={
+                "enabled": True,
+                "appearance": "always",
+                "export_behavior": "sidecar",
+            },
+        )
+        srt_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_subtitles.srt")
+        vtt_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_subtitles.vtt")
+        with open(srt_path, "w", encoding="utf-8") as f:
+            f.write(srt_content)
+        with open(vtt_path, "w", encoding="utf-8") as f:
+            f.write(_srt_to_vtt(srt_content))
+
+        chapters = _generate_chapter_file(render_ranges)
+        chapters_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_chapters.txt")
+        with open(chapters_path, "w", encoding="utf-8") as f:
+            f.write(chapters)
+
+        _check_render_cancel(render_job_id, video_id)
+        _render_progress(
+            render_job_id,
+            video_id,
+            92,
+            "exporting_audio_plan",
+            "Writing audio export plan",
+            "Recording audio-only export metadata and artifact paths",
+            {"output_kind": "audio_only"},
+        )
+        plan_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_edit_plan.json")
+        quality_report_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_quality_report.json")
+        evidence_json_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_academic_evidence.json")
+        evidence_markdown_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_academic_evidence.md")
+        before_after_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_before_after_comparison.json")
+        timeline_json_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_timeline_decisions.json")
+        timeline_csv_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_timeline_decisions.csv")
+        provider_mode_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_provider_mode_trace.json")
+        metrics_summary_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_metrics_summary.json")
+        evidence_index_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_generated_evidence_index.json")
+        artifact_paths = {
+            "audio_only": output_path,
+            "transcript_srt": srt_path,
+            "transcript_vtt": vtt_path,
+            "chapters": chapters_path,
+            "plan_json": plan_path,
+            "quality_report": quality_report_path,
+            "academic_evidence_json": evidence_json_path,
+            "academic_evidence_markdown": evidence_markdown_path,
+            "before_after_comparison_json": before_after_path,
+            "timeline_decisions_json": timeline_json_path,
+            "timeline_decisions_csv": timeline_csv_path,
+            "provider_mode_trace_json": provider_mode_path,
+            "metrics_summary_json": metrics_summary_path,
+            "generated_evidence_index_json": evidence_index_path,
+        }
+        metadata = await ffmpeg_service.get_video_metadata(output_path)
+        output_duration = float(metadata.get("duration") or sum(clip_durations))
+        plan_export = _export_plan_json(
+            video,
+            plan,
+            segments,
+            render_ranges,
+            sync_plan,
+            render_metadata_extra={
+                "renderer_schema_version": "phase9.audio-only-export.v1",
+                "output_kind": "audio_only",
+                "selected_preset_id": selected_preset.get("id"),
+                "container": selected_preset.get("container"),
+                "audio_codec": audio_codec,
+                "audio_bitrate": audio_bitrate,
+                "audio_source": audio_source,
+                "audio_clip_count": len(clip_paths),
+                "caption_policy": {
+                    "enabled": True,
+                    "appearance": "always",
+                    "export_behavior": "transcript_export",
+                    "sidecar_files": True,
+                    "burned_in": False,
+                    "cue_count": srt_content.count(" --> "),
+                },
+            },
+            artifact_paths=artifact_paths,
+        )
+        write_json_artifact(plan_path, plan_export)
+
+        video.processed_video_path = output_path
+        video.status = VideoStatus.COMPLETED
+        if db is not None:
+            await db.flush()
+            evaluation_artifacts = await _write_evaluation_artifacts(
+                video=video,
+                plan=plan,
+                segments=segments,
+                transcript=transcript,
+                db=db,
+                plan_export=plan_export,
+                plan_path=plan_path,
+                artifact_paths=artifact_paths,
+                render_metadata=plan_export.get("export_metadata", {}).get("render", {}),
+            )
+        else:
+            evaluation_artifacts = {"artifact_manifest": artifact_records(artifact_paths)}
+
+        _render_progress(
+            render_job_id,
+            video_id,
+            100,
+            "completed",
+            "Audio export complete",
+            "Podcast audio and transcript files are ready",
+            {"output_kind": "audio_only"},
+        )
+
+        return {
+            "status": "success",
+            "output_path": output_path,
+            "output_kind": "audio_only",
+            "audio_path": output_path,
+            "subtitle_path": srt_path,
+            "vtt_path": vtt_path,
+            "chapters_path": chapters_path,
+            "plan_export_path": plan_path,
+            "output_duration": round(output_duration, 2),
+            "original_duration": round(video.duration_seconds or 0, 2),
+            "segments_included": len(included_segment_ids),
+            "segments_removed": len(segments) - len(included_segment_ids),
+            "playable_ranges": len(render_ranges),
+            "transcript_cuts_applied": sync_plan["export_plan"]["transcript_cut_count"],
+            "audio_clip_count": len(clip_paths),
+            "audio_source": audio_source,
+            "quality_report_path": quality_report_path,
+            "academic_evidence_path": evidence_json_path,
+            "academic_evidence_markdown_path": evidence_markdown_path,
+            "artifact_count": len(evaluation_artifacts["artifact_manifest"]),
+        }
+    finally:
+        try:
+            shutil.rmtree(clip_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
+async def _render_layout_span(
+    *,
+    cue: dict | None,
+    layout_context: LayoutRenderContext,
+    output_path: str,
+    fallback_video_path: str,
+    start_time: float,
+    end_time: float,
+    cancel_check=None,
+) -> str | None:
+    layout = str(_dict_value(cue).get("layout") or "")
+    output_width, output_height = FFmpegService.output_dimensions_for_aspect_ratio(
+        _dict_value(_dict_value(cue).get("output")).get("aspect_ratio")
+    )
+    screen_asset = _cue_asset(cue, "screen", layout_context) or layout_context.fallback_screen_asset
+    camera_asset = _cue_asset(cue, "camera", layout_context) or layout_context.fallback_camera_asset
+    audio_asset = _cue_asset(cue, "audio", layout_context) or layout_context.fallback_audio_asset
+
+    if layout == LayoutMode.PICTURE_IN_PICTURE.value and screen_asset and camera_asset:
+        await ffmpeg_service.render_picture_in_picture_clip(
+            screen_path=screen_asset.file_path,
+            camera_path=camera_asset.file_path,
+            audio_path=audio_asset.file_path if audio_asset else None,
+            output_path=output_path,
+            start_time=start_time,
+            end_time=end_time,
+            screen_sync_offset=_cue_sync_offset(cue, "screen", screen_asset),
+            camera_sync_offset=_cue_sync_offset(cue, "camera", camera_asset),
+            audio_sync_offset=_cue_sync_offset(cue, "audio", audio_asset),
+            output_width=output_width,
+            output_height=output_height,
+            camera_corner=str(_dict_value(cue.get("camera")).get("corner") or "bottom_right"),
+            camera_shape=str(_dict_value(cue.get("camera")).get("shape") or "rounded_rectangle"),
+            camera_size=str(_dict_value(cue.get("camera")).get("size") or "medium"),
+            margin_percent=_float_value(_dict_value(cue.get("camera")).get("margin_percent"), 4.0),
+            cancel_check=cancel_check,
+        )
+        return layout
+
+    if layout == LayoutMode.SIDE_BY_SIDE.value and screen_asset and camera_asset:
+        await ffmpeg_service.render_side_by_side_clip(
+            screen_path=screen_asset.file_path,
+            camera_path=camera_asset.file_path,
+            audio_path=audio_asset.file_path if audio_asset else None,
+            output_path=output_path,
+            start_time=start_time,
+            end_time=end_time,
+            screen_sync_offset=_cue_sync_offset(cue, "screen", screen_asset),
+            camera_sync_offset=_cue_sync_offset(cue, "camera", camera_asset),
+            audio_sync_offset=_cue_sync_offset(cue, "audio", audio_asset),
+            output_width=output_width,
+            output_height=output_height,
+            cancel_check=cancel_check,
+        )
+        return layout
+
+    if layout == LayoutMode.FULL_SCREEN_SOURCE.value:
+        source_asset = screen_asset
+        if source_asset:
+            await ffmpeg_service.render_full_source_clip(
+                source_path=source_asset.file_path,
+                audio_path=audio_asset.file_path if audio_asset else None,
+                output_path=output_path,
+                start_time=start_time,
+                end_time=end_time,
+                source_sync_offset=_cue_sync_offset(cue, "screen", source_asset),
+                audio_sync_offset=_cue_sync_offset(cue, "audio", audio_asset),
+                output_width=output_width,
+                output_height=output_height,
+                cancel_check=cancel_check,
+            )
+            return layout
+        if not screen_asset:
+            await ffmpeg_service.render_full_source_clip(
+                source_path=fallback_video_path,
+                output_path=output_path,
+                start_time=start_time,
+                end_time=end_time,
+                output_width=output_width,
+                output_height=output_height,
+                cancel_check=cancel_check,
+            )
+            return layout
+
+    if layout == LayoutMode.FULL_CAMERA_SOURCE.value and camera_asset:
+        await ffmpeg_service.render_full_source_clip(
+            source_path=camera_asset.file_path,
+            audio_path=audio_asset.file_path if audio_asset else None,
+            output_path=output_path,
+            start_time=start_time,
+            end_time=end_time,
+            source_sync_offset=_cue_sync_offset(cue, "camera", camera_asset),
+            audio_sync_offset=_cue_sync_offset(cue, "audio", audio_asset),
+            output_width=output_width,
+            output_height=output_height,
+            cancel_check=cancel_check,
+        )
+        return layout
+
+    return None
+
+
+async def _trim_single_source_clip(
+    video_path: str,
+    output_path: str,
+    start_time: float,
+    end_time: float,
+    cancel_check=None,
+) -> None:
+    await ffmpeg_service.trim_video(
+        video_path=video_path,
+        output_path=output_path,
+        start_time=start_time,
+        end_time=end_time,
+        cancel_check=cancel_check,
+    )
+
+
+async def _apply_span_transition_polish(
+    *,
+    cue: dict | None,
+    input_path: str,
+    range_index: int,
+    span_index: int,
+    clip_dir: str,
+    start_time: float,
+    end_time: float,
+    cancel_check=None,
+) -> str:
+    timing = _dict_value(_dict_value(cue).get("timing"))
+    duration = min(
+        _float_value(timing.get("transition_duration_seconds"), 0.0) or 0.0,
+        max(0.0, (float(end_time) - float(start_time)) / 2),
+    )
+    if duration <= 0:
+        return input_path
+
+    fade_in = str(timing.get("transition_in") or "").lower() in {"fade", "dip_to_black"}
+    fade_out = str(timing.get("transition_out") or "").lower() in {"fade", "dip_to_black"}
+    if not fade_in and not fade_out:
+        return input_path
+
+    output_path = os.path.join(clip_dir, f"transition_{range_index:04d}_{span_index:02d}.mp4")
+    await ffmpeg_service.apply_clip_fades(
+        input_path=input_path,
+        output_path=output_path,
+        clip_duration_seconds=max(0.001, float(end_time) - float(start_time)),
+        fade_duration_seconds=duration,
+        fade_in=fade_in,
+        fade_out=fade_out,
+        cancel_check=cancel_check,
+    )
+    _remove_file(input_path)
+    return output_path
+
+
+def _layout_spans_for_range(
+    render_range: dict,
+    cues: list[dict],
+) -> list[tuple[float, float, dict | None]]:
+    range_start = float(render_range["source_start_time"])
+    range_end = float(render_range["source_end_time"])
+    boundaries = {range_start, range_end}
+    for cue in cues:
+        cue_start = _float_value(cue.get("start_time"), 0.0) or 0.0
+        cue_end = cue.get("end_time")
+        if range_start < cue_start < range_end:
+            boundaries.add(cue_start)
+        if cue_end is not None:
+            cue_end_value = _float_value(cue_end, range_end) or range_end
+            if range_start < cue_end_value < range_end:
+                boundaries.add(cue_end_value)
+
+    ordered = sorted(boundaries)
+    spans = []
+    for start_time, end_time in zip(ordered, ordered[1:]):
+        if end_time <= start_time:
+            continue
+        spans.append((start_time, end_time, _cue_at_time(cues, start_time)))
+    return spans or [(range_start, range_end, _cue_at_time(cues, range_start))]
+
+
+def _cue_at_time(cues: list[dict], timestamp: float) -> dict | None:
+    matching = []
+    for cue in cues:
+        cue_start = _float_value(cue.get("start_time"), 0.0) or 0.0
+        cue_end = cue.get("end_time")
+        cue_end_value = float("inf") if cue_end is None else (_float_value(cue_end, cue_start) or cue_start)
+        if cue_start <= timestamp < cue_end_value:
+            matching.append((cue_start, cue))
+    if not matching:
+        return None
+    return sorted(matching, key=lambda item: item[0])[-1][1]
+
+
+def _is_picture_in_picture_cue(cue: dict | None) -> bool:
+    return isinstance(cue, dict) and cue.get("layout") == LayoutMode.PICTURE_IN_PICTURE.value
+
+
+def _is_renderable_layout_cue(cue: dict | None) -> bool:
+    return isinstance(cue, dict) and cue.get("layout") in {
+        LayoutMode.PICTURE_IN_PICTURE.value,
+        LayoutMode.SIDE_BY_SIDE.value,
+        LayoutMode.FULL_SCREEN_SOURCE.value,
+        LayoutMode.FULL_CAMERA_SOURCE.value,
+    }
+
+
+def _cue_asset(
+    cue: dict | None,
+    role: str,
+    context: LayoutRenderContext,
+) -> ProjectAsset | None:
+    source = _dict_value(_dict_value(cue).get("sources")).get(role)
+    source_dict = _dict_value(source)
+    if not source_dict.get("enabled", True):
+        return None
+    asset_id = source_dict.get("asset_id")
+    if asset_id:
+        asset = context.assets_by_id.get(str(asset_id))
+        if asset:
+            return asset
+    track = str(source_dict.get("track") or "").strip().lower()
+    if track and track in context.assets_by_track:
+        return context.assets_by_track[track]
+    source_role = str(source_dict.get("role") or role).strip().lower()
+    return context.assets_by_role.get(source_role)
+
+
+def _assets_by_track(assets: list[ProjectAsset]) -> dict[str, ProjectAsset]:
+    tracked: dict[str, ProjectAsset] = {}
+    for asset in sorted(assets, key=_asset_sort_key):
+        for track in _asset_track_keys(asset):
+            tracked.setdefault(track, asset)
+    return tracked
+
+
+def _assets_by_role(assets: list[ProjectAsset]) -> dict[str, ProjectAsset]:
+    by_role: dict[str, ProjectAsset] = {}
+    for asset in sorted(assets, key=_asset_sort_key):
+        role = _enum_value(getattr(asset, "role", None))
+        if role:
+            by_role.setdefault(role, asset)
+        sync_role = _enum_value(getattr(asset, "sync_role", None))
+        if sync_role:
+            by_role.setdefault(sync_role, asset)
+    return by_role
+
+
+def _asset_track_keys(asset: ProjectAsset) -> list[str]:
+    metadata = _dict_value(getattr(asset, "metadata_json", None))
+    candidates = [
+        metadata.get("track"),
+        metadata.get("timeline_track"),
+        _enum_value(getattr(asset, "role", None)),
+        _enum_value(getattr(asset, "sync_role", None)),
+        _enum_value(getattr(asset, "source_type", None)),
+    ]
+    role = _enum_value(getattr(asset, "role", None))
+    sync_role = _enum_value(getattr(asset, "sync_role", None))
+    if role == "screen" or sync_role == "screen_reference":
+        candidates.append("screen")
+    if role == "camera" or sync_role == "camera_overlay":
+        candidates.append("camera")
+    if role == "audio" or sync_role in {"audio_master", "audio_reference"}:
+        candidates.append("audio")
+    if role == "primary" or sync_role == "primary_timeline":
+        candidates.append("primary_timeline")
+    return [str(item).strip().lower() for item in candidates if str(item or "").strip()]
+
+
+def _asset_sort_key(asset: ProjectAsset) -> tuple[int, int, datetime]:
+    return (
+        0 if bool(getattr(asset, "is_primary", False)) else 1,
+        0 if _enum_value(getattr(asset, "status", None)) == "ready" else 1,
+        getattr(asset, "created_at", None) or datetime.min,
+    )
+
+
+def _timeline_tracks_from_plan(plan_payload: dict, assets: list[ProjectAsset]) -> list[dict]:
+    tracks = []
+    raw_tracks = plan_payload.get("timeline_tracks")
+    if isinstance(raw_tracks, list):
+        for index, raw_track in enumerate(raw_tracks):
+            if not isinstance(raw_track, dict):
+                continue
+            track_id = str(raw_track.get("id") or raw_track.get("track") or f"track-{index + 1}")
+            tracks.append({
+                **raw_track,
+                "id": track_id,
+                "role": str(raw_track.get("role") or raw_track.get("kind") or track_id).lower(),
+                "enabled": bool(raw_track.get("enabled", True)),
+                "asset_id": raw_track.get("asset_id"),
+            })
+
+    existing_ids = {str(track.get("id")).lower() for track in tracks}
+    for asset in assets:
+        for track in _asset_track_keys(asset):
+            if track in existing_ids:
+                continue
+            tracks.append({
+                "id": track,
+                "role": _enum_value(getattr(asset, "role", None)) or track,
+                "enabled": True,
+                "asset_id": str(asset.id),
+                "source_type": _enum_value(getattr(asset, "source_type", None)),
+                "sync_role": _enum_value(getattr(asset, "sync_role", None)),
+            })
+            existing_ids.add(track)
+    return tracks
+
+
+def _source_manifest(assets: list[ProjectAsset], timeline_tracks: list[dict]) -> list[dict]:
+    tracks_by_asset: dict[str, list[str]] = {}
+    for track in timeline_tracks:
+        asset_id = track.get("asset_id")
+        if asset_id:
+            tracks_by_asset.setdefault(str(asset_id), []).append(str(track.get("id")))
+    return [
+        {
+            "asset_id": str(asset.id),
+            "filename": getattr(asset, "original_filename", None) or getattr(asset, "filename", None),
+            "role": _enum_value(getattr(asset, "role", None)),
+            "source_type": _enum_value(getattr(asset, "source_type", None)),
+            "sync_role": _enum_value(getattr(asset, "sync_role", None)),
+            "sync_offset_seconds": float(getattr(asset, "sync_offset_seconds", 0.0) or 0.0),
+            "tracks": sorted(set(tracks_by_asset.get(str(asset.id), _asset_track_keys(asset)))),
+        }
+        for asset in sorted(assets, key=_asset_sort_key)
+    ]
+
+
+def _implicit_full_source_cues(video: Video, assets: list[ProjectAsset]) -> list[dict]:
+    screen_asset = _first_asset_with_role(assets, {"screen", "primary"})
+    audio_asset = _first_asset_with_role(assets, {"audio"})
+    if not screen_asset and not audio_asset:
+        return []
+    return [
+        {
+            "id": "renderer-implicit-full-source",
+            "kind": "layout_cue",
+            "schema_version": "phase9.multitrack-renderer.v1",
+            "status": "planned",
+            "layout": LayoutMode.FULL_SCREEN_SOURCE.value,
+            "start_time": 0.0,
+            "end_time": video.duration_seconds,
+            "timing": {
+                "start_time": 0.0,
+                "end_time": video.duration_seconds,
+                "duration_seconds": video.duration_seconds,
+                "transition_in": "cut",
+                "transition_out": "cut",
+                "transition_duration_seconds": 0.0,
+            },
+            "sources": {
+                "screen": {
+                    "role": "screen",
+                    "asset_id": str(screen_asset.id) if screen_asset else None,
+                    "enabled": True,
+                    "track": "screen" if screen_asset else "primary_timeline",
+                    "sync_offset_seconds": 0.0,
+                },
+                "camera": {
+                    "role": "camera",
+                    "asset_id": None,
+                    "enabled": False,
+                    "track": "camera",
+                    "sync_offset_seconds": 0.0,
+                },
+                "audio": {
+                    "role": "audio",
+                    "asset_id": str(audio_asset.id) if audio_asset else None,
+                    "enabled": True,
+                    "track": "audio",
+                    "sync_offset_seconds": 0.0,
+                },
+            },
+            "output": {"aspect_ratio": "16:9"},
+            "camera": {"enabled": False, "shape": "rounded_rectangle", "corner": "bottom_right", "size": "medium", "margin_percent": 4},
+            "reason": "Implicit renderer cue for multi-source project assets.",
+        }
+    ]
+
+
+def _layout_transition_events_for_render_ranges(cues: list[dict], render_ranges: List[dict]) -> list[dict]:
+    events = []
+    for cue in cues:
+        if not _is_renderable_layout_cue(cue):
+            continue
+        timing = _dict_value(cue.get("timing"))
+        transition_duration = _float_value(timing.get("transition_duration_seconds"), 0.0) or 0.0
+        if transition_duration <= 0:
+            continue
+        for edge, field in (("in", "transition_in"), ("out", "transition_out")):
+            transition = str(timing.get(field) or "cut").lower()
+            if transition == "cut":
+                continue
+            source_time = _float_value(cue.get("start_time") if edge == "in" else cue.get("end_time"), None)
+            if source_time is None:
+                continue
+            for render_range in render_ranges:
+                source_start = float(render_range["source_start_time"])
+                source_end = float(render_range["source_end_time"])
+                if source_start <= source_time <= source_end:
+                    output_time = float(render_range["output_start_time"]) + (source_time - source_start)
+                    render_strategy = (
+                        "clip_fade"
+                        if transition in {"fade", "dip_to_black"}
+                        else "concat_compositor"
+                        if _is_supported_concat_transition(transition)
+                        else "metadata_only"
+                    )
+                    events.append({
+                        "cue_id": cue.get("id"),
+                        "layout": cue.get("layout"),
+                        "edge": edge,
+                        "transition": transition,
+                        "duration_seconds": round(min(transition_duration, float(render_range["duration"]) / 2), 3),
+                        "source_time": round(source_time, 3),
+                        "output_time": round(output_time, 3),
+                        "render_strategy": render_strategy,
+                    })
+                    break
+    return sorted(events, key=lambda item: (item["output_time"], item["cue_id"] or "", item["edge"]))
+
+
+def _concat_transition_specs(
+    transition_events: list[dict],
+    clip_durations: list[float],
+) -> list[dict]:
+    """Map source/output transition metadata to concrete clip boundaries."""
+    supported_events = [
+        event
+        for event in transition_events
+        if event.get("render_strategy") == "concat_compositor"
+        and _is_supported_concat_transition(str(event.get("transition") or ""))
+    ]
+    if not supported_events or len(clip_durations) < 2:
+        return []
+
+    specs: list[dict] = []
+    used_boundaries: set[int] = set()
+    cumulative = 0.0
+    boundaries = []
+    for index, duration in enumerate(clip_durations[:-1]):
+        cumulative += max(0.001, float(duration or 0.001))
+        boundaries.append((index, cumulative))
+
+    for event in supported_events:
+        output_time = _float_value(event.get("output_time"), None)
+        if output_time is None:
+            continue
+        nearest = min(boundaries, key=lambda item: abs(item[1] - output_time), default=None)
+        if not nearest:
+            continue
+        boundary_index, boundary_time = nearest
+        if boundary_index in used_boundaries:
+            continue
+        tolerance = max(0.05, float(event.get("duration_seconds") or 0.0) + 0.05)
+        if abs(boundary_time - output_time) > tolerance:
+            continue
+        specs.append({
+            "boundary_index": boundary_index,
+            "transition": str(event.get("transition") or "crossfade").lower(),
+            "duration_seconds": event.get("duration_seconds") or 0.35,
+            "output_time": output_time,
+            "cue_id": event.get("cue_id"),
+        })
+        used_boundaries.add(boundary_index)
+
+    return specs
+
+
+def _is_supported_concat_transition(transition: str) -> bool:
+    return str(transition or "").lower() in {
+        "crossfade",
+        "wipe",
+        "wipe_left",
+        "wipe_right",
+        "wipe_up",
+        "wipe_down",
+    }
+
+
+def _cue_sync_offset(cue: dict | None, role: str, asset: ProjectAsset | None) -> float:
+    source = _dict_value(_dict_value(cue).get("sources")).get(role)
+    source_offset = _float_value(_dict_value(source).get("sync_offset_seconds"), None)
+    asset_offset = float(asset.sync_offset_seconds or 0.0) if asset else 0.0
+    if asset_offset:
+        return asset_offset
+    return source_offset or 0.0
+
+
+def _selected_export_preset(plan_payload: dict) -> dict:
+    metadata = _dict_value(plan_payload.get("export_metadata"))
+    selected = _dict_value(metadata.get("selected_preset"))
+    if selected:
+        return selected
+
+    target_presets = metadata.get("target_presets") or []
+    if isinstance(target_presets, list) and target_presets:
+        try:
+            return get_export_preset(str(target_presets[0]))
+        except ValueError:
+            return {}
+    return {}
+
+
+def _is_audio_only_export(selected_preset: dict) -> bool:
+    return bool(_dict_value(selected_preset).get("audio_only"))
+
+
+def _audio_export_source(video: Video, layout_context: LayoutRenderContext | None) -> dict:
+    if layout_context:
+        for cue in layout_context.cues:
+            asset = _cue_asset(cue, "audio", layout_context)
+            if asset:
+                return _audio_source_payload(asset, "layout_audio")
+
+        for key in ("audio", "audio_master", "audio_reference", "separate_audio"):
+            asset = layout_context.assets_by_track.get(key) or layout_context.assets_by_role.get(key)
+            if asset:
+                return _audio_source_payload(asset, "project_audio_asset")
+
+        if layout_context.fallback_audio_asset:
+            return _audio_source_payload(layout_context.fallback_audio_asset, "project_audio_asset")
+
+    return {
+        "source": "legacy_video_audio",
+        "path": video.file_path,
+        "asset_id": str(video.project_asset_id) if getattr(video, "project_asset_id", None) else None,
+        "sync_offset_seconds": 0.0,
+    }
+
+
+def _audio_source_payload(asset: ProjectAsset, source: str) -> dict:
+    return {
+        "source": source,
+        "path": asset.file_path,
+        "asset_id": str(asset.id) if getattr(asset, "id", None) else None,
+        "sync_offset_seconds": round(float(getattr(asset, "sync_offset_seconds", 0.0) or 0.0), 3),
+    }
+
+
+def _ffmpeg_audio_bitrate(value: object) -> str:
+    text = str(value or "192k").strip().lower().replace(" ", "")
+    if text.endswith("kbps"):
+        return f"{text[:-4]}k"
+    if text.endswith("k"):
+        return text
+    if text.isdigit():
+        return f"{text}k"
+    return "192k"
+
+
+def _audio_output_extension(selected_preset: dict) -> str:
+    extension = str(selected_preset.get("extension") or "").strip()
+    if extension.startswith(".") and len(extension) <= 8:
+        return extension
+    container = str(selected_preset.get("container") or "m4a").strip().lower()
+    return ".mp3" if container == "mp3" else ".m4a"
+
+
+def _first_asset_with_role(assets: list[ProjectAsset], roles: set[str]) -> ProjectAsset | None:
+    sync_roles = {
+        "screen_reference" if "screen" in roles else "",
+        "primary_timeline" if "primary" in roles else "",
+        "camera_overlay" if "camera" in roles else "",
+        "audio_master" if "audio" in roles else "",
+    }
+    candidates = [
+        asset for asset in assets
+        if _enum_value(getattr(asset, "role", None)) in roles
+        or _enum_value(getattr(asset, "sync_role", None)) in sync_roles
+    ]
+    if not candidates:
+        return None
+    return sorted(
+        candidates,
+        key=lambda asset: (
+            0 if asset.is_primary else 1,
+            0 if _enum_value(asset.status) == "ready" else 1,
+            asset.created_at or datetime.min,
+        ),
+    )[0]
+
+
+def _enum_value(value) -> str:
+    return str(value.value if hasattr(value, "value") else value or "").lower()
+
+
+def _dict_value(value) -> dict:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _float_value(value, default: float | None) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _generate_word_level_srt(
-    kept_segments: List[Segment],
+    render_ranges: List[dict],
     word_timestamps: list | None,
     max_chars_per_line: int = 80,
     max_duration_per_cue: float = 5.0,
+    caption_policy: dict | None = None,
 ) -> str:
     """
     Generate SRT subtitles with sentence-level timing.
@@ -257,18 +1634,25 @@ def _generate_word_level_srt(
 
     The timestamps are REMAPPED to the edited timeline (cumulative offset).
     """
+    policy = _caption_policy_value(caption_policy)
+    style = _dict_value(policy.get("style"))
+    max_chars_per_line = int(style.get("max_chars_per_line") or max_chars_per_line)
+    max_duration_per_cue = float(style.get("max_duration_per_cue") or max_duration_per_cue)
     cues = []
     cumulative_offset = 0.0
 
-    for seg in kept_segments:
-        seg_duration = seg.end_time - seg.start_time
+    for render_range in render_ranges:
+        seg = render_range["segment"]
+        source_start = float(render_range["source_start_time"])
+        source_end = float(render_range["source_end_time"])
+        seg_duration = source_end - source_start
 
         if word_timestamps:
             # Find words within this segment's original time range
             seg_words = [
                 w for w in word_timestamps
-                if w.get("start", 0) >= seg.start_time
-                and w.get("end", 0) <= seg.end_time
+                if w.get("start", 0) >= source_start
+                and w.get("end", 0) <= source_end
             ]
 
             if seg_words:
@@ -283,11 +1667,11 @@ def _generate_word_level_srt(
                         continue
 
                     if cue_start is None:
-                        cue_start = word["start"] - seg.start_time + cumulative_offset
+                        cue_start = word["start"] - source_start + cumulative_offset
 
                     current_cue_words.append(word)
                     current_cue_text += (" " if current_cue_text else "") + word_text
-                    cue_end = word["end"] - seg.start_time + cumulative_offset
+                    cue_end = word["end"] - source_start + cumulative_offset
                     cue_duration = cue_end - cue_start
 
                     # Flush cue if line is long enough or duration exceeded
@@ -337,8 +1721,353 @@ def _generate_word_level_srt(
 
         cumulative_offset += seg_duration
 
-    # Build SRT string
+    cues = _filter_caption_cues(cues, render_ranges, policy)
     return FFmpegService.generate_srt(cues)
+
+
+def _caption_sidecar_enabled(caption_policy: dict | None) -> bool:
+    policy = _caption_policy_value(caption_policy)
+    behavior = str(policy.get("export_behavior") or "sidecar")
+    return bool(policy.get("enabled")) and behavior in {"sidecar", "sidecar_and_burn_in"}
+
+
+def _caption_burn_in_enabled(caption_policy: dict | None) -> bool:
+    policy = _caption_policy_value(caption_policy)
+    behavior = str(policy.get("export_behavior") or "sidecar")
+    return bool(policy.get("enabled")) and behavior in {"burn_in", "sidecar_and_burn_in"}
+
+
+def _caption_policy_value(caption_policy: dict | None) -> dict:
+    if isinstance(caption_policy, dict):
+        return get_caption_policy({"polish_actions": [{"kind": "caption_policy", **caption_policy}]})
+    return get_caption_policy({})
+
+
+def _filter_caption_cues(cues: list[dict], render_ranges: List[dict], caption_policy: dict) -> list[dict]:
+    if not caption_policy.get("enabled") or caption_policy.get("appearance") == "off":
+        return []
+    intervals = _caption_active_intervals(render_ranges, caption_policy)
+    if not intervals:
+        return list(cues)
+
+    filtered = []
+    for cue in cues:
+        cue_start = float(cue.get("start") or 0.0)
+        cue_end = float(cue.get("end") or cue_start)
+        for start, end in intervals:
+            if cue_start < end and cue_end > start:
+                filtered.append({
+                    **cue,
+                    "start": max(cue_start, start),
+                    "end": min(cue_end, end),
+                })
+                break
+    return [cue for cue in filtered if float(cue.get("end") or 0) > float(cue.get("start") or 0)]
+
+
+def _caption_active_intervals(render_ranges: List[dict], caption_policy: dict) -> list[tuple[float, float]]:
+    appearance = str(caption_policy.get("appearance") or "always")
+    if appearance == "always":
+        return []
+    if appearance == "highlight_segments":
+        return [
+            (float(item["output_start_time"]), float(item["output_end_time"]))
+            for item in render_ranges
+            if item.get("action") == SegmentAction.HIGHLIGHT.value
+        ]
+    if appearance == "section_starts":
+        seconds = _float_value(caption_policy.get("section_intro_seconds"), 6.0) or 6.0
+        intervals = []
+        current_topic = object()
+        for item in render_ranges:
+            segment = item.get("segment")
+            topic = getattr(segment, "topic_label", None) or getattr(segment, "summary", None) or item.get("segment_id")
+            if topic == current_topic:
+                continue
+            current_topic = topic
+            start = float(item["output_start_time"])
+            end = min(float(item["output_end_time"]), start + seconds)
+            if end > start:
+                intervals.append((start, end))
+        return intervals
+    if appearance == "manual_ranges":
+        intervals = []
+        for item in caption_policy.get("ranges") or []:
+            if not isinstance(item, dict):
+                continue
+            start = _float_value(item.get("start_time"), None)
+            end = _float_value(item.get("end_time"), None)
+            if start is not None and end is not None and end > start:
+                intervals.append((start, end))
+        return intervals
+    return []
+
+
+def _annotation_events_for_render_ranges(annotations: list[dict], render_ranges: List[dict]) -> list[dict]:
+    events = []
+    for annotation in annotations:
+        if str(annotation.get("status") or "active") not in {"active", "planned", "applied"}:
+            continue
+        start = _float_value(annotation.get("start_time"), None)
+        end = _float_value(annotation.get("end_time"), None)
+        if start is None or end is None or end <= start:
+            continue
+        for render_range in render_ranges:
+            source_start = float(render_range["source_start_time"])
+            source_end = float(render_range["source_end_time"])
+            overlap_start = max(start, source_start)
+            overlap_end = min(end, source_end)
+            if overlap_end <= overlap_start:
+                continue
+            output_start = float(render_range["output_start_time"]) + (overlap_start - source_start)
+            output_end = float(render_range["output_start_time"]) + (overlap_end - source_start)
+            events.append({
+                **annotation,
+                "output_start_time": round(output_start, 3),
+                "output_end_time": round(output_end, 3),
+            })
+    return sorted(events, key=lambda item: (item["output_start_time"], item["output_end_time"], item["id"]))
+
+
+async def _render_end_card_clip(
+    *,
+    end_card: dict,
+    output_path: str,
+    clip_dir: str,
+    width: int,
+    height: int,
+    index: int,
+    cancel_check=None,
+) -> str:
+    """Render one appended end-card CTA as a silent video clip."""
+    duration = max(2.0, min(15.0, float(end_card.get("duration_seconds") or 6.0)))
+    style = _dict_value(end_card.get("style"))
+    base_path = os.path.join(clip_dir, f"end_card_base_{index:02d}.mp4")
+    ass_path = os.path.join(clip_dir, f"end_card_{index:02d}.ass")
+    await ffmpeg_service.create_solid_color_clip(
+        base_path,
+        duration_seconds=duration,
+        width=width,
+        height=height,
+        background_color=str(style.get("background_color") or "#111827"),
+        cancel_check=cancel_check,
+    )
+    ass_content = _generate_annotation_ass([
+        {
+            **end_card,
+            "output_start_time": 0.0,
+            "output_end_time": duration,
+            "position": "center",
+            "x_percent": 50.0,
+            "y_percent": 50.0,
+        }
+    ], width=width, height=height)
+    with open(ass_path, "w", encoding="utf-8") as f:
+        f.write(ass_content)
+    await ffmpeg_service.burn_ass_overlay(base_path, ass_path, output_path, cancel_check=cancel_check)
+    return output_path
+
+
+def _generate_annotation_ass(events: list[dict], *, width: int = 1920, height: int = 1080) -> str:
+    lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        f"PlayResX: {int(width)}",
+        f"PlayResY: {int(height)}",
+        "ScaledBorderAndShadow: yes",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        "Style: Default,Arial,28,&H00FFFFFF,&H00FFFFFF,&H0038BDF8,&H66111827,0,0,0,0,100,100,0,0,3,2,0,7,20,20,20,1",
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    for event in events:
+        style = _dict_value(event.get("style"))
+        is_educational = str(event.get("kind") or "") == "educational_overlay"
+        is_end_card = str(event.get("kind") or "") == "end_card"
+        font_size = int(_float_value(style.get("font_size"), 28) or 28)
+        text_color = _ass_color(style.get("text_color"), "FFFFFF")
+        border_color = _ass_color(
+            style.get("accent_color") if (is_educational or is_end_card) else style.get("border_color"),
+            "38BDF8",
+        )
+        background_color = _ass_back_color(style.get("background_color"), style.get("opacity"))
+        x = int((float(event.get("x_percent") or 50.0) / 100.0) * width)
+        y = int((float(event.get("y_percent") or 50.0) / 100.0) * height)
+        align = _ass_alignment_for_position(str(event.get("position") or ("center" if (is_educational or is_end_card) else "top_right")))
+        if is_end_card:
+            label = _end_card_label_text(event)
+        else:
+            label = _educational_overlay_label_text(event) if is_educational else _annotation_label_text(event)
+        border_width = 3 if is_end_card or str(event.get("overlay_type") or "") in {"intro_card", "section_title_card"} else 2
+        position_tag, animation_tags = _ass_animation_override(event, x, y)
+        override = (
+            f"{{\\an{align}{position_tag}\\fs{font_size}\\1c{text_color}"
+            f"\\3c{border_color}\\4c{background_color}\\bord{border_width}\\shad0"
+            f"{animation_tags}}}"
+        )
+        lines.append(
+            "Dialogue: 0,"
+            f"{_format_ass_time(float(event['output_start_time']))},"
+            f"{_format_ass_time(float(event['output_end_time']))},"
+            f"Default,,0,0,0,,{override}{label}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _annotation_canvas_dimensions(plan_payload: dict) -> tuple[int, int]:
+    for cue in plan_payload.get("layout_cues") or []:
+        output = _dict_value(_dict_value(cue).get("output"))
+        if output.get("aspect_ratio"):
+            return FFmpegService.output_dimensions_for_aspect_ratio(str(output["aspect_ratio"]))
+    return FFmpegService.output_dimensions_for_aspect_ratio("16:9")
+
+
+def _annotation_label_text(event: dict) -> str:
+    text = _escape_ass_text(str(event.get("text") or ""))
+    pointer = _dict_value(event.get("pointer"))
+    if bool(pointer.get("enabled")) and str(event.get("annotation_type") or "") == "callout":
+        direction = str(pointer.get("direction") or "left")
+        prefix = {"left": "<- ", "right": "-> ", "up": "^ ", "down": "v "}.get(direction, "")
+        return f"{prefix}{text}"
+    return text
+
+
+def _educational_overlay_label_text(event: dict) -> str:
+    overlay_type = str(event.get("overlay_type") or "chapter_label")
+    title = _escape_ass_text(str(event.get("title") or event.get("text") or ""))
+    subtitle = _escape_ass_text(str(event.get("subtitle") or ""))
+    step_number = event.get("step_number")
+    chapter_index = event.get("chapter_index")
+
+    prefix = ""
+    if overlay_type == "step_label" and step_number:
+        prefix = f"STEP {step_number}: "
+    elif overlay_type == "chapter_label" and chapter_index is not None:
+        try:
+            prefix = f"CHAPTER {int(chapter_index) + 1}: "
+        except (TypeError, ValueError):
+            prefix = "CHAPTER: "
+    elif overlay_type == "section_title_card":
+        prefix = "SECTION: "
+
+    if subtitle:
+        subtitle_size = int(_float_value(_dict_value(event.get("style")).get("subtitle_font_size"), 22) or 22)
+        return f"{prefix}{title}\\N{{\\fs{subtitle_size}}}{subtitle}"
+    return f"{prefix}{title}"
+
+
+def _end_card_label_text(event: dict) -> str:
+    style = _dict_value(event.get("style"))
+    title = _escape_ass_text(str(event.get("title") or "Lecture Summary"))
+    message = _escape_ass_text(str(event.get("message") or ""))
+    next_topic = _escape_ass_text(str(event.get("next_topic") or ""))
+    course_url = _escape_ass_text(str(event.get("course_url") or ""))
+    button_text = _escape_ass_text(str(event.get("button_text") or "Continue"))
+    body_size = int(_float_value(style.get("body_font_size"), 24) or 24)
+    body_color = _ass_color(style.get("body_color"), "CBD5E1")
+    accent_color = _ass_color(style.get("accent_color"), "38BDF8")
+
+    body_lines = []
+    for point in event.get("summary_points") or []:
+        text = _escape_ass_text(str(point))
+        if text:
+            body_lines.append(f"{{\\fs{body_size}\\1c{body_color}}}- {text}")
+    if message:
+        body_lines.append(f"{{\\fs{body_size}\\1c{body_color}}}{message}")
+    if next_topic:
+        body_lines.append(f"{{\\fs{body_size}\\1c{accent_color}}}Next: {next_topic}")
+    if course_url:
+        label = f"{button_text}: {course_url}" if button_text else course_url
+        body_lines.append(f"{{\\fs{body_size}\\1c{accent_color}}}{label}")
+
+    if body_lines:
+        return f"{title}\\N" + "\\N".join(body_lines)
+    return title
+
+
+def _ass_animation_override(event: dict, x: int, y: int) -> tuple[str, str]:
+    animation = _dict_value(event.get("animation"))
+    preset = str(animation.get("preset") or "fade").lower()
+    if preset == "none":
+        return f"\\pos({x},{y})", ""
+
+    duration = _float_value(animation.get("duration_seconds"), 0.35) or 0.35
+    duration_ms = int(max(80, min(2000, round(duration * 1000))))
+    event_duration = max(0.1, float(event.get("output_end_time", 0)) - float(event.get("output_start_time", 0)))
+    fade_ms = int(min(duration_ms, max(80, round(event_duration * 1000 / 3))))
+
+    if preset in {"slide_up", "slide_down", "slide_left", "slide_right"}:
+        offset = 70
+        start_x, start_y = x, y
+        if preset == "slide_up":
+            start_y = y + offset
+        elif preset == "slide_down":
+            start_y = y - offset
+        elif preset == "slide_left":
+            start_x = x + offset
+        elif preset == "slide_right":
+            start_x = x - offset
+        return f"\\move({start_x},{start_y},{x},{y},0,{duration_ms})", f"\\fad({fade_ms},{fade_ms})"
+
+    scale_tags = ""
+    if preset == "pop":
+        scale_tags = f"\\fscx88\\fscy88\\t(0,{duration_ms},\\fscx100\\fscy100)"
+    elif preset == "zoom":
+        scale_tags = f"\\fscx96\\fscy96\\t(0,{duration_ms},\\fscx100\\fscy100)"
+    return f"\\pos({x},{y})", f"{scale_tags}\\fad({fade_ms},{fade_ms})"
+
+
+def _ass_alignment_for_position(position: str) -> int:
+    return {
+        "center": 5,
+        "top_left": 7,
+        "top_center": 8,
+        "top_right": 9,
+        "middle_left": 4,
+        "middle_center": 5,
+        "middle_right": 6,
+        "bottom_left": 1,
+        "bottom_center": 2,
+        "bottom_right": 3,
+    }.get(position, 9)
+
+
+def _format_ass_time(seconds: float) -> str:
+    value = max(0.0, float(seconds or 0.0))
+    hours = int(value // 3600)
+    minutes = int((value % 3600) // 60)
+    secs = int(value % 60)
+    centis = int(round((value - int(value)) * 100))
+    return f"{hours}:{minutes:02d}:{secs:02d}.{centis:02d}"
+
+
+def _ass_color(value: object, default_rgb: str) -> str:
+    text = str(value or "").strip().lstrip("#")
+    if len(text) != 6:
+        text = default_rgb
+    try:
+        int(text, 16)
+    except ValueError:
+        text = default_rgb
+    red, green, blue = text[0:2], text[2:4], text[4:6]
+    return f"&H00{blue}{green}{red}"
+
+
+def _ass_back_color(value: object, opacity: object) -> str:
+    rgb = _ass_color(value, "111827")
+    try:
+        opacity_value = float(opacity)
+    except (TypeError, ValueError):
+        opacity_value = 0.88
+    alpha = int(round((1.0 - min(1.0, max(0.2, opacity_value))) * 255))
+    return f"&H{alpha:02X}{rgb[4:]}"
+
+
+def _escape_ass_text(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("{", "(").replace("}", ")").replace("\n", "\\N")
 
 
 def _split_into_sentences(text: str, max_chars: int = 80) -> List[str]:
@@ -378,11 +2107,19 @@ def _srt_to_vtt(srt_content: str) -> str:
     return "\n".join(vtt_lines)
 
 
+def _remove_file(path: str) -> None:
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        logger.warning("Could not remove stale caption sidecar: %s", path)
+
+
 # ═══════════════════════════════════════════
 #  CHAPTER MARKERS
 # ═══════════════════════════════════════════
 
-def _generate_chapter_file(kept_segments: List[Segment]) -> str:
+def _generate_chapter_file(render_ranges: List[dict]) -> str:
     """
     Generate YouTube-compatible chapter markers.
     Based on topic transitions in the kept segments.
@@ -391,7 +2128,13 @@ def _generate_chapter_file(kept_segments: List[Segment]) -> str:
     current_topic = None
     cumulative_time = 0.0
 
-    for seg in kept_segments:
+    seen_segments = set()
+    for render_range in render_ranges:
+        seg = render_range["segment"]
+        if str(seg.id) in seen_segments:
+            cumulative_time += render_range["duration"]
+            continue
+        seen_segments.add(str(seg.id))
         topic = seg.topic_label or "Unknown"
         if topic != current_topic and (seg.importance_score or 0) >= 0.3:
             minutes = int(cumulative_time // 60)
@@ -399,7 +2142,7 @@ def _generate_chapter_file(kept_segments: List[Segment]) -> str:
             chapters.append(f"{minutes:02d}:{seconds:02d} {topic}")
             current_topic = topic
 
-        cumulative_time += (seg.end_time - seg.start_time)
+        cumulative_time += render_range["duration"]
 
     return "\n".join(chapters) if chapters else "00:00 Full Lecture"
 
@@ -412,15 +2155,46 @@ def _export_plan_json(
     video: Video,
     plan: EditPlan,
     all_segments: List[Segment],
-    kept_segments: List[Segment],
+    render_ranges: List[dict],
+    sync_plan: dict,
+    render_metadata_extra: dict | None = None,
+    artifact_paths: dict[str, str] | None = None,
 ) -> dict:
     """
     Export the complete edit plan as a standalone JSON file.
     Used for thesis documentation and reproducibility.
     """
+    ranges_by_segment: dict[str, list[dict]] = {}
+    for render_range in render_ranges:
+        segment_id = render_range["segment_id"]
+        ranges_by_segment.setdefault(segment_id, []).append({
+            "source_start_time": render_range["source_start_time"],
+            "source_end_time": render_range["source_end_time"],
+            "duration": render_range["duration"],
+            "output_start_time": render_range["output_start_time"],
+            "output_end_time": render_range["output_end_time"],
+            "action": render_range["action"],
+        })
+
+    artifacts = artifact_records(artifact_paths or {})
+    render_metadata = {
+        "playable_range_count": len(render_ranges),
+        "transcript_cuts_applied": sync_plan.get("export_plan", {}).get("transcript_cut_count", 0),
+        "estimated_output_duration_seconds": sync_plan.get("export_plan", {}).get(
+            "estimated_output_duration_seconds"
+        ),
+    }
+    render_metadata.update(render_metadata_extra or {})
+    plan_payload = update_export_metadata(
+        normalize_plan_payload(plan.plan_json),
+        artifacts=artifacts,
+        render=render_metadata,
+    )
+    plan.plan_json = plan_payload
+
     return {
-        "export_version": "1.0",
-        "exported_at": datetime.utcnow().isoformat(),
+        "export_version": "2.0",
+        "exported_at": _utc_now_iso(),
         "video": {
             "id": str(video.id),
             "filename": video.original_filename,
@@ -441,6 +2215,17 @@ def _export_plan_json(
             "approved_at": str(plan.approved_at) if plan.approved_at else None,
             "teacher_notes": plan.teacher_notes,
         },
+        "transcript_edit_sync": {
+            "schema_version": sync_plan.get("schema_version"),
+            "cut_intervals": sync_plan.get("cut_intervals", []),
+            "export_plan": sync_plan.get("export_plan", {}),
+        },
+        "edit_plan_payload": plan_payload,
+        "layout_cues": plan_payload.get("layout_cues", []),
+        "polish_actions": plan_payload.get("polish_actions", []),
+        "sections": plan_payload.get("sections", []),
+        "chapters": plan_payload.get("chapters", []),
+        "export_metadata": plan_payload.get("export_metadata", {}),
         "segments": [
             {
                 "index": seg.segment_index,
@@ -462,7 +2247,8 @@ def _export_plan_json(
                 "teacher_action": seg.teacher_action.value if seg.teacher_action else None,
                 "teacher_note": seg.teacher_note,
                 "final_action": (seg.teacher_action or seg.action).value if (seg.teacher_action or seg.action) else None,
-                "included_in_output": seg in kept_segments,
+                "included_in_output": str(seg.id) in ranges_by_segment,
+                "output_ranges": ranges_by_segment.get(str(seg.id), []),
             }
             for seg in all_segments
         ],
@@ -472,6 +2258,122 @@ def _export_plan_json(
 # ═══════════════════════════════════════════
 #  QUALITY REPORT
 # ═══════════════════════════════════════════
+
+async def _write_evaluation_artifacts(
+    *,
+    video: Video,
+    plan: EditPlan,
+    segments: List[Segment],
+    transcript: Transcript | None,
+    db: AsyncSession,
+    plan_export: dict,
+    plan_path: str,
+    artifact_paths: dict[str, str | None],
+    render_metadata: dict | None,
+) -> dict:
+    quality_report_path = artifact_paths.get("quality_report")
+    evidence_json_path = artifact_paths.get("academic_evidence_json")
+    evidence_markdown_path = artifact_paths.get("academic_evidence_markdown")
+
+    quality_report = await generate_quality_report(str(video.id), db)
+    if quality_report_path:
+        write_json_artifact(quality_report_path, quality_report)
+
+    plan_payload = plan_export.get("edit_plan_payload", {})
+    before_after_path = artifact_paths.get("before_after_comparison_json")
+    timeline_json_path = artifact_paths.get("timeline_decisions_json")
+    timeline_csv_path = artifact_paths.get("timeline_decisions_csv")
+    provider_mode_path = artifact_paths.get("provider_mode_trace_json")
+    metrics_summary_path = artifact_paths.get("metrics_summary_json")
+    evidence_index_path = artifact_paths.get("generated_evidence_index_json")
+    if before_after_path:
+        write_json_artifact(
+            before_after_path,
+            build_before_after_comparison(
+                video=video,
+                plan=plan,
+                segments=segments,
+                plan_payload=plan_payload,
+                quality_report=quality_report,
+            ),
+        )
+    if timeline_json_path:
+        write_json_artifact(
+            timeline_json_path,
+            build_timeline_decisions_artifact(
+                segments=segments,
+                plan_payload=plan_payload,
+                quality_report=quality_report,
+            ),
+        )
+    if timeline_csv_path:
+        write_csv_artifact(
+            timeline_csv_path,
+            build_timeline_decision_rows(
+                segments=segments,
+                plan_payload=plan_payload,
+                quality_report=quality_report,
+            ),
+            TIMELINE_DECISION_CSV_FIELDS,
+        )
+    if provider_mode_path:
+        write_json_artifact(
+            provider_mode_path,
+            build_provider_mode_trace(
+                transcript=transcript,
+                plan_payload=plan_payload,
+                quality_report=quality_report,
+            ),
+        )
+    if metrics_summary_path:
+        write_json_artifact(metrics_summary_path, build_metrics_summary_artifact(quality_report))
+
+    manifest = artifact_records(artifact_paths)
+    if evidence_index_path:
+        write_json_artifact(evidence_index_path, build_generated_evidence_index(manifest))
+        manifest = artifact_records(artifact_paths)
+    evidence = build_academic_evidence_artifact(
+        video=video,
+        plan=plan,
+        segments=segments,
+        transcript=transcript,
+        plan_payload=plan_payload,
+        quality_report=quality_report,
+        artifact_manifest=manifest,
+        render_metadata=render_metadata,
+    )
+    if evidence_json_path:
+        write_json_artifact(evidence_json_path, evidence)
+    if evidence_markdown_path:
+        write_text_artifact(evidence_markdown_path, build_evidence_markdown(evidence))
+
+    final_manifest = artifact_records(artifact_paths)
+    if evidence_index_path:
+        write_json_artifact(evidence_index_path, build_generated_evidence_index(final_manifest))
+        final_manifest = artifact_records(artifact_paths)
+    evidence["artifact_manifest"] = final_manifest
+    evidence["generated_evidence_files"] = build_generated_evidence_index(final_manifest)
+    if evidence_json_path:
+        write_json_artifact(evidence_json_path, evidence)
+    if evidence_markdown_path:
+        write_text_artifact(evidence_markdown_path, build_evidence_markdown(evidence))
+
+    plan_payload = update_export_metadata(
+        plan_export.get("edit_plan_payload", {}),
+        artifacts=final_manifest,
+        render=render_metadata,
+    )
+    plan.plan_json = plan_payload
+    plan_export["edit_plan_payload"] = plan_payload
+    plan_export["export_metadata"] = plan_payload.get("export_metadata", {})
+    write_json_artifact(plan_path, plan_export)
+
+    return {
+        "quality_report": quality_report,
+        "academic_evidence": evidence,
+        "artifact_manifest": final_manifest,
+    }
+
 
 async def generate_quality_report(video_id: str, db: AsyncSession) -> dict:
     """
@@ -491,8 +2393,20 @@ async def generate_quality_report(video_id: str, db: AsyncSession) -> dict:
     )
     segments = list(result.scalars().all())
 
+    result = await db.execute(
+        select(Transcript).where(Transcript.video_id == video_id)
+    )
+    transcript = result.scalar_one_or_none()
+
     if not plan or not segments:
         return {"error": "No data available"}
+
+    sync_plan = build_synced_timeline_plan(
+        plan=plan,
+        segments=segments,
+        duration_seconds=video.duration_seconds if video else None,
+    )
+    plan_payload = normalize_plan_payload(plan.plan_json)
 
     # ── Compute metrics ──
     total_fillers = sum(s.filler_count or 0 for s in segments)
@@ -541,6 +2455,16 @@ async def generate_quality_report(video_id: str, db: AsyncSession) -> dict:
         except Exception:
             pass
 
+    evaluation_metrics = build_evaluation_metrics(
+        video=video,
+        plan=plan,
+        segments=segments,
+        transcript=transcript,
+        plan_payload=plan_payload,
+        actual_output_duration_seconds=output_duration,
+    )
+    evaluation_summary = evaluation_metrics["summary"]
+
     return {
         "video_id": str(video_id),
         "video_filename": video.original_filename if video else None,
@@ -562,6 +2486,11 @@ async def generate_quality_report(video_id: str, db: AsyncSession) -> dict:
         "action_distribution": action_dist,
         "teacher_modifications": teacher_modified,
         "teacher_overrides": teacher_overrides,
+        "teacher_override_rate": evaluation_summary["teacher_override_rate"],
+        "processing_time_seconds": evaluation_summary["processing_time_seconds"],
+        "estimated_cost_usd": evaluation_summary["estimated_cost_usd"],
+        "evaluation_metrics": evaluation_metrics,
+        "transcript_edit_sync": sync_plan["export_plan"],
         "is_rendered": video.status == VideoStatus.COMPLETED if video else False,
         "output_files": {
             "video": video.processed_video_path if video else None,
@@ -569,5 +2498,14 @@ async def generate_quality_report(video_id: str, db: AsyncSession) -> dict:
             "vtt": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_subtitles.vtt"),
             "chapters": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_chapters.txt"),
             "plan_json": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_edit_plan.json"),
+            "quality_report": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_quality_report.json"),
+            "academic_evidence_json": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_academic_evidence.json"),
+            "academic_evidence_markdown": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_academic_evidence.md"),
+            "before_after_comparison": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_before_after_comparison.json"),
+            "timeline_decisions_json": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_timeline_decisions.json"),
+            "timeline_decisions_csv": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_timeline_decisions.csv"),
+            "provider_mode_trace": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_provider_mode_trace.json"),
+            "metrics_summary": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_metrics_summary.json"),
+            "generated_evidence_index": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_generated_evidence_index.json"),
         },
     }

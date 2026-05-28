@@ -1,0 +1,67 @@
+{
+  "schema_version": "phase10.synthetic-slides.v1",
+  "deck_id": "synthetic-mooc-lecture-slides",
+  "title": "Building a Tiny AI Video Editor",
+  "slides": [
+    {
+      "number": 1,
+      "start_time": 0.0,
+      "end_time": 12.0,
+      "title": "Learning Goal",
+      "subtitle": "Turn raw teaching sources into an editable lecture plan",
+      "bullets": [
+        "Screen, camera, audio, slides, and transcript",
+        "Teacher review stays in the loop",
+        "Evidence artifacts support evaluation"
+      ]
+    },
+    {
+      "number": 2,
+      "start_time": 12.0,
+      "end_time": 26.0,
+      "title": "Import Sources",
+      "subtitle": "Keep each recording as a separate project asset",
+      "bullets": [
+        "Screen recording is the timing reference",
+        "Webcam starts 0.35 seconds later",
+        "Audio master starts 0.18 seconds later"
+      ]
+    },
+    {
+      "number": 3,
+      "start_time": 26.0,
+      "end_time": 42.0,
+      "title": "Clean Transcript",
+      "subtitle": "Suggest cuts without hiding the reasoning",
+      "bullets": [
+        "Find filler words and false starts",
+        "Trim dead air conservatively",
+        "Preserve important teaching context"
+      ]
+    },
+    {
+      "number": 4,
+      "start_time": 42.0,
+      "end_time": 60.0,
+      "title": "Review Decision",
+      "subtitle": "Compare AI actions with teacher overrides",
+      "bullets": [
+        "Keep core explanations",
+        "Shorten setup mistakes",
+        "Cut long silence and bad takes"
+      ]
+    },
+    {
+      "number": 5,
+      "start_time": 60.0,
+      "end_time": 72.0,
+      "title": "Export Evidence",
+      "subtitle": "Render outputs and academic evidence side by side",
+      "bullets": [
+        "MP4, captions, chapters, and edit plan JSON",
+        "Metrics for duration reduction and override rate",
+        "Reusable fixture for demos and regression checks"
+      ]
+    }
+  ]
+}

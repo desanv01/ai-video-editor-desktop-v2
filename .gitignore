@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+pytest-cache-files-*/
 dist/
 build/
 .venv/
@@ -36,6 +37,7 @@ frontend/dist/
 frontend/build/
 frontend/.next/
 desktop/dist/
+desktop/src-tauri/gen/
 desktop/src-tauri/target/
 **/.vite/
 
@@ -43,3 +45,4 @@ desktop/src-tauri/target/
 *.log
 *.tmp
 outputs/
+fixtures/synthetic_media/generated/

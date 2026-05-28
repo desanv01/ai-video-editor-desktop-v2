@@ -16,19 +16,38 @@ pub struct ProjectFile {
 /// App settings persisted to disk
 #[derive(Serialize, Deserialize, Clone)]
 pub struct AppSettings {
+    #[serde(default = "default_backend_url")]
     pub backend_url: String,
+    #[serde(default = "default_asr_provider")]
     pub asr_provider: String,
+    #[serde(default)]
     pub domain_terms: Vec<String>,
+    #[serde(default = "default_auto_accept_threshold")]
     pub auto_accept_threshold: f64,
+    #[serde(default)]
+    pub export_folder: Option<String>,
+    #[serde(default = "default_appearance_theme")]
+    pub appearance_theme: String,
+    #[serde(default = "default_interface_density")]
+    pub interface_density: String,
+    #[serde(default = "default_true")]
+    pub guided_tours_enabled: bool,
+    #[serde(default = "default_true")]
+    pub guided_hints_enabled: bool,
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            backend_url: "http://localhost:8000".to_string(),
-            asr_provider: "voxtral".to_string(),
+            backend_url: default_backend_url(),
+            asr_provider: default_asr_provider(),
             domain_terms: vec![],
-            auto_accept_threshold: 0.85,
+            auto_accept_threshold: default_auto_accept_threshold(),
+            export_folder: None,
+            appearance_theme: default_appearance_theme(),
+            interface_density: default_interface_density(),
+            guided_tours_enabled: true,
+            guided_hints_enabled: true,
         }
     }
 }
@@ -89,6 +108,30 @@ fn settings_path() -> Result<PathBuf, String> {
 
 fn dirs_next() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("ai-video-editor"))
+}
+
+fn default_backend_url() -> String {
+    "http://localhost:8000".to_string()
+}
+
+fn default_asr_provider() -> String {
+    "voxtral".to_string()
+}
+
+fn default_auto_accept_threshold() -> f64 {
+    0.85
+}
+
+fn default_appearance_theme() -> String {
+    "dark".to_string()
+}
+
+fn default_interface_density() -> String {
+    "comfortable".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 // ─── App Builder ───

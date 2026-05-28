@@ -24,9 +24,26 @@ import os
 import asyncio
 import json
 import logging
+import re
 from typing import List, Optional
 from openai import AsyncOpenAI
 from config import settings
+from providers.defaults import get_provider_registry
+from providers.interfaces import (
+    ProviderCapability,
+    ProviderHealth,
+    ProviderHealthStatus,
+    ProviderKind,
+    ProviderMetadata,
+    TranscriptionProvider,
+    TranscriptionRequest,
+    TranscriptionResponse,
+)
+from providers.processing_modes import ProcessingMode
+from providers.whisper_cpp import (
+    WhisperCppTranscriptionProvider,
+    resolve_whisper_cpp_model_selection,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +54,91 @@ WHISPER_MAX_FILE_SIZE = 23 * 1024 * 1024
 # Chunk duration for splitting long audio
 CHUNK_DURATION_SEC = 10 * 60  # 20 minutes with 30s overlap
 CHUNK_OVERLAP_SEC = 20
-MIXED_LANGUAGE_TRANSCRIPTION_PROMPT = (
-    "This lecture may contain mixed English and Bahasa Melayu/Malay. "
-    "Transcribe exactly what is spoken, preserving the original language for each phrase. "
-    "Do not translate, summarize, or normalize the speech into a single language."
+DEFAULT_ASR_CONTEXT_NOTE = (
+    "English software engineering lecture with occasional Malay phrases. "
+    "Preserve English technical terms such as object design, design pattern, "
+    "bridge pattern, template method, class diagram, inheritance, delegation, "
+    "abstraction, and implementation."
 )
+
+PROMPT_LEAK_MARKERS = (
+    "transcribe exactly",
+    "preserving the original language",
+    "do not translate",
+    "normalize the speech into a single language",
+)
+
+WORD_CLEAN_RE = re.compile(r"[^a-z0-9]+")
+
+
+class ExistingAPITranscriptionProvider(TranscriptionProvider):
+    """Provider adapter for the existing Voxtral/Whisper transcription pipelines."""
+
+    def __init__(
+        self,
+        *,
+        provider_id: str,
+        label: str,
+        provider_name: str,
+        default_model: str,
+        api_key: str,
+        service: "TranscriptionService",
+    ):
+        self._provider_id = provider_id
+        self._api_key = api_key
+        self._service = service
+        self._metadata = ProviderMetadata(
+            provider_id=provider_id,
+            kind=ProviderKind.TRANSCRIPTION,
+            label=label,
+            provider_name=provider_name,
+            default_model=default_model,
+            capabilities=(
+                ProviderCapability("audio_transcription", "Speech-to-text transcription."),
+                ProviderCapability("timestamps", "Word and segment timestamps when available."),
+            ),
+        )
+
+    @property
+    def metadata(self) -> ProviderMetadata:
+        return self._metadata
+
+    async def health(self) -> ProviderHealth:
+        if not self._api_key:
+            return ProviderHealth(
+                status=ProviderHealthStatus.NOT_CONFIGURED,
+                message=f"{self.metadata.label} API key is not configured.",
+            )
+        return await super().health()
+
+    async def transcribe(self, request: TranscriptionRequest) -> TranscriptionResponse:
+        duration = request.metadata.get("duration")
+        if duration is None:
+            duration = await self._service._get_audio_duration(request.audio_path)
+
+        if self._provider_id == "voxtral":
+            transcript = await self._service._transcribe_voxtral_pipeline(
+                request.audio_path,
+                float(duration),
+                request.language,
+                request.domain_terms,
+            )
+        elif self._provider_id == "whisper":
+            transcript = await self._service._transcribe_whisper_pipeline(
+                request.audio_path,
+                float(duration),
+                request.language,
+            )
+        else:
+            raise RuntimeError(f"Unsupported transcription provider: {self._provider_id}")
+
+        transcript = dict(transcript)
+        transcript["provider"] = self.metadata.provider_id
+        return TranscriptionResponse(
+            transcript=transcript,
+            provider_id=self.metadata.provider_id,
+            model=self.metadata.default_model,
+        )
 
 
 class TranscriptionService:
@@ -57,6 +154,117 @@ class TranscriptionService:
         self._openai = AsyncOpenAI(
             api_key=settings.OPENAI_API_KEY,
         )
+        self._registered_registry = None
+        self._registry()
+
+    def _registry(self):
+        registry = get_provider_registry()
+        if registry is not self._registered_registry:
+            self._register_transcription_providers(registry)
+            self._registered_registry = registry
+        return registry
+
+    def _register_transcription_providers(self, registry) -> None:
+        default_provider = settings.ASR_PROVIDER.lower()
+        registry.register(
+            ExistingAPITranscriptionProvider(
+                provider_id="voxtral",
+                label="Voxtral Transcription",
+                provider_name="mistral",
+                default_model=settings.VOXTRAL_MODEL,
+                api_key=settings.MISTRAL_API_KEY,
+                service=self,
+            ),
+            set_default=default_provider == "voxtral",
+            replace=True,
+        )
+        registry.register(
+            ExistingAPITranscriptionProvider(
+                provider_id="whisper",
+                label="Whisper Transcription",
+                provider_name="openai",
+                default_model=settings.WHISPER_MODEL,
+                api_key=settings.OPENAI_API_KEY,
+                service=self,
+            ),
+            set_default=default_provider == "whisper",
+            replace=True,
+        )
+        whisper_cpp_selection = resolve_whisper_cpp_model_selection(settings)
+        registry.register(
+            WhisperCppTranscriptionProvider(
+                binary_path=whisper_cpp_selection.binary_path,
+                model_path=whisper_cpp_selection.model_path,
+                model_id=whisper_cpp_selection.model_id,
+                work_dir=settings.TEMP_PATH,
+            ),
+            set_default=default_provider == "whisper-cpp",
+            replace=True,
+        )
+
+    def _selected_transcription_provider_id(self) -> str:
+        registry = self._registry()
+        mode_config = registry.processing_mode_for(ProviderKind.TRANSCRIPTION)
+        if mode_config.mode == ProcessingMode.LOCAL:
+            return mode_config.local_provider_id or "whisper-cpp"
+
+        return (
+            mode_config.api_provider_id
+            or registry.default_provider_id(ProviderKind.TRANSCRIPTION)
+            or settings.ASR_PROVIDER.lower()
+        )
+
+    def _transcription_provider_route(self) -> list[str]:
+        mode_config = self._registry().processing_mode_for(ProviderKind.TRANSCRIPTION)
+        provider_ids: list[str] = []
+
+        for mode in mode_config.mode_order():
+            if mode == ProcessingMode.LOCAL:
+                provider_ids.append(mode_config.local_provider_id or "whisper-cpp")
+            elif mode == ProcessingMode.API:
+                provider_ids.extend(
+                    self._api_transcription_provider_ids(mode_config.api_provider_id)
+                )
+
+        return self._dedupe_provider_ids(provider_ids)
+
+    def _api_transcription_provider_ids(
+        self,
+        preferred_provider_id: Optional[str],
+    ) -> list[str]:
+        primary = (
+            preferred_provider_id
+            or self._registry().default_provider_id(ProviderKind.TRANSCRIPTION)
+            or settings.ASR_PROVIDER
+            or "voxtral"
+        ).strip().lower()
+        if primary == "whisper-cpp":
+            primary = settings.ASR_PROVIDER.lower() if settings.ASR_PROVIDER else "voxtral"
+            if primary == "whisper-cpp":
+                primary = "voxtral"
+
+        provider_ids = [primary]
+        provider_ids.extend(provider_id for provider_id in ("whisper", "voxtral") if provider_id != primary)
+        return self._dedupe_provider_ids(provider_ids)
+
+    @staticmethod
+    def _dedupe_provider_ids(provider_ids: list[str]) -> list[str]:
+        route: list[str] = []
+        seen: set[str] = set()
+        for provider_id in provider_ids:
+            normalized = (provider_id or "").strip().lower()
+            if normalized and normalized not in seen:
+                route.append(normalized)
+                seen.add(normalized)
+        return route
+
+    def _get_transcription_provider(self, provider_id: str) -> TranscriptionProvider:
+        provider = self._registry().get(ProviderKind.TRANSCRIPTION, provider_id)
+        if not isinstance(provider, TranscriptionProvider):
+            raise TypeError(
+                f"Provider {provider_id} does not implement TranscriptionProvider"
+            )
+        return provider
 
     # ═══════════════════════════════════════════
     #  PUBLIC API
@@ -87,37 +295,86 @@ class TranscriptionService:
             "provider": "voxtral" | "whisper" | "whisper_fallback",
         }
         """
-        provider = settings.ASR_PROVIDER.lower()
+        mode_config = self._registry().processing_mode_for(ProviderKind.TRANSCRIPTION)
+        provider_route = self._transcription_provider_route()
+        if not provider_route:
+            raise RuntimeError("No transcription providers are configured for the selected mode")
+
         terms = domain_terms or settings.domain_terms_list
 
         # Get audio duration to decide if chunking is needed
         duration = await self._get_audio_duration(audio_path)
+        request = TranscriptionRequest(
+            audio_path=audio_path,
+            language=language,
+            domain_terms=terms,
+            metadata={
+                "duration": duration,
+                "threads": getattr(settings, "WHISPER_CPP_THREADS", 0),
+            },
+        )
 
-        if provider == "voxtral":
+        attempted_providers: list[str] = []
+        failures: list[tuple[str, Exception]] = []
+
+        for provider_id in provider_route:
+            attempted_providers.append(provider_id)
             try:
-                result = await self._transcribe_voxtral_pipeline(
-                    audio_path, duration, language, terms
+                response = await self._get_transcription_provider(provider_id).transcribe(
+                    request
                 )
-                result["provider"] = "voxtral"
+                result = dict(response.transcript)
+                fallback_from = failures[-1][0] if failures else None
+                result["provider"] = self._provider_result_label(
+                    response.provider_id,
+                    fallback_from,
+                )
+                result["transcription_mode"] = mode_config.mode.value
+                result["transcription_route"] = {
+                    "mode": mode_config.mode.value,
+                    "fallback_enabled": mode_config.fallback_enabled,
+                    "attempted_providers": attempted_providers,
+                    "selected_provider": response.provider_id,
+                    "fallback_from": fallback_from,
+                }
                 logger.info(
-                    f"Voxtral transcription complete: {result.get('duration', 0):.0f}s, "
-                    f"{len(result.get('segments', []))} segments, "
-                    f"{len(result.get('speakers', []))} speakers"
+                    "%s transcription complete via %s: %.0fs, %s segments, %s speakers",
+                    mode_config.mode.value.title(),
+                    response.provider_id,
+                    result.get("duration", 0),
+                    len(result.get("segments", [])),
+                    len(result.get("speakers", [])),
                 )
                 return result
             except Exception as e:
-                logger.warning(f"Voxtral failed, falling back to Whisper: {e}")
-                result = await self._transcribe_whisper_pipeline(
-                    audio_path, duration, language
+                failures.append((provider_id, e))
+                if not mode_config.fallback_enabled:
+                    raise
+
+                if provider_id == provider_route[-1]:
+                    break
+
+                next_provider = provider_route[len(attempted_providers)]
+                logger.warning(
+                    "Transcription provider %s failed, falling back to %s: %s",
+                    provider_id,
+                    next_provider,
+                    e,
                 )
-                result["provider"] = "whisper_fallback"
-                return result
-        else:
-            result = await self._transcribe_whisper_pipeline(
-                audio_path, duration, language
-            )
-            result["provider"] = "whisper"
-            return result
+
+        failure_summary = "; ".join(
+            f"{provider_id}: {error}" for provider_id, error in failures
+        )
+        raise RuntimeError(
+            f"Transcription failed after trying {', '.join(attempted_providers)}: "
+            f"{failure_summary}"
+        )
+
+    @staticmethod
+    def _provider_result_label(provider_id: str, fallback_from: Optional[str]) -> str:
+        if provider_id == "whisper" and fallback_from == "voxtral":
+            return "whisper_fallback"
+        return provider_id
 
     # ═══════════════════════════════════════════
     #  VOXTRAL (Mistral API)
@@ -164,7 +421,7 @@ class TranscriptionService:
 
         # Context biasing for domain-specific terms (Voxtral feature)
         # Passed as part of the prompt field
-        prompt_parts = [MIXED_LANGUAGE_TRANSCRIPTION_PROMPT]
+        prompt_parts = [settings.ASR_CONTEXT_PROMPT or DEFAULT_ASR_CONTEXT_NOTE]
         if domain_terms:
             bias_text = ", ".join(domain_terms[:100])
             prompt_parts.append(f"Domain terms: {bias_text}")
@@ -178,7 +435,7 @@ class TranscriptionService:
 
         try:
             response = await self._mistral.audio.transcriptions.create(**kwargs)
-            return self._parse_voxtral_response(response)
+            return self._clean_transcription_result(self._parse_voxtral_response(response))
         finally:
             # Close file handle
             kwargs["file"].close()
@@ -265,10 +522,14 @@ class TranscriptionService:
             "file": open(audio_path, "rb"),
             "response_format": "verbose_json",
             "timestamp_granularities": ["word", "segment"],
-            "prompt": MIXED_LANGUAGE_TRANSCRIPTION_PROMPT,
         }
         if language:
             kwargs["language"] = language
+
+        prompt_parts = [settings.ASR_CONTEXT_PROMPT or DEFAULT_ASR_CONTEXT_NOTE]
+        if settings.domain_terms_list:
+            prompt_parts.append(", ".join(settings.domain_terms_list[:100]))
+        kwargs["prompt"] = "\n".join(part for part in prompt_parts if part)
 
         try:
             response = await self._openai.audio.transcriptions.create(**kwargs)
@@ -294,14 +555,113 @@ class TranscriptionService:
                 for s in response.segments
             ]
 
-        return {
+        return self._clean_transcription_result({
             "text": response.text,
             "language": getattr(response, "language", "en"),
             "duration": getattr(response, "duration", 0),
             "words": words,
             "segments": segments or self._segments_from_text(response.text, getattr(response, "duration", 0)),
             "speakers": [],
-        }
+        })
+
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    #  HALLUCINATION / PROMPT LEAK CLEANUP
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+    def _clean_transcription_result(self, result: dict) -> dict:
+        """
+        Remove ASR prompt echoes/hallucinated instruction loops.
+
+        Whisper's prompt field is context, not an instruction channel. Older
+        runs used an instruction-style prompt, and during long silences the
+        model echoed it into the transcript. This guard keeps future sidecar
+        files and edit plans from treating that as lecture content.
+        """
+        segments = result.get("segments") or []
+        words = result.get("words") or []
+
+        cleaned_segments = []
+        leak_seen = False
+        for seg in segments:
+            if leak_seen:
+                continue
+
+            original_text = (seg.get("text") or "").strip()
+            cleaned_text, leaked = self._strip_prompt_leak(original_text)
+
+            if cleaned_text and len(cleaned_text.split()) >= 3:
+                cleaned = dict(seg)
+                cleaned["text"] = cleaned_text
+                if leaked:
+                    original_len = max(len(original_text), 1)
+                    keep_ratio = min(0.95, max(0.05, len(cleaned_text) / original_len))
+                    start = float(cleaned.get("start", 0) or 0)
+                    end = float(cleaned.get("end", start) or start)
+                    cleaned["end"] = start + ((end - start) * keep_ratio)
+                cleaned_segments.append(cleaned)
+
+            if leaked:
+                leak_seen = True
+
+        cleaned_words = self._strip_prompt_words(words)
+
+        if leak_seen:
+            logger.warning("ASR prompt leakage detected and removed from transcript")
+
+        if cleaned_segments:
+            result["segments"] = cleaned_segments
+            result["text"] = " ".join(s["text"] for s in cleaned_segments).strip()
+
+            last_clean_end = max(float(s.get("end", 0) or 0) for s in cleaned_segments)
+            if last_clean_end:
+                result["duration"] = min(float(result.get("duration", 0) or last_clean_end), last_clean_end)
+        else:
+            cleaned_text, leaked = self._strip_prompt_leak(result.get("text", "") or "")
+            result["text"] = cleaned_text
+            if leaked:
+                result["segments"] = self._segments_from_text(cleaned_text, result.get("duration", 0))
+
+        result["words"] = cleaned_words
+        return result
+
+    @staticmethod
+    def _strip_prompt_leak(text: str) -> tuple[str, bool]:
+        lower = text.lower()
+        marker_positions = [
+            lower.find(marker)
+            for marker in PROMPT_LEAK_MARKERS
+            if lower.find(marker) >= 0
+        ]
+        if not marker_positions:
+            return text.strip(), False
+
+        first_marker = min(marker_positions)
+        return text[:first_marker].strip(" ,.;:-"), True
+
+    @staticmethod
+    def _strip_prompt_words(words: List[dict]) -> List[dict]:
+        if not words:
+            return []
+
+        normalized = [
+            WORD_CLEAN_RE.sub("", (w.get("word") or w.get("text") or "").lower())
+            for w in words
+        ]
+
+        cutoff = len(words)
+        for i, token in enumerate(normalized):
+            window = normalized[i:i + 12]
+            if token == "transcribe" and "exactly" in window and "spoken" in window:
+                cutoff = i
+                break
+            if token == "preserving" and "original" in window and "language" in window:
+                cutoff = i
+                break
+            if token == "normalize" and "speech" in window and "language" in window:
+                cutoff = i
+                break
+
+        return words[:cutoff]
 
     # ═══════════════════════════════════════════
     #  AUDIO CHUNKING (shared by both providers)

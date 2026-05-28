@@ -1,19 +1,28 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { UploadPanel } from "./components/UploadPanel";
 import { ProcessingView } from "./components/ProcessingView";
 import { ReviewEditor } from "./components/ReviewEditor";
-import { Clapperboard } from "lucide-react";
-import type { AppSettings } from "./types/api";
+import { MainSettingsPanel } from "./components/MainSettingsPanel";
+import { ProjectDashboard } from "./components/ProjectDashboard";
+import { Clapperboard, FolderOpen, Settings } from "lucide-react";
+import type { AppSettings, Project, Video } from "./types/api";
 import { setBaseUrl } from "./lib/api";
 
-type View = "upload" | "processing" | "review";
+type View = "dashboard" | "upload" | "processing" | "review";
+
+type DashboardContinueTarget = {
+  project: Project;
+  video: Video | null;
+  nextView: "upload" | "processing" | "review";
+};
 
 export default function App() {
-  const [view, setView] = useState<View>("upload");
+  const [view, setView] = useState<View>("dashboard");
   const [videoId, setVideoId] = useState<string | null>(null);
   const [videoFilename, setVideoFilename] = useState<string>("");
+  const [selectedProject, setSelectedProject] = useState<Project | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
-  // Load backend URL from Tauri settings on mount
   useEffect(() => {
     (async () => {
       try {
@@ -21,7 +30,7 @@ export default function App() {
         const settings = await invoke<AppSettings>("load_settings");
         if (settings?.backend_url) setBaseUrl(settings.backend_url);
       } catch {
-        // Not running in Tauri (browser dev mode) — use default localhost
+        // Browser dev mode uses the default localhost backend.
       }
     })();
   }, []);
@@ -36,39 +45,62 @@ export default function App() {
     setView("review");
   };
 
-  const handleBackToUpload = () => {
+  const handleBackToDashboard = () => {
     setVideoId(null);
     setVideoFilename("");
-    setView("upload");
+    setSelectedProject(null);
+    setView("dashboard");
+  };
+
+  const handleDashboardContinue = ({ project, video, nextView }: DashboardContinueTarget) => {
+    setSelectedProject(project);
+    setVideoId(video?.id ?? null);
+    setVideoFilename(video?.original_filename ?? project.title);
+    setView(nextView);
   };
 
   return (
     <div className="h-screen flex flex-col bg-surface overflow-hidden">
-      {/* ── Title Bar ── */}
       <header className="flex items-center justify-between px-4 py-2 bg-surface-raised border-b border-surface-border shrink-0">
         <div className="flex items-center gap-2">
           <Clapperboard className="w-5 h-5 text-accent" />
           <h1 className="text-sm font-semibold tracking-wide">AI Video Editor</h1>
+          {selectedProject && (
+            <span className="ml-2 hidden items-center gap-1.5 rounded bg-surface-overlay px-2 py-1 text-xs text-gray-400 sm:inline-flex">
+              <FolderOpen className="h-3.5 w-3.5" />
+              {selectedProject.title}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-3 text-xs text-gray-400">
           {videoFilename && (
             <span className="bg-surface-overlay px-2 py-1 rounded">{videoFilename}</span>
           )}
-          {videoId && (
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 transition-colors hover:bg-surface-overlay hover:text-gray-200"
+          >
+            <Settings className="w-3.5 h-3.5" />
+            Settings
+          </button>
+          {view !== "dashboard" && (
             <button
-              onClick={handleBackToUpload}
+              onClick={handleBackToDashboard}
               className="hover:text-gray-200 transition-colors"
             >
-              ← New Video
+              Projects
             </button>
           )}
         </div>
       </header>
 
-      {/* ── Main Content ── */}
       <main className="flex-1 overflow-hidden">
+        {view === "dashboard" && (
+          <ProjectDashboard onContinue={handleDashboardContinue} />
+        )}
         {view === "upload" && (
-          <UploadPanel onUpload={handleUpload} />
+          <UploadPanel project={selectedProject} onUpload={handleUpload} />
         )}
         {view === "processing" && videoId && (
           <ProcessingView
@@ -77,9 +109,18 @@ export default function App() {
           />
         )}
         {view === "review" && videoId && (
-          <ReviewEditor videoId={videoId} />
+          <ReviewEditor
+            videoId={videoId}
+            videoFilename={videoFilename}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
         )}
       </main>
+
+      <MainSettingsPanel
+        isOpen={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
     </div>
   );
 }

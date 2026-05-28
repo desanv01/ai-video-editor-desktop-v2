@@ -40,6 +40,7 @@ python-dotenv==1.0.1
 aiofiles==24.1.0
 uuid6==2024.7.10
 orjson==3.10.13
+cryptography>=42.0.0
 
 # ── MCP (Model Context Protocol) ──
 mcp>=1.0.0
