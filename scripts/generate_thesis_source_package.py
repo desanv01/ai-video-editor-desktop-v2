@@ -163,7 +163,11 @@ def category(relative: str) -> str:
         return "automated_test"
     if relative.startswith("scripts/") or relative == "check_renderer.py":
         return "utility_script"
-    if relative.startswith(("backend/app/", "backend/revideo/", "desktop/src/", "desktop/src-tauri/src/", "desktop/revideo/")):
+    relative_path = Path(relative)
+    if (
+        relative_path.suffix.lower() in CODE_EXTENSIONS
+        and relative.startswith(("backend/app/", "backend/revideo/", "desktop/src/", "desktop/src-tauri/src/", "desktop/revideo/"))
+    ):
         return "core_source"
     if relative.startswith("docs/") or relative.endswith("README.md"):
         return "documentation"
@@ -188,6 +192,15 @@ def language(path: Path) -> str:
 
 def assert_no_secrets(path: Path, data: bytes) -> None:
     relative = path.relative_to(ROOT).as_posix()
+    if relative == ".env.example":
+        text = data.decode("utf-8", errors="replace")
+        for line in text.splitlines():
+            if "API_KEY=" not in line:
+                continue
+            value = line.split("=", 1)[1].split("#", 1)[0].strip()
+            if value and value not in {"...", "sk-..."} and not value.startswith(("your_", "<")):
+                raise RuntimeError(".env.example contains a non-placeholder API key value")
+        return
     for pattern in SECRET_PATTERNS:
         if pattern.search(data):
             raise RuntimeError(f"Potential credential detected; source package aborted: {relative}")
