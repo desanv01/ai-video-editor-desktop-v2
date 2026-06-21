@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 def classify_video_type(project_assets: list) -> str:
     """
     Inspect project assets and classify the video type for pipeline routing.
-    
+
     Returns one of:
     - "camera_with_slides": Camera/face video + PDF slide deck → use slide alignment
     - "screen_recording": Screen capture → use existing PySceneDetect
@@ -62,7 +62,7 @@ def classify_video_type(project_assets: list) -> str:
     CAMERA_ROLES = {"camera_overlay", "camera"}
     SCREEN_ROLES = {"screen_reference", "screen"}
     SLIDE_ROLES = {"structure_reference"}
-    
+
     has_camera = any(
         getattr(a, 'sync_role', None) in CAMERA_ROLES
         or getattr(a, 'role', None) in CAMERA_ROLES
@@ -246,27 +246,27 @@ async def run_processing_pipeline(video_id: str, db_session) -> dict:
             from services.clean_tools import apply_clean_suggestions
             from db.models import EditPlan, Segment, Transcript
             from sqlalchemy import select
-            
+
             # Reload segments created/updated by Agents 2–4
             seg_result = await db_session.execute(
                 select(Segment).where(Segment.video_id == video_id).order_by(Segment.segment_index)
             )
             segments = list(seg_result.scalars().all())
-            
+
             # Load the plan and transcript for clean suggestions
             plan_result = await db_session.execute(
                 select(EditPlan).where(EditPlan.video_id == video_id)
             )
             plan = plan_result.scalar_one_or_none()
-            
+
             transcript_result = await db_session.execute(
                 select(Transcript).where(Transcript.video_id == video_id)
             )
             transcript = transcript_result.scalar_one_or_none()
-            
+
             if plan and segments:
                 timeline_words = (transcript.words_json or []) if transcript else None
-                
+
                 # Run apply_clean_suggestions in a thread since it's synchronous
                 clean_result = await asyncio.to_thread(
                     apply_clean_suggestions,
