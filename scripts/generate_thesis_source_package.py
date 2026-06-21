@@ -227,7 +227,8 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(rows)
 
-    status = git("status", "--porcelain")
+    tracked_status = git("status", "--porcelain", "--untracked-files=no")
+    full_status = git("status", "--porcelain")
     summary = {
         "project": "AI-Agent Assisted Video Editing Framework",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -235,7 +236,8 @@ def main() -> None:
         "git_commit_short": git("rev-parse", "--short", "HEAD"),
         "git_branch": git("branch", "--show-current"),
         "git_tags_at_commit": [tag for tag in git("tag", "--points-at", "HEAD").splitlines() if tag],
-        "working_tree_clean": not bool(status),
+        "tracked_working_tree_clean": not bool(tracked_status),
+        "untracked_entries_present": sum(1 for line in full_status.splitlines() if line.startswith("??")),
         "counting_method": "Physical and nonblank UTF-8 text lines over the sanitised package include set; dependencies, generated outputs, credentials, media, caches and temporary analysis are excluded.",
         "totals": {
             "files": len(rows),
