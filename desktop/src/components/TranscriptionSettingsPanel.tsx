@@ -33,7 +33,7 @@ const MODE_OPTIONS: {
   {
     value: "hybrid",
     label: "Hybrid",
-    description: "Use local Whisper first, then API fallback when needed.",
+    description: "Use API Voxtral first, then local Whisper fallback when needed.",
     icon: Layers3,
   },
   {
@@ -45,7 +45,7 @@ const MODE_OPTIONS: {
   {
     value: "api",
     label: "API",
-    description: "Use the configured API transcription provider.",
+    description: "Use Voxtral (Mistral) or Whisper (OpenAI) API.",
     icon: Cloud,
   },
 ];
@@ -61,6 +61,10 @@ function selectedModelIdFrom(
   settings: BackendAISettings,
   catalog: LocalTranscriptionModelCatalog,
 ): string {
+  const persistedId = settings.local_model_ids?.transcription;
+  if (persistedId && catalog.models.some(model => model.model_id === persistedId)) {
+    return persistedId;
+  }
   const persistedPath = settings.local_model_paths.transcription;
   const pathMatch = catalog.models.find(model => modelMatchesPath(model, persistedPath));
   return pathMatch?.model_id
@@ -202,6 +206,7 @@ export function TranscriptionSettingsPanel({ isOpen, onClose }: Props) {
           },
         },
         local_model_paths: selected?.file_path ? { transcription: selected.file_path } : undefined,
+        local_model_ids: { transcription: selectedModelId },
       });
       setSettings(nextSettings);
       setNotice("Transcription settings saved.");

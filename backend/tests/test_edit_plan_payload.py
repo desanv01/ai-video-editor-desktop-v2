@@ -14,6 +14,7 @@ from services.edit_plan_payload import (  # noqa: E402
     get_caption_policy,
     get_educational_overlays,
     get_end_cards,
+    get_layout_cues,
     normalize_plan_payload,
     update_annotations,
     update_cleaning_payload,
@@ -21,11 +22,107 @@ from services.edit_plan_payload import (  # noqa: E402
     update_end_cards,
     update_educational_overlays,
     update_export_metadata,
+    update_layout_cues,
+    update_slide_cues,
     update_sections_payload,
 )
 
 
 class EditPlanPayloadTests(unittest.TestCase):
+    def test_normalization_surfaces_legacy_nested_slide_cues(self):
+        nested_cues = [
+            {
+                "start_time": 12.0,
+                "end_time": 28.0,
+                "slide_index": 2,
+                "cue_type": "anchor",
+            }
+        ]
+
+        normalized = normalize_plan_payload({"render_plan": {"slide_cues": nested_cues}})
+
+        self.assertEqual(normalized["slide_cues"][0]["start_time"], 12.0)
+        self.assertEqual(normalized["slide_cues"][0]["end_time"], 28.0)
+        self.assertEqual(normalized["slide_cues"][0]["slide_index"], 2)
+
+    def test_editorial_blocks_remove_stale_micro_cues_and_keep_exact_block_style(self):
+        normalized = normalize_plan_payload({
+            "summary": {"original_duration_seconds": 12.0},
+            "editorial_blocks": [
+                {
+                    "id": "block-a",
+                    "start_time": 0.0,
+                    "end_time": 5.0,
+                    "slide_index": 0,
+                    "layout": "picture_in_picture",
+                },
+                {
+                    "id": "editorial-gap-1",
+                    "start_time": 5.0,
+                    "end_time": 6.0,
+                    "slide_index": None,
+                    "layout": "full_camera_source",
+                    "source": "editorial_gap_coverage",
+                },
+                {
+                    "id": "block-b",
+                    "start_time": 6.0,
+                    "end_time": 12.0,
+                    "slide_index": 1,
+                    "layout": "picture_in_picture",
+                },
+            ],
+            "layout_cues": [
+                {
+                    "id": "styled-a",
+                    "editorial_block_id": "block-a",
+                    "start_time": 0.0,
+                    "end_time": 5.0,
+                    "layout": "picture_in_picture",
+                    "camera": {"shape": "circle", "size": "small", "corner": "bottom_left"},
+                },
+                {
+                    "id": "stale-gap",
+                    "editorial_block_id": "editorial-gap-1",
+                    "start_time": 5.0,
+                    "end_time": 6.0,
+                    "layout": "full_camera_source",
+                },
+                {
+                    "id": "styled-b",
+                    "editorial_block_id": "block-b",
+                    "start_time": 6.0,
+                    "end_time": 12.0,
+                    "layout": "picture_in_picture",
+                },
+            ],
+        })
+
+        self.assertEqual([item["id"] for item in normalized["editorial_blocks"]], ["block-a", "block-b"])
+        self.assertEqual(len(normalized["slide_cues"]), 2)
+        self.assertEqual(len(normalized["layout_cues"]), 2)
+        self.assertEqual(normalized["layout_cues"][0]["camera"]["shape"], "circle")
+        self.assertEqual(normalized["layout_cues"][0]["camera"]["corner"], "bottom_left")
+
+    def test_teacher_slide_cues_do_not_change_layout_or_export_metadata(self):
+        payload = normalize_plan_payload({
+            "summary": {"original_duration_seconds": 60.0},
+            "layout_cues": [{"id": "layout-1", "start_time": 0.0, "end_time": 60.0, "layout": "side_by_side"}],
+            "export_metadata": {"selected_preset": "youtube_1080p"},
+        })
+
+        updated = update_slide_cues(payload, [{
+            "id": "slide-1",
+            "start_time": 0.0,
+            "end_time": 20.0,
+            "slide_index": 2,
+        }])
+
+        self.assertEqual(updated["slide_cues"][0]["source"], "teacher_slide_override")
+        self.assertEqual(updated["slide_cues"][0]["confidence"], 1.0)
+        self.assertEqual(updated["layout_cues"], payload["layout_cues"])
+        self.assertEqual(updated["export_metadata"]["selected_preset"], "youtube_1080p")
+
     def test_normalizes_legacy_segment_array_to_v2_envelope(self):
         payload = normalize_plan_payload([
             {"segment_id": "seg-1", "action": "keep"},
@@ -119,6 +216,35 @@ class EditPlanPayloadTests(unittest.TestCase):
         self.assertEqual(policy["style"]["background"], "box")
         self.assertEqual(payload["polish_actions"][0]["status"], "active")
         self.assertEqual(payload["export_metadata"]["caption_policy"]["placement"], "top_center")
+
+    def test_updates_layout_cues_for_studio_composition(self):
+        payload = update_layout_cues(
+            normalize_plan_payload({"summary": {"original_duration_seconds": 60.0}}),
+            [
+                {
+                    "id": "layout-teacher-1",
+                    "layout": "picture_in_picture",
+                    "start_time": 0.0,
+                    "end_time": 60.0,
+                    "camera": {"corner": "top_right", "size": "large"},
+                    "timing": {"transition_in": "fade", "transition_duration_seconds": 0.5},
+                    "sources": {
+                        "screen": {"role": "screen", "asset_id": "screen-1", "enabled": True, "track": "screen"},
+                        "camera": {"role": "camera", "asset_id": "cam-1", "enabled": True, "track": "camera"},
+                        "audio": {"role": "audio", "asset_id": "audio-1", "enabled": True, "track": "audio"},
+                    },
+                }
+            ],
+        )
+
+        cues = get_layout_cues(payload)
+
+        self.assertEqual(cues[0]["layout"], "picture_in_picture")
+        self.assertEqual(cues[0]["camera"]["corner"], "top_right")
+        self.assertEqual(cues[0]["camera"]["size"], "large")
+        self.assertEqual(cues[0]["timing"]["transition_in"], "fade")
+        self.assertEqual(payload["metadata"]["layout_planning"]["last_updated_by"], "teacher_layout_override")
+        self.assertEqual(payload["export_metadata"]["layout_cues"]["picture_in_picture_count"], 1)
 
     def test_updates_timeline_annotations_and_callouts(self):
         payload = update_annotations(

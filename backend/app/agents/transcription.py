@@ -87,6 +87,7 @@ async def run_transcription_agent(video_id: str, db: AsyncSession) -> dict:
             "segment_count": len(result.get("segments", [])),
             "speakers": result.get("speakers", []),
             "provider": result.get("provider", "unknown"),
+            "transcription_route": result.get("transcription_route"),
         }
 
     except Exception as e:

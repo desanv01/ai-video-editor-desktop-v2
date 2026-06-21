@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Iterable, Optional, TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 from services.transcript_edit_decisions import (
     create_transcript_cut_decision,
@@ -18,6 +21,7 @@ if TYPE_CHECKING:
 
 
 CLEAN_SCHEMA_VERSION = "phase6.clean-tools.v2"
+MIN_AUTO_APPLY_CONFIDENCE = 0.75
 ACTION_KEEP = "keep"
 ACTION_CUT = "cut"
 ACTION_SHORTEN = "shorten"
@@ -78,6 +82,34 @@ CLEANING_PROFILES: dict[str, CleanProfile] = {
         repeated_explanation_similarity=0.72,
         repeated_explanation_min_tokens=7,
         repeated_explanation_confidence=0.76,
+    ),
+    "moderate": CleanProfile(
+        id="moderate",
+        label="Moderate",
+        description="Balanced lecture cleaning — removes common delivery issues while keeping most teaching content.",
+        filler_phrases=(
+            ("um",), ("uh",), ("erm",), ("er",), ("ah",), ("hmm",), ("mmm",),
+            ("like",), ("basically",), ("actually",), ("you", "know"),
+        ),
+        filler_confidence=0.75,
+        filler_padding_seconds=0.03,
+        dead_air_min_seconds=0.9,
+        dead_air_pause_ratio=0.28,
+        dead_air_confidence=0.75,
+        bad_take_importance_max=0.32,
+        bad_take_fluency_max=0.42,
+        bad_take_filler_min=4,
+        bad_take_pause_ratio=0.6,
+        bad_take_confidence=0.78,
+        repeated_phrase_min_words=2,
+        repeated_phrase_max_words=8,
+        repeated_phrase_gap_words=3,
+        repeated_phrase_confidence=0.74,
+        restarted_sentence_min_words=5,
+        restarted_sentence_confidence=0.8,
+        repeated_explanation_similarity=0.67,
+        repeated_explanation_min_tokens=6,
+        repeated_explanation_confidence=0.72,
     ),
     "aggressive": CleanProfile(
         id="aggressive",
@@ -172,6 +204,119 @@ CONTENT_STOPWORDS = {
 }
 
 
+# ── Regex-based false start patterns ──────────────────────────────────────────
+# Self-correction / restart lead-in phrases
+FALSE_START_SELF_CORRECTIONS = re.compile(
+    r"\b("
+    r"let me (?:restart|start over|try that again|rephrase that|say that differently)"
+    r"|actually let me"
+    r"|what I meant (?:to say|was)"
+    r"|or rather"
+    r"|that is to say"
+    r"|I should say"
+    r"|let me clarify"
+    r"|sorry[,.]?\s+let me"
+    r"|sorry[,.]?\s+I mean"
+    r"|I'll start again"
+    r"|okay (?:so )?let me (?:restart|rephrase|try)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Cut-off / trailing-off sentence markers
+FALSE_START_CUTOFF = re.compile(
+    r"(?:\.\.\.|\u2014)\s*$"  # trailing ellipsis or em-dash at end of sentence
+    r"|(?<!\w)(?:\w+)-$"       # hyphenated word fragment at end (already handled by _partial_word_false_starts)
+    r"|\b(?:I was going to|I wanted to)\s*$",  # incomplete thought
+    re.IGNORECASE,
+)
+
+# Repeated sentence-start pattern (same first 2-4 words in adjacent sentences)
+FALSE_START_REPEATED_OPENING = re.compile(
+    r"^(\w+(?:\s+\w+){0,3})\s+.*?[.!?]\s+\1\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def detect_false_starts(segments_text: str) -> list[dict]:
+    """Detect false starts in transcript text using regex patterns.
+
+    Returns a list of dicts with keys: type, text, position (char index), reason.
+    """
+    results: list[dict] = []
+
+    # 1. Self-corrections
+    for match in FALSE_START_SELF_CORRECTIONS.finditer(segments_text):
+        results.append({
+            "type": "false_start_self_correction",
+            "text": match.group(0),
+            "position": match.start(),
+            "reason": f"Self-correction phrase: '{match.group(0)}'",
+        })
+
+    # 2. Cut-off / trailing-off markers
+    for match in FALSE_START_CUTOFF.finditer(segments_text):
+        results.append({
+            "type": "false_start_cutoff",
+            "text": match.group(0).strip(),
+            "position": match.start(),
+            "reason": "Cut-off or incomplete sentence detected",
+        })
+
+    # 3. Repeated sentence openings
+    for match in FALSE_START_REPEATED_OPENING.finditer(segments_text):
+        results.append({
+            "type": "false_start_repeated_opening",
+            "text": match.group(0)[:80],
+            "position": match.start(),
+            "reason": f"Repeated sentence start: '{match.group(1)}...'",
+        })
+
+    return results
+
+
+def filler_stats(segments: list[Any]) -> dict:
+    """Compile filler word statistics from a list of Segment objects.
+
+    Returns dict with:
+        total_filler_count, unique_filler_types, filler_type_counts,
+        segments_with_fillers, per_segment_stats
+    """
+    total = 0
+    filler_type_counts: dict[str, int] = {}
+    segments_with_fillers = 0
+    per_segment: list[dict] = []
+
+    for seg in segments:
+        fillers = seg.filler_words if isinstance(seg.filler_words, list) else (seg.filler_words or [])
+        count = int(seg.filler_count or len(fillers))
+        if count > 0:
+            segments_with_fillers += 1
+            total += count
+            for word in fillers:
+                key = str(word).strip().lower()
+                if key:
+                    filler_type_counts[key] = filler_type_counts.get(key, 0) + 1
+            per_segment.append({
+                "segment_id": str(getattr(seg, "id", "")),
+                "segment_index": int(getattr(seg, "segment_index", 0)),
+                "filler_count": count,
+                "filler_words": fillers,
+                "start_time": float(getattr(seg, "start_time", 0)),
+                "end_time": float(getattr(seg, "end_time", 0)),
+            })
+
+    sorted_types = sorted(filler_type_counts.items(), key=lambda item: item[1], reverse=True)
+    return {
+        "total_filler_count": total,
+        "unique_filler_types": len(sorted_types),
+        "filler_type_counts": dict(sorted_types),
+        "segments_with_fillers": segments_with_fillers,
+        "segments_total": len(segments),
+        "per_segment_stats": per_segment,
+    }
+
+
 def profile_catalog() -> list[dict[str, Any]]:
     return [
         {"id": profile.id, "label": profile.label, "description": profile.description}
@@ -184,7 +329,7 @@ def analyze_clean_suggestions(
     segments: Iterable[Any],
     timeline_words: Iterable[dict[str, Any]] | None = None,
     plan: Any = None,
-    profile_id: str = "conservative",
+    profile_id: str = "moderate",
 ) -> dict[str, Any]:
     """Build reviewable cleaning suggestions without mutating the edit state."""
     profile = _profile(profile_id)
@@ -196,9 +341,11 @@ def analyze_clean_suggestions(
     suggestions: list[dict[str, Any]] = []
     filler_suggestions = _filler_suggestions(profile, words, active_cut_keys, active_cut_ranges)
     suggestions.extend(filler_suggestions)
+    suggestions.extend(_dead_air_word_gap_suggestions(profile, words, active_cut_ranges))
     suggestions.extend(_repetition_suggestions(profile, words, active_cut_ranges, _claimed_word_indexes(filler_suggestions)))
-    suggestions.extend(_segment_suggestions(profile, segment_list))
+    suggestions.extend(_segment_suggestions(profile, segment_list, include_dead_air=not bool(words)))
     suggestions.extend(_repeated_explanation_suggestions(profile, segment_list))
+    suggestions.extend(_text_false_start_suggestions(profile, segment_list))
     suggestions.sort(key=lambda item: (item["start_time"], item["type"], item["id"]))
 
     return {
@@ -215,8 +362,9 @@ def apply_clean_suggestions(
     plan: "EditPlan",
     segments: Iterable[Any],
     timeline_words: Iterable[dict[str, Any]] | None = None,
-    profile_id: str = "conservative",
+    profile_id: str = "moderate",
     suggestion_ids: Optional[set[str]] = None,
+    suggestion_types: Optional[set[str]] = None,
 ) -> dict[str, Any]:
     """Apply Clean suggestions as transcript cuts and teacher overrides."""
     segment_list = sorted(list(segments or []), key=lambda segment: segment.segment_index)
@@ -226,18 +374,71 @@ def apply_clean_suggestions(
         plan=plan,
         profile_id=profile_id,
     )
-    selected = [
-        suggestion
-        for suggestion in analysis["suggestions"]
-        if suggestion_ids is None or suggestion["id"] in suggestion_ids
-    ]
+    filler_count = analysis["summary"]["filler_word_count"]
+    segment_count = sum(1 for s in analysis["suggestions"] if s.get("apply_kind") == "segment_override")
+    logger.info("Clean: %s suggestions generated with profile=%s (%s filler, %s segment_override)",
+                analysis["summary"]["suggestions_total"], analysis["profile"], filler_count, segment_count)
+    allowed_types = suggestion_types if suggestion_types is not None else None
+    selected = []
+    for suggestion in analysis["suggestions"]:
+        if suggestion_ids is not None and suggestion["id"] not in suggestion_ids:
+            continue
+        if allowed_types is not None and suggestion["type"] not in allowed_types:
+            continue
+        if float(suggestion.get("confidence") or 0.0) < MIN_AUTO_APPLY_CONFIDENCE:
+            continue
+        selected.append(suggestion)
 
     created_transcript_cuts: list[dict[str, Any]] = []
     updated_segments: list[dict[str, Any]] = []
     segments_by_id = {str(segment.id): segment for segment in segment_list}
     words = list(timeline_words or [])
+    existing_clean_cut_ids = {
+        str(item.get("id"))
+        for item in normalize_plan_payload(plan.plan_json).get("clean_cuts", [])
+        if item.get("status") == "active"
+    }
 
     for suggestion in selected:
+        apply_kind = suggestion.get("apply_kind", "")
+        if apply_kind == "report_only":
+            continue
+        if apply_kind == "time_cut":
+            if suggestion["id"] in existing_clean_cut_ids:
+                continue
+            payload = normalize_plan_payload(plan.plan_json)
+            payload.setdefault("clean_cuts", []).append({
+                "id": suggestion["id"],
+                "kind": "clean_time_cut",
+                "status": "active",
+                "type": suggestion["type"],
+                "start_time": suggestion["start_time"],
+                "end_time": suggestion["end_time"],
+                "duration": suggestion["duration"],
+                "confidence": suggestion["confidence"],
+                "reason": suggestion["reason"],
+                "source": f"auto_clean_{suggestion['type']}",
+            })
+            plan.plan_json = payload
+            existing_clean_cut_ids.add(suggestion["id"])
+            continue
+        if apply_kind == "segment_override":
+            # Segment-level suggestions (bad_take, dead_air, text-based false starts)
+            segment = segments_by_id.get(str(suggestion.get("segment_id")))
+            if segment is None or segment.is_teacher_modified:
+                continue
+            target_action = _segment_action(suggestion["target_action"])
+            segment.teacher_action = target_action
+            segment.teacher_note = suggestion["reason"]
+            segment.is_teacher_modified = True
+            updated_segments.append({
+                "segment_id": str(segment.id),
+                "segment_index": segment.segment_index,
+                "teacher_action": _enum_value(target_action) or str(target_action),
+                "teacher_note": segment.teacher_note,
+            })
+            continue
+
         if suggestion["type"] in WORD_LEVEL_SUGGESTION_TYPES:
             try:
                 decision = create_transcript_cut_decision(
@@ -345,6 +546,50 @@ def _filler_suggestions(
             claimed_indexes.update(range(start_index, end_index + 1))
             break
 
+    return suggestions
+
+
+def _dead_air_word_gap_suggestions(
+    profile: CleanProfile,
+    words: list[dict[str, Any]],
+    active_cut_ranges: list[tuple[int, int]],
+) -> list[dict[str, Any]]:
+    """Create precise silence ranges between words, preserving teaching pauses."""
+    suggestions: list[dict[str, Any]] = []
+    ordered = sorted(words, key=lambda word: float(word.get("start_time", 0.0)))
+    for previous, current in zip(ordered, ordered[1:]):
+        previous_end = float(previous.get("end_time", 0.0))
+        current_start = float(current.get("start_time", previous_end))
+        gap = current_start - previous_end
+        if gap < profile.dead_air_min_seconds:
+            continue
+        previous_index = int(previous.get("word_index", -1))
+        current_index = int(current.get("word_index", -1))
+        if _word_range_overlaps(previous_index, current_index, active_cut_ranges):
+            continue
+        # Keep a natural breath on both sides. Only the accidental excess is cut.
+        keep_edge = 0.18
+        cut_start = previous_end + keep_edge
+        cut_end = current_start - keep_edge
+        if cut_end - cut_start < 0.25:
+            continue
+        suggestions.append({
+            "id": f"clean-dead-air-{previous_index}-{current_index}",
+            "type": "dead_air",
+            "title": "Trim dead air",
+            "text": "",
+            "reason": f"Trim {gap:.1f}s silent gap while preserving a natural pause",
+            "confidence": profile.dead_air_confidence,
+            "start_time": round(cut_start, 3),
+            "end_time": round(cut_end, 3),
+            "duration": round(cut_end - cut_start, 3),
+            "word_start_index": None,
+            "word_end_index": None,
+            "segment_id": current.get("segment_id") or previous.get("segment_id"),
+            "segment_index": current.get("segment_index"),
+            "target_action": "shorten",
+            "apply_kind": "time_cut",
+        })
     return suggestions
 
 
@@ -522,7 +767,7 @@ def _repeated_explanation_suggestions(profile: CleanProfile, segments: list[Any]
                 "segment_id": str(duplicate.id),
                 "segment_index": duplicate.segment_index,
                 "target_action": "cut",
-                "apply_kind": "segment_override",
+                "apply_kind": "report_only",
                 "duplicate_of_segment_id": str(original.id),
                 "duplicate_of_segment_index": original.segment_index,
             })
@@ -532,7 +777,44 @@ def _repeated_explanation_suggestions(profile: CleanProfile, segments: list[Any]
     return suggestions
 
 
-def _segment_suggestions(profile: CleanProfile, segments: list[Any]) -> list[dict[str, Any]]:
+def _text_false_start_suggestions(profile: CleanProfile, segments: list[Any]) -> list[dict[str, Any]]:
+    """Detect false starts in segment text via regex: self-corrections, cut-offs, repeated openings."""
+    suggestions: list[dict[str, Any]] = []
+    for segment in segments:
+        if segment.is_teacher_modified or not segment.text:
+            continue
+        text = str(segment.text)
+
+        detected = detect_false_starts(text)
+        for item in detected:
+            # Map the position to segment timing (rough estimate)
+            offset_ratio = item["position"] / max(len(text), 1)
+            estimated_time = float(segment.start_time) + offset_ratio * float(
+                segment.end_time - segment.start_time
+            )
+            suggestions.append({
+                "id": f"clean-text-false-start-{segment.id}-{item['position']}",
+                "type": "false_start",
+                "title": "Review false start",
+                "text": _clip_text(item["text"]),
+                "reason": item["reason"],
+                "confidence": profile.restarted_sentence_confidence,
+                "start_time": round(max(float(segment.start_time), estimated_time - 0.5), 3),
+                "end_time": round(min(float(segment.end_time), estimated_time + 0.5), 3),
+                "duration": 1.0,
+                "segment_id": str(segment.id),
+                "segment_index": segment.segment_index,
+                "target_action": "cut",
+                "apply_kind": "report_only",
+                "word_start_index": None,
+                "word_end_index": None,
+                "padding_seconds": 0.0,
+            })
+
+    return suggestions
+
+
+def _segment_suggestions(profile: CleanProfile, segments: list[Any], *, include_dead_air: bool = True) -> list[dict[str, Any]]:
     suggestions: list[dict[str, Any]] = []
     for segment in segments:
         if segment.is_teacher_modified:
@@ -564,13 +846,13 @@ def _segment_suggestions(profile: CleanProfile, segments: list[Any]) -> list[dic
             })
             continue
 
-        if pause_seconds >= profile.dead_air_min_seconds and pause_ratio >= profile.dead_air_pause_ratio:
+        if include_dead_air and pause_seconds >= profile.dead_air_min_seconds and pause_ratio >= profile.dead_air_pause_ratio:
             suggestions.append({
                 "id": f"clean-dead-air-{segment.id}",
                 "type": "dead_air",
                 "title": "Trim dead air",
                 "text": _clip_text(segment.text),
-                "reason": f"Trim {pause_seconds:.1f}s of pause from this segment",
+                "reason": f"{pause_seconds:.1f}s of dead air in segment {segment.segment_index}",
                 "confidence": profile.dead_air_confidence,
                 "start_time": round(float(segment.start_time), 3),
                 "end_time": round(float(segment.end_time), 3),
@@ -580,6 +862,31 @@ def _segment_suggestions(profile: CleanProfile, segments: list[Any]) -> list[dic
                 "target_action": "shorten",
                 "apply_kind": "segment_override",
             })
+
+        # Report filler words per segment for actionable insights
+        filler_count = int(segment.filler_count or 0)
+        if filler_count > 0 and not _is_bad_take(profile, segment, pause_ratio, importance, fluency, filler_count, segment_type):
+            filler_list = segment.filler_words if isinstance(segment.filler_words, list) else []
+            filler_sample = ", ".join(str(w) for w in (filler_list[:3] if filler_list else []))
+            if filler_sample:
+                suggestions.append({
+                    "id": f"clean-filler-report-{segment.id}",
+                    "type": "filler_word",
+                    "title": "Filler words detected",
+                    "text": _clip_text(segment.text),
+                    "reason": f"{filler_count} filler words in segment {segment.segment_index} ({filler_sample})",
+                    "confidence": profile.filler_confidence * 0.75,
+                    "start_time": round(float(segment.start_time), 3),
+                    "end_time": round(float(segment.end_time), 3),
+                    "duration": round(duration, 3),
+                    "segment_id": str(segment.id),
+                    "segment_index": segment.segment_index,
+                    "target_action": "keep",
+                    "apply_kind": "report_only",
+                    "word_start_index": None,
+                    "word_end_index": None,
+                    "padding_seconds": 0.0,
+                })
 
     return suggestions
 
@@ -695,9 +1002,20 @@ def _refresh_clean_plan_summary(
             silence_removed += float(segment.pause_duration_total or 0.0)
             segment_savings += float(segment.pause_duration_total or 0.0)
 
+    normalized_payload = normalize_plan_payload(plan.plan_json)
     transcript_cut_duration = sum(
         float(interval.get("duration") or 0.0)
         for interval in list_active_transcript_cut_intervals(plan)
+    )
+    filler_cut_count = sum(
+        max(1, int(decision.get("word_end_index", 0)) - int(decision.get("word_start_index", 0)) + 1)
+        for decision in normalized_payload.get("edit_decisions", [])
+        if decision.get("status") == "active" and str(decision.get("source") or "").startswith("auto_clean_filler_word")
+    )
+    precise_silence_removed = sum(
+        float(decision.get("duration") or 0.0)
+        for decision in normalized_payload.get("clean_cuts", [])
+        if decision.get("status") == "active" and decision.get("type") == "dead_air"
     )
     original = float(plan.original_duration or 0.0)
     plan.estimated_duration = round(max(0.0, original - segment_savings - transcript_cut_duration), 1)
@@ -705,8 +1023,8 @@ def _refresh_clean_plan_summary(
     plan.segments_keep = counts["keep"]
     plan.segments_cut = counts["cut"]
     plan.segments_highlight = counts["highlight"]
-    plan.filler_words_removed = filler_words_removed + summary["filler_word_count"]
-    plan.silence_removed_seconds = round(silence_removed, 2)
+    plan.filler_words_removed = filler_words_removed + filler_cut_count
+    plan.silence_removed_seconds = round(silence_removed + precise_silence_removed, 2)
 
 
 def _profile(profile_id: str) -> CleanProfile:

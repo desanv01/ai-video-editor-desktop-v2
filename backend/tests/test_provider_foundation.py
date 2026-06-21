@@ -25,6 +25,8 @@ if "openai" not in sys.modules:
 if "config" not in sys.modules:
     config_stub = types.ModuleType("config")
     config_stub.settings = SimpleNamespace(
+        DATABASE_URL="postgresql+asyncpg://user:pass@localhost/test",
+        APP_DEBUG=False,
         ASR_PROVIDER="voxtral",
         VOXTRAL_MODEL="voxtral-mini-latest",
         WHISPER_MODEL="whisper-1",
@@ -33,7 +35,10 @@ if "config" not in sys.modules:
         OPENAI_API_KEY="",
         DEEPSEEK_API_KEY="",
         DEEPSEEK_BASE_URL="https://api.deepseek.com",
+        ALIBABA_API_KEY="",
+        ALIBABA_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1",
         AGENT2_MODEL="deepseek-chat",
+        AGENT5_MODEL="deepseek-reasoner",
         EMBEDDING_MODEL="text-embedding-3-small",
         EMBEDDING_DIMENSIONS=1536,
         TEMP_PATH="/tmp",
@@ -77,21 +82,27 @@ from providers.whisper_cpp import (
     WhisperCppRunResult,
     WhisperCppTranscriptionProvider,
     build_whisper_cpp_model_catalog,
+    resolve_whisper_cpp_runtime_status,
     resolve_whisper_cpp_model_selection,
 )
-from services.local_transcription_models import LocalTranscriptionModelService
+from services.local_transcription_models import LocalModelDownloadJob, LocalTranscriptionModelService
 from services.llm import LLMService
 from services.transcription import TranscriptionService
 
 
 def settings_stub(**overrides):
     defaults = {
+        "DATABASE_URL": "postgresql+asyncpg://user:pass@localhost/test",
+        "APP_DEBUG": False,
         "ASR_PROVIDER": "voxtral",
         "VOXTRAL_MODEL": "voxtral-mini-latest",
         "WHISPER_MODEL": "whisper-1",
         "DEEPSEEK_API_KEY": "",
         "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+        "ALIBABA_API_KEY": "",
+        "ALIBABA_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "AGENT2_MODEL": "deepseek-chat",
+        "AGENT5_MODEL": "deepseek-reasoner",
         "OPENAI_API_KEY": "",
         "EMBEDDING_MODEL": "text-embedding-3-small",
         "EMBEDDING_DIMENSIONS": 1536,
@@ -304,7 +315,7 @@ class DefaultRegistryTests(unittest.TestCase):
             registry.default_provider_id(ProviderKind.TRANSCRIPTION),
             "whisper",
         )
-        self.assertEqual(registry.default_provider_id(ProviderKind.CHAT), "deepseek-chat")
+        self.assertEqual(registry.default_provider_id(ProviderKind.CHAT), "deepseek-v4-flash")
         self.assertEqual(
             registry.default_provider_id(ProviderKind.EMBEDDING),
             "openai-embeddings",
@@ -408,6 +419,34 @@ class WhisperCppProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(selection.model_path, "C:/models/whisper-cpp.bin")
         self.assertEqual(selection.binary_path, "C:/tools/whisper-cli.exe")
 
+    def test_model_selection_infers_large_model_from_persisted_path(self):
+        selection = resolve_whisper_cpp_model_selection(
+            settings_stub(
+                WHISPER_CPP_MODEL_ID="small",
+                WHISPER_CPP_MODEL_PATH="C:/models/ggml-large-v3.bin",
+            )
+        )
+
+        self.assertEqual(selection.model_id, "large-v3")
+        self.assertEqual(selection.tier, "accurate")
+
+    def test_runtime_status_reports_missing_binary_separately_from_model(self):
+        with patch(
+            "providers.whisper_cpp.os.path.isfile",
+            side_effect=lambda path: str(path).endswith("ggml-large-v3.bin"),
+        ), patch("providers.whisper_cpp.shutil.which", return_value=None):
+            status = resolve_whisper_cpp_runtime_status(
+                settings_stub(
+                    WHISPER_CPP_MODEL_ID="large-v3",
+                    WHISPER_CPP_MODEL_PATH="C:/models/ggml-large-v3.bin",
+                    WHISPER_CPP_BINARY_PATH="missing-whisper-cli",
+                )
+            )
+
+        self.assertFalse(status.configured)
+        self.assertIn("WHISPER_CPP_BINARY_PATH", status.message)
+        self.assertEqual(status.model_path, "C:/models/ggml-large-v3.bin")
+
     def test_model_catalog_reports_size_quality_and_local_status(self):
         with patch(
             "providers.whisper_cpp.os.path.isfile",
@@ -480,6 +519,49 @@ class LocalTranscriptionModelServiceTests(unittest.TestCase):
 
         self.assertTrue(result.removed)
         self.assertFalse(model_path.exists())
+
+    def test_remove_active_model_falls_back_to_another_downloaded_model(self):
+        local_settings = settings_stub(LOCAL_MODEL_STORAGE_PATH=str(self.tmp_root))
+        model_dir = self.tmp_root / "whisper-cpp"
+        model_dir.mkdir()
+        small_path = model_dir / "ggml-small.bin"
+        medium_path = model_dir / "ggml-medium.bin"
+        small_path.write_bytes(b"small")
+        medium_path.write_bytes(b"medium")
+        local_settings.WHISPER_CPP_MODEL_ID = "medium"
+        local_settings.LOCAL_TRANSCRIPTION_MODEL_ID = "medium"
+        local_settings.WHISPER_CPP_MODEL_PATH = str(medium_path)
+        local_settings.LOCAL_TRANSCRIPTION_MODEL_PATH = str(medium_path)
+
+        service = LocalTranscriptionModelService()
+        with patch("services.local_transcription_models.settings", local_settings):
+            result = service.remove_model("medium")
+
+        self.assertTrue(result.removed)
+        self.assertFalse(medium_path.exists())
+        self.assertEqual(local_settings.WHISPER_CPP_MODEL_ID, "small")
+        self.assertEqual(local_settings.WHISPER_CPP_MODEL_PATH, str(small_path))
+
+    def test_download_progress_tracks_speed_and_eta(self):
+        service = LocalTranscriptionModelService()
+        job = LocalModelDownloadJob(
+            job_id="job",
+            provider_id="whisper-cpp",
+            model_id="small",
+            status="downloading",
+            file_path="model.bin",
+            download_url="https://example.invalid/model.bin",
+            total_bytes=200,
+            started_at=1.0,
+        )
+
+        with patch("services.local_transcription_models.time.time", return_value=11.0):
+            service._update_progress(job, 50)
+
+        self.assertEqual(job.bytes_downloaded, 50)
+        self.assertEqual(job.progress_percent, 25.0)
+        self.assertEqual(job.speed_bytes_per_second, 5.0)
+        self.assertEqual(job.eta_seconds, 30.0)
 
     def test_remove_model_refuses_arbitrary_configured_file_path(self):
         outside_dir = self.tmp_root / "outside"
@@ -641,6 +723,44 @@ class TranscriptionFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             result["transcription_route"]["attempted_providers"],
             ["whisper-cpp", "voxtral"],
+        )
+        self.assertEqual(result["transcription_route"]["fallback_from"], "whisper-cpp")
+
+    async def test_local_mode_falls_back_to_api_when_fallback_enabled(self):
+        local = FakeTranscriptionProvider(
+            "whisper-cpp",
+            error=RuntimeError("local runtime missing"),
+            is_local=True,
+        )
+        whisper = FakeTranscriptionProvider(
+            "whisper",
+            transcript={
+                "text": "api fallback transcript",
+                "duration": 2.0,
+                "segments": [{"text": "api fallback transcript", "start": 0, "end": 2}],
+                "words": [],
+                "speakers": [],
+                "provider": "whisper",
+            },
+        )
+        mode_config = CapabilityModeConfig(
+            kind=ProviderKind.TRANSCRIPTION,
+            mode=ProcessingMode.LOCAL,
+            api_provider_id="whisper",
+            local_provider_id="whisper-cpp",
+            fallback_enabled=True,
+        )
+        service = self._service_with_route(
+            mode_config,
+            {"whisper-cpp": local, "whisper": whisper, "voxtral": FakeTranscriptionProvider("voxtral")},
+        )
+
+        result = await service.transcribe("lecture.wav")
+
+        self.assertEqual(result["text"], "api fallback transcript")
+        self.assertEqual(
+            result["transcription_route"]["attempted_providers"],
+            ["whisper-cpp", "whisper"],
         )
         self.assertEqual(result["transcription_route"]["fallback_from"], "whisper-cpp")
 

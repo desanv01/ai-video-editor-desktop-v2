@@ -25,7 +25,9 @@ import os
 import uuid
 import shutil
 import logging
+import subprocess
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import List
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,11 +61,35 @@ from services.export_artifacts import (
 )
 from services.evaluation_metrics import build_evaluation_metrics
 from services.layout_model import LayoutMode
+from services.lecture_structure import build_structure_references_from_assets
 from services.transcript_edit_decisions import build_synced_timeline_plan
 from services.export_presets import get_export_preset
+from services.native_semantic_compositor import render_semantic_plan_with_ffmpeg
+from services.revideo_renderer import RevideoUnavailable, render_semantic_plan_with_revideo
+from services.semantic_render_plan import build_semantic_render_plan, with_semantic_render_plan
 from config import settings
 
 logger = logging.getLogger(__name__)
+MIN_RENDER_SPAN_SECONDS = 0.05
+
+# Layout mode mapping: Agent 5 new names → compositor legacy names
+AGENT5_LAYOUT_MAP = {
+    "full_slide": "full_screen_source",
+    "pip_slide": "picture_in_picture",
+    "half_half": "side_by_side",
+    "full_face": "full_camera_source",
+}
+
+
+def _resolve_compositor_layout_mode(layout_mode: str | None) -> str:
+    """Map Agent 5's layout_mode values to the compositor's expected format.
+
+    Agent 5 outputs: full_slide, pip_slide, half_half, full_face
+    Compositor expects: full_screen_source, picture_in_picture, side_by_side, full_camera_source
+    """
+    if layout_mode in AGENT5_LAYOUT_MAP:
+        return AGENT5_LAYOUT_MAP[layout_mode]
+    return layout_mode or "picture_in_picture"
 
 
 def _utc_now_iso() -> str:
@@ -82,6 +108,360 @@ class LayoutRenderContext:
     fallback_screen_asset: ProjectAsset | None = None
     fallback_camera_asset: ProjectAsset | None = None
     fallback_audio_asset: ProjectAsset | None = None
+
+
+async def _try_render_revideo_timeline_clip(
+    *,
+    video: Video,
+    plan: EditPlan,
+    segments: list[Segment],
+    transcript: Transcript | None,
+    plan_payload: dict,
+    layout_context: LayoutRenderContext | None,
+    clip_dir: str,
+    render_job_id: str | None,
+    video_id: str,
+) -> str | None:
+    """Render the whole semantic composition with Revideo when available."""
+    if not bool(getattr(settings, "REVIDEO_RENDERER_ENABLED", False)):
+        return None
+    max_duration = float(getattr(settings, "REVIDEO_RENDERER_MAX_DEFAULT_DURATION_SECONDS", 90.0) or 90.0)
+    if float(video.duration_seconds or 0.0) > max_duration:
+        logger.info(
+            "Renderer: skipping Revideo for %s because %.1fs exceeds %.1fs short-form limit",
+            video_id,
+            float(video.duration_seconds or 0.0),
+            max_duration,
+        )
+        return None
+
+    render_plan = _dict_value(plan_payload.get("render_plan"))
+    assets = list((layout_context.assets_by_id or {}).values()) if layout_context else []
+    current_render_plan = build_semantic_render_plan(
+        video=video,
+        plan=plan,
+        segments=segments,
+        transcript=transcript,
+        assets=assets,
+    )
+    if not render_plan or render_plan.get("plan_hash") != current_render_plan.get("plan_hash"):
+        render_plan = current_render_plan
+        updated_payload = with_semantic_render_plan(plan_payload, render_plan)
+        plan_payload.clear()
+        plan_payload.update(updated_payload)
+        plan.plan_json = plan_payload
+
+    output_path = os.path.join(clip_dir, "revideo_semantic_timeline.mp4")
+
+    def progress(progress_value: float, message: str) -> None:
+        _render_progress(
+            render_job_id,
+            video_id,
+            18 + int(max(0.0, min(1.0, progress_value)) * 38),
+            "revideo_composition",
+            "Rendering semantic composition",
+            message or "Rendering Revideo composition",
+            {
+                "renderer": "revideo",
+                "progress": round(progress_value, 3),
+                "scene_count": _dict_value(render_plan.get("timeline")).get("scene_count", 0),
+            },
+        )
+
+    try:
+        await render_semantic_plan_with_revideo(
+            render_plan=render_plan,
+            source_video_path=video.file_path,
+            output_path=output_path,
+            progress_callback=progress,
+            cancel_check=_cancel_check_callback(render_job_id, video_id),
+        )
+        logger.info("Renderer: Revideo semantic timeline rendered for %s -> %s", video_id, output_path)
+        return output_path
+    except RevideoUnavailable as exc:
+        logger.warning("Revideo renderer unavailable; using FFmpeg fallback: %s", exc)
+    except Exception as exc:
+        if not bool(getattr(settings, "REVIDEO_RENDERER_FALLBACK_ENABLED", True)):
+            raise
+        logger.warning("Revideo renderer failed; using FFmpeg fallback: %s", exc)
+    return None
+
+
+async def _try_render_native_semantic_timeline_clip(
+    *,
+    video: Video,
+    plan: EditPlan,
+    segments: list[Segment],
+    transcript: Transcript | None,
+    plan_payload: dict,
+    layout_context: LayoutRenderContext | None,
+    clip_dir: str,
+    selected_preset: dict,
+    render_job_id: str | None,
+    video_id: str,
+) -> str | None:
+    """Render the semantic teaching timeline with the fast native FFmpeg compositor."""
+    if not bool(getattr(settings, "NATIVE_SEMANTIC_COMPOSITOR_ENABLED", True)):
+        return None
+
+    render_plan = _dict_value(plan_payload.get("render_plan"))
+    if not render_plan:
+        assets = list((layout_context.assets_by_id or {}).values()) if layout_context else []
+        render_plan = build_semantic_render_plan(
+            video=video,
+            plan=plan,
+            segments=segments,
+            transcript=transcript,
+            assets=assets,
+        )
+        updated_payload = with_semantic_render_plan(plan_payload, render_plan)
+        plan_payload.clear()
+        plan_payload.update(updated_payload)
+        plan.plan_json = plan_payload
+
+    if not _dict_value(render_plan.get("timeline")).get("scene_count"):
+        return None
+
+    output_path = os.path.join(clip_dir, "native_semantic_timeline.mp4")
+    work_dir = os.path.join(clip_dir, "native_semantic")
+    preset_width, preset_height = _preset_output_dimensions(selected_preset, plan_payload)
+    fallback_width, fallback_height = _annotation_canvas_dimensions(plan_payload)
+    output_width = int(preset_width or fallback_width or 1920)
+    output_height = int(preset_height or fallback_height or 1080)
+    fps = _preset_fps(selected_preset) or 30
+    video_bitrate = _ffmpeg_video_bitrate(selected_preset.get("video_bitrate"))
+    audio_bitrate = _ffmpeg_audio_bitrate(selected_preset.get("audio_bitrate"))
+
+    def progress(progress_value: float, message: str) -> None:
+        _render_progress(
+            render_job_id,
+            video_id,
+            18 + int(max(0.0, min(1.0, progress_value)) * 38),
+            "native_semantic_composition",
+            "Composing semantic lecture timeline",
+            message or "Composing slide and lecturer video timeline with FFmpeg",
+            {
+                "renderer": "ffmpeg_native_semantic",
+                "progress": round(progress_value, 3),
+                "scene_count": _dict_value(render_plan.get("timeline")).get("scene_count", 0),
+                "hardware_acceleration": str(getattr(settings, "FFMPEG_HARDWARE_ACCELERATION", "auto") or "auto"),
+            },
+        )
+
+    try:
+        await render_semantic_plan_with_ffmpeg(
+            render_plan=render_plan,
+            source_video_path=video.file_path,
+            output_path=output_path,
+            work_dir=work_dir,
+            output_width=output_width,
+            output_height=output_height,
+            fps=fps,
+            video_bitrate=video_bitrate,
+            audio_bitrate=audio_bitrate,
+            progress_callback=progress,
+            cancel_check=_cancel_check_callback(render_job_id, video_id),
+        )
+        logger.info("Renderer: native semantic timeline rendered for %s -> %s", video_id, output_path)
+        return output_path
+    except Exception as exc:
+        logger.warning("Native semantic compositor failed; using legacy clip renderer fallback: %s", exc)
+        return None
+
+
+async def _fast_ffmpeg_concat_path(
+    *,
+    video: Video,
+    render_ranges: list[dict],
+    clip_dir: str,
+    selected_preset: dict,
+    preset_width: int,
+    preset_height: int,
+    video_bitrate: str | None,
+    audio_bitrate: str,
+    fps: int,
+    plan_payload: dict,
+    transcript: Transcript | None,
+    render_job_id: str | None,
+    video_id: str,
+) -> dict | None:
+    """Fast FFmpeg direct concat pipeline — trims, concats, and encodes with HW acceleration.
+
+    Bypasses the Revideo browser compositor entirely for simple trim+concat cases.
+    Trims each render range from the source video with stream copy (-c copy),
+    then concatenates and re-encodes using the configured hardware encoder
+    (h264_nvenc / qsv / vaapi / amf) with libx264 fallback.
+    Optionally burns SRT subtitles via FFmpeg's subtitles filter in a single encode pass.
+
+    Returns {"path": str, "duration": float, "subtitles_burned": bool} or None on failure.
+    """
+    cancel_check = _cancel_check_callback(render_job_id, video_id)
+
+    # ── Step 1: Trim each range from source with frame-accurate re-encode ──
+    trim_dir = os.path.join(clip_dir, "fast_trim")
+    os.makedirs(trim_dir, exist_ok=True)
+    trimmed_paths: list[str] = []
+    total_duration = 0.0
+
+    for i, render_range in enumerate(render_ranges):
+        cancel_check()
+        start_time = float(render_range["source_start_time"])
+        end_time = float(render_range["source_end_time"])
+        duration = max(0.001, end_time - start_time)
+
+        raw_clip = os.path.join(trim_dir, f"trim_{i:04d}.mp4")
+        await ffmpeg_service.trim_video_accurate(
+            video_path=video.file_path,
+            output_path=raw_clip,
+            start_time=start_time,
+            end_time=end_time,
+            cancel_check=cancel_check,
+        )
+
+        # Apply silence removal for SHORTEN segments
+        action = render_range.get("action", "")
+        if action == SegmentAction.SHORTEN.value:
+            silence_trimmed = os.path.join(trim_dir, f"trim_{i:04d}_silence.mp4")
+            await ffmpeg_service.trim_silence_from_clip(
+                input_path=raw_clip,
+                output_path=silence_trimmed,
+                cancel_check=cancel_check,
+            )
+            _remove_file(raw_clip)
+            raw_clip = silence_trimmed
+
+        trimmed_paths.append(raw_clip)
+        total_duration += duration
+
+    if not trimmed_paths:
+        return None
+
+    _render_progress(
+        render_job_id, video_id, 12,
+        "fast_concat", "Fast FFmpeg concat",
+        f"Trimming {len(trimmed_paths)} ranges, preparing concat",
+        {"range_count": len(trimmed_paths)},
+    )
+
+    # ── Step 2: Build concat file list for FFmpeg concat demuxer ──
+    concat_list_path = os.path.join(trim_dir, "concat_list.txt")
+    with open(concat_list_path, "w") as f:
+        for p in trimmed_paths:
+            f.write(f"file '{p}'\n")
+
+    # ── Step 3: Prepare subtitle burn-in if enabled ──
+    caption_policy = get_caption_policy(plan_payload)
+    subtitles_burned = False
+    srt_path = None
+    srt_filter = ""
+
+    if _caption_burn_in_enabled(caption_policy):
+        word_timestamps = transcript.words_json if transcript else None
+        srt_content = _generate_word_level_srt(
+            render_ranges, word_timestamps, caption_policy=caption_policy,
+        )
+        if srt_content.strip():
+            srt_path = os.path.join(trim_dir, f"{video.id}_concat_subtitles.srt")
+            with open(srt_path, "w", encoding="utf-8") as f:
+                f.write(srt_content)
+            font_size = int(_dict_value(caption_policy.get("style")).get("font_size") or 24)
+            placement = str(caption_policy.get("placement") or "bottom_center")
+            force_style = FFmpegService._subtitle_force_style(
+                font_size=font_size, placement=placement,
+                style=_dict_value(caption_policy.get("style")),
+            )
+            srt_filter = f",subtitles={FFmpegService._escape_subtitle_path(srt_path)}:force_style='{force_style}'"
+            subtitles_burned = True
+
+    # ── Step 4: Concat + encode with HW acceleration + optional subtitle burn ──
+    output_path = os.path.join(clip_dir, "fast_ffmpeg_concat_output.mp4")
+
+    video_filter = FFmpegService._concat_video_filter(
+        preset_width or None, preset_height or None, fps or 30,
+    )
+    if srt_filter:
+        video_filter = (video_filter + srt_filter) if video_filter else srt_filter.lstrip(",")
+
+    cmd = [
+        "ffmpeg",
+        "-f", "concat", "-safe", "0",
+        "-i", concat_list_path,
+    ]
+    if video_filter:
+        cmd.extend(["-vf", video_filter])
+    cmd.extend([
+        *FFmpegService._video_encoder_args(video_bitrate, "veryfast"),
+        "-c:a", "aac", "-b:a", FFmpegService._normalize_audio_bitrate(audio_bitrate),
+        "-ar", "48000", "-ac", "2",
+        "-movflags", "+faststart",
+        "-y", output_path,
+    ])
+
+    try:
+        _, stderr, returncode = await FFmpegService._run_process_with_encoder_fallback(
+            cmd,
+            error_prefix="Fast FFmpeg concat failed",
+            cancel_check=cancel_check,
+            allow_failure=True,
+        )
+    except Exception as exc:
+        logger.warning("Fast FFmpeg concat exception: %s", exc)
+        returncode = 1
+        stderr = b""
+
+    # Clean up temp files regardless of outcome
+    _remove_file(concat_list_path)
+    for p in trimmed_paths:
+        _remove_file(p)
+    if srt_path:
+        _remove_file(srt_path)
+
+    if returncode != 0:
+        err_msg = stderr.decode()[:500] if isinstance(stderr, bytes) else str(stderr)[:500]
+        logger.warning("Fast FFmpeg concat failed (returncode=%s): %s", returncode, err_msg)
+        _remove_file(output_path)
+        return None
+
+    logger.info(
+        "Fast FFmpeg concat rendered for %s -> %s (%.1fs, subtitles_burned=%s)",
+        video_id, output_path, total_duration, subtitles_burned,
+    )
+
+    return {
+        "path": output_path,
+        "duration": total_duration,
+        "subtitles_burned": subtitles_burned,
+    }
+
+
+def _is_pure_trim_concat_export(plan_payload: dict) -> bool:
+    """Return True only when the export is a simple trim+concat with no layouts, overlays, annotations, or burn-in captions.
+
+    When False the render pipeline must fall through to the full semantic compositor
+    (native FFmpeg composition or Revideo) so that layout cues, annotations, and
+    educational overlays are rendered correctly.
+    """
+    # Layout cues (picture-in-picture, side-by-side, etc.) require compositor
+    layout_cues = plan_payload.get("layout_cues") or []
+    if layout_cues:
+        return False
+
+    # Burn-in captions require compositor (sidecar-only is fine for fast concat)
+    caption_policy = get_caption_policy(plan_payload)
+    if caption_policy.get("enabled") and str(caption_policy.get("export_behavior") or "sidecar") in {"burn_in", "sidecar_and_burn_in"}:
+        return False
+
+    # Annotations require compositor
+    annotations = plan_payload.get("annotations") or []
+    if annotations:
+        return False
+
+    # Educational overlays require compositor
+    educational_overlays = plan_payload.get("educational_overlays") or []
+    if educational_overlays:
+        return False
+
+    return True
 
 
 # ═══════════════════════════════════════════
@@ -166,6 +546,7 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
             {**playable_range, "segment": segment_by_id[playable_range["segment_id"]]}
             for playable_range in sync_plan["playable_ranges"]
             if playable_range["segment_id"] in segment_by_id
+            and _render_range_duration(playable_range) >= MIN_RENDER_SPAN_SECONDS
         ]
         included_segment_ids = {item["segment_id"] for item in render_ranges}
 
@@ -191,8 +572,17 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
 
         # ── Step 2: Trim clips ──
         plan_payload = normalize_plan_payload(plan.plan_json)
-        layout_render_context = await _build_layout_render_context(video, plan_payload, db)
+        layout_render_context = await _build_layout_render_context(
+            video,
+            plan_payload,
+            db,
+            render_job_id=render_job_id,
+        )
         selected_preset = _selected_export_preset(plan_payload)
+        preset_width, preset_height = _preset_output_dimensions(selected_preset, plan_payload)
+        preset_video_bitrate = _ffmpeg_video_bitrate(selected_preset.get("video_bitrate"))
+        preset_audio_bitrate = _ffmpeg_audio_bitrate(selected_preset.get("audio_bitrate"))
+        preset_fps = _preset_fps(selected_preset)
         if _is_audio_only_export(selected_preset):
             result = await _render_audio_only_export(
                 video=video,
@@ -227,30 +617,138 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
         end_cards = get_end_cards(plan_payload)
         enabled_end_cards = [card for card in end_cards if card.get("enabled")]
         end_card_clip_paths: list[str] = []
-        for i, render_range in enumerate(render_ranges):
-            _check_render_cancel(render_job_id, video_id)
-            _render_progress(
-                render_job_id,
-                video_id,
-                _range_progress(i, len(render_ranges)),
-                "rendering_clips",
-                "Rendering timeline clips",
-                f"Rendering range {i + 1} of {len(render_ranges)}",
-                {"current_range": i + 1, "total_ranges": len(render_ranges)},
-            )
-            rendered_paths, rendered_durations, rendered_layout_counts = await _render_range_clips(
+        single_composed_clip = False
+
+        # ── Fast FFmpeg concat path (bypasses Revideo for simple trim+concat exports) ──
+        if _is_pure_trim_concat_export(plan_payload):
+            fast_concat_path = await _fast_ffmpeg_concat_path(
                 video=video,
-                render_range=render_range,
-                range_index=i,
+                render_ranges=render_ranges,
                 clip_dir=clip_dir,
-                layout_context=layout_render_context,
-                cancel_check=_cancel_check_callback(render_job_id, video_id),
+                selected_preset=selected_preset,
+                preset_width=preset_width,
+                preset_height=preset_height,
+                video_bitrate=str(preset_video_bitrate) if preset_video_bitrate else None,
+                audio_bitrate=str(preset_audio_bitrate) if preset_audio_bitrate else "192k",
+                fps=preset_fps or 30,
+                plan_payload=plan_payload,
+                transcript=transcript,
+                render_job_id=render_job_id,
+                video_id=video_id,
             )
-            clip_paths.extend(rendered_paths)
-            clip_durations.extend(rendered_durations)
-            for layout, count in rendered_layout_counts.items():
-                layout_render_counts[layout] = layout_render_counts.get(layout, 0) + count
-                layout_clip_count += count
+            if fast_concat_path:
+                clip_paths.append(fast_concat_path["path"])
+                clip_durations.append(max(0.1, float(fast_concat_path.get("duration", 0))))
+                layout_clip_count = 1
+                layout_render_counts["fast_ffmpeg_concat"] = 1
+                transition_events = []
+                single_composed_clip = True
+                logger.info("Renderer: using fast FFmpeg concat path for %s", video_id)
+        else:
+            logger.warning("Renderer: skipping fast concat because layout/overlay cues require full compositor")
+
+        if not single_composed_clip:
+            native_semantic_clip_path = await _try_render_native_semantic_timeline_clip(
+            video=video,
+            plan=plan,
+            segments=segments,
+            transcript=transcript,
+            plan_payload=plan_payload,
+            layout_context=layout_render_context,
+            clip_dir=clip_dir,
+            selected_preset=selected_preset,
+            render_job_id=render_job_id,
+            video_id=video_id,
+        )
+            revideo_clip_path = None if native_semantic_clip_path else await _try_render_revideo_timeline_clip(
+            video=video,
+            plan=plan,
+            segments=segments,
+            transcript=transcript,
+            plan_payload=plan_payload,
+            layout_context=layout_render_context,
+            clip_dir=clip_dir,
+            render_job_id=render_job_id,
+            video_id=video_id,
+        )
+            if native_semantic_clip_path:
+                render_plan = _dict_value(plan_payload.get("render_plan"))
+                timeline_duration = float(_dict_value(render_plan.get("timeline")).get("duration_seconds") or sync_plan["export_plan"]["estimated_output_duration_seconds"] or 0.1)
+                clip_paths.append(native_semantic_clip_path)
+                clip_durations.append(max(0.1, timeline_duration))
+                layout_clip_count = 1
+                layout_render_counts["ffmpeg_native_semantic_composition"] = 1
+                transition_events = []
+                single_composed_clip = True
+            if revideo_clip_path:
+                render_plan = _dict_value(plan_payload.get("render_plan"))
+                timeline_duration = float(_dict_value(render_plan.get("timeline")).get("duration_seconds") or sync_plan["export_plan"]["estimated_output_duration_seconds"] or 0.1)
+                clip_paths.append(revideo_clip_path)
+                clip_durations.append(max(0.1, timeline_duration))
+                layout_clip_count = 1
+                layout_render_counts["revideo_semantic_composition"] = 1
+                transition_events = []
+                single_composed_clip = True
+        if not single_composed_clip:
+            # Build plan_payload segment lookup for layout_mode (from Agent 5)
+            plan_segment_by_id: dict[str, dict] = {}
+            for ps in (plan_payload.get("segments") or []):
+                sid = ps.get("segment_id")
+                if sid:
+                    plan_segment_by_id[sid] = ps
+
+            for i, render_range in enumerate(render_ranges):
+                _check_render_cancel(render_job_id, video_id)
+                _render_progress(
+                    render_job_id,
+                    video_id,
+                    _range_progress(i, len(render_ranges)),
+                    "rendering_clips",
+                    "Rendering timeline clips",
+                    f"Rendering range {i + 1} of {len(render_ranges)}",
+                    {"current_range": i + 1, "total_ranges": len(render_ranges)},
+                )
+                segment = render_range.get("segment")
+                segment_id = render_range.get("segment_id")
+                plan_seg = plan_segment_by_id.get(segment_id) if segment_id else None
+                # Edit actions (keep/cut/highlight) are not layout modes. Timed
+                # teacher layout cues are resolved by the semantic render plan.
+                teacher_mode = getattr(segment, 'teacher_layout', None)
+                if teacher_mode:
+                    layout_mode = _resolve_compositor_layout_mode(teacher_mode)
+                else:
+                    layout_mode = _resolve_compositor_layout_mode(plan_seg.get("layout_mode")) if plan_seg else None
+                slide_image_path = _resolve_slide_image(segment, str(video_id)) if segment else None
+
+                if slide_image_path and layout_mode and render_range["action"] != "cut":
+                    # Use Static Image Compositor for slide-based rendering
+                    logger.info(
+                        "Renderer: slide compositor for range %s (layout=%s, slide=%s)",
+                        i, layout_mode, slide_image_path,
+                    )
+                    rendered_paths, rendered_durations, rendered_layout_counts = await _render_slide_composited_clip(
+                        video=video,
+                        render_range=render_range,
+                        range_index=i,
+                        clip_dir=clip_dir,
+                        slide_image_path=slide_image_path,
+                        layout_mode=layout_mode,
+                        cancel_check=_cancel_check_callback(render_job_id, video_id),
+                    )
+                else:
+                    rendered_paths, rendered_durations, rendered_layout_counts = await _render_range_clips(
+                        video=video,
+                        render_range=render_range,
+                        range_index=i,
+                        clip_dir=clip_dir,
+                        layout_context=layout_render_context,
+                        cancel_check=_cancel_check_callback(render_job_id, video_id),
+                    )
+                clip_paths.extend(rendered_paths)
+                clip_durations.extend(rendered_durations)
+                for layout, count in rendered_layout_counts.items():
+                    layout_render_counts[layout] = layout_render_counts.get(layout, 0) + count
+                    layout_clip_count += count
 
         if enabled_end_cards:
             _check_render_cancel(render_job_id, video_id)
@@ -285,7 +783,7 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
             layout_clip_count,
             len(end_card_clip_paths),
         )
-
+        expected_output_duration = _expected_concat_duration(clip_durations, transition_events)
         # ── Step 3: Concatenate all clips ──
         _check_render_cancel(render_job_id, video_id)
         _render_progress(
@@ -301,7 +799,9 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
         output_path = os.path.join(settings.VIDEO_STORAGE_PATH, output_filename)
 
         concat_transition_specs = _concat_transition_specs(transition_events, clip_durations)
-        if concat_transition_specs:
+        if single_composed_clip and len(clip_paths) == 1 and not concat_transition_specs:
+            shutil.copyfile(clip_paths[0], output_path)
+        elif concat_transition_specs:
             transition_width, transition_height = _annotation_canvas_dimensions(plan_payload)
             try:
                 await ffmpeg_service.concat_videos_with_transitions(
@@ -309,8 +809,11 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
                     clip_durations=clip_durations,
                     transitions=concat_transition_specs,
                     output_path=output_path,
-                    output_width=transition_width,
-                    output_height=transition_height,
+                    output_width=preset_width or transition_width,
+                    output_height=preset_height or transition_height,
+                    video_bitrate=preset_video_bitrate,
+                    audio_bitrate=preset_audio_bitrate,
+                    fps=preset_fps,
                     cancel_check=_cancel_check_callback(render_job_id, video_id),
                 )
             except Exception as exc:
@@ -318,12 +821,22 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
                 await ffmpeg_service.concat_videos(
                     clip_paths=clip_paths,
                     output_path=output_path,
+                    video_bitrate=preset_video_bitrate,
+                    audio_bitrate=preset_audio_bitrate,
+                    output_width=preset_width,
+                    output_height=preset_height,
+                    fps=preset_fps,
                     cancel_check=_cancel_check_callback(render_job_id, video_id),
                 )
         else:
             await ffmpeg_service.concat_videos(
                 clip_paths=clip_paths,
                 output_path=output_path,
+                video_bitrate=preset_video_bitrate,
+                audio_bitrate=preset_audio_bitrate,
+                output_width=preset_width,
+                output_height=preset_height,
+                fps=preset_fps,
                 cancel_check=_cancel_check_callback(render_job_id, video_id),
             )
 
@@ -529,11 +1042,15 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
             "Reading output metadata and updating the project record",
         )
         metadata = await ffmpeg_service.get_video_metadata(output_path)
+        _validate_rendered_video_output(
+            metadata=metadata,
+            expected_duration=expected_output_duration,
+            output_path=output_path,
+        )
         output_duration = metadata.get("duration", 0)
 
         # ── Step 8: Update video record ──
         video.processed_video_path = output_path
-        video.status = VideoStatus.COMPLETED
         await db.flush()
         evaluation_artifacts = await _write_evaluation_artifacts(
             video=video,
@@ -552,6 +1069,9 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
             shutil.rmtree(clip_dir, ignore_errors=True)
         except Exception:
             pass
+
+        video.status = VideoStatus.COMPLETED
+        await db.flush()
 
         logger.info(
             f"Render complete: {output_duration:.1f}s output, "
@@ -651,10 +1171,50 @@ def _range_progress(index: int, total: int) -> float:
     return 14.0 + (float(index) / float(total)) * 40.0
 
 
+def _render_range_duration(render_range: dict) -> float:
+    try:
+        start = float(render_range.get("source_start_time") or 0.0)
+        end = float(render_range.get("source_end_time") or start)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, end - start)
+
+
+def _resolve_slide_image(segment, video_id: str) -> str | None:
+    """Return path to slide PNG if segment has a slide_index, else None."""
+    slide_index = getattr(segment, 'slide_index', None)
+    if slide_index is None:
+        return None
+
+    slide_path = os.path.join(
+        settings.VIDEO_STORAGE_PATH,
+        f"slides_{video_id}",
+        f"page_{int(slide_index):03d}.png"
+    )
+    if os.path.isfile(slide_path):
+        return slide_path
+    return None
+
+
+def _detect_layout_mode(segment, render_range: dict) -> str:
+    """Determine which layout mode to use for this segment.
+
+    Priority:
+    1. segment.layout_mode (set by Agent 5 via plan_payload)
+    2. Default to "picture_in_picture"
+    """
+    layout = render_range.get("layout_mode")
+    if layout:
+        return layout
+    return "picture_in_picture"
+
+
 async def _build_layout_render_context(
     video: Video,
     plan_payload: dict,
     db: AsyncSession,
+    *,
+    render_job_id: str | None = None,
 ) -> LayoutRenderContext | None:
     cues = list(plan_payload.get("layout_cues") or [])
     if not video.project_id:
@@ -676,13 +1236,20 @@ async def _build_layout_render_context(
         select(ProjectAsset).where(ProjectAsset.project_id == video.project_id)
     )
     assets = list(result.scalars().all())
-    assets_by_id = {str(asset.id): asset for asset in assets}
-    assets_by_track = _assets_by_track(assets)
-    assets_by_role = _assets_by_role(assets)
-    timeline_tracks = _timeline_tracks_from_plan(plan_payload, assets)
+    generated_slide_asset = await _generated_slide_background_asset(
+        video,
+        assets,
+        plan_payload,
+        render_job_id=render_job_id,
+    )
+    render_assets = assets + ([generated_slide_asset] if generated_slide_asset else [])
+    assets_by_id = {str(asset.id): asset for asset in render_assets}
+    assets_by_track = _assets_by_track(render_assets)
+    assets_by_role = _assets_by_role(render_assets)
+    timeline_tracks = _timeline_tracks_from_plan(plan_payload, render_assets)
 
-    if not cues and assets:
-        cues = _implicit_full_source_cues(video, assets)
+    if not cues and render_assets:
+        cues = _implicit_full_source_cues(video, render_assets)
 
     if not any(_is_renderable_layout_cue(cue) for cue in cues) and not timeline_tracks:
         return None
@@ -693,12 +1260,569 @@ async def _build_layout_render_context(
         assets_by_track=assets_by_track,
         assets_by_role=assets_by_role,
         timeline_tracks=timeline_tracks,
-        source_manifest=_source_manifest(assets, timeline_tracks),
+        source_manifest=_source_manifest(render_assets, timeline_tracks),
         transition_events=[],
-        fallback_screen_asset=_first_asset_with_role(assets, {"screen", "primary"}),
-        fallback_camera_asset=_first_asset_with_role(assets, {"camera"}),
+        fallback_screen_asset=generated_slide_asset or _first_asset_with_role(assets, {"screen", "primary"}),
+        fallback_camera_asset=_first_asset_with_role(assets, {"camera"}) or _structure_backed_primary_asset(assets),
         fallback_audio_asset=_first_asset_with_role(assets, {"audio"}),
     )
+
+
+async def _generated_slide_background_asset(
+    video: Video,
+    assets: list[ProjectAsset],
+    plan_payload: dict,
+    *,
+    render_job_id: str | None = None,
+) -> object | None:
+    """Create a renderable screen track from uploaded notes/PDF/PPT structure."""
+    if _first_asset_with_role(assets, {"screen"}):
+        return None
+
+    structure_references = build_structure_references_from_assets(assets)
+    if not structure_references:
+        structure_references = _fallback_structure_references_from_assets(assets)
+    if not structure_references:
+        return None
+
+    duration = _render_source_duration(video, assets, plan_payload)
+    if duration <= 0:
+        return None
+
+    width, height = _annotation_canvas_dimensions(plan_payload)
+    output_dir = os.path.join(settings.TEMP_PATH, f"generated_slides_{video.id}")
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, "generated_slides.mp4")
+
+    rasterized_slides = _render_structure_reference_images(assets, output_dir, width, height)
+    cancel_check = lambda: _check_render_cancel(render_job_id, str(video.id))
+    if rasterized_slides:
+        _render_progress(
+            render_job_id,
+            str(video.id),
+            12,
+            "visual_sources",
+            "Preparing visual sources",
+            f"Rendering {len(rasterized_slides)} slide pages for the export timeline",
+            {"slide_pages": len(rasterized_slides)},
+        )
+        durations = _slide_durations(len(rasterized_slides), duration)
+        await ffmpeg_service.create_slideshow_clip(
+            output_path,
+            image_paths=[slide["path"] for slide in rasterized_slides],
+            durations=durations,
+            width=width,
+            height=height,
+            background_color="#101827",
+            cancel_check=cancel_check,
+        )
+        return _generated_slide_asset(
+            video=video,
+            output_path=output_path,
+            duration=duration,
+            structure_reference_count=len(structure_references),
+            source="uploaded_structure_raster",
+            render_mode="rasterized_pages",
+            rasterized_slide_count=len(rasterized_slides),
+            rasterized_sources=sorted({slide.get("render_source", "unknown") for slide in rasterized_slides}),
+        )
+
+    events = _structure_reference_slide_events(structure_references, duration)
+    if not events:
+        return None
+
+    base_path = os.path.join(output_dir, "generated_slides_base.mp4")
+    ass_path = os.path.join(output_dir, "generated_slides.ass")
+    await ffmpeg_service.create_solid_color_clip(
+        base_path,
+        duration_seconds=duration,
+        width=width,
+        height=height,
+        background_color="#101827",
+        cancel_check=cancel_check,
+    )
+    with open(ass_path, "w", encoding="utf-8") as handle:
+        handle.write(_generate_annotation_ass(events, width=width, height=height))
+    await ffmpeg_service.burn_ass_overlay(
+        base_path,
+        ass_path,
+        output_path,
+        cancel_check=cancel_check,
+    )
+
+    return _generated_slide_asset(
+        video=video,
+        output_path=output_path,
+        duration=duration,
+        structure_reference_count=len(structure_references),
+        source="uploaded_structure_reference",
+        render_mode="text_cards",
+        rasterized_slide_count=0,
+        rasterized_sources=[],
+    )
+
+
+def _generated_slide_asset(
+    *,
+    video: Video,
+    output_path: str,
+    duration: float,
+    structure_reference_count: int,
+    source: str,
+    render_mode: str,
+    rasterized_slide_count: int,
+    rasterized_sources: list[str],
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=f"generated-slides-{video.id}",
+        role="screen",
+        kind="generated_slides",
+        source_type="generated_slides",
+        sync_role="screen_reference",
+        status="ready",
+        is_primary=False,
+        filename="generated_slides.mp4",
+        original_filename="Generated teaching slides",
+        file_path=output_path,
+        duration_seconds=duration,
+        sync_offset_seconds=0.0,
+        created_at=datetime.min,
+        metadata_json={
+            "generated": True,
+            "track": "generated_slides",
+            "timeline_track": "generated_slides",
+            "structure_reference_count": structure_reference_count,
+            "source": source,
+            "render_mode": render_mode,
+            "rasterized_slide_count": rasterized_slide_count,
+            "rasterized_sources": rasterized_sources,
+        },
+    )
+
+
+def _render_structure_reference_images(
+    assets: list[ProjectAsset],
+    output_dir: str,
+    width: int,
+    height: int,
+) -> list[dict]:
+    slides: list[dict] = []
+    image_dir = os.path.join(output_dir, "rasterized")
+    os.makedirs(image_dir, exist_ok=True)
+    for asset in assets:
+        if not _asset_is_structure_reference(asset):
+            continue
+        file_path = str(getattr(asset, "file_path", "") or "")
+        if not os.path.isfile(file_path):
+            continue
+        ext = os.path.splitext(file_path)[1].lower()
+        try:
+            if ext == ".pdf":
+                slides.extend(_render_pdf_pages_to_images(asset, image_dir, width, height))
+            elif ext in {".ppt", ".pptx"}:
+                slides.extend(_render_presentation_to_images(asset, image_dir, width, height))
+        except Exception as exc:
+            logger.warning("Could not rasterize teaching material %s: %s", file_path, exc)
+        if len(slides) >= 80:
+            break
+    return slides[:80]
+
+
+def _render_pdf_pages_to_images(asset: ProjectAsset, image_dir: str, width: int, height: int) -> list[dict]:
+    import fitz
+
+    slides = []
+    doc = fitz.open(str(asset.file_path))
+    try:
+        for page_index in range(min(len(doc), 80)):
+            page = doc[page_index]
+            zoom = min(float(width) / max(float(page.rect.width), 1.0), float(height) / max(float(page.rect.height), 1.0))
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(max(0.5, zoom), max(0.5, zoom)), alpha=False)
+            image_path = os.path.join(image_dir, f"{_safe_asset_stem(asset)}_page_{page_index + 1:03d}.png")
+            pixmap.save(image_path)
+            slides.append(
+                {
+                    "path": image_path,
+                    "asset_id": str(getattr(asset, "id", "")),
+                    "page_index": page_index + 1,
+                    "render_source": "pdf",
+                    "exact": True,
+                }
+            )
+    finally:
+        doc.close()
+    return slides
+
+
+def _render_presentation_to_images(asset: ProjectAsset, image_dir: str, width: int, height: int) -> list[dict]:
+    pdf_path = _convert_presentation_to_pdf(asset.file_path, image_dir)
+    if pdf_path and os.path.isfile(pdf_path):
+        rendered = _render_pdf_pages_to_images(
+            SimpleNamespace(
+                id=getattr(asset, "id", ""),
+                file_path=pdf_path,
+                filename=getattr(asset, "filename", "presentation.pdf"),
+                original_filename=getattr(asset, "original_filename", "presentation.pdf"),
+            ),
+            image_dir,
+            width,
+            height,
+        )
+        for slide in rendered:
+            slide["render_source"] = "pptx_via_libreoffice_pdf"
+            slide["asset_id"] = str(getattr(asset, "id", ""))
+            slide["exact"] = True
+        return rendered
+    return _render_pptx_text_slides_to_images(asset, image_dir, width, height)
+
+
+def _convert_presentation_to_pdf(file_path: str, image_dir: str) -> str | None:
+    executable = shutil.which("soffice") or shutil.which("libreoffice")
+    if not executable:
+        return None
+    output_dir = os.path.join(image_dir, "office_pdf")
+    os.makedirs(output_dir, exist_ok=True)
+    try:
+        subprocess.run(
+            [
+                executable,
+                "--headless",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                output_dir,
+                str(file_path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120,
+            check=True,
+        )
+    except Exception as exc:
+        logger.warning("Presentation PDF conversion failed for %s: %s", file_path, exc)
+        return None
+    candidate = os.path.join(output_dir, f"{os.path.splitext(os.path.basename(file_path))[0]}.pdf")
+    return candidate if os.path.isfile(candidate) else None
+
+
+def _render_pptx_text_slides_to_images(asset: ProjectAsset, image_dir: str, width: int, height: int) -> list[dict]:
+    import fitz
+    from pptx import Presentation
+
+    presentation = Presentation(str(asset.file_path))
+    slides = []
+    for slide_index, slide in enumerate(presentation.slides, start=1):
+        title, bullets = _pptx_slide_text(slide, slide_index)
+        doc = fitz.open()
+        page = doc.new_page(width=width, height=height)
+        page.draw_rect(fitz.Rect(0, 0, width, height), color=(1, 1, 1), fill=(1, 1, 1))
+        page.draw_rect(
+            fitz.Rect(0, 0, width, int(height * 0.18)),
+            color=(0.10, 0.12, 0.18),
+            fill=(0.10, 0.12, 0.18),
+        )
+        page.insert_textbox(
+            fitz.Rect(width * 0.06, height * 0.045, width * 0.94, height * 0.16),
+            title,
+            fontsize=42,
+            fontname="helv",
+            color=(1, 1, 1),
+            align=0,
+        )
+        y = height * 0.25
+        for bullet in bullets[:8]:
+            page.insert_textbox(
+                fitz.Rect(width * 0.09, y, width * 0.90, y + 72),
+                f"- {bullet}",
+                fontsize=28,
+                fontname="helv",
+                color=(0.08, 0.10, 0.16),
+                align=0,
+            )
+            y += 78
+        page.insert_textbox(
+            fitz.Rect(width * 0.78, height * 0.90, width * 0.95, height * 0.96),
+            f"Slide {slide_index}",
+            fontsize=20,
+            fontname="helv",
+            color=(0.35, 0.40, 0.50),
+            align=2,
+        )
+        image_path = os.path.join(image_dir, f"{_safe_asset_stem(asset)}_slide_{slide_index:03d}.png")
+        page.get_pixmap(alpha=False).save(image_path)
+        doc.close()
+        slides.append(
+            {
+                "path": image_path,
+                "asset_id": str(getattr(asset, "id", "")),
+                "page_index": slide_index,
+                "render_source": "pptx_text_visual",
+                "exact": False,
+            }
+        )
+        if len(slides) >= 80:
+            break
+    return slides
+
+
+def _pptx_slide_text(slide, slide_index: int) -> tuple[str, list[str]]:
+    texts = []
+    for shape in slide.shapes:
+        if getattr(shape, "has_text_frame", False):
+            for paragraph in shape.text_frame.paragraphs:
+                text = " ".join(str(paragraph.text or "").split())
+                if text:
+                    texts.append(text)
+        if getattr(shape, "has_table", False):
+            for row in shape.table.rows:
+                row_text = " | ".join(" ".join(str(cell.text or "").split()) for cell in row.cells if str(cell.text or "").strip())
+                if row_text:
+                    texts.append(row_text)
+    title = texts[0] if texts else f"Slide {slide_index}"
+    bullets = texts[1:] if len(texts) > 1 else []
+    return _compact_text(title, 90), [_compact_text(text, 160) for text in bullets if text]
+
+
+def _slide_durations(slide_count: int, duration_seconds: float) -> list[float]:
+    if slide_count <= 0:
+        return []
+    base = max(1.0, float(duration_seconds) / float(slide_count))
+    return [base for _ in range(slide_count)]
+
+
+def _structure_reference_slide_events(
+    structure_references: list[dict],
+    duration_seconds: float,
+) -> list[dict]:
+    items: list[dict] = []
+    for reference in structure_references:
+        source_title = str(reference.get("title") or reference.get("source_filename") or "").strip()
+        for item in reference.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            title = _compact_text(item.get("title") or source_title or "Lecture section", 90)
+            body = _compact_text(item.get("text") or "", 220)
+            items.append({
+                "title": title,
+                "subtitle": body,
+                "source_title": source_title,
+            })
+
+    if not items:
+        return []
+
+    max_items = min(len(items), 36)
+    selected = items[:max_items]
+    span = max(4.0, float(duration_seconds) / max(len(selected), 1))
+    events = []
+    for index, item in enumerate(selected):
+        start = min(float(duration_seconds), index * span)
+        end = float(duration_seconds) if index == len(selected) - 1 else min(float(duration_seconds), (index + 1) * span)
+        if end <= start:
+            continue
+        events.append({
+            "id": f"generated-slide-{index + 1:03d}",
+            "kind": "educational_overlay",
+            "overlay_type": "section_title_card",
+            "title": item["title"],
+            "subtitle": item["subtitle"],
+            "output_start_time": round(start, 3),
+            "output_end_time": round(end, 3),
+            "position": "center",
+            "x_percent": 50.0,
+            "y_percent": 50.0,
+            "style": {
+                "font_size": 42,
+                "subtitle_font_size": 24,
+                "text_color": "#FFFFFF",
+                "subtitle_color": "#CBD5E1",
+                "background_color": "#111827",
+                "accent_color": "#A78BFA",
+                "opacity": 0.92,
+            },
+            "animation": {
+                "preset": "fade",
+                "duration_seconds": 0.45,
+            },
+        })
+    return events
+
+
+def _fallback_structure_references_from_assets(assets: list[ProjectAsset]) -> list[dict]:
+    references = []
+    structure_roles = {"slides", "notes", "supporting_material"}
+    structure_kinds = {"slide_deck", "pdf_notes", "text_notes"}
+    for asset in assets:
+        role = _enum_value(getattr(asset, "role", None))
+        kind = _enum_value(getattr(asset, "kind", None))
+        sync_role = _enum_value(getattr(asset, "sync_role", None))
+        if role not in structure_roles and kind not in structure_kinds and sync_role != "structure_reference":
+            continue
+        title = _compact_text(
+            getattr(asset, "original_filename", None)
+            or getattr(asset, "filename", None)
+            or "Uploaded teaching material",
+            90,
+        )
+        references.append(
+            {
+                "title": title,
+                "source_filename": getattr(asset, "original_filename", None) or getattr(asset, "filename", None),
+                "reference_role": role or kind or "structure_reference",
+                "items": [
+                    {
+                        "index": 1,
+                        "title": title,
+                        "text": "Uploaded structure reference for the lecture.",
+                    }
+                ],
+            }
+        )
+    return references
+
+
+def _asset_is_structure_reference(asset: object) -> bool:
+    return (
+        _enum_value(getattr(asset, "role", None)) in {"slides", "notes", "supporting_material"}
+        or _enum_value(getattr(asset, "kind", None)) in {"slide_deck", "pdf_notes", "text_notes"}
+        or _enum_value(getattr(asset, "sync_role", None)) == "structure_reference"
+    )
+
+
+def _safe_asset_stem(asset: object) -> str:
+    raw = os.path.splitext(str(getattr(asset, "filename", None) or getattr(asset, "original_filename", None) or "asset"))[0]
+    return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in raw)[:80] or "asset"
+
+
+def _compact_text(value: object, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+async def _render_slide_composited_clip(
+    *,
+    video: Video,
+    render_range: dict,
+    range_index: int,
+    clip_dir: str,
+    slide_image_path: str,
+    layout_mode: str,
+    cancel_check=None,
+) -> tuple[list[str], list[float], dict[str, int]]:
+    """
+    Render a single clip by compositing face video over a static slide PNG.
+
+    Uses FFmpeg with filter_complex to overlay face video onto a static slide background.
+    Returns same format as _render_range_clips: (paths, durations, layout_counts)
+    """
+    start_time = float(render_range["source_start_time"])
+    end_time = float(render_range["source_end_time"])
+    duration = max(0.1, end_time - start_time)
+
+    output_path = os.path.join(clip_dir, f"slide_composite_{range_index:04d}.mp4")
+
+    output_width = 1920
+    output_height = 1080
+
+    if layout_mode == "full_screen_source":
+        # Slide fills entire canvas. Face video hidden.
+        filter_complex = (
+            f"[0:v]scale={output_width}:{output_height}:force_original_aspect_ratio=decrease,"
+            f"pad={output_width}:{output_height}:(ow-iw)/2:(oh-ih)/2:white[bg];"
+            f"[bg]null[out]"
+        )
+    elif layout_mode == "side_by_side":
+        # Slide on left half, face on right half
+        half_w = output_width // 2
+        filter_complex = (
+            f"[0:v]scale={half_w}:{output_height}:force_original_aspect_ratio=decrease,"
+            f"pad={half_w}:{output_height}:(ow-iw)/2:(oh-ih)/2:white[left];"
+            f"[1:v]scale={half_w}:{output_height}:force_original_aspect_ratio=decrease,"
+            f"pad={half_w}:{output_height}:(ow-iw)/2:(oh-ih)/2:white[right];"
+            f"[left][right]hstack=2[out]"
+        )
+    elif layout_mode == "full_camera_source":
+        # Face full-screen, no slide. Just trim the video.
+        cmd = [
+            "ffmpeg",
+            "-ss", str(start_time),
+            "-i", video.file_path,
+            "-t", str(duration),
+            "-c:v", "copy",
+            "-c:a", "copy",
+            "-y", output_path,
+        ]
+        # Use fast copy when possible; fall back to encode if needed
+        try:
+            result = await FFmpegService._run_process_with_encoder_fallback(
+                cmd,
+                error_prefix=f"Slide compositor full_camera_source range {range_index}",
+                cancel_check=cancel_check,
+                allow_failure=True,
+            )
+            _, stderr, returncode = result
+        except Exception:
+            returncode = 1
+
+        if returncode != 0:
+            # Fall back to full re-encode with hw acceleration
+            cmd_encode = [
+                "ffmpeg",
+                "-ss", str(start_time),
+                "-i", video.file_path,
+                "-t", str(duration),
+                *FFmpegService._video_encoder_args("5000k", "veryfast"),
+                "-c:a", "aac", "-b:a", "192k",
+                "-ar", "48000", "-ac", "2",
+                "-movflags", "+faststart",
+                "-y", output_path,
+            ]
+            await FFmpegService._run_process_with_encoder_fallback(
+                cmd_encode,
+                error_prefix=f"Slide compositor full_camera_source encode range {range_index}",
+                cancel_check=cancel_check,
+            )
+
+        return [output_path], [duration], {"slide_composite_full_camera_source": 1}
+    else:
+        # Default: picture_in_picture — Slide background with PiP face in bottom-right
+        face_w = 480
+        face_h = 270
+        margin = 20
+        filter_complex = (
+            f"[0:v]scale={output_width}:{output_height}:force_original_aspect_ratio=decrease,"
+            f"pad={output_width}:{output_height}:(ow-iw)/2:(oh-ih)/2:white[bg];"
+            f"[1:v]scale={face_w}:{face_h}[face];"
+            f"[bg][face]overlay=W-w-{margin}:H-h-{margin}[out]"
+        )
+
+    # Build FFmpeg command for layout modes that need filter_complex
+    cmd = [
+        "ffmpeg",
+        "-loop", "1",
+        "-i", slide_image_path,
+        "-ss", str(start_time),
+        "-i", video.file_path,
+        "-t", str(duration),
+        "-filter_complex", filter_complex,
+        "-map", "[out]",
+        "-map", "1:a",
+        "-c:a", "copy",
+        *FFmpegService._video_encoder_args("5000k", "veryfast"),
+        "-movflags", "+faststart",
+        "-y", output_path,
+    ]
+
+    await FFmpegService._run_process_with_encoder_fallback(
+        cmd,
+        error_prefix=f"Slide compositor range {range_index} (layout={layout_mode})",
+        cancel_check=cancel_check,
+    )
+
+    layout_label = f"slide_composite_{layout_mode}"
+    return [output_path], [duration], {layout_label: 1}
 
 
 async def _render_range_clips(
@@ -716,6 +1840,9 @@ async def _render_range_clips(
     spans = _layout_spans_for_range(render_range, layout_context.cues if layout_context else [])
 
     for span_index, (start_time, end_time, cue) in enumerate(spans):
+        span_duration = float(end_time) - float(start_time)
+        if span_duration < MIN_RENDER_SPAN_SECONDS:
+            continue
         raw_clip = os.path.join(clip_dir, f"raw_{range_index:04d}_{span_index:02d}.mp4")
         rendered_layout = None
         if layout_context and _is_renderable_layout_cue(cue):
@@ -762,7 +1889,7 @@ async def _render_range_clips(
             final_clip = os.path.join(clip_dir, f"clip_{range_index:04d}_{span_index:02d}.mp4")
             os.rename(raw_clip, final_clip)
         clip_paths.append(final_clip)
-        clip_durations.append(max(0.001, float(end_time) - float(start_time)))
+        clip_durations.append(span_duration)
 
     return clip_paths, clip_durations, layout_counts
 
@@ -958,7 +2085,6 @@ async def _render_audio_only_export(
         write_json_artifact(plan_path, plan_export)
 
         video.processed_video_path = output_path
-        video.status = VideoStatus.COMPLETED
         if db is not None:
             await db.flush()
             evaluation_artifacts = await _write_evaluation_artifacts(
@@ -974,6 +2100,10 @@ async def _render_audio_only_export(
             )
         else:
             evaluation_artifacts = {"artifact_manifest": artifact_records(artifact_paths)}
+
+        video.status = VideoStatus.COMPLETED
+        if db is not None:
+            await db.flush()
 
         _render_progress(
             render_job_id,
@@ -1031,6 +2161,8 @@ async def _render_layout_span(
     screen_asset = _cue_asset(cue, "screen", layout_context) or layout_context.fallback_screen_asset
     camera_asset = _cue_asset(cue, "camera", layout_context) or layout_context.fallback_camera_asset
     audio_asset = _cue_asset(cue, "audio", layout_context) or layout_context.fallback_audio_asset
+    if not audio_asset and _asset_is_generated_slides(screen_asset) and camera_asset:
+        audio_asset = camera_asset
 
     if layout == LayoutMode.PICTURE_IN_PICTURE.value and screen_asset and camera_asset:
         await ffmpeg_service.render_picture_in_picture_clip(
@@ -1123,7 +2255,15 @@ async def _trim_single_source_clip(
     end_time: float,
     cancel_check=None,
 ) -> None:
-    await ffmpeg_service.trim_video(
+    """Trim a segment with re-encoding for frame-accurate cuts.
+
+    Uses re-encoding (via trim_video_accurate) so clips have consistent
+    codec parameters and are safe to concatenate with the concat demuxer.
+    """
+    trim_method = getattr(ffmpeg_service, "trim_video_accurate", None)
+    if not callable(trim_method):
+        trim_method = ffmpeg_service.trim_video
+    await trim_method(
         video_path=video_path,
         output_path=output_path,
         start_time=start_time,
@@ -1176,6 +2316,8 @@ def _layout_spans_for_range(
 ) -> list[tuple[float, float, dict | None]]:
     range_start = float(render_range["source_start_time"])
     range_end = float(render_range["source_end_time"])
+    if range_end - range_start < MIN_RENDER_SPAN_SECONDS:
+        return []
     boundaries = {range_start, range_end}
     for cue in cues:
         cue_start = _float_value(cue.get("start_time"), 0.0) or 0.0
@@ -1188,12 +2330,23 @@ def _layout_spans_for_range(
                 boundaries.add(cue_end_value)
 
     ordered = sorted(boundaries)
-    spans = []
+    # Build raw spans
+    raw_spans: list[tuple[float, float, dict | None]] = []
     for start_time, end_time in zip(ordered, ordered[1:]):
-        if end_time <= start_time:
+        if end_time - start_time < MIN_RENDER_SPAN_SECONDS:
             continue
-        spans.append((start_time, end_time, _cue_at_time(cues, start_time)))
-    return spans or [(range_start, range_end, _cue_at_time(cues, range_start))]
+        raw_spans.append((start_time, end_time, _cue_at_time(cues, start_time)))
+
+    # Merge adjacent spans that share the same cue (no layout change)
+    merged: list[tuple[float, float, dict | None]] = []
+    for span_start, span_end, cue in raw_spans:
+        if merged and merged[-1][2] == cue:
+            # Same cue, merge: extend the previous span
+            merged[-1] = (merged[-1][0], span_end, cue)
+        else:
+            merged.append((span_start, span_end, cue))
+
+    return merged or [(range_start, range_end, _cue_at_time(cues, range_start))]
 
 
 def _cue_at_time(cues: list[dict], timestamp: float) -> dict | None:
@@ -1519,7 +2672,10 @@ def _selected_export_preset(plan_payload: dict) -> dict:
             return get_export_preset(str(target_presets[0]))
         except ValueError:
             return {}
-    return {}
+    try:
+        return get_export_preset(None)
+    except ValueError:
+        return {}
 
 
 def _is_audio_only_export(selected_preset: dict) -> bool:
@@ -1562,11 +2718,119 @@ def _ffmpeg_audio_bitrate(value: object) -> str:
     text = str(value or "192k").strip().lower().replace(" ", "")
     if text.endswith("kbps"):
         return f"{text[:-4]}k"
+    if text.endswith("mbps"):
+        return f"{text[:-4]}M"
     if text.endswith("k"):
+        return text
+    if text.endswith("m"):
         return text
     if text.isdigit():
         return f"{text}k"
     return "192k"
+
+
+def _ffmpeg_video_bitrate(value: object) -> str | None:
+    text = str(value or "").strip().lower().replace(" ", "")
+    if not text:
+        return None
+    if text.endswith("mbps"):
+        return f"{text[:-4]}M"
+    if text.endswith("kbps"):
+        return f"{text[:-4]}k"
+    if text.endswith(("m", "k")):
+        return text
+    if text.isdigit():
+        return f"{text}k"
+    return None
+
+
+def _preset_fps(selected_preset: dict) -> int:
+    try:
+        return int(selected_preset.get("fps") or 30)
+    except (TypeError, ValueError):
+        return 30
+
+
+def _preset_output_dimensions(selected_preset: dict, plan_payload: dict) -> tuple[int, int]:
+    try:
+        width = int(selected_preset.get("width") or 0)
+        height = int(selected_preset.get("height") or 0)
+    except (TypeError, ValueError):
+        width = 0
+        height = 0
+    if width > 0 and height > 0:
+        return width, height
+    return _annotation_canvas_dimensions(plan_payload)
+
+
+def _expected_concat_duration(clip_durations: list[float], transition_events: list[dict]) -> float:
+    total = sum(max(0.0, float(duration or 0.0)) for duration in clip_durations)
+    transition_duration = sum(
+        max(0.0, float(event.get("duration_seconds") or 0.0))
+        for event in transition_events
+        if event.get("render_strategy") == "concat_transition"
+    )
+    return round(max(0.0, total - transition_duration), 3)
+
+
+def _validate_rendered_video_output(*, metadata: dict, expected_duration: float, output_path: str) -> None:
+    if not metadata.get("has_video"):
+        raise RuntimeError("Render validation failed: output has no video stream")
+
+    duration = float(metadata.get("duration") or 0.0)
+    video_duration = float(metadata.get("video_duration") or metadata.get("duration") or 0.0)
+    audio_duration = float(metadata.get("audio_duration") or 0.0)
+    frame_count = int(metadata.get("video_frame_count") or 0)
+    expected = max(0.0, float(expected_duration or 0.0))
+    tolerance = max(1.5, expected * 0.035)
+
+    if expected > 0 and video_duration + tolerance < expected:
+        raise RuntimeError(
+            "Render validation failed: video stream is too short "
+            f"({video_duration:.2f}s video for {expected:.2f}s timeline) in {output_path}"
+        )
+
+    if audio_duration > 0 and video_duration > 0 and abs(audio_duration - video_duration) > tolerance:
+        raise RuntimeError(
+            "Render validation failed: video/audio duration mismatch "
+            f"({video_duration:.2f}s video vs {audio_duration:.2f}s audio) in {output_path}"
+        )
+
+    if duration > 0 and video_duration > 0 and duration - video_duration > tolerance:
+        raise RuntimeError(
+            "Render validation failed: container duration exceeds actual video stream "
+            f"({duration:.2f}s container vs {video_duration:.2f}s video) in {output_path}"
+        )
+
+    if expected > 1.0 and frame_count == 0:
+        raise RuntimeError("Render validation failed: output video stream has no counted frames")
+
+
+def _render_source_duration(video: Video, assets: list[ProjectAsset], plan_payload: dict) -> float:
+    candidates: list[float] = []
+
+    def add(value: object) -> None:
+        try:
+            parsed = float(value or 0.0)
+        except (TypeError, ValueError):
+            parsed = 0.0
+        if parsed > 0:
+            candidates.append(parsed)
+
+    add(getattr(video, "duration_seconds", None))
+    metadata = _dict_value(plan_payload.get("metadata"))
+    add(metadata.get("original_duration"))
+    add(metadata.get("duration_seconds"))
+    add(_dict_value(plan_payload.get("export_metadata")).get("source_duration_seconds"))
+    for cue in _list_of_dicts(plan_payload.get("layout_cues")):
+        add(_dict_value(cue).get("end_time"))
+    for segment in _list_of_dicts(plan_payload.get("segments")):
+        add(_dict_value(segment).get("end_time"))
+    for asset in assets:
+        add(getattr(asset, "duration_seconds", None))
+        add(_dict_value(getattr(asset, "metadata_json", None)).get("duration_seconds"))
+
+    return round(max(candidates or [0.0]), 3)
 
 
 def _audio_output_extension(selected_preset: dict) -> str:
@@ -1601,12 +2865,43 @@ def _first_asset_with_role(assets: list[ProjectAsset], roles: set[str]) -> Proje
     )[0]
 
 
+def _structure_backed_primary_asset(assets: list[ProjectAsset]) -> ProjectAsset | None:
+    has_structure_reference = any(
+        _enum_value(getattr(asset, "role", None)) in {"slides", "notes", "supporting_material"}
+        or _enum_value(getattr(asset, "kind", None)) in {"slide_deck", "pdf_notes", "text_notes"}
+        or _enum_value(getattr(asset, "sync_role", None)) == "structure_reference"
+        for asset in assets
+    )
+    if not has_structure_reference:
+        return None
+    return _first_asset_with_role(assets, {"primary"})
+
+
+def _asset_is_generated_slides(asset: object | None) -> bool:
+    if not asset:
+        return False
+    metadata = _dict_value(getattr(asset, "metadata_json", None))
+    return bool(metadata.get("generated")) and any(
+        _enum_value(value) == "generated_slides"
+        for value in (
+            getattr(asset, "kind", None),
+            getattr(asset, "source_type", None),
+            metadata.get("track"),
+            metadata.get("timeline_track"),
+        )
+    )
+
+
 def _enum_value(value) -> str:
     return str(value.value if hasattr(value, "value") else value or "").lower()
 
 
 def _dict_value(value) -> dict:
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _list_of_dicts(value) -> list[dict]:
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
 
 def _float_value(value, default: float | None) -> float | None:

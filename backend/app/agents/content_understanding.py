@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from db.models import Video, Transcript, Segment, SegmentType, VideoStatus
 from services.llm import llm_service
+from providers import ProviderKind
 from rag.vector_store import rag_service
 from config import settings
 
@@ -90,7 +91,13 @@ async def run_content_understanding_agent(video_id: str, db: AsyncSession) -> di
     chunks = rag_service.chunk_transcript_segments(raw_segments, target_duration=60.0)
 
     if not chunks:
-        return {"status": "success", "segments_analyzed": 0, "chapters": []}
+        return {
+            "status": "success",
+            "segments_analyzed": 0,
+            "chapters": [],
+            "chat_provider": llm_service.provider_id_for_kind(ProviderKind.CHAT),
+            "model": settings.AGENT2_MODEL,
+        }
 
     logger.info(f"Agent 2: Analyzing {len(chunks)} chunks for video {video_id}")
 
@@ -215,6 +222,8 @@ async def run_content_understanding_agent(video_id: str, db: AsyncSession) -> di
         "status": "success",
         "segments_analyzed": len(created_segments),
         "chapters": chapters,
+        "chat_provider": llm_service.provider_id_for_kind(ProviderKind.CHAT),
+        "model": settings.AGENT2_MODEL,
     }
 
 

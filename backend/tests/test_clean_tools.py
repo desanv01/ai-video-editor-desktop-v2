@@ -8,11 +8,37 @@ APP_DIR = Path(__file__).resolve().parents[1] / "app"
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
+if "openai" not in sys.modules:
+    import types
+
+    openai_stub = types.ModuleType("openai")
+
+    class AsyncOpenAI:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    openai_stub.AsyncOpenAI = AsyncOpenAI
+    sys.modules["openai"] = openai_stub
+
 from services.clean_tools import analyze_clean_suggestions, apply_clean_suggestions  # noqa: E402
+from agents.fluency import _fallback_fluency_analysis  # noqa: E402
 from services.transcript_edit_decisions import list_transcript_cut_decisions  # noqa: E402
 
 
 class CleanToolsTests(unittest.TestCase):
+    def test_fluency_fallback_detects_obvious_fillers(self):
+        segment = SimpleNamespace(
+            segment_index=0,
+            text="Um okay so basically we start with the tree, uh the tree root.",
+        )
+
+        result = _fallback_fluency_analysis(segment)
+
+        self.assertGreaterEqual(result["filler_count"], 4)
+        self.assertIn("um", result["filler_words"])
+        self.assertIn("okay so", result["filler_words"])
+
     def test_conservative_profile_finds_obvious_fillers_dead_air_and_bad_takes(self):
         plan = _plan()
         segments = [
@@ -84,6 +110,7 @@ class CleanToolsTests(unittest.TestCase):
         words = [
             _word(0, "um", 0.0, 0.2, "seg-1", 0),
             _word(1, "topic", 0.3, 0.7, "seg-1", 0),
+            _word(2, "continues", 3.0, 3.4, "seg-1", 0),
         ]
 
         applied = apply_clean_suggestions(
@@ -94,10 +121,11 @@ class CleanToolsTests(unittest.TestCase):
         )
 
         self.assertEqual(len(applied["created_transcript_cuts"]), 1)
-        self.assertEqual(len(applied["updated_segments"]), 2)
-        self.assertEqual(segments[0].teacher_action, "shorten")
+        self.assertEqual(len(applied["updated_segments"]), 1)
+        self.assertIsNone(segments[0].teacher_action)
         self.assertEqual(segments[1].teacher_action, "cut")
         self.assertEqual(list_transcript_cut_decisions(plan)[0]["source"], "auto_clean_filler_word")
+        self.assertEqual(plan.plan_json["clean_cuts"][0]["type"], "dead_air")
         self.assertLess(plan.estimated_duration, 12.0)
 
     def test_detects_false_starts_restarted_sentences_and_repeated_phrases(self):
@@ -212,8 +240,8 @@ class CleanToolsTests(unittest.TestCase):
         self.assertEqual(applied["summary"]["repeated_explanation_count"], 1)
         self.assertEqual(len(applied["created_transcript_cuts"]), 1)
         self.assertEqual(applied["created_transcript_cuts"][0]["source"], "auto_clean_false_start")
-        self.assertEqual(len(applied["updated_segments"]), 1)
-        self.assertEqual(segments[1].teacher_action, "cut")
+        self.assertEqual(len(applied["updated_segments"]), 0)
+        self.assertIsNone(segments[1].teacher_action)
 
 
 def _plan(original_duration=20.0):

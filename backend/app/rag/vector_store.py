@@ -348,6 +348,25 @@ class RAGService:
     #  STORAGE (shared by both ingest paths)
     # ═══════════════════════════════════════════
 
+    async def add_chunks(
+        self,
+        chunks: List[dict],
+        source_id: str,
+        source_type: str,
+    ) -> int:
+        """Public wrapper to store arbitrary chunked text in Qdrant for semantic search.
+
+        Args:
+            chunks: List of dicts with ``text`` and optional ``metadata`` keys.
+            source_id: Identifier for the source document (e.g. ``"<video_id>_slides"``).
+            source_type: Category label used as a search filter (e.g. ``"slide_page"``).
+
+        Returns:
+            Number of chunks stored.
+        """
+        await self._store_chunks(chunks, source_id, source_type)
+        return len(chunks)
+
     async def _store_chunks(
         self,
         chunks: List[dict],

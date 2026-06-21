@@ -11,6 +11,7 @@ from services.edit_plan_payload import EDIT_PLAN_SCHEMA_VERSION, normalize_plan_
 
 TRANSCRIPT_DECISION_SCHEMA_VERSION = "phase5.transcript-decisions.v1"
 MAX_TRIM_TOLERANCE_SECONDS = 5.0
+MIN_PLAYABLE_RANGE_SECONDS = 0.05
 
 
 def list_transcript_cut_decisions(plan: Any) -> list[dict[str, Any]]:
@@ -27,8 +28,14 @@ def list_transcript_cut_decisions(plan: Any) -> list[dict[str, Any]]:
 
 def list_active_transcript_cut_intervals(plan: Any) -> list[dict[str, Any]]:
     """Return merged active transcript cut intervals for playback/render sync."""
+    payload = normalize_plan_payload(plan.plan_json) if plan else {}
+    clean_time_cuts = [
+        decision
+        for decision in payload.get("clean_cuts", [])
+        if decision.get("kind") == "clean_time_cut" and decision.get("status") == "active"
+    ]
     decisions = sorted(
-        list_transcript_cut_decisions(plan),
+        [*list_transcript_cut_decisions(plan), *clean_time_cuts],
         key=lambda decision: (float(decision.get("start_time", 0.0)), float(decision.get("end_time", 0.0))),
     )
     intervals: list[dict[str, Any]] = []
@@ -47,7 +54,7 @@ def list_active_transcript_cut_intervals(plan: Any) -> list[dict[str, Any]]:
             "texts": [decision.get("text") or ""],
             "word_start_index": decision.get("word_start_index"),
             "word_end_index": decision.get("word_end_index"),
-            "source": "transcript_cut",
+            "source": decision.get("source") or "transcript_cut",
         }
 
         if intervals and start_time <= intervals[-1]["end_time"]:
@@ -83,11 +90,11 @@ def subtract_cut_intervals(
         if cut_end <= cursor or cut_start >= end:
             continue
 
-        if cut_start > cursor:
+        if cut_start - cursor >= MIN_PLAYABLE_RANGE_SECONDS:
             playable.append(_range_payload(cursor, cut_start))
         cursor = max(cursor, cut_end)
 
-    if cursor < end:
+    if end - cursor >= MIN_PLAYABLE_RANGE_SECONDS:
         playable.append(_range_payload(cursor, end))
 
     return playable
@@ -135,7 +142,7 @@ def build_synced_timeline_plan(
 
         for playable in subtract_cut_intervals(segment_start, segment_end, cut_intervals):
             duration = playable["duration"]
-            if duration <= 0:
+            if duration < MIN_PLAYABLE_RANGE_SECONDS:
                 continue
             playable_ranges.append({
                 "segment_id": str(segment.id),
@@ -191,6 +198,33 @@ def create_transcript_cut_decision(
     if word_start_index < 0 or word_end_index >= len(timeline_words):
         raise ValueError("Word selection is outside the transcript timeline")
 
+    decision = _build_transcript_cut_decision(
+        timeline_words=timeline_words,
+        word_start_index=word_start_index,
+        word_end_index=word_end_index,
+        teacher_note=teacher_note,
+        source=source,
+        pre_roll_seconds=pre_roll_seconds,
+        post_roll_seconds=post_roll_seconds,
+    )
+
+    payload = normalize_plan_payload(plan.plan_json)
+    payload.setdefault("edit_decisions", []).append(decision)
+    _refresh_transcript_cut_summary(payload, plan)
+    plan.plan_json = payload
+    return decision
+
+
+def _build_transcript_cut_decision(
+    *,
+    timeline_words: list[dict[str, Any]],
+    word_start_index: int,
+    word_end_index: int,
+    teacher_note: Optional[str] = None,
+    source: str = "manual_text_selection",
+    pre_roll_seconds: float = 0.0,
+    post_roll_seconds: float = 0.0,
+) -> dict[str, Any]:
     selected_words = timeline_words[word_start_index:word_end_index + 1]
     if not selected_words:
         raise ValueError("Select at least one transcript word")
@@ -207,7 +241,7 @@ def create_transcript_cut_decision(
         word.get("segment_index") for word in selected_words if word.get("segment_index") is not None
     )
 
-    decision = {
+    return {
         "id": str(uuid.uuid4()),
         "kind": "transcript_cut",
         "action": "cut",
@@ -229,12 +263,6 @@ def create_transcript_cut_decision(
         "teacher_note": teacher_note,
         "created_at": _utc_now(),
     }
-
-    payload = normalize_plan_payload(plan.plan_json)
-    payload.setdefault("edit_decisions", []).append(decision)
-    _refresh_transcript_cut_summary(payload, plan)
-    plan.plan_json = payload
-    return decision
 
 
 def update_transcript_cut_trim(
@@ -312,6 +340,52 @@ def remove_transcript_cut_decision(*, plan: Any, decision_id: str) -> bool:
         plan.plan_json = payload
 
     return removed
+
+
+def restore_word_from_transcript_cut(
+    *,
+    plan: Any,
+    timeline_words: list[dict[str, Any]],
+    decision_id: str,
+    word_index: int,
+    teacher_note: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Restore one word from an active cut by splitting the remaining cut ranges."""
+    payload = normalize_plan_payload(plan.plan_json)
+    decision = _find_active_transcript_cut(payload, decision_id)
+    if not decision:
+        raise ValueError("Transcript cut decision not found")
+
+    start_index = int(decision.get("word_start_index", -1))
+    end_index = int(decision.get("word_end_index", -1))
+    if word_index < start_index or word_index > end_index:
+        raise ValueError("Selected word is not inside this transcript cut")
+    if word_index < 0 or word_index >= len(timeline_words):
+        raise ValueError("Word selection is outside the transcript timeline")
+
+    decision["status"] = "removed"
+    decision["removed_at"] = _utc_now()
+    decision["restore_source"] = "single_word_restore"
+    decision["restored_word_index"] = word_index
+
+    new_decisions: list[dict[str, Any]] = []
+    for next_start, next_end in ((start_index, word_index - 1), (word_index + 1, end_index)):
+        if next_start > next_end:
+            continue
+        new_decisions.append(_build_transcript_cut_decision(
+            timeline_words=timeline_words,
+            word_start_index=next_start,
+            word_end_index=next_end,
+            teacher_note=teacher_note or f"Split after restoring word {word_index}",
+            source=str(decision.get("source") or "single_word_restore"),
+            pre_roll_seconds=0.0,
+            post_roll_seconds=0.0,
+        ))
+
+    payload.setdefault("edit_decisions", []).extend(new_decisions)
+    _refresh_transcript_cut_summary(payload, plan)
+    plan.plan_json = payload
+    return list_transcript_cut_decisions(plan)
 
 
 def _refresh_transcript_cut_summary(payload: dict[str, Any], plan: Any) -> None:

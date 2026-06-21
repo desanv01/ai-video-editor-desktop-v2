@@ -46,3 +46,18 @@ desktop/src-tauri/target/
 *.tmp
 outputs/
 fixtures/synthetic_media/generated/
+desktop/revideo/runtime-render-plan.json
+desktop/revideo/*output*.mp4
+desktop/revideo/*output*.wav
+backend/revideo/runtime-render-plan.json
+backend/revideo/*output*.mp4
+backend/revideo/*output*.wav
+
+# Local analysis and thesis-generation workspaces
+.audit/
+.codex-analysis/
+tmp/
+tmp_*/
+
+# Generated thesis/source-package deliverables
+output/

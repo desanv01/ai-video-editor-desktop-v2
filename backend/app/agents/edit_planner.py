@@ -34,6 +34,7 @@ from sqlalchemy import select
 from db.models import Video, Segment, EditPlan, ProjectAsset, SegmentAction, SegmentType, VideoStatus
 from services.edit_plan_payload import build_edit_plan_payload
 from services.llm import llm_service
+from providers import ProviderKind
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,12 @@ ACTIONS (pick exactly one per segment):
   - shorten: Trim dead space (pauses, hesitations) but preserve the core content
   - highlight: Especially important — flag for visual emphasis (key concept, crucial definition, critical example)
 
+LAYOUT MODES (pick exactly one per segment — only relevant for non-cut segments):
+  - full_slide: PDF slide fills the entire screen, face video is hidden. Use for: complex diagrams, dense equations, tables, code snippets.
+  - pip_slide: PDF slide is the background with face video as picture-in-picture in corner. Use for: normal lecture delivery where slide supports what's being said.
+  - half_half: Slide on left half, face on right half (equal width). Use for: slide AND lecturer both equally important, demonstrations.
+  - full_face: Lecturer fills the screen, slide hidden. Use for: introductions, personal stories, conclusions, Q&A.
+
 DECISION RULES (apply in order):
   1. HIGHLIGHT segments with importance >= 0.85 AND type = core_content or example
   2. KEEP all segments with importance >= 0.6
@@ -57,6 +64,10 @@ DECISION RULES (apply in order):
   8. NEVER cut a segment that introduces a topic referenced by a later KEEP segment
   9. When two adjacent segments have the same topic, prefer keeping the one with higher fluency
   10. Preserve natural pacing — don't cut every single pause; short pauses between important content are natural
+  11. Choose full_slide for segments with complex visual content (diagrams, code, equations in the summary)
+  12. Choose pip_slide as the DEFAULT mode for most segments
+  13. Choose half_half when the instructor is demonstrating something interactive (type="example" with slide_change=true)
+  14. Choose full_face for intro_outro segments, segments with very high fluency but no slide changes
 
 COHERENCE CHECK:
   After making decisions, verify the remaining (non-cut) segments form a logical narrative.
@@ -68,6 +79,7 @@ RESPOND WITH ONLY VALID JSON:
     {
       "segment_index": 0,
       "action": "keep",
+      "layout_mode": "pip_slide",
       "confidence": 0.95,
       "reason": "Core concept introduction — bubble sort mechanism"
     }
@@ -133,6 +145,7 @@ async def run_edit_planner_agent(video_id: str, db: AsyncSession) -> dict:
         for seg in batch:
             segment_data.append({
                 "index": seg.segment_index,
+                "slide_index": seg.slide_index,  # May be None if no PDF alignment done
                 "time": f"{seg.start_time:.1f}-{seg.end_time:.1f}s",
                 "duration": round(seg.duration or 0, 1),
                 "topic": seg.topic_label or "Unknown",
@@ -232,6 +245,10 @@ async def run_edit_planner_agent(video_id: str, db: AsyncSession) -> dict:
     # ── Step 6: Build rich plan_json for the desktop app ──
     plan_entries = []
     for seg in segments:
+        decision = next(
+            (d for d in all_decisions if d.get("segment_index") == seg.segment_index),
+            None,
+        )
         plan_entries.append({
             "segment_id": str(seg.id),
             "segment_index": seg.segment_index,
@@ -241,6 +258,7 @@ async def run_edit_planner_agent(video_id: str, db: AsyncSession) -> dict:
             "action": seg.action.value,
             "confidence": seg.action_confidence,
             "reason": seg.action_reason,
+            "layout_mode": decision.get("layout_mode", "pip_slide") if decision else "pip_slide",
             # Rich data for desktop app display
             "topic": seg.topic_label,
             "summary": seg.summary,
@@ -327,6 +345,8 @@ async def run_edit_planner_agent(video_id: str, db: AsyncSession) -> dict:
         "silence_removed_seconds": round(silence_removed, 2),
         "chapters": chapters,
         "warnings": all_warnings,
+        "chat_provider": llm_service.provider_id_for_kind(ProviderKind.CHAT),
+        "model": settings.AGENT5_MODEL,
     }
 
 

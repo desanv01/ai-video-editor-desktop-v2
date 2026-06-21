@@ -28,7 +28,9 @@ ACTIVE_RENDER_JOB_STATUSES = {"queued", "running", "cancel_requested"}
 
 _render_jobs_by_id: dict[str, dict[str, Any]] = {}
 _active_job_id_by_video_id: dict[str, str] = {}
-_render_job_store_path = Path(settings.TEMP_PATH) / "render_jobs.json"
+# Render state must survive container recreation. TEMP_PATH is container-local
+# in the default Compose setup, while VIDEO_STORAGE_PATH is a named volume.
+_render_job_store_path = Path(settings.VIDEO_STORAGE_PATH) / ".state" / "render_jobs.json"
 
 
 class RenderCancelled(RuntimeError):
@@ -88,12 +90,15 @@ def load_render_jobs_from_store() -> None:
         _save_render_jobs_to_store()
 
 
-def create_render_job(video_id: str, preset_id: str | None = None) -> dict[str, Any]:
-    """Create or replace the active render job for a video."""
+def create_render_job_with_status(
+    video_id: str,
+    preset_id: str | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Return the active render job and whether this call created it."""
     video_id = str(video_id)
     existing = get_active_render_job(video_id)
     if existing:
-        return existing
+        return existing, False
 
     now = _utc_now()
     job = {
@@ -119,7 +124,13 @@ def create_render_job(video_id: str, preset_id: str | None = None) -> dict[str, 
     _active_job_id_by_video_id[video_id] = job["job_id"]
     _save_render_jobs_to_store()
     logger.info("Render job %s queued for video %s", job["job_id"], video_id)
-    return snapshot_render_job(job)
+    return snapshot_render_job(job), True
+
+
+def create_render_job(video_id: str, preset_id: str | None = None) -> dict[str, Any]:
+    """Create a render job, or return the existing active job."""
+    job, _created = create_render_job_with_status(video_id, preset_id)
+    return job
 
 
 def get_render_job(job_id: str | None) -> dict[str, Any] | None:
@@ -173,6 +184,20 @@ def start_render_job(job_id: str | None, video_id: str) -> dict[str, Any]:
     )
     logger.info("Render job %s started for video %s", job["job_id"], video_id)
     return snapshot_render_job(job)
+
+
+def claim_render_job(job_id: str | None, video_id: str) -> dict[str, Any] | None:
+    """Atomically claim a queued job so duplicate background tasks cannot render it."""
+    job = _resolve_or_create_job(job_id, video_id)
+    if job.get("status") != "queued":
+        logger.warning(
+            "Render job %s for video %s was not claimed because status is %s",
+            job.get("job_id"),
+            video_id,
+            job.get("status"),
+        )
+        return None
+    return start_render_job(job.get("job_id"), video_id)
 
 
 def update_render_job(

@@ -13,37 +13,61 @@ import type {
   BackendAISettingsUpdate,
   TranscriptTimeline,
   TranscriptCutDecision, TranscriptCutDecisionRequest, TranscriptCutTrimUpdateRequest,
+  TranscriptCutWordRestoreRequest,
   EditDecisionSync,
   CleanAnalyzeResult, CleanApplyResult, CleanProfileId,
   LocalTranscriptionModelCatalog, LocalTranscriptionModelDownload,
   LocalTranscriptionModelRemoveResult,
   Project, ProjectAsset, ProjectAssetUploadResponse,
-  ProjectAssetSyncUpdateRequest, ProjectAssetUploadType,
+  ProjectAssetSyncUpdateRequest, ProjectAssetMetadataUpdateRequest, ProjectAssetUploadType,
   ProjectCreateRequest, ProjectDetail, ProjectSourceSyncPlan,
+  ProjectUpdateRequest,
   TopicSegmentationResult,
   AnnotationActionUpdate,
   CaptionPolicyUpdate,
   EndCardActionUpdate,
   EducationalOverlayActionUpdate,
+  LayoutCueUpdate,
   ExportPresetCatalog,
+  AppStorageLayout,
+  DesktopBootstrapResult,
+  NativeImportProgress,
+  NativeImportResult,
+  PrimaryImportChunkResponse,
+  PrimaryImportInitSession,
+  PrimaryImportStatus,
   ApprovePlanResponse,
   RenderCancelResponse,
+  SemanticRenderPlan,
+  SectionClipExportManifest,
+  SlideCue,
+  EditorialBlock,
 } from "../types/api";
 
 let BASE_URL = "http://localhost:8000/api/v1";
 const DEFAULT_TIMEOUT_MS = 30_000;
-const VIDEO_UPLOAD_TIMEOUT_MS = 10 * 60_000;
+const APPROVAL_TIMEOUT_MS = 10 * 60_000;
+const VIDEO_UPLOAD_TIMEOUT_MS = 60 * 60_000;
 const MATERIAL_UPLOAD_TIMEOUT_MS = 90_000;
+const PRIMARY_BROWSER_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
 
 export function setBaseUrl(url: string) {
   BASE_URL = url.replace(/\/+$/, "") + "/api/v1";
 }
 
+export function getBackendBaseUrl(): string {
+  return BASE_URL.replace(/\/api\/v1$/, "");
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${BASE_URL}${path}`;
+  const headers = new Headers(options?.headers);
+  if (options?.body && !(options.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   const res = await fetchWithTimeout(url, {
-    headers: { "Content-Type": "application/json", ...options?.headers },
     ...options,
+    headers,
   }, DEFAULT_TIMEOUT_MS);
 
   if (!res.ok) {
@@ -57,22 +81,227 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  const upstreamSignal = options.signal;
+  const abortFromUpstream = () => controller.abort();
+
+  if (upstreamSignal) {
+    if (upstreamSignal.aborted) {
+      controller.abort();
+    } else {
+      upstreamSignal.addEventListener("abort", abortFromUpstream, { once: true });
+    }
+  }
 
   try {
     return await fetch(url, { ...options, signal: controller.signal });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
+      if (upstreamSignal?.aborted) {
+        throw new Error("Request cancelled");
+      }
       throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)} seconds`);
     }
     throw error;
   } finally {
     window.clearTimeout(timeout);
+    upstreamSignal?.removeEventListener("abort", abortFromUpstream);
   }
 }
 
 async function errorFromResponse(prefix: string, res: Response): Promise<Error> {
   const body = await res.text();
   return new Error(`${prefix}: ${res.status}${body ? ` - ${body.slice(0, 300)}` : ""}`);
+}
+
+type BrowserPrimaryUploadCallbacks = {
+  onProgress?: (payload: NativeImportProgress) => void;
+  onSession?: (token: string) => void;
+  signal?: AbortSignal;
+};
+
+type StoredBrowserUploadSession = {
+  token: string;
+  projectId: string;
+  filename: string;
+  fileSize: number;
+  fileLastModified: number;
+};
+
+function browserUploadStorageKey(projectId: string, file: File): string {
+  return `aive:browser-primary-upload:${projectId}:${file.name}:${file.size}:${file.lastModified}`;
+}
+
+function loadBrowserUploadSession(projectId: string, file: File): StoredBrowserUploadSession | null {
+  try {
+    const raw = window.localStorage.getItem(browserUploadStorageKey(projectId, file));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StoredBrowserUploadSession;
+    if (parsed.projectId !== projectId || parsed.filename !== file.name || parsed.fileSize !== file.size) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function saveBrowserUploadSession(projectId: string, file: File, token: string): void {
+  const payload: StoredBrowserUploadSession = {
+    token,
+    projectId,
+    filename: file.name,
+    fileSize: file.size,
+    fileLastModified: file.lastModified,
+  };
+  window.localStorage.setItem(browserUploadStorageKey(projectId, file), JSON.stringify(payload));
+}
+
+function clearBrowserUploadSession(projectId: string, file: File): void {
+  window.localStorage.removeItem(browserUploadStorageKey(projectId, file));
+}
+
+function toImportProgress(
+  projectId: string,
+  filename: string,
+  status: string,
+  bytesCopied: number,
+  totalBytes: number,
+  bytesPerSecond: number,
+  etaSeconds: number | null,
+  message: string,
+  token: string,
+): NativeImportProgress {
+  return {
+    token,
+    projectId,
+    filename,
+    status,
+    bytesCopied,
+    totalBytes,
+    percent: totalBytes > 0 ? (bytesCopied / totalBytes) * 100 : 0,
+    bytesPerSecond,
+    etaSeconds,
+    message,
+  };
+}
+
+async function initBrowserPrimaryImport(
+  projectId: string,
+  file: File,
+): Promise<PrimaryImportInitSession> {
+  return request(`/projects/${projectId}/imports/browser/primary/init`, {
+    method: "POST",
+    body: JSON.stringify({
+      original_filename: file.name,
+      file_size_bytes: file.size,
+      mime_type: file.type || null,
+    }),
+  });
+}
+
+async function getBrowserPrimaryImportStatus(projectId: string, token: string): Promise<PrimaryImportStatus> {
+  return request(`/projects/${projectId}/imports/browser/primary/${token}`);
+}
+
+async function appendBrowserPrimaryImportChunk(
+  projectId: string,
+  token: string,
+  offset: number,
+  chunk: Blob,
+  signal?: AbortSignal,
+): Promise<PrimaryImportChunkResponse> {
+  const res = await fetchWithTimeout(
+    `${BASE_URL}/projects/${projectId}/imports/browser/primary/${token}/chunk?offset=${offset}`,
+    {
+      method: "PUT",
+      body: chunk,
+      headers: {
+        "Content-Type": "application/octet-stream",
+      },
+      signal,
+    },
+    VIDEO_UPLOAD_TIMEOUT_MS,
+  );
+  if (!res.ok) throw await errorFromResponse("Browser upload chunk failed", res);
+  return res.json();
+}
+
+async function finalizeBrowserPrimaryImport(
+  projectId: string,
+  token: string,
+  copiedFileSizeBytes: number,
+): Promise<VideoUploadResponse> {
+  return request(`/projects/${projectId}/imports/browser/primary/${token}/finalize`, {
+    method: "POST",
+    body: JSON.stringify({ copied_file_size_bytes: copiedFileSizeBytes }),
+  });
+}
+
+async function cancelBrowserPrimaryImport(projectId: string, token: string): Promise<void> {
+  await request(`/projects/${projectId}/imports/browser/primary/${token}/cancel`, {
+    method: "POST",
+  });
+}
+
+export async function isNativeDesktop(): Promise<boolean> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke<AppStorageLayout>("get_app_storage_layout");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function getAppStorageLayout(): Promise<AppStorageLayout> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<AppStorageLayout>("get_app_storage_layout");
+}
+
+export async function bootstrapDesktopBackend(): Promise<DesktopBootstrapResult> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<DesktopBootstrapResult>("bootstrap_desktop_backend");
+}
+
+export async function pickNativePrimaryVideoPath(): Promise<string | null> {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const selected = await open({
+    multiple: false,
+    filters: [
+      {
+        name: "Video",
+        extensions: ["mp4", "mov", "avi", "webm", "mkv", "mpeg", "mpg"],
+      },
+    ],
+  });
+  if (Array.isArray(selected)) return selected[0] ?? null;
+  return selected;
+}
+
+export async function listenToNativeImportProgress(
+  onProgress: (payload: NativeImportProgress) => void,
+): Promise<() => void> {
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<NativeImportProgress>("native-import-progress", event => {
+    onProgress(event.payload);
+  });
+}
+
+export async function startNativePrimaryImport(
+  projectId: string,
+  sourcePath: string,
+): Promise<NativeImportResult> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<NativeImportResult>("start_native_primary_import", {
+    projectId,
+    sourcePath,
+    backendUrl: getBackendBaseUrl(),
+  });
+}
+
+export async function cancelNativeImport(token: string): Promise<boolean> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<boolean>("cancel_native_import", { token });
 }
 
 export async function createProject(requestBody: ProjectCreateRequest): Promise<ProjectDetail> {
@@ -88,6 +317,17 @@ export async function listProjects(): Promise<Project[]> {
 
 export async function getProject(projectId: string): Promise<ProjectDetail> {
   return request(`/projects/${projectId}`);
+}
+
+export async function updateProject(projectId: string, requestBody: ProjectUpdateRequest): Promise<ProjectDetail> {
+  return request(`/projects/${projectId}`, {
+    method: "PATCH",
+    body: JSON.stringify(requestBody),
+  });
+}
+
+export async function deleteProject(projectId: string): Promise<void> {
+  await request(`/projects/${projectId}`, { method: "DELETE" });
 }
 
 export async function listProjectAssets(projectId: string): Promise<ProjectAsset[]> {
@@ -112,6 +352,17 @@ export async function updateProjectAssetSyncOffset(
 ): Promise<ProjectAsset> {
   return request(`/projects/${projectId}/assets/${assetId}/sync`, {
     method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateProjectAssetMetadata(
+  projectId: string,
+  assetId: string,
+  payload: ProjectAssetMetadataUpdateRequest,
+): Promise<ProjectAsset> {
+  return request(`/projects/${projectId}/assets/${assetId}/metadata`, {
+    method: "PATCH",
     body: JSON.stringify(payload),
   });
 }
@@ -143,17 +394,146 @@ export async function uploadProjectAsset(
 export async function uploadProjectPrimaryVideo(
   projectId: string,
   file: File,
+  callbacks?: BrowserPrimaryUploadCallbacks,
 ): Promise<VideoUploadResponse> {
-  const form = new FormData();
-  form.append("file", file);
+  const callbacksSafe = callbacks ?? {};
+  let token = loadBrowserUploadSession(projectId, file)?.token ?? null;
+  let status: PrimaryImportStatus | null = null;
 
-  const res = await fetchWithTimeout(
-    `${BASE_URL}/projects/${projectId}/videos/upload`,
-    { method: "POST", body: form },
-    VIDEO_UPLOAD_TIMEOUT_MS,
+  if (token) {
+    try {
+      status = await getBrowserPrimaryImportStatus(projectId, token);
+      if (
+        status.total_bytes !== file.size ||
+        status.filename !== file.name ||
+        ["cancelled", "finalized"].includes(status.status)
+      ) {
+        clearBrowserUploadSession(projectId, file);
+        token = null;
+        status = null;
+      }
+    } catch {
+      clearBrowserUploadSession(projectId, file);
+      token = null;
+      status = null;
+    }
+  }
+
+  if (!token) {
+    const session = await initBrowserPrimaryImport(projectId, file);
+    token = session.token;
+    saveBrowserUploadSession(projectId, file, token);
+    callbacksSafe.onSession?.(token);
+    status = {
+      token,
+      project_id: session.project_id,
+      filename: file.name,
+      status: "initialized",
+      bytes_received: 0,
+      total_bytes: file.size,
+      percent: 0,
+      complete: false,
+      updated_at: null,
+      warnings: session.warnings,
+    };
+  } else {
+    callbacksSafe.onSession?.(token);
+  }
+
+  let bytesUploaded = status?.bytes_received ?? 0;
+  let lastTick = performance.now();
+  let lastBytes = bytesUploaded;
+  callbacksSafe.onProgress?.(
+    toImportProgress(
+      projectId,
+      file.name,
+      bytesUploaded >= file.size ? "finalizing" : "copying",
+      bytesUploaded,
+      file.size,
+      0,
+      null,
+      bytesUploaded > 0 ? "Resuming browser upload" : "Uploading video in resumable chunks",
+      token,
+    ),
   );
-  if (!res.ok) throw await errorFromResponse("Project video upload failed", res);
-  return res.json();
+
+  try {
+    while (bytesUploaded < file.size) {
+      const nextChunk = file.slice(bytesUploaded, bytesUploaded + PRIMARY_BROWSER_UPLOAD_CHUNK_BYTES);
+      const chunkResult = await appendBrowserPrimaryImportChunk(
+        projectId,
+        token,
+        bytesUploaded,
+        nextChunk,
+        callbacksSafe.signal,
+      );
+
+      const now = performance.now();
+      const deltaBytes = chunkResult.bytes_received - lastBytes;
+      const elapsedSeconds = Math.max((now - lastTick) / 1000, 0.001);
+      const bytesPerSecond = deltaBytes > 0 ? deltaBytes / elapsedSeconds : 0;
+      const remainingBytes = Math.max(file.size - chunkResult.bytes_received, 0);
+      const etaSeconds = bytesPerSecond > 0 ? remainingBytes / bytesPerSecond : null;
+
+      bytesUploaded = chunkResult.bytes_received;
+      lastTick = now;
+      lastBytes = bytesUploaded;
+
+      callbacksSafe.onProgress?.(
+        toImportProgress(
+          projectId,
+          file.name,
+          chunkResult.complete ? "finalizing" : "copying",
+          bytesUploaded,
+          file.size,
+          bytesPerSecond,
+          etaSeconds,
+          chunkResult.complete ? "Finalizing uploaded video" : "Uploading video in resumable chunks",
+          token,
+        ),
+      );
+    }
+
+    const result = await finalizeBrowserPrimaryImport(projectId, token, file.size);
+    clearBrowserUploadSession(projectId, file);
+    callbacksSafe.onProgress?.(
+      toImportProgress(
+        projectId,
+        file.name,
+        "completed",
+        file.size,
+        file.size,
+        0,
+        0,
+        "Browser upload completed",
+        token,
+      ),
+    );
+    return result;
+  } catch (error) {
+    if (callbacksSafe.signal?.aborted) {
+      clearBrowserUploadSession(projectId, file);
+      try {
+        await cancelBrowserPrimaryImport(projectId, token);
+      } catch {
+        // Ignore cleanup failures after an explicit cancel.
+      }
+      callbacksSafe.onProgress?.(
+        toImportProgress(
+          projectId,
+          file.name,
+          "cancelled",
+          bytesUploaded,
+          file.size,
+          0,
+          null,
+          "Browser upload cancelled",
+          token,
+        ),
+      );
+    }
+    throw error;
+  }
 }
 
 export async function deleteProjectAsset(projectId: string, assetId: string): Promise<void> {
@@ -232,6 +612,17 @@ export async function updateTranscriptCutTrim(
   });
 }
 
+export async function restoreTranscriptCutWord(
+  videoId: string,
+  decisionId: string,
+  payload: TranscriptCutWordRestoreRequest,
+): Promise<TranscriptCutDecision[]> {
+  return request(`/videos/${videoId}/transcript/cuts/${decisionId}/restore-word`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function getEditDecisionSync(videoId: string): Promise<EditDecisionSync> {
   return request(`/videos/${videoId}/edit-decision-sync`);
 }
@@ -242,21 +633,23 @@ export async function getEditDecisionSync(videoId: string): Promise<EditDecision
 
 export async function analyzeCleanSuggestions(
   videoId: string,
-  profile: CleanProfileId | string = "conservative",
+  profile: CleanProfileId | string = "moderate",
 ): Promise<CleanAnalyzeResult> {
   return request(`/videos/${videoId}/clean/analyze?profile=${encodeURIComponent(profile)}`);
 }
 
 export async function applyCleanSuggestions(
   videoId: string,
-  profile: CleanProfileId | string = "conservative",
+  profile: CleanProfileId | string = "moderate",
   suggestionIds?: string[],
+  suggestionTypes?: string[],
 ): Promise<CleanApplyResult> {
   return request(`/videos/${videoId}/clean/apply`, {
     method: "POST",
     body: JSON.stringify({
       profile,
       suggestion_ids: suggestionIds && suggestionIds.length > 0 ? suggestionIds : null,
+      suggestion_types: suggestionTypes && suggestionTypes.length > 0 ? suggestionTypes : null,
     }),
   });
 }
@@ -300,10 +693,46 @@ export async function getEditPlan(videoId: string): Promise<EditPlan> {
   return request(`/videos/${videoId}/plan`);
 }
 
+export async function getSemanticRenderPlan(videoId: string): Promise<SemanticRenderPlan> {
+  return request(`/videos/${videoId}/render-plan`);
+}
+
+export async function regenerateSemanticRenderPlan(videoId: string): Promise<SemanticRenderPlan> {
+  return request(`/videos/${videoId}/render-plan/regenerate`, { method: "POST" });
+}
+
 export async function updateCaptionPolicy(videoId: string, payload: CaptionPolicyUpdate): Promise<EditPlan> {
   return request(`/videos/${videoId}/plan/captions`, {
     method: "PUT",
     body: JSON.stringify(payload),
+  });
+}
+
+export async function updateLayoutCues(videoId: string, layoutCues: LayoutCueUpdate[]): Promise<EditPlan> {
+  return request(`/videos/${videoId}/plan/layout-cues`, {
+    method: "PUT",
+    body: JSON.stringify({ layout_cues: layoutCues }),
+  });
+}
+
+export async function updateSlideCues(videoId: string, slideCues: SlideCue[]): Promise<EditPlan> {
+  return request(`/videos/${videoId}/plan/slide-cues`, {
+    method: "PUT",
+    body: JSON.stringify({ slide_cues: slideCues, source: "teacher_slide_override" }),
+  });
+}
+
+export async function updateEditorialBlocks(videoId: string, editorialBlocks: EditorialBlock[]): Promise<EditPlan> {
+  return request(`/videos/${videoId}/plan/editorial-blocks`, {
+    method: "PUT",
+    body: JSON.stringify({ editorial_blocks: editorialBlocks, source: "teacher_editorial_override" }),
+  });
+}
+
+export async function autoGenerateLayoutCues(videoId: string, profile = "balanced"): Promise<EditPlan> {
+  return request(`/videos/${videoId}/plan/layout-cues/auto`, {
+    method: "POST",
+    body: JSON.stringify({ profile }),
   });
 }
 
@@ -339,10 +768,17 @@ export async function getExportPresets(): Promise<ExportPresetCatalog> {
 }
 
 export async function approvePlan(videoId: string, notes?: string, exportPresetId?: string): Promise<ApprovePlanResponse> {
-  return request(`/videos/${videoId}/plan/approve`, {
+  const url = `${BASE_URL}/videos/${videoId}/plan/approve`;
+  const res = await fetchWithTimeout(url, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ teacher_notes: notes || null, export_preset_id: exportPresetId || null }),
-  });
+  }, APPROVAL_TIMEOUT_MS);
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`API ${res.status}: ${body.slice(0, 300)}`);
+  }
+  return res.json();
 }
 
 export async function cancelRender(videoId: string): Promise<RenderCancelResponse> {
@@ -465,6 +901,14 @@ export function getSubtitleVttUrl(videoId: string): string {
 
 export function getChaptersDownloadUrl(videoId: string): string {
   return `${BASE_URL}/videos/${videoId}/chapters/download`;
+}
+
+export async function exportSectionClips(videoId: string): Promise<SectionClipExportManifest> {
+  return request(`/videos/${videoId}/section-clips/export`, { method: "POST" });
+}
+
+export function getSectionClipsManifestUrl(videoId: string): string {
+  return `${BASE_URL}/videos/${videoId}/section-clips/manifest`;
 }
 
 export function getPlanExportUrl(videoId: string): string {

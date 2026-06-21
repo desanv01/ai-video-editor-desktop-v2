@@ -89,9 +89,36 @@ export interface ProjectCreateRequest {
   metadata?: Record<string, unknown>;
 }
 
+export interface ProjectUpdateRequest {
+  title?: string;
+  description?: string | null;
+  source_mode?: ProjectSourceMode;
+  project_type?: string;
+  metadata?: Record<string, unknown>;
+}
+
 export interface ProjectAssetUploadResponse extends ProjectAsset {
   file_size_mb: number | null;
   message: string;
+}
+
+export interface SectionClipExportManifest {
+  schema_version: string;
+  video_id: string;
+  source_path: string;
+  project_type: string;
+  clip_count: number;
+  clips: {
+    clip_index: number;
+    label: string;
+    start_time: number;
+    end_time: number;
+    duration_seconds: number;
+    filename: string;
+    path: string;
+    download_url: string;
+  }[];
+  chapter_summary: Record<string, unknown>;
 }
 
 export interface ProjectSourceSyncAsset {
@@ -119,6 +146,11 @@ export interface ProjectSourceSyncPlan {
 export interface ProjectAssetSyncUpdateRequest {
   sync_offset_seconds: number;
   note?: string | null;
+}
+
+export interface ProjectAssetMetadataUpdateRequest {
+  slide_page_start: number | null;
+  slide_page_end: number | null;
 }
 
 // ── Video ──
@@ -239,6 +271,11 @@ export interface TranscriptCutTrimUpdateRequest {
   end_time?: number;
   pre_roll_seconds?: number;
   post_roll_seconds?: number;
+  teacher_note?: string | null;
+}
+
+export interface TranscriptCutWordRestoreRequest {
+  word_index: number;
   teacher_note?: string | null;
 }
 
@@ -611,6 +648,13 @@ export type EndCardActionUpdate = Partial<Omit<EndCardAction, "kind" | "schema_v
   animation?: Partial<AnimationSettings>;
 };
 
+export type LayoutCueUpdate = Partial<Omit<LayoutCue, "kind" | "schema_version" | "timing" | "sources" | "output" | "camera">> & {
+  timing?: Partial<LayoutCueTiming>;
+  sources?: Partial<LayoutCueSources>;
+  output?: Partial<LayoutCueOutput>;
+  camera?: Partial<LayoutCueCamera>;
+};
+
 export interface Segment {
   id: string;
   segment_index: number;
@@ -646,6 +690,90 @@ export interface Segment {
   teacher_action: SegmentAction | null;
   teacher_note: string | null;
   is_teacher_modified: boolean;
+
+  // Upgrade: Agent 5 layout decision (2026-06-09)
+  layout_mode?: string | null;  // "full_slide" | "pip_slide" | "half_half" | "full_face"
+}
+
+// ── Semantic Render Plan ──
+
+export interface SemanticRenderSlide {
+  id: string;
+  title: string;
+  body: string;
+  bullets: string[];
+  source_filename: string | null;
+  source_asset_id: string | null;
+  reference_index: number | null;
+  image_path?: string | null;
+  image_url?: string | null;
+}
+
+export interface SemanticRenderTransition {
+  type: string;
+  duration_seconds: number;
+}
+
+export interface SemanticRenderScene {
+  id: string;
+  source_segment_id: string | null;
+  source_start_time: number;
+  source_end_time: number;
+  start_time: number;
+  end_time: number;
+  duration_seconds: number;
+  layout: LayoutMode | string;
+  slide_id: string | null;
+  slide_title: string;
+  caption_text: string;
+  topic_label: string;
+  importance_score: number | null;
+  action: SegmentAction | string;
+  transition: SemanticRenderTransition;
+  camera: {
+    enabled: boolean;
+    shape: CameraShape | string;
+    corner: CameraCorner | string;
+    size: string;
+  };
+  semantic_match: {
+    score: number;
+    strategy: string;
+    source: string | null;
+  };
+}
+
+export interface SemanticRenderPlan {
+  schema_version: string;
+  renderer: {
+    preferred: "revideo" | string;
+    fallback: string;
+    composition: string;
+  };
+  video: {
+    id: string;
+    project_id: string | null;
+    filename: string;
+    duration_seconds: number;
+    source_url: string;
+  };
+  timeline: {
+    duration_seconds: number;
+    scene_count: number;
+    slide_count: number;
+    source_duration_seconds: number;
+  };
+  plan_hash?: string;
+  slide_cues?: Record<string, unknown>[];
+  layout_cues?: LayoutCue[];
+  clean_cuts?: Record<string, unknown>[];
+  source_map?: Record<string, unknown>[];
+  transitions?: Record<string, unknown>[];
+  sources: Record<string, unknown>;
+  slides: SemanticRenderSlide[];
+  scenes: SemanticRenderScene[];
+  captions: { id: string; start_time: number; end_time: number; text: string }[];
+  metadata: Record<string, unknown>;
 }
 
 // ── Edit Plan ──
@@ -663,18 +791,57 @@ export interface EditPlan {
   chapters: Record<string, unknown>[];
   section_summary: Record<string, unknown>;
   layout_cues: LayoutCue[];
+  slide_cues: SlideCue[];
+  editorial_blocks: EditorialBlock[];
   polish_actions: PolishAction[];
   export_metadata: Record<string, unknown>;
+  render_plan: SemanticRenderPlan | Record<string, never>;
   original_duration: number | null;
   estimated_duration: number | null;
   segments_total: number | null;
   segments_keep: number | null;
   segments_cut: number | null;
+  segments_shorten: number | null;
   segments_highlight: number | null;
   filler_words_removed: number | null;
   silence_removed_seconds: number | null;
   is_approved: boolean;
   teacher_notes: string | null;
+}
+
+export interface SlideCue {
+  id: string;
+  start_time: number;
+  end_time: number;
+  slide_id?: string | null;
+  slide_index: number | null;
+  confidence?: number;
+  cue_type?: "anchor" | "excursion" | "return" | "advance" | "anchor_hold" | "lecturer_only" | string;
+  reason?: string;
+  source?: string;
+  anchor_slide_index?: number | null;
+  editorial_block_id?: string;
+}
+
+export interface EditorialBlock {
+  id: string;
+  schema_version?: string;
+  start_time: number;
+  end_time: number;
+  title: string;
+  summary: string;
+  transcript_excerpt?: string;
+  slide_index: number | null;
+  candidate_slide_index?: number | null;
+  slide_relevance: "none" | "partial" | "direct" | "critical" | string;
+  slide_relation?: "related" | "unrelated" | "uncertain" | string;
+  layout: LayoutMode;
+  confidence: number;
+  review_required?: boolean;
+  planning_status?: "verified" | "needs_review" | "degraded" | "teacher_adjusted" | string;
+  reason?: string;
+  source?: string;
+  teacher_modified?: boolean;
 }
 
 // ── Processing Status ──
@@ -763,8 +930,10 @@ export interface ProcessingStatus {
   current_step_label: string;
   progress_percent: number;
   steps_completed: string[];
-  steps_timing: Record<string, { elapsed_seconds: number; summary?: Record<string, unknown> }>;
+  steps_failed: Record<string, { error: string; elapsed_seconds: number; failed_at?: string }>;
+  steps_timing: Record<string, { elapsed_seconds: number; summary?: Record<string, unknown>; error?: string }>;
   total_elapsed_seconds: number;
+  current_step_elapsed_seconds?: number;
   error_message: string | null;
   render_job?: RenderJob | null;
 }
@@ -1039,6 +1208,7 @@ export interface BackendAISettings {
   capabilities: Record<AIProviderKind, AICapabilitySettings>;
   api_keys: Record<string, APIKeyStatus>;
   local_model_paths: Record<AIProviderKind, string | null>;
+  local_model_ids: Record<AIProviderKind, string | null>;
 }
 
 export type AICapabilitySettingsUpdate = Partial<AICapabilitySettings>;
@@ -1049,6 +1219,7 @@ export interface BackendAISettingsUpdate {
   capabilities?: Partial<Record<AIProviderKind, AICapabilitySettingsUpdate>>;
   api_keys?: Partial<Record<string, APIKeyUpdate>>;
   local_model_paths?: Partial<Record<AIProviderKind, string | null>>;
+  local_model_ids?: Partial<Record<AIProviderKind, string | null>>;
   domain_terms?: string[];
 }
 
@@ -1073,13 +1244,21 @@ export interface LocalTranscriptionModel {
   status: LocalTranscriptionModelStatus;
   can_download: boolean;
   can_remove: boolean;
+  download_bytes_downloaded: number;
+  download_total_bytes: number | null;
   download_progress_percent: number | null;
+  download_speed_bytes_per_second: number | null;
+  download_eta_seconds: number | null;
   file_path: string | null;
 }
 
 export interface LocalTranscriptionModelCatalog {
   provider_id: "whisper-cpp";
   active_model_id: string;
+  runtime_configured: boolean;
+  runtime_status: "ready" | "missing" | string;
+  runtime_message: string;
+  runtime_binary_path: string | null;
   models: LocalTranscriptionModel[];
 }
 
@@ -1093,6 +1272,8 @@ export interface LocalTranscriptionModelDownload {
   total_bytes: number | null;
   bytes_downloaded: number;
   progress_percent: number;
+  speed_bytes_per_second: number | null;
+  eta_seconds: number | null;
   message: string;
   error: string | null;
   active: boolean;
@@ -1116,4 +1297,82 @@ export interface AppSettings {
   interface_density?: "comfortable" | "compact" | string;
   guided_tours_enabled?: boolean;
   guided_hints_enabled?: boolean;
+}
+
+export interface AppStorageLayout {
+  rootDir: string;
+  uploadsDir: string;
+  stagingDir: string;
+  renderedVideosDir: string;
+  proxiesDir: string;
+  tempDir: string;
+  logsDir: string;
+  configDir: string;
+  backupsDir: string;
+}
+
+export interface NativeImportProgress {
+  token: string;
+  projectId: string;
+  filename: string;
+  status: "copying" | "finalizing" | "completed" | "cancelled" | string;
+  bytesCopied: number;
+  totalBytes: number;
+  percent: number;
+  bytesPerSecond: number;
+  etaSeconds: number | null;
+  message: string;
+}
+
+export interface PrimaryImportInitSession {
+  token: string;
+  project_id: string;
+  original_filename: string;
+  mime_type: string | null;
+  file_size_bytes: number;
+  max_size_bytes: number;
+  available_disk_bytes: number;
+  required_free_bytes: number;
+  staging_relative_path: string;
+  staging_part_relative_path: string;
+  warnings: string[];
+}
+
+export interface PrimaryImportStatus {
+  token: string;
+  project_id: string;
+  filename: string;
+  status: string;
+  bytes_received: number;
+  total_bytes: number;
+  percent: number;
+  complete: boolean;
+  updated_at: string | null;
+  warnings: string[];
+}
+
+export interface PrimaryImportChunkResponse extends PrimaryImportStatus {
+  next_offset: number;
+}
+
+export interface NativeImportResult {
+  token: string;
+  projectId: string;
+  videoId: string;
+  filename: string;
+}
+
+export interface DesktopReadinessItem {
+  key: string;
+  label: string;
+  status: "ready" | "starting" | "warning" | "failed" | string;
+  detail: string;
+}
+
+export interface DesktopBootstrapResult {
+  ready: boolean;
+  backendUrl: string;
+  composeProjectName: string;
+  envFile: string;
+  items: DesktopReadinessItem[];
 }

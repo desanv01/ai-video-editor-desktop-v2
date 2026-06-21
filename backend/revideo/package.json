@@ -1,0 +1,14 @@
+{
+  "name": "aive-backend-revideo-renderer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@revideo/2d": "0.10.4",
+    "@revideo/core": "0.10.4",
+    "@revideo/player-react": "0.10.4",
+    "@revideo/renderer": "0.10.4",
+    "@revideo/ui": "0.10.4",
+    "@revideo/vite-plugin": "0.10.4"
+  }
+}

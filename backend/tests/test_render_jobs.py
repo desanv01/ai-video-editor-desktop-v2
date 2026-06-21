@@ -12,9 +12,11 @@ if str(APP_DIR) not in sys.path:
 from services.render_jobs import (  # noqa: E402
     RenderCancelled,
     cancel_render_job,
+    claim_render_job,
     complete_render_job,
     configure_render_job_store,
     create_render_job,
+    create_render_job_with_status,
     ensure_not_cancelled,
     get_active_render_job,
     get_latest_render_job,
@@ -66,6 +68,18 @@ class RenderJobTests(unittest.TestCase):
         self.assertFalse(completed["cancellable"])
         self.assertIsNone(get_active_render_job(video_id))
         self.assertEqual(get_latest_render_job(video_id)["status"], "completed")
+
+    def test_active_job_is_reused_and_can_only_be_claimed_once(self):
+        video_id = "render-progress-test-idempotent"
+        job, created = create_render_job_with_status(video_id, "youtube_1080p")
+        duplicate, duplicate_created = create_render_job_with_status(video_id, "youtube_720p")
+
+        self.assertTrue(created)
+        self.assertFalse(duplicate_created)
+        self.assertEqual(duplicate["job_id"], job["job_id"])
+        self.assertEqual(duplicate["preset_id"], "youtube_1080p")
+        self.assertIsNotNone(claim_render_job(job["job_id"], video_id))
+        self.assertIsNone(claim_render_job(job["job_id"], video_id))
 
     def test_render_cancel_request_is_observed_by_checker(self):
         video_id = "render-progress-test-cancel"

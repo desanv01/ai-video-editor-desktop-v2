@@ -72,16 +72,31 @@ export function useSegments(videoId: string | null) {
     action: SegmentAction,
     note?: string,
   ) => {
-    if (!videoId) return;
-    await api.updateSegment(videoId, segmentId, action, note, true);
+    if (!videoId) {
+      console.error("updateAction: videoId is null, cannot persist segment change");
+      alert("Cannot save: no video selected");
+      return;
+    }
+    if (!segmentId) {
+      console.error("updateAction: segmentId is empty");
+      alert("Cannot save: invalid segment");
+      return;
+    }
+    try {
+      await api.updateSegment(videoId, segmentId, action, note, true);
 
-    setSegments(prev =>
-      prev.map(s =>
-        s.id === segmentId
-          ? { ...s, teacher_action: action, teacher_note: note || null, is_teacher_modified: true }
-          : s
-      )
-    );
+      setSegments(prev =>
+        prev.map(s =>
+          s.id === segmentId
+            ? { ...s, teacher_action: action, teacher_note: note || null, is_teacher_modified: true }
+            : s
+        )
+      );
+    } catch (err) {
+      console.error("updateAction: API call failed", err);
+      alert(`Failed to save segment change: ${err}`);
+      throw err; // re-throw so callers like undo/redo can surface the error
+    }
   }, [videoId]);
 
   const applySegmentOverride = useCallback(async (
@@ -90,25 +105,44 @@ export function useSegments(videoId: string | null) {
     teacherNote: string | null,
     isTeacherModified: boolean,
   ) => {
-    if (!videoId) return;
-    await api.updateSegment(videoId, segmentId, teacherAction, teacherNote, isTeacherModified);
+    if (!videoId) {
+      console.error("applySegmentOverride: videoId is null");
+      alert("Cannot save: no video selected");
+      return;
+    }
+    if (!segmentId) {
+      console.error("applySegmentOverride: segmentId is empty");
+      alert("Cannot save: invalid segment");
+      return;
+    }
+    try {
+      await api.updateSegment(videoId, segmentId, teacherAction, teacherNote, isTeacherModified);
 
-    setSegments(prev =>
-      prev.map(s =>
-        s.id === segmentId
-          ? {
-              ...s,
-              teacher_action: teacherAction,
-              teacher_note: teacherNote,
-              is_teacher_modified: isTeacherModified,
-            }
-          : s
-      )
-    );
+      setSegments(prev =>
+        prev.map(s =>
+          s.id === segmentId
+            ? {
+                ...s,
+                teacher_action: teacherAction,
+                teacher_note: teacherNote,
+                is_teacher_modified: isTeacherModified,
+              }
+            : s
+        )
+      );
+    } catch (err) {
+      console.error("applySegmentOverride: API call failed", err);
+      alert(`Failed to save segment override: ${err}`);
+      throw err;
+    }
   }, [videoId]);
 
   const acceptAllHighConfidence = useCallback(async (threshold = 0.85) => {
-    if (!videoId) return;
+    if (!videoId) {
+      console.error("acceptAllHighConfidence: videoId is null");
+      alert("Cannot accept: no video selected");
+      return 0;
+    }
     const updates = segments
       .filter(s => (s.action_confidence ?? 0) >= threshold && !s.is_teacher_modified)
       .map(s => ({
@@ -118,8 +152,14 @@ export function useSegments(videoId: string | null) {
       }));
 
     if (updates.length > 0) {
-      await api.bulkUpdateSegments(videoId, updates);
-      await load(); // Reload after bulk update
+      try {
+        await api.bulkUpdateSegments(videoId, updates);
+        await load(); // Reload after bulk update
+      } catch (err) {
+        console.error("acceptAllHighConfidence: bulk update API call failed", err);
+        alert(`Failed to auto-accept segments: ${err}`);
+        throw err;
+      }
     }
 
     return updates.length;
@@ -143,16 +183,22 @@ export function usePlaybackSync() {
     }
   }, []);
 
-  const togglePlay = useCallback(() => {
-    if (videoRef.current) {
-      if (videoRef.current.paused) {
-        videoRef.current.play();
-        setIsPlaying(true);
-      } else {
-        videoRef.current.pause();
+  const togglePlay = useCallback(async () => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (video.paused) {
+      try {
+        await video.play();
+        setIsPlaying(!video.paused);
+      } catch {
         setIsPlaying(false);
       }
+      return;
     }
+
+    video.pause();
+    setIsPlaying(false);
   }, []);
 
   return { currentTime, setCurrentTime, isPlaying, setIsPlaying, videoRef, seekTo, togglePlay };

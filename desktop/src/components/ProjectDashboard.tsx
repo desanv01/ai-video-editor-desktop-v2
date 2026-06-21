@@ -2,10 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
   ArrowRight,
-  CalendarClock,
   CheckCircle2,
   CircleDashed,
-  Clock3,
+  Edit3,
   FileVideo,
   FolderOpen,
   LayoutDashboard,
@@ -16,6 +15,7 @@ import {
   Search,
   Settings2,
   Sparkles,
+  Trash2,
 } from "lucide-react";
 import * as api from "../lib/api";
 import type { Project, ProjectCreateRequest, ProjectSourceMode, ProjectStatus, Video } from "../types/api";
@@ -61,6 +61,8 @@ export function ProjectDashboard({ onContinue }: Props) {
   const [videos, setVideos] = useState<Video[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
+  const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [newProject, setNewProject] = useState<ProjectCreateRequest>({
@@ -112,7 +114,6 @@ export function ProjectDashboard({ onContinue }: Props) {
     });
   }, [projects, query]);
 
-  const recentProjects = projects.slice(0, 4);
   const activeProjectCount = projects.filter((project) => {
     const status = effectiveProjectStatus(project, videosByProject.get(project.id)?.[0] ?? null);
     return status !== "archived" && status !== "completed";
@@ -158,12 +159,53 @@ export function ProjectDashboard({ onContinue }: Props) {
       return;
     }
 
+    if (linkedVideo.status === "rendering") {
+      onContinue({ project, video: linkedVideo, nextView: "review" });
+      return;
+    }
+
     if (BUSY_VIDEO_STATUSES.has(linkedVideo.status)) {
       onContinue({ project, video: linkedVideo, nextView: "processing" });
       return;
     }
 
     onContinue({ project, video: linkedVideo, nextView: "upload" });
+  };
+
+  const renameProject = async (project: Project) => {
+    const nextTitle = window.prompt("Rename project", project.title);
+    if (nextTitle === null) return;
+
+    const title = nextTitle.trim();
+    if (!title || title === project.title) return;
+
+    setRenamingProjectId(project.id);
+    setError(null);
+    try {
+      const updated = await api.updateProject(project.id, { title });
+      setProjects(prev => prev.map(item => item.id === project.id ? updated : item));
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setRenamingProjectId(null);
+    }
+  };
+
+  const deleteProject = async (project: Project) => {
+    const confirmed = window.confirm(`Delete "${project.title}" and its linked videos, sources, and generated artifacts?`);
+    if (!confirmed) return;
+
+    setDeletingProjectId(project.id);
+    setError(null);
+    try {
+      await api.deleteProject(project.id);
+      setProjects(prev => prev.filter(item => item.id !== project.id));
+      setVideos(prev => prev.filter(video => video.project_id !== project.id));
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setDeletingProjectId(null);
+    }
   };
 
   return (
@@ -234,6 +276,9 @@ export function ProjectDashboard({ onContinue }: Props) {
                       project={project}
                       video={linkedVideo}
                       onContinue={() => continueProject(project)}
+                      onRename={() => void renameProject(project)}
+                      onDelete={() => void deleteProject(project)}
+                      busy={deletingProjectId === project.id || renamingProjectId === project.id}
                     />
                   );
                 })}
@@ -242,8 +287,8 @@ export function ProjectDashboard({ onContinue }: Props) {
           </div>
         </section>
 
-        <aside className="flex min-h-0 flex-col overflow-hidden bg-surface-raised">
-          <form onSubmit={handleCreateProject} className="border-b border-surface-border p-5">
+        <aside className="min-h-0 overflow-auto bg-surface-raised">
+          <form onSubmit={handleCreateProject} className="p-5">
             <div className="mb-4 flex items-center justify-between">
               <div>
                 <h3 className="text-sm font-semibold text-white">Create Project</h3>
@@ -324,37 +369,6 @@ export function ProjectDashboard({ onContinue }: Props) {
             </div>
           </form>
 
-          <div className="min-h-0 flex-1 overflow-auto p-5">
-            <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-white">
-              <Clock3 className="h-4 w-4 text-gray-400" />
-              Recent Projects
-            </div>
-            <div className="space-y-2">
-              {recentProjects.length === 0 ? (
-                <p className="rounded-md border border-dashed border-surface-border p-4 text-sm text-gray-500">
-                  Recent workspaces will appear here after a project is created or a legacy video is uploaded.
-                </p>
-              ) : (
-                recentProjects.map((project) => (
-                  <button
-                    key={project.id}
-                    type="button"
-                    onClick={() => continueProject(project)}
-                    className="w-full rounded-md border border-surface-border bg-surface p-3 text-left transition-colors hover:border-gray-500"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="min-w-0 truncate text-sm font-medium text-gray-100">{project.title}</span>
-                      <ProjectStatusPill status={effectiveProjectStatus(project, videosByProject.get(project.id)?.[0] ?? null)} />
-                    </div>
-                    <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
-                      <CalendarClock className="h-3.5 w-3.5" />
-                      {formatRelativeDate(project.updated_at)}
-                    </div>
-                  </button>
-                ))
-              )}
-            </div>
-          </div>
         </aside>
       </div>
     </div>
@@ -370,13 +384,30 @@ function MetricTile({ label, value, accent }: { label: string; value: number; ac
   );
 }
 
-function ProjectRow({ project, video, onContinue }: { project: Project; video: Video | null; onContinue: () => void }) {
+function ProjectRow({
+  project,
+  video,
+  onContinue,
+  onRename,
+  onDelete,
+  busy,
+}: {
+  project: Project;
+  video: Video | null;
+  onContinue: () => void;
+  onRename: () => void;
+  onDelete: () => void;
+  busy: boolean;
+}) {
   const actionLabel = getContinueLabel(project, video);
   const detail = video ? `${video.original_filename} / ${formatVideoStatus(video.status)}` : "Workspace setup";
   const displayStatus = effectiveProjectStatus(project, video);
 
   return (
-    <div className="grid grid-cols-[minmax(220px,1fr)_130px_140px_150px] items-center gap-4 px-6 py-4 transition-colors hover:bg-surface-raised/70">
+    <div
+      onClick={onContinue}
+      className="grid cursor-pointer grid-cols-[minmax(220px,1fr)_130px_140px_190px] items-center gap-4 px-6 py-4 transition-colors hover:bg-surface-raised/70"
+    >
       <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-surface-raised text-gray-400">
@@ -405,7 +436,36 @@ function ProjectRow({ project, video, onContinue }: { project: Project; video: V
         </div>
         <button
           type="button"
-          onClick={onContinue}
+          onClick={(event) => {
+            event.stopPropagation();
+            onRename();
+          }}
+          disabled={busy}
+          className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-surface-border text-gray-400 transition-colors hover:border-accent hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+          aria-label={`Rename ${project.title}`}
+          title="Rename project"
+        >
+          <Edit3 className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete();
+          }}
+          disabled={busy}
+          className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-surface-border text-gray-400 transition-colors hover:border-red-400/70 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-50"
+          aria-label={`Delete ${project.title}`}
+          title="Delete project"
+        >
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+        </button>
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onContinue();
+          }}
           className="inline-flex h-9 items-center gap-2 rounded-md border border-surface-border px-3 text-sm text-gray-200 transition-colors hover:border-accent hover:text-white"
         >
           {actionLabel}
@@ -478,6 +538,7 @@ function EmptyProjectState({ hasQuery }: { hasQuery: boolean }) {
 function getContinueLabel(project: Project, video: Video | null) {
   if (!video) return project.status === "draft" ? "Open Project" : "Continue";
   if (video.status === "awaiting_review" || video.status === "completed") return "Continue Editing";
+  if (video.status === "rendering") return "Open Export";
   if (BUSY_VIDEO_STATUSES.has(video.status)) return "View Progress";
   if (video.status === "failed") return "Inspect";
   return "Open Project";
@@ -488,6 +549,7 @@ function effectiveProjectStatus(project: Project, video: Video | null): ProjectS
   if (video.status === "awaiting_review") return "awaiting_review";
   if (video.status === "completed") return "completed";
   if (video.status === "failed") return "failed";
+  if (video.status === "rendering") return "processing";
   if (BUSY_VIDEO_STATUSES.has(video.status)) return "processing";
   return project.status === "draft" ? "ready" : project.status;
 }

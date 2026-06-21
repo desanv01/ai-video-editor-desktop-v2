@@ -50,16 +50,29 @@ def build_provider_registry(settings) -> ProviderRegistry:
         set_default=default_asr_provider == "whisper-cpp",
     )
 
+    # DeepSeek V4 Flash — fast reasoning (Agents 2, 3)
     registry.register(
         OpenAICompatibleChatProvider(
-            provider_id="deepseek-chat",
-            label="DeepSeek Chat",
+            provider_id="deepseek-v4-flash",
+            label="DeepSeek V4 Flash",
             provider_name="deepseek",
             api_key=settings.DEEPSEEK_API_KEY,
             base_url=settings.DEEPSEEK_BASE_URL,
             default_model=settings.AGENT2_MODEL,
         ),
         set_default=True,
+    )
+
+    # DeepSeek V4 Pro — strongest reasoning (Agent 5)
+    registry.register(
+        OpenAICompatibleChatProvider(
+            provider_id="deepseek-v4-pro",
+            label="DeepSeek V4 Pro",
+            provider_name="deepseek",
+            api_key=settings.DEEPSEEK_API_KEY,
+            base_url=settings.DEEPSEEK_BASE_URL,
+            default_model=settings.AGENT5_MODEL,  # deepseek-v4-pro from .env
+        ),
     )
 
     registry.register(
@@ -73,6 +86,19 @@ def build_provider_registry(settings) -> ProviderRegistry:
         set_default=True,
     )
 
+    # Alibaba Qwen 3.7 Plus — vision model (not default chat provider)
+    registry.register(
+        OpenAICompatibleChatProvider(
+            provider_id="qwen-3.7-plus",
+            label="Qwen 3.7 Plus (Alibaba)",
+            provider_name="alibaba",
+            api_key=settings.ALIBABA_API_KEY,
+            base_url=settings.ALIBABA_BASE_URL,
+            default_model="qwen3.7-plus-2026-05-26",
+        ),
+    )
+
+    # Unconfigured vision fallback — replaced when a real vision provider is used
     registry.register(UnconfiguredVisionProvider(), set_default=True)
     registry.register(UnconfiguredLocalRuntimeProvider(), set_default=True)
     registry.set_processing_modes(build_processing_mode_config(settings, registry))

@@ -13,6 +13,15 @@ const ACTIONS: { action: SegmentAction; label: string; icon: React.ReactNode; co
   { action: "highlight", label: "Highlight", icon: <Star className="w-4 h-4" />, color: "bg-action-highlight hover:bg-action-highlight-dark" },
 ];
 
+function layoutModeLabel(mode: string): string {
+  return ({
+    full_slide: "Full slide",
+    pip_slide: "Picture-in-picture",
+    half_half: "Side by side",
+    full_face: "Full lecturer",
+  } as Record<string, string>)[mode] || mode;
+}
+
 export function SegmentDetail({ segment: seg, onUpdateAction }: Props) {
   const currentAction = seg.is_teacher_modified && seg.teacher_action ? seg.teacher_action : seg.action;
 
@@ -91,12 +100,27 @@ export function SegmentDetail({ segment: seg, onUpdateAction }: Props) {
 
       <Section title="Visual Structure (Agent 4)">
         <Row label="Slide change" value={seg.has_slide_change ? `Yes (#${seg.slide_index})` : "No"} />
+        {seg.slide_index != null && (
+          <Row label="Matched slide">
+            <span className="text-xs">
+              Slide #{seg.slide_index}
+              {seg.has_slide_change ? " (new slide)" : " (continued)"}
+            </span>
+          </Row>
+        )}
       </Section>
 
       <Section title="AI Decision (Agent 5)">
         <Row label="Action" value={seg.action} />
         <Row label="Confidence" value={seg.action_confidence ? `${Math.round(seg.action_confidence * 100)}%` : "N/A"} />
         {seg.action_reason && <Row label="Reason" value={seg.action_reason} />}
+        {seg.layout_mode && (
+          <Row label="Layout mode">
+            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium">
+              {layoutModeLabel(seg.layout_mode)}
+            </span>
+          </Row>
+        )}
       </Section>
 
       {/* ── Teacher Note ── */}

@@ -1,0 +1,80 @@
+services:
+  backend:
+    image: ai-video-editor/backend:${AIVE_BACKEND_TAG:-1.0.0}
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:${AIVE_BACKEND_PORT:-18000}:8000"
+    volumes:
+      - ${AIVE_HOST_UPLOADS_DIR}:/data/uploads
+      - ${AIVE_HOST_VIDEOS_DIR}:/data/videos
+      - ${AIVE_HOST_TEMP_DIR}:/data/temp
+      - ${AIVE_HOST_LOGS_DIR}:/data/logs
+      - ${AIVE_HOST_CONFIG_DIR}:/data/config
+      - ${AIVE_HOST_BACKUPS_DIR}:/data/backups
+      - ${AIVE_HOST_PROXIES_DIR}:/data/proxies
+      - ${AIVE_HOST_MODELS_DIR}:/data/models
+    env_file:
+      - ${AIVE_DESKTOP_ENV_FILE}
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,video,utility}
+      VIDEO_STORAGE_PATH: /data/videos
+      UPLOAD_PATH: /data/uploads
+      TEMP_PATH: /data/temp
+      LOG_PATH: /data/logs
+      CONFIG_PATH: /data/config
+      BACKUP_PATH: /data/backups
+      PROXY_STORAGE_PATH: /data/proxies
+      MODEL_STORAGE_PATH: /data/models
+      APP_STORAGE_ROOT: /data
+      STAGING_UPLOAD_PATH: /data/uploads/staging/native-imports
+      IMPORT_MANIFEST_PATH: /data/uploads/staging/native-imports/manifests
+      ORPHAN_UPLOAD_PATH: /data/uploads/orphaned-imports
+      FFMPEG_HARDWARE_ACCELERATION: ${FFMPEG_HARDWARE_ACCELERATION:-auto}
+      FFMPEG_HARDWARE_FALLBACK_TO_CPU: ${FFMPEG_HARDWARE_FALLBACK_TO_CPU:-false}
+    depends_on:
+      db:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      redis:
+        condition: service_started
+    restart: unless-stopped
+    mem_limit: ${BACKEND_MEMORY_LIMIT:-6g}
+    pids_limit: 512
+
+  db:
+    image: postgres:16-alpine
+    ports:
+      - "127.0.0.1:${AIVE_DB_PORT:-15432}:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aive}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aive_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-aive_db}
+    volumes:
+      - ${AIVE_HOST_POSTGRES_DIR}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aive}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "127.0.0.1:${AIVE_QDRANT_HTTP_PORT:-16333}:6333"
+      - "127.0.0.1:${AIVE_QDRANT_GRPC_PORT:-16334}:6334"
+    volumes:
+      - ${AIVE_HOST_QDRANT_DIR}:/qdrant/storage
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:${AIVE_REDIS_PORT:-16379}:6379"
+    volumes:
+      - ${AIVE_HOST_REDIS_DIR}:/data
+    restart: unless-stopped

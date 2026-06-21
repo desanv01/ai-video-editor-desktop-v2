@@ -50,6 +50,7 @@ import type {
   CaptionPolicyUpdate,
   Chapter,
   CleanAnalyzeResult,
+  CleanApplyResult,
   CleanProfileId,
   EducationalOverlayAction,
   EducationalOverlayActionUpdate,
@@ -59,10 +60,12 @@ import type {
   EndCardActionUpdate,
   EndCardType,
   EditPlan,
+  EditorialBlock,
   ExportPreset,
   ExportPresetCatalog,
   LayoutAspectRatio,
   LayoutCue,
+  LayoutCueUpdate,
   LayoutMode,
   ProcessingStatus,
   RevalidationResult,
@@ -81,6 +84,24 @@ export type GuidedWorkflowStep = {
 };
 
 export type CameraSize = "small" | "medium" | "large";
+type EditorialBlockFilter = "all" | "needs_review" | "lecturer_only" | "slide_focus";
+
+function editorialBlockNeedsReview(block: EditorialBlock): boolean {
+  return Boolean(
+    block.review_required
+    || block.slide_relation === "uncertain"
+    || block.planning_status === "needs_review"
+    || block.planning_status === "degraded"
+  );
+}
+
+function editorialBlockStatus(block: EditorialBlock): string {
+  if (block.teacher_modified || block.planning_status === "teacher_adjusted") return "Teacher adjusted";
+  if (block.planning_status === "degraded") return "Fallback needs review";
+  if (block.slide_relation === "uncertain" || block.review_required) return "Uncertain match";
+  if (block.slide_relation === "unrelated" || block.slide_index == null) return "Lecturer only";
+  return "Matched to slide";
+}
 
 export type LayoutPreviewSettings = {
   layout: LayoutMode;
@@ -256,11 +277,12 @@ type PanelProps = StepperProps & {
   renderStatus: ProcessingStatus | null;
   renderCancelling: boolean;
   onLayoutSettingsChange: (settings: LayoutPreviewSettings) => void;
+  onLayoutDraftDirtyChange: (dirty: boolean, blockId?: string | null) => void;
   onPolishPlanUpdated: (plan: EditPlan) => void;
   onSelectedAnnotationChange: (annotationId: string | null) => void;
   onSelectedEducationalOverlayChange: (overlayId: string | null) => void;
   onAcceptAll: () => void;
-  onCleanApplied: () => Promise<void> | void;
+  onCleanApplied: (result?: CleanApplyResult) => Promise<void> | void;
   onApprove: (exportPresetId?: string) => void;
   onCancelRender: () => void;
   onRefreshChapters: () => void;
@@ -276,8 +298,8 @@ export function GuidedWorkflowStepper({ activeStep, completedStepIds, onStepChan
   const progressPercent = Math.round((completedCount / GUIDED_WORKFLOW_STEPS.length) * 100);
 
   return (
-    <div className="border-b border-surface-border bg-surface-raised px-4 py-3">
-      <div className="mb-3 flex items-center justify-between gap-4">
+    <div className="border-b border-surface-border bg-surface-raised px-4 py-2">
+      <div className="mb-2 flex items-center justify-between gap-4">
         <div>
           <h2 className="text-sm font-semibold text-white">Guided Editor Workflow</h2>
           <p className="text-xs text-gray-400">{completedCount} of {GUIDED_WORKFLOW_STEPS.length} steps complete</p>
@@ -293,7 +315,7 @@ export function GuidedWorkflowStepper({ activeStep, completedStepIds, onStepChan
         </div>
       </div>
 
-      <div className="grid grid-cols-6 gap-2">
+      <div className="grid grid-cols-6 gap-1.5">
         {GUIDED_WORKFLOW_STEPS.map((step, index) => {
           const Icon = step.icon;
           const isActive = activeStep === step.id;
@@ -305,7 +327,7 @@ export function GuidedWorkflowStepper({ activeStep, completedStepIds, onStepChan
               type="button"
               onClick={() => onStepChange(step.id)}
               aria-current={isActive ? "step" : undefined}
-              className={`flex min-w-0 items-center gap-2 rounded-md border px-2.5 py-2 text-left transition-colors ${
+              className={`flex min-w-0 items-center gap-2 rounded-md border px-2.5 py-1.5 text-left transition-colors ${
                 isActive
                   ? "border-accent bg-accent/15 text-white"
                   : isComplete
@@ -348,6 +370,7 @@ export function GuidedWorkflowPanel({
   renderStatus,
   renderCancelling,
   onLayoutSettingsChange,
+  onLayoutDraftDirtyChange,
   onPolishPlanUpdated,
   onSelectedAnnotationChange,
   onSelectedEducationalOverlayChange,
@@ -382,6 +405,14 @@ export function GuidedWorkflowPanel({
   const [exportPresetCatalog, setExportPresetCatalog] = useState<ExportPresetCatalog | null>(null);
   const [selectedExportPresetId, setSelectedExportPresetId] = useState<string>("youtube_1080p");
   const [exportPresetMessage, setExportPresetMessage] = useState<string | null>(null);
+  const [sectionClipsExporting, setSectionClipsExporting] = useState(false);
+  const [sectionClipsMessage, setSectionClipsMessage] = useState<string | null>(null);
+  const [layoutSaving, setLayoutSaving] = useState(false);
+  const [layoutAutoGenerating, setLayoutAutoGenerating] = useState(false);
+  const [layoutMessage, setLayoutMessage] = useState<string | null>(null);
+  const [layoutDirty, setLayoutDirty] = useState(false);
+  const [draftSlideIndex, setDraftSlideIndex] = useState<number | null>(null);
+  const [editorialFilter, setEditorialFilter] = useState<EditorialBlockFilter>("all");
 
   const activeStepMeta = GUIDED_WORKFLOW_STEPS.find((step) => step.id === activeStep) ?? GUIDED_WORKFLOW_STEPS[0];
   const activeIndex = GUIDED_WORKFLOW_STEPS.findIndex((step) => step.id === activeStep);
@@ -405,7 +436,47 @@ export function GuidedWorkflowPanel({
   const warningCount = (warnings?.warnings.length ?? 0) + (warnings?.consequence_alerts.length ?? 0);
   const StepIcon = activeStepMeta.icon;
   const layoutCues = plan?.layout_cues ?? [];
-  const primaryLayoutCue = layoutCues[0] ?? null;
+  const slideCues = plan?.slide_cues ?? [];
+  const slideCount = Array.isArray(plan?.render_plan?.slides) ? plan.render_plan.slides.length : 0;
+  const availableSlideCount = Math.max(slideCount, ...slideCues.map(cue => (cue.slide_index ?? -1) + 1), 0);
+  const editorialBlocks = useMemo<EditorialBlock[]>(() => {
+    if (plan?.editorial_blocks?.length) return plan.editorial_blocks;
+    return slideCues.map((cue, index) => ({
+      id: cue.editorial_block_id || `compat-editorial-${index + 1}`,
+      start_time: cue.start_time,
+      end_time: cue.end_time,
+      title: cue.slide_index == null ? "Lecturer context" : `Slide ${cue.slide_index + 1} discussion`,
+      summary: cue.reason || "Existing slide decision",
+      slide_index: cue.slide_index,
+      slide_relevance: cue.slide_index == null ? "none" : "direct",
+      slide_relation: cue.slide_index == null ? "unrelated" : "related",
+      layout: cue.slide_index == null ? "full_camera_source" : (layoutCueAtTime(layoutCues, cue.start_time)?.layout ?? "picture_in_picture"),
+      confidence: cue.confidence ?? 0.5,
+      review_required: false,
+      planning_status: "verified",
+      reason: cue.reason,
+      source: cue.source,
+    }));
+  }, [layoutCues, plan?.editorial_blocks, slideCues]);
+  const filteredEditorialBlocks = useMemo(() => editorialBlocks.filter(block => {
+    if (editorialFilter === "needs_review") return editorialBlockNeedsReview(block);
+    if (editorialFilter === "lecturer_only") return block.slide_index == null;
+    if (editorialFilter === "slide_focus") return block.slide_index != null;
+    return true;
+  }), [editorialBlocks, editorialFilter]);
+  const editorialPlanning = (plan?.metadata?.editorial_planning ?? {}) as {
+    status?: string;
+    warnings?: string[];
+    degraded_reason?: string | null;
+  };
+  const activeEditorialBlock = editorialBlocks.find(block => (
+    currentTime >= block.start_time && currentTime < block.end_time
+  )) ?? editorialBlocks[0] ?? null;
+  const activeLayoutCue = (
+    activeEditorialBlock
+      ? layoutCues.find(cue => cue.editorial_block_id === activeEditorialBlock.id)
+      : null
+  ) ?? layoutCueAtTime(layoutCues, currentTime) ?? layoutCues[0] ?? null;
   const exportPresets = useMemo(() => exportPresetCatalog?.groups.flatMap((group) => group.presets) ?? [], [exportPresetCatalog]);
   const selectedExportPreset =
     exportPresets.find((preset) => preset.id === selectedExportPresetId) ?? exportPresets[0] ?? null;
@@ -417,6 +488,100 @@ export function GuidedWorkflowPanel({
   const cameraEnabled = layoutUsesCamera(layoutSettings.layout);
   const updateLayoutSettings = (patch: Partial<LayoutPreviewSettings>) => {
     onLayoutSettingsChange({ ...layoutSettings, ...patch });
+    setLayoutDirty(true);
+    onLayoutDraftDirtyChange(true, activeEditorialBlock?.id ?? null);
+    setLayoutMessage(null);
+  };
+
+  useEffect(() => {
+    if (activeStep !== "layout" || layoutDirty || !activeLayoutCue) return;
+    onLayoutSettingsChange(layoutPreviewSettingsFromCue(activeLayoutCue));
+    setDraftSlideIndex(activeEditorialBlock?.slide_index ?? null);
+  }, [activeEditorialBlock?.id, activeLayoutCue?.id, activeStep, layoutDirty, onLayoutSettingsChange]);
+
+  const handleAutoGenerateLayoutCues = async () => {
+    setLayoutAutoGenerating(true);
+    setLayoutMessage(null);
+    try {
+      const updatedPlan = await api.autoGenerateLayoutCues(videoId, "balanced");
+      onPolishPlanUpdated(updatedPlan);
+      const needsReview = updatedPlan.editorial_blocks.some(editorialBlockNeedsReview);
+      const planning = (updatedPlan.metadata?.editorial_planning ?? {}) as { status?: string };
+      if (!needsReview && planning.status !== "degraded") {
+        onCompleteStep("layout");
+        setLayoutMessage(`${updatedPlan.editorial_blocks.length} verified teaching block${updatedPlan.editorial_blocks.length === 1 ? "" : "s"} generated`);
+      } else {
+        setLayoutMessage("The AI plan was generated, but uncertain or fallback decisions need review before Layout is complete");
+      }
+    } catch (error) {
+      setLayoutMessage(`AI layout generation failed: ${error}`);
+    } finally {
+      setLayoutAutoGenerating(false);
+    }
+  };
+
+  const handleSaveLayoutOverride = async () => {
+    setLayoutSaving(true);
+    setLayoutMessage(null);
+    try {
+      let workingPlan = plan;
+      if (activeEditorialBlock) {
+        if (layoutSettings.layout !== "full_camera_source" && draftSlideIndex == null) {
+          setLayoutMessage("Choose a slide for this teaching block before applying a slide layout");
+          return;
+        }
+        const blocks = editorialBlocks.map(block => block.id === activeEditorialBlock.id ? {
+          ...block,
+          layout: layoutSettings.layout,
+          slide_index: layoutSettings.layout === "full_camera_source" ? null : draftSlideIndex,
+          slide_relevance: layoutSettings.layout === "full_camera_source" ? "none" as const : block.slide_relevance,
+          slide_relation: layoutSettings.layout === "full_camera_source" ? "unrelated" as const : "related" as const,
+          confidence: 1,
+          review_required: false,
+          planning_status: "teacher_adjusted",
+          source: "teacher_editorial_override",
+          teacher_modified: true,
+          reason: "Teacher corrected the active teaching block",
+        } : block);
+        workingPlan = await api.updateEditorialBlocks(videoId, blocks);
+      }
+
+      const currentCues = workingPlan?.layout_cues ?? layoutCues;
+      const matchingCue = activeEditorialBlock
+        ? currentCues.find(cue => cue.editorial_block_id === activeEditorialBlock.id)
+        : layoutCueAtTime(currentCues, currentTime);
+      const cues = currentCues.length > 0
+        ? currentCues.map((cue) => (
+            cue.id === matchingCue?.id
+              ? layoutCueForSave(mergeLayoutCueWithSettings(cue, layoutSettings, currentTime, workingPlan?.original_duration ?? null))
+              : layoutCueForSave(cue)
+          ))
+        : [layoutCueForSave(createLayoutCueDraft(layoutSettings, currentTime, workingPlan?.original_duration ?? null))];
+      const updatedPlan = await api.updateLayoutCues(videoId, cues);
+      onPolishPlanUpdated(updatedPlan);
+      setLayoutDirty(false);
+      setDraftSlideIndex(layoutSettings.layout === "full_camera_source" ? null : draftSlideIndex);
+      onLayoutDraftDirtyChange(false, null);
+      onCompleteStep("layout");
+      setLayoutMessage("Active teaching block styling saved for preview and export");
+    } catch (error) {
+      setLayoutMessage(`Layout save failed: ${error}`);
+    } finally {
+      setLayoutSaving(false);
+    }
+  };
+
+  const handleExportSectionClips = async () => {
+    setSectionClipsExporting(true);
+    setSectionClipsMessage(null);
+    try {
+      const manifest = await api.exportSectionClips(videoId);
+      setSectionClipsMessage(`${manifest.clip_count} subtopic clip${manifest.clip_count === 1 ? "" : "s"} exported`);
+    } catch (error) {
+      setSectionClipsMessage(`Section clip export failed: ${error}`);
+    } finally {
+      setSectionClipsExporting(false);
+    }
   };
   useEffect(() => {
     setCaptionPolicy(captionPolicyFromPlan(plan));
@@ -486,11 +651,11 @@ export function GuidedWorkflowPanel({
     }
   };
 
-  const handleApplyClean = async () => {
+  const handleApplyClean = async (suggestionTypes?: string[]) => {
     setCleanBusy(true);
     setCleanMessage(null);
     try {
-      const result = await api.applyCleanSuggestions(videoId, cleanProfile);
+      const result = await api.applyCleanSuggestions(videoId, cleanProfile, undefined, suggestionTypes);
       setCleanPreview({
         schema_version: result.schema_version,
         profile: result.profile,
@@ -498,13 +663,13 @@ export function GuidedWorkflowPanel({
         summary: result.summary,
         suggestions: result.suggestions,
       });
-      await onCleanApplied();
+      await onCleanApplied(result);
       onCompleteStep("clean");
       setCleanMessage(
         `Applied ${result.created_transcript_cuts.length} transcript cuts and ${result.updated_segments.length} segment edits`,
       );
     } catch (error) {
-      setCleanMessage(`Auto-clean failed: ${error}`);
+      setCleanMessage(`Clean apply failed: ${error}`);
     } finally {
       setCleanBusy(false);
     }
@@ -714,12 +879,38 @@ export function GuidedWorkflowPanel({
                   </button>
                   <button
                     type="button"
-                    onClick={handleApplyClean}
+                    onClick={() => handleApplyClean(["filler_word", "dead_air"])}
                     disabled={cleanBusy}
                     className="flex items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {cleanBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Scissors className="h-3.5 w-3.5" />}
                     Auto-clean
+                  </button>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleApplyClean(["filler_word"])}
+                    disabled={cleanBusy}
+                    className="rounded-md border border-surface-border bg-surface-raised px-3 py-2 text-xs font-semibold text-gray-200 transition-colors hover:border-accent/60 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Filler words
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleApplyClean(["dead_air"])}
+                    disabled={cleanBusy}
+                    className="rounded-md border border-surface-border bg-surface-raised px-3 py-2 text-xs font-semibold text-gray-200 transition-colors hover:border-accent/60 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Trim dead air
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleApplyClean(["false_start", "repeated_phrase", "restarted_sentence"])}
+                    disabled={cleanBusy}
+                    className="rounded-md border border-surface-border bg-surface-raised px-3 py-2 text-xs font-semibold text-gray-200 transition-colors hover:border-accent/60 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    False starts
                   </button>
                 </div>
                 {cleanPreview && (
@@ -756,7 +947,10 @@ export function GuidedWorkflowPanel({
             </WorkflowCard>
             <div className="rounded-md border border-surface-border bg-surface-overlay">
               {selectedSegment ? (
-                <SegmentDetail segment={selectedSegment} onUpdateAction={onUpdateAction} />
+                <SegmentDetail
+                  segment={selectedSegment}
+                  onUpdateAction={onUpdateAction}
+                />
               ) : (
                 <div className="p-4 text-center text-sm text-gray-500">
                   Select a transcript or timeline segment to inspect the AI decision.
@@ -808,12 +1002,252 @@ export function GuidedWorkflowPanel({
             ) : (
               <EmptyState title="No chapters yet" detail="Chapters appear here after the edit plan has section markers." />
             )}
+            {editorialBlocks.length > 0 && (
+              <WorkflowCard title="Teaching Blocks" icon={<ListChecks className="h-4 w-4 text-emerald-300" />}>
+                <div className="space-y-2">
+                  <p className="text-xs leading-5 text-gray-400">
+                    The AI grouped complete sentences and related ideas into {editorialBlocks.length} reviewable content blocks.
+                  </p>
+                  <div className="max-h-72 space-y-1.5 overflow-y-auto pr-1">
+                    {editorialBlocks.map(block => (
+                      <button
+                        key={block.id}
+                        type="button"
+                        onClick={() => onSeekToTime(block.start_time)}
+                        className="w-full rounded-md border border-surface-border bg-surface-overlay px-3 py-2 text-left hover:border-accent/60"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate text-xs font-semibold text-gray-200">{block.title}</span>
+                          <span className="shrink-0 font-mono text-[10px] text-gray-500">{formatTime(block.start_time)}-{formatTime(block.end_time)}</span>
+                        </div>
+                        <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-gray-500">{block.summary}</p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </WorkflowCard>
+            )}
           </PanelStack>
         )}
 
         {activeStep === "layout" && (
           <PanelStack>
-            <WorkflowCard title="Layout Style" icon={<SplitSquareHorizontal className="h-4 w-4 text-blue-300" />}>
+            <WorkflowCard title="AI Edit Plan" icon={<Wand2 className="h-4 w-4 text-purple-300" />}>
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <MiniMetric label="Teaching blocks" value={String(editorialBlocks.length)} />
+                  <MiniMetric label="Needs review" value={String(editorialBlocks.filter(editorialBlockNeedsReview).length)} />
+                  <MiniMetric label="Lecturer only" value={String(editorialBlocks.filter(block => block.slide_index == null).length)} />
+                  <MiniMetric label="Slide related" value={String(editorialBlocks.filter(block => block.slide_index != null).length)} />
+                </div>
+                {(editorialPlanning.status === "degraded" || (editorialPlanning.warnings?.length ?? 0) > 0) && (
+                  <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-100">
+                    <div className="flex items-center gap-2 font-semibold">
+                      <AlertTriangle className="h-4 w-4" />
+                      AI plan needs review
+                    </div>
+                    <p className="mt-1 leading-5 text-amber-100/80">
+                      {editorialPlanning.warnings?.[0] || "The semantic planner used a degraded fallback for one or more ranges."}
+                    </p>
+                  </div>
+                )}
+                <p className="text-xs leading-5 text-gray-400">
+                  Regeneration analyzes transcript meaning and slide text together, then chooses both the relevant slide and presentation mode for each coherent topic block.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleAutoGenerateLayoutCues}
+                  disabled={layoutAutoGenerating || layoutSaving}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {layoutAutoGenerating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                  Regenerate semantic edit plan
+                </button>
+                {layoutMessage && <p className="text-xs leading-5 text-gray-400">{layoutMessage}</p>}
+              </div>
+            </WorkflowCard>
+
+            {editorialBlocks.length > 0 && (
+              <WorkflowCard title="Content Layout Decisions" icon={<Layers className="h-4 w-4 text-emerald-300" />}>
+                <div className="space-y-2">
+                  <p className="text-xs leading-5 text-gray-400">
+                    Review the AI by topic. Each correction updates slide choice and layout together for preview and export.
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {([
+                      ["all", "All"],
+                      ["needs_review", "Needs review"],
+                      ["lecturer_only", "Lecturer only"],
+                      ["slide_focus", "Uses slides"],
+                    ] as Array<[EditorialBlockFilter, string]>).map(([value, label]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        onClick={() => setEditorialFilter(value)}
+                        className={`rounded-md border px-2 py-1 text-[11px] transition-colors ${editorialFilter === value ? "border-accent bg-accent/15 text-purple-200" : "border-surface-border text-gray-400 hover:text-gray-200"}`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="max-h-[34rem] space-y-2 overflow-y-auto pr-1">
+                    {filteredEditorialBlocks.map(block => (
+                      <div key={block.id} className="rounded-md border border-surface-border bg-surface-overlay p-3 text-xs">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (layoutDirty && activeEditorialBlock?.id !== block.id) {
+                              setLayoutMessage("Apply or discard the active block styling before selecting another teaching block");
+                              return;
+                            }
+                            onSeekToTime(Math.min(block.end_time - 0.001, block.start_time + 0.001));
+                          }}
+                          className="w-full text-left"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <span className="font-semibold text-gray-100">{block.title}</span>
+                            <span className="shrink-0 font-mono text-[10px] text-gray-500">{formatTime(block.start_time)}-{formatTime(block.end_time)}</span>
+                          </div>
+                          <p className="mt-1 line-clamp-2 leading-4 text-gray-400">{block.summary}</p>
+                          <div className="mt-2 flex items-center gap-2 text-[10px] text-gray-500">
+                            <span className={editorialBlockNeedsReview(block) ? "text-amber-300" : "text-emerald-300"}>
+                              {editorialBlockStatus(block)}
+                            </span>
+                            <span>{block.slide_relevance.replace("_", " ")}</span>
+                            <span title="Diagnostic score; it does not remove a related slide">score {Math.round(block.confidence * 100)}%</span>
+                          </div>
+                        </button>
+                        <div className="mt-3 grid grid-cols-2 gap-2">
+                          <select
+                            value={activeEditorialBlock?.id === block.id ? layoutSettings.layout : block.layout}
+                            disabled={activeEditorialBlock?.id !== block.id}
+                            onChange={event => {
+                              const layout = event.target.value as LayoutMode;
+                              updateLayoutSettings({ layout });
+                              if (layout === "full_camera_source") setDraftSlideIndex(null);
+                            }}
+                            className="rounded-md border border-surface-border bg-surface-raised px-2 py-1.5 text-xs text-gray-200"
+                          >
+                            <option value="full_camera_source">Lecturer only</option>
+                            <option value="picture_in_picture">Slide + lecturer inset</option>
+                            <option value="side_by_side">Slide and lecturer side by side</option>
+                            <option value="full_screen_source">Slide only</option>
+                          </select>
+                          <select
+                            value={(activeEditorialBlock?.id === block.id ? draftSlideIndex : block.slide_index) == null
+                              ? "none"
+                              : String(activeEditorialBlock?.id === block.id ? draftSlideIndex : block.slide_index)}
+                            disabled={activeEditorialBlock?.id !== block.id}
+                            onChange={event => {
+                              const slideIndex = event.target.value === "none" ? null : Number(event.target.value);
+                              setDraftSlideIndex(slideIndex);
+                              updateLayoutSettings({
+                                layout: slideIndex == null
+                                  ? "full_camera_source"
+                                  : layoutSettings.layout === "full_camera_source" ? "picture_in_picture" : layoutSettings.layout,
+                              });
+                            }}
+                            className="rounded-md border border-surface-border bg-surface-raised px-2 py-1.5 text-xs text-gray-200 disabled:opacity-50"
+                          >
+                            <option value="none">No slide</option>
+                            {Array.from({ length: availableSlideCount }, (_, index) => (
+                              <option key={index} value={index}>Slide {index + 1}</option>
+                            ))}
+                          </select>
+                        </div>
+                        {activeEditorialBlock?.id === block.id && (
+                          <div className="mt-3 space-y-3 border-t border-surface-border pt-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-semibold text-gray-200">Visual styling</span>
+                              <span className={`text-[10px] ${layoutDirty ? "text-amber-300" : "text-emerald-300"}`}>
+                                {layoutDirty ? "Unsaved changes" : "Saved"}
+                              </span>
+                            </div>
+                            <ChoiceGrid
+                              value={layoutSettings.cameraCorner}
+                              onChange={(value) => updateLayoutSettings({ cameraCorner: value as CameraCorner })}
+                              disabled={!cameraEnabled}
+                              options={[
+                                { value: "top_left", label: "Top left", detail: "Upper-left inset" },
+                                { value: "top_right", label: "Top right", detail: "Upper-right inset" },
+                                { value: "bottom_left", label: "Bottom left", detail: "Lower-left inset" },
+                                { value: "bottom_right", label: "Bottom right", detail: "Lower-right inset" },
+                              ]}
+                            />
+                            <ChoiceGrid
+                              value={layoutSettings.cameraShape}
+                              onChange={(value) => updateLayoutSettings({ cameraShape: value as CameraShape })}
+                              disabled={!cameraEnabled}
+                              options={[
+                                { value: "rectangle", label: "Rectangle", detail: "Maximum image area" },
+                                { value: "rounded_rectangle", label: "Rounded", detail: "Soft inset" },
+                                { value: "circle", label: "Circle", detail: "Headshot crop" },
+                              ]}
+                            />
+                            <ChoiceGrid
+                              value={layoutSettings.cameraSize}
+                              onChange={(value) => updateLayoutSettings({ cameraSize: value as CameraSize })}
+                              disabled={!cameraEnabled}
+                              options={[
+                                { value: "small", label: "Small", detail: "20% frame" },
+                                { value: "medium", label: "Medium", detail: "26% frame" },
+                                { value: "large", label: "Large", detail: "34% frame" },
+                              ]}
+                            />
+                            <SliderControl
+                              label="Inset margin"
+                              value={layoutSettings.cameraMarginPercent}
+                              min={2}
+                              max={8}
+                              step={1}
+                              suffix="%"
+                              disabled={!cameraEnabled}
+                              onChange={(value) => updateLayoutSettings({ cameraMarginPercent: value })}
+                            />
+                            <ChoiceGrid
+                              value={layoutSettings.transitionPreset}
+                              onChange={(value) => updateLayoutSettings({ transitionPreset: value })}
+                              options={[
+                                { value: "crossfade", label: "Crossfade", detail: "Dissolve from previous block" },
+                                { value: "fade", label: "Fade", detail: "Gentle scene change" },
+                                { value: "wipe_left", label: "Wipe", detail: "Slide-led topic shift" },
+                                { value: "cut", label: "Cut", detail: "Instant switch" },
+                              ]}
+                            />
+                            <SliderControl
+                              label="Transition duration"
+                              value={layoutSettings.transitionDurationSeconds}
+                              min={0}
+                              max={1}
+                              step={0.05}
+                              suffix="s"
+                              onChange={(value) => updateLayoutSettings({ transitionDurationSeconds: value })}
+                            />
+                            <button
+                              type="button"
+                              onClick={handleSaveLayoutOverride}
+                              disabled={layoutSaving || !layoutDirty}
+                              className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {layoutSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                              Apply block decision and styling
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                    {filteredEditorialBlocks.length === 0 && (
+                      <p className="rounded-md border border-dashed border-surface-border px-3 py-4 text-center text-xs text-gray-500">
+                        No teaching blocks match this filter.
+                      </p>
+                    )}
+                  </div>
+                  {layoutMessage && <p className="text-xs text-gray-400">{layoutMessage}</p>}
+                </div>
+              </WorkflowCard>
+            )}
+
+            {false && <WorkflowCard title="Layout Style" icon={<SplitSquareHorizontal className="h-4 w-4 text-blue-300" />}>
               <OptionGroup
                 value={layoutSettings.layout}
                 onChange={(value) => updateLayoutSettings({ layout: value as LayoutMode })}
@@ -824,9 +1258,21 @@ export function GuidedWorkflowPanel({
                   { value: "full_camera_source", label: "Full camera", icon: Film },
                 ]}
               />
-            </WorkflowCard>
+              <p className="mt-1 text-[10px] leading-4 text-gray-500">
+                 Fine-tune the teaching block at the current playhead. Its AI slide decision remains authoritative.
+              </p>
+              <button
+                type="button"
+                onClick={handleSaveLayoutOverride}
+                disabled={layoutSaving}
+                className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-md border border-surface-border px-3 py-2 text-xs font-semibold text-gray-100 hover:border-accent disabled:opacity-50"
+              >
+                {layoutSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                 Save active block styling
+              </button>
+            </WorkflowCard>}
 
-            <WorkflowCard title="Output Aspect" icon={<MonitorPlay className="h-4 w-4 text-sky-300" />}>
+            {false && <WorkflowCard title="Output Aspect" icon={<MonitorPlay className="h-4 w-4 text-sky-300" />}>
               <ChoiceGrid
                 value={layoutSettings.aspectRatio}
                 onChange={(value) => updateLayoutSettings({ aspectRatio: value as LayoutAspectRatio })}
@@ -837,9 +1283,9 @@ export function GuidedWorkflowPanel({
                   { value: "9:16", label: "9:16", detail: "Vertical" },
                 ]}
               />
-            </WorkflowCard>
+            </WorkflowCard>}
 
-            <WorkflowCard title="Camera Position" icon={<Film className="h-4 w-4 text-green-300" />}>
+            {false && <WorkflowCard title="Camera Position" icon={<Film className="h-4 w-4 text-green-300" />}>
               <div className="space-y-3">
                 <ChoiceGrid
                   value={layoutSettings.cameraCorner}
@@ -863,9 +1309,9 @@ export function GuidedWorkflowPanel({
                   onChange={(value) => updateLayoutSettings({ cameraMarginPercent: value })}
                 />
               </div>
-            </WorkflowCard>
+            </WorkflowCard>}
 
-            <WorkflowCard title="Camera Shape" icon={<Circle className="h-4 w-4 text-yellow-300" />}>
+            {false && <WorkflowCard title="Camera Shape" icon={<Circle className="h-4 w-4 text-yellow-300" />}>
               <div className="space-y-3">
                 <ChoiceGrid
                   value={layoutSettings.cameraShape}
@@ -888,26 +1334,26 @@ export function GuidedWorkflowPanel({
                   ]}
                 />
               </div>
-            </WorkflowCard>
+            </WorkflowCard>}
 
-            <WorkflowCard title="Preview Cue" icon={<Layers className="h-4 w-4 text-purple-300" />}>
+            {false && <WorkflowCard title="Preview Cue" icon={<Layers className="h-4 w-4 text-purple-300" />}>
               <div className="space-y-3">
                 <div className="grid grid-cols-2 gap-2">
                   <MiniMetric label="Plan cues" value={String(layoutCues.length)} />
                   <MiniMetric label="Camera" value={cameraEnabled ? "On" : "Off"} />
                   <MiniMetric label="Aspect" value={layoutSettings.aspectRatio} />
-                  <MiniMetric label="Status" value={primaryLayoutCue?.status ?? "Preview"} />
+                  <MiniMetric label="Status" value={activeLayoutCue?.status ?? "Preview"} />
                 </div>
-                {primaryLayoutCue?.reason ? (
-                  <p className="text-xs leading-5 text-gray-400">{primaryLayoutCue.reason}</p>
+                {activeLayoutCue?.reason ? (
+                  <p className="text-xs leading-5 text-gray-400">{activeLayoutCue.reason}</p>
                 ) : (
                   <p className="text-xs leading-5 text-gray-400">
                     No planned layout cue is attached to this edit plan yet.
                   </p>
                 )}
               </div>
-            </WorkflowCard>
-            <WorkflowCard title="Layout Transitions" icon={<Sparkles className="h-4 w-4 text-sky-300" />}>
+            </WorkflowCard>}
+            {false && <WorkflowCard title="Layout Transitions" icon={<Sparkles className="h-4 w-4 text-sky-300" />}>
               <div className="space-y-3">
                 <ChoiceGrid
                   value={layoutSettings.transitionPreset}
@@ -929,10 +1375,10 @@ export function GuidedWorkflowPanel({
                   onChange={(value) => updateLayoutSettings({ transitionDurationSeconds: value })}
                 />
                 <p className="text-xs leading-5 text-gray-500">
-                  Current plan default: {primaryLayoutCue?.timing.transition_in ?? "crossfade"}.
+                  Current plan default: {activeLayoutCue?.timing.transition_in ?? "crossfade"}.
                 </p>
               </div>
-            </WorkflowCard>
+            </WorkflowCard>}
           </PanelStack>
         )}
 
@@ -1612,6 +2058,15 @@ export function GuidedWorkflowPanel({
               </button>
             ) : renderComplete ? (
               <div className="space-y-2">
+                <button
+                  type="button"
+                  onClick={() => onApprove(selectedExportPreset?.id ?? selectedExportPresetId)}
+                  disabled={approving || !plan}
+                  className="flex w-full items-center justify-center gap-2 rounded-md bg-accent px-3 py-3 text-sm font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {approving ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                  {approving ? "Starting export..." : `Export Again ${selectedExportPreset?.label ?? "Video"}`}
+                </button>
                 <DownloadLink
                   href={api.getVideoDownloadUrl(videoId)}
                   label={selectedExportPreset?.audio_only ? "Lecture Audio (M4A)" : "Edited Video (MP4)"}
@@ -1629,6 +2084,20 @@ export function GuidedWorkflowPanel({
                 <DownloadLink href={api.getProviderModeTraceUrl(videoId)} label="Provider Mode Trace" />
                 <DownloadLink href={api.getMetricsSummaryUrl(videoId)} label="Metrics Summary" />
                 <DownloadLink href={api.getAcademicEvidenceBundleUrl(videoId)} label="Evidence Bundle (ZIP)" />
+                <button
+                  type="button"
+                  onClick={handleExportSectionClips}
+                  disabled={sectionClipsExporting}
+                  className="flex w-full items-center justify-between rounded-md border border-surface-border bg-surface-raised px-3 py-2 text-sm text-gray-200 transition-colors hover:border-accent hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <span className="flex items-center gap-2">
+                    {sectionClipsExporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Film className="h-4 w-4" />}
+                    Export Subtopic Clips
+                  </span>
+                  <ArrowRight className="h-4 w-4" />
+                </button>
+                {sectionClipsMessage && <p className="text-xs leading-5 text-gray-400">{sectionClipsMessage}</p>}
+                <DownloadLink href={api.getSectionClipsManifestUrl(videoId)} label="Subtopic Clip Manifest" />
               </div>
             ) : renderActive ? null : (
               <button
@@ -2055,6 +2524,13 @@ function formatDuration(seconds: number): string {
   return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
 }
 
+function formatTime(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+// Agent 5 layout_mode → LayoutMode enum mapping for preview
 function selectedExportPresetIdFromPlan(plan: EditPlan | null): string | null {
   const metadata = plan?.export_metadata;
   if (!metadata || typeof metadata !== "object") return null;
@@ -2081,6 +2557,124 @@ function exportPresetSummary(preset: ExportPreset): string {
 
 function layoutUsesCamera(layout: LayoutMode): boolean {
   return layout === "picture_in_picture" || layout === "side_by_side" || layout === "full_camera_source";
+}
+
+export function layoutCueAtTime(cues: LayoutCue[], time: number): LayoutCue | null {
+  return cues.find((cue) => {
+    const start = Number.isFinite(cue.start_time) ? cue.start_time : 0;
+    const end = cue.end_time ?? Number.POSITIVE_INFINITY;
+    return time >= start && time < end;
+  }) ?? null;
+}
+
+function createLayoutCueDraft(
+  settings: LayoutPreviewSettings,
+  currentTime: number,
+  duration: number | null,
+): LayoutCue {
+  const start = Math.max(0, currentTime || 0);
+  const end = duration && duration > start ? duration : null;
+  return {
+    id: `layout-manual-${Date.now()}`,
+    kind: "layout_cue",
+    schema_version: "phase7.layout.v1",
+    status: "active",
+    layout: settings.layout,
+    start_time: start,
+    end_time: end,
+    timing: {
+      start_time: start,
+      end_time: end,
+      duration_seconds: end == null ? null : Math.round((end - start) * 1000) / 1000,
+      transition_in: settings.transitionPreset,
+      transition_out: "cut",
+      transition_duration_seconds: settings.transitionDurationSeconds,
+    },
+    sources: {
+      screen: { role: "screen", asset_id: null, enabled: settings.layout !== "full_camera_source", track: "screen", sync_offset_seconds: 0 },
+      camera: { role: "camera", asset_id: null, enabled: layoutUsesCamera(settings.layout), track: "camera", sync_offset_seconds: 0 },
+      audio: { role: "audio", asset_id: null, enabled: true, track: "audio", sync_offset_seconds: 0 },
+    },
+    output: { aspect_ratio: settings.aspectRatio },
+    camera: {
+      enabled: layoutUsesCamera(settings.layout),
+      shape: settings.cameraShape,
+      corner: settings.cameraCorner,
+      size: settings.cameraSize,
+      margin_percent: settings.cameraMarginPercent,
+    },
+    source: "teacher_layout_override",
+    reason: "Teacher-created layout cue from the guided workflow.",
+  };
+}
+
+function mergeLayoutCueWithSettings(
+  cue: LayoutCue,
+  settings: LayoutPreviewSettings,
+  currentTime: number,
+  duration: number | null,
+): LayoutCue {
+  const start = Number.isFinite(cue.start_time) ? cue.start_time : Math.max(0, currentTime || 0);
+  const end = cue.end_time ?? (duration && duration > start ? duration : null);
+  return {
+    ...cue,
+    status: "active",
+    layout: settings.layout,
+    start_time: start,
+    end_time: end,
+    timing: {
+      ...cue.timing,
+      start_time: start,
+      end_time: end,
+      duration_seconds: end == null ? null : Math.round((end - start) * 1000) / 1000,
+      transition_in: settings.transitionPreset,
+      transition_out: "cut",
+      transition_duration_seconds: settings.transitionDurationSeconds,
+    },
+    output: {
+      ...cue.output,
+      aspect_ratio: settings.aspectRatio,
+    },
+    camera: {
+      ...cue.camera,
+      enabled: layoutUsesCamera(settings.layout),
+      shape: settings.cameraShape,
+      corner: settings.cameraCorner,
+      size: settings.cameraSize,
+      margin_percent: settings.cameraMarginPercent,
+    },
+    sources: {
+      ...cue.sources,
+      screen: {
+        ...cue.sources.screen,
+        enabled: settings.layout !== "full_camera_source",
+      },
+      camera: {
+        ...cue.sources.camera,
+        enabled: layoutUsesCamera(settings.layout),
+      },
+      audio: {
+        ...cue.sources.audio,
+        enabled: true,
+      },
+    },
+    source: "teacher_layout_override",
+    reason: "Teacher override saved from the guided workflow layout panel.",
+  };
+}
+
+function layoutCueForSave(cue: LayoutCue): LayoutCueUpdate {
+  return {
+    ...cue,
+    timing: { ...cue.timing },
+    sources: {
+      screen: { ...cue.sources.screen },
+      camera: { ...cue.sources.camera },
+      audio: { ...cue.sources.audio },
+    },
+    output: { ...cue.output },
+    camera: { ...cue.camera },
+  };
 }
 
 function captionPolicyFromPlan(plan: EditPlan | null): CaptionPolicy {

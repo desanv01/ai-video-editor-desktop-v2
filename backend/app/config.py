@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     DEEPSEEK_API_KEY: str = ""
     MISTRAL_API_KEY: str = ""
 
+    # ── Alibaba Cloud (Qwen) ──
+    ALIBABA_API_KEY: str = ""
+    ALIBABA_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
     # ── Database ──
     DATABASE_URL: str = "postgresql+asyncpg://aive:aive_secret@db:5432/aive_db"
 
@@ -25,9 +29,21 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://redis:6379/0"
 
     # ── Storage ──
+    APP_STORAGE_ROOT: str = "/data"
     VIDEO_STORAGE_PATH: str = "/data/videos"
     UPLOAD_PATH: str = "/data/uploads"
     TEMP_PATH: str = "/data/temp"
+    LOG_PATH: str = "/data/logs"
+    CONFIG_PATH: str = "/data/config"
+    BACKUP_PATH: str = "/data/backups"
+    PROXY_STORAGE_PATH: str = "/data/proxies"
+    MODEL_STORAGE_PATH: str = "/data/models"
+    STAGING_UPLOAD_PATH: str = "/data/uploads/staging/native-imports"
+    IMPORT_MANIFEST_PATH: str = "/data/uploads/staging/native-imports/manifests"
+    ORPHAN_UPLOAD_PATH: str = "/data/uploads/orphaned-imports"
+    UPLOAD_REQUIRED_FREE_SPACE_MULTIPLIER: float = 4.0
+    UPLOAD_MIN_FREE_SPACE_BYTES: int = 8 * 1024 * 1024 * 1024
+    UPLOAD_ABANDONED_PART_MAX_AGE_HOURS: int = 24
 
     # ── ASR Configuration ──
     ASR_PROVIDER: str = "voxtral"              # "voxtral" (primary) or "whisper" (fallback)
@@ -43,9 +59,9 @@ class Settings(BaseSettings):
 
     # ── LLM Configuration (per-agent) ──
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
-    AGENT2_MODEL: str = "deepseek-chat"         # Content Understanding — heavy reasoning
-    AGENT3_MODEL: str = "deepseek-chat"         # Fluency Detection — lightweight (swap to qwen3-8b when available)
-    AGENT5_MODEL: str = "deepseek-chat"         # Edit Planner — strong JSON + reasoning
+    AGENT2_MODEL: str = "deepseek-v4-flash"     # Content Understanding — V4 Flash (fast reasoning)
+    AGENT3_MODEL: str = "deepseek-v4-flash"     # Fluency Detection — V4 Flash
+    AGENT5_MODEL: str = "deepseek-v4-pro"       # Edit Planner — V4 Pro (strongest reasoning)
 
     # AI Provider Mode Configuration
     AI_PROCESSING_MODE: str = "hybrid"          # "api", "local", or "hybrid"
@@ -79,14 +95,43 @@ class Settings(BaseSettings):
     EMBEDDING_DIMENSIONS: int = 1536
 
     # ── Processing ──
-    MAX_VIDEO_SIZE_MB: int = 500
+    MAX_VIDEO_SIZE_MB: int = 10240
     FRAME_SAMPLE_INTERVAL: float = 1.0
+    AGENT4_SCENE_DETECTION_TIMEOUT_SECONDS: float = 90.0
+    AGENT4_MAX_SCENE_THUMBNAILS: int = 40
+    AGENT4_STRUCTURE_REFERENCE_SKIP_MB: int = 768
     SILENCE_THRESHOLD_DB: int = -40
     SILENCE_MIN_DURATION: float = 1.5
     MIN_EDIT_REDUCTION_PERCENT: float = 18.0
     MAX_AUTO_CUT_IMPORTANCE: float = 0.62
     CHUNK_SIZE_TOKENS: int = 300
     CHUNK_OVERLAP_TOKENS: int = 50
+
+    # Hardware accelerated FFmpeg export/rendering.
+    # "auto" prefers NVIDIA NVENC, then Intel QSV, then VAAPI, then AMD AMF when available.
+    # Use "off" to force CPU libx264, or set "nvenc", "qsv", "vaapi", or "amf" explicitly.
+    FFMPEG_HARDWARE_ACCELERATION: str = "auto"
+    # When False, hardware encoder failures raise errors instead of silently falling
+    # back to CPU. This ensures HW issues are loud and get fixed rather than hidden.
+    FFMPEG_HARDWARE_FALLBACK_TO_CPU: bool = False
+
+    # Native semantic compositor is the production lecture export path. It uses
+    # the shared semantic render plan, static slide/card images, FFmpeg filters,
+    # and the configured hardware encoder when available.
+    NATIVE_SEMANTIC_COMPOSITOR_ENABLED: bool = True
+
+    # Revideo semantic compositor is intentionally opt-in/short-form only.
+    # Browser/frame rendering is too slow for full lecture exports, so the
+    # native FFmpeg compositor is the default for normal videos.
+    REVIDEO_RENDERER_ENABLED: bool = False
+    REVIDEO_RENDERER_FALLBACK_ENABLED: bool = True
+    REVIDEO_RENDERER_MAX_DEFAULT_DURATION_SECONDS: float = 90.0
+    REVIDEO_RENDERER_COMMAND: str = "node"
+    REVIDEO_RENDERER_WORKDIR: str = "/revideo"
+    REVIDEO_RENDERER_SCRIPT: str = "/revideo/render.mjs"
+    REVIDEO_RENDERER_WORKERS: int = 1
+    REVIDEO_RENDERER_BASE_PORT: int = 9300
+    REVIDEO_RENDERER_TIMEOUT_SECONDS: int = 1800
 
     # ── Context Biasing (domain-specific terms for ASR accuracy) ──
     DOMAIN_TERMS: str = "[]"                   # JSON array of terms, e.g. '["polymorphism","quicksort"]'
@@ -102,7 +147,18 @@ class Settings(BaseSettings):
 
     @property
     def cors_origins_list(self) -> List[str]:
-        return json.loads(self.CORS_ORIGINS)
+        origins = json.loads(self.CORS_ORIGINS)
+        local_dev_origins = [
+            "http://localhost:1420",
+            "http://127.0.0.1:1420",
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "tauri://localhost",
+        ]
+        for origin in local_dev_origins:
+            if origin not in origins:
+                origins.append(origin)
+        return origins
 
     class Config:
         env_file = ".env"

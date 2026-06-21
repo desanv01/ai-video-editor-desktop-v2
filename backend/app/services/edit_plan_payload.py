@@ -8,6 +8,11 @@ from typing import Any, Iterable
 from services.layout_model import default_layout_cues as default_phase7_layout_cues
 from services.layout_model import normalize_layout_cues
 from services.layout_planner import layout_planning_summary, plan_layout_cues
+from services.editorial_plan import (
+    layout_cues_from_editorial_blocks,
+    normalize_editorial_blocks,
+    slide_cues_from_editorial_blocks,
+)
 
 
 EDIT_PLAN_SCHEMA_VERSION = "phase6.edit-plan.v2"
@@ -105,12 +110,58 @@ def normalize_plan_payload(plan_json: Any) -> dict[str, Any]:
     payload.setdefault("segments", [])
     payload.setdefault("edit_decisions", [])
     payload.setdefault("cleaning_suggestions", [])
+    payload.setdefault("clean_cuts", [])
     payload.setdefault("sections", [])
     payload.setdefault("chapters", [])
+    raw_editorial_blocks = payload.get("editorial_blocks", [])
+    has_authoritative_editorial_blocks = isinstance(raw_editorial_blocks, list) and bool(raw_editorial_blocks)
+    payload["editorial_blocks"] = (
+        normalize_editorial_blocks(
+            raw_editorial_blocks,
+            duration_seconds=_payload_duration_seconds(payload),
+        )
+        if has_authoritative_editorial_blocks
+        else []
+    )
+    slide_cues = payload.get("slide_cues")
+    if not slide_cues:
+        render_plan = _dict_value(payload.get("render_plan"))
+        nested_slide_cues = render_plan.get("slide_cues")
+        if isinstance(nested_slide_cues, list):
+            payload["slide_cues"] = list(nested_slide_cues)
+    payload.setdefault("slide_cues", [])
+    payload.setdefault("visual_analysis", {})
     payload["layout_cues"] = normalize_layout_cues(
         payload.get("layout_cues", []),
         duration_seconds=_payload_duration_seconds(payload),
     )
+    if not payload["editorial_blocks"]:
+        visual_analysis = _dict_value(payload.get("visual_analysis"))
+        legacy_blocks = visual_analysis.get("editorial_blocks")
+        if not isinstance(legacy_blocks, list) or not legacy_blocks:
+            legacy_blocks = payload.get("slide_cues", [])
+        migrated_blocks = (
+            normalize_editorial_blocks(
+                legacy_blocks,
+                duration_seconds=_payload_duration_seconds(payload),
+            )
+            if isinstance(legacy_blocks, list) and legacy_blocks
+            else []
+        )
+        for block in migrated_blocks:
+            if block.get("slide_index") is not None:
+                cue = _layout_cue_at(payload["layout_cues"], float(block.get("start_time", 0.0) or 0.0))
+                if cue:
+                    block["layout"] = cue.get("layout", block["layout"])
+        payload["editorial_blocks"] = migrated_blocks
+        has_authoritative_editorial_blocks = bool(migrated_blocks)
+    if has_authoritative_editorial_blocks and payload["editorial_blocks"]:
+        payload["slide_cues"] = slide_cues_from_editorial_blocks(payload["editorial_blocks"])
+        payload["layout_cues"] = layout_cues_from_editorial_blocks(
+            payload["editorial_blocks"],
+            base_cues=payload["layout_cues"],
+            duration_seconds=_payload_duration_seconds(payload),
+        )
     payload["polish_actions"] = normalize_polish_actions(payload.get("polish_actions", []))
     payload.setdefault("export_metadata", _default_export_metadata())
     payload["export_metadata"] = _dict_value(payload.get("export_metadata"))
@@ -145,7 +196,7 @@ def build_edit_plan_payload(
         "estimated_duration_seconds": estimated_duration,
         "warnings": list(warnings or []),
     }
-    payload["segments"] = segment_list
+    payload["segments"] = segment_list  # layout_mode from Agent 5 flows through per-segment data automatically
     if source_asset_list is None:
         payload["layout_cues"] = default_layout_cues(original_duration)
     else:
@@ -169,6 +220,135 @@ def build_edit_plan_payload(
 def default_layout_cues(duration_seconds: float | None = None) -> list[dict[str, Any]]:
     """Return conservative Phase 7 layout placeholders."""
     return default_phase7_layout_cues(duration_seconds)
+
+
+def get_layout_cues(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Return normalized studio composition cues from the plan payload."""
+    normalized = normalize_plan_payload(payload or {})
+    return normalize_layout_cues(
+        normalized.get("layout_cues", []),
+        duration_seconds=_payload_duration_seconds(normalized),
+    )
+
+
+def update_layout_cues(
+    payload: dict[str, Any],
+    layout_cues: Iterable[dict[str, Any]],
+    *,
+    source: str = "teacher_layout_override",
+) -> dict[str, Any]:
+    """Replace the editable layout cue set while preserving the v2 edit-plan envelope."""
+    normalized = normalize_plan_payload(payload)
+    cues = normalize_layout_cues(
+        list(layout_cues or []),
+        duration_seconds=_payload_duration_seconds(normalized),
+    )
+    normalized["layout_cues"] = cues
+    normalized["metadata"] = {
+        **_dict_value(normalized.get("metadata")),
+        "layout_planning": {
+            **layout_planning_summary(cues),
+            "last_updated_by": source,
+            "updated_at": _utc_now(),
+        },
+    }
+    normalized["export_metadata"] = {
+        **_dict_value(normalized.get("export_metadata")),
+        "layout_cues": {
+            "count": len(cues),
+            "picture_in_picture_count": sum(1 for cue in cues if cue.get("layout") == "picture_in_picture"),
+            "side_by_side_count": sum(1 for cue in cues if cue.get("layout") == "side_by_side"),
+            "full_screen_source_count": sum(1 for cue in cues if cue.get("layout") == "full_screen_source"),
+            "full_camera_source_count": sum(1 for cue in cues if cue.get("layout") == "full_camera_source"),
+            "manual_override": source == "teacher_layout_override",
+        },
+        "updated_at": _utc_now(),
+    }
+    return normalized
+
+
+def update_slide_cues(
+    payload: dict[str, Any],
+    slide_cues: Iterable[dict[str, Any]],
+    *,
+    source: str = "teacher_slide_override",
+) -> dict[str, Any]:
+    """Replace timed slide choices while leaving layout and render settings intact."""
+    normalized = normalize_plan_payload(payload)
+    duration = _payload_duration_seconds(normalized)
+    cues: list[dict[str, Any]] = []
+    for index, raw in enumerate(slide_cues or []):
+        if not isinstance(raw, dict):
+            continue
+        start = max(0.0, float(raw.get("start_time", 0.0) or 0.0))
+        end = min(duration, float(raw.get("end_time", start) or start)) if duration else float(raw.get("end_time", start) or start)
+        if end - start < 0.05:
+            continue
+        slide_index = raw.get("slide_index")
+        try:
+            slide_index = int(slide_index) if slide_index is not None else None
+        except (TypeError, ValueError):
+            slide_index = None
+        cues.append({
+            **raw,
+            "id": str(raw.get("id") or f"teacher-slide-cue-{index + 1:04d}"),
+            "start_time": round(start, 3),
+            "end_time": round(end, 3),
+            "slide_index": slide_index,
+            "confidence": 1.0,
+            "cue_type": str(raw.get("cue_type") or ("lecturer_only" if slide_index is None else "anchor")),
+            "source": str(raw.get("source") or source),
+            "strategy": str(raw.get("strategy") or ("teacher_slide_override" if str(raw.get("source") or source).startswith("teacher") else "semantic_slide_plan")),
+            "reason": str(raw.get("reason") or "Teacher slide selection"),
+        })
+    cues.sort(key=lambda cue: cue["start_time"])
+    normalized["slide_cues"] = cues
+    metadata = _dict_value(normalized.get("metadata"))
+    metadata["slide_planning"] = {
+        "cue_count": len(cues),
+        "last_updated_by": source,
+        "updated_at": _utc_now(),
+    }
+    normalized["metadata"] = metadata
+    return normalized
+
+
+def update_editorial_blocks(
+    payload: dict[str, Any],
+    editorial_blocks: Iterable[dict[str, Any]],
+    *,
+    source: str = "teacher_editorial_override",
+) -> dict[str, Any]:
+    """Replace the authoritative semantic blocks and refresh compatibility cues."""
+    normalized = normalize_plan_payload(payload)
+    duration = _payload_duration_seconds(normalized)
+    blocks = normalize_editorial_blocks(list(editorial_blocks or []), duration_seconds=duration)
+    if source.startswith("teacher"):
+        blocks = [
+            {
+                **block,
+                "source": str(block.get("source") or source),
+                "teacher_modified": bool(block.get("teacher_modified", False) or str(block.get("source") or "").startswith("teacher")),
+            }
+            for block in blocks
+        ]
+    normalized["editorial_blocks"] = blocks
+    normalized["slide_cues"] = slide_cues_from_editorial_blocks(blocks)
+    normalized["layout_cues"] = layout_cues_from_editorial_blocks(
+        blocks,
+        base_cues=normalized.get("layout_cues", []),
+        duration_seconds=duration,
+    )
+    metadata = _dict_value(normalized.get("metadata"))
+    metadata["editorial_planning"] = {
+        "block_count": len(blocks),
+        "lecturer_only_count": sum(1 for block in blocks if block.get("slide_index") is None),
+        "slide_related_count": sum(1 for block in blocks if block.get("slide_index") is not None),
+        "last_updated_by": source,
+        "updated_at": _utc_now(),
+    }
+    normalized["metadata"] = metadata
+    return normalized
 
 
 def default_polish_actions() -> list[dict[str, Any]]:
@@ -745,6 +925,15 @@ def _payload_duration_seconds(payload: dict[str, Any]) -> float | None:
         except (TypeError, ValueError):
             continue
     return None
+
+
+def _layout_cue_at(cues: list[dict[str, Any]], time_seconds: float) -> dict[str, Any] | None:
+    for cue in cues:
+        start = float(cue.get("start_time", 0.0) or 0.0)
+        end_raw = cue.get("end_time")
+        if time_seconds >= start and (end_raw is None or time_seconds < float(end_raw)):
+            return cue
+    return cues[0] if cues else None
 
 
 def _dict_value(value: Any) -> dict[str, Any]:

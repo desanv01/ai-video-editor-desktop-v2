@@ -80,6 +80,20 @@ class ProjectAssetSyncUpdateRequest(BaseModel):
     note: Optional[str] = Field(default=None, max_length=500)
 
 
+class ProjectAssetMetadataUpdateRequest(BaseModel):
+    slide_page_start: Optional[int] = Field(default=None, ge=1, le=10000)
+    slide_page_end: Optional[int] = Field(default=None, ge=1, le=10000)
+
+    def validated_page_scope(self) -> tuple[int, int] | None:
+        if self.slide_page_start is None and self.slide_page_end is None:
+            return None
+        if self.slide_page_start is None or self.slide_page_end is None:
+            raise ValueError("Both slide_page_start and slide_page_end are required")
+        if self.slide_page_end < self.slide_page_start:
+            raise ValueError("slide_page_end must be greater than or equal to slide_page_start")
+        return self.slide_page_start, self.slide_page_end
+
+
 class ProjectSourceSyncAsset(BaseModel):
     asset: ProjectAssetResponse
     reference_asset_id: UUID
@@ -135,9 +149,78 @@ class ProjectCreateRequest(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class ProjectUpdateRequest(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    source_mode: Optional[ProjectSourceMode] = None
+    project_type: Optional[str] = Field(default=None, max_length=50)
+    metadata: Optional[Dict[str, Any]] = None
+
+
 class ProjectAssetUploadResponse(ProjectAssetResponse):
     file_size_mb: Optional[float] = None
     message: str = "Asset uploaded successfully."
+
+
+class NativeImportInitRequest(BaseModel):
+    original_filename: str = Field(min_length=1, max_length=255)
+    file_size_bytes: int = Field(gt=0, le=10 * 1024 * 1024 * 1024)
+    mime_type: Optional[str] = Field(default=None, max_length=255)
+
+
+class NativeImportInitResponse(BaseModel):
+    token: str
+    project_id: UUID
+    original_filename: str
+    mime_type: Optional[str] = None
+    file_size_bytes: int
+    max_size_bytes: int
+    available_disk_bytes: int
+    required_free_bytes: int
+    staging_relative_path: str
+    staging_part_relative_path: str
+    warnings: List[str] = Field(default_factory=list)
+
+
+class NativeImportFinalizeRequest(BaseModel):
+    copied_file_size_bytes: int = Field(gt=0, le=10 * 1024 * 1024 * 1024)
+
+
+class PrimaryImportStatusResponse(BaseModel):
+    token: str
+    project_id: UUID
+    filename: str
+    status: str
+    bytes_received: int = 0
+    total_bytes: int
+    percent: float = 0.0
+    complete: bool = False
+    updated_at: Optional[datetime] = None
+    warnings: List[str] = Field(default_factory=list)
+
+
+class PrimaryImportChunkResponse(PrimaryImportStatusResponse):
+    next_offset: int
+
+
+class NativeImportCancelResponse(BaseModel):
+    token: str
+    project_id: UUID
+    cancelled: bool = True
+    removed_files: List[str] = Field(default_factory=list)
+
+
+class NativeImportOrphanRecord(BaseModel):
+    path: str
+    size_bytes: int
+    modified_at: datetime
+    reason: str
+
+
+class NativeImportOrphanReport(BaseModel):
+    project_id: UUID
+    orphans: List[NativeImportOrphanRecord] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
 
 
 class VideoUploadResponse(BaseModel):
@@ -270,6 +353,11 @@ class TranscriptCutTrimUpdateRequest(BaseModel):
     teacher_note: Optional[str] = Field(default=None, max_length=500)
 
 
+class TranscriptCutWordRestoreRequest(BaseModel):
+    word_index: int = Field(ge=0)
+    teacher_note: Optional[str] = Field(default=None, max_length=500)
+
+
 class TranscriptCutDecisionResponse(BaseModel):
     id: str
     kind: str = "transcript_cut"
@@ -392,6 +480,7 @@ class CleanAnalyzeResponse(BaseModel):
 class CleanApplyRequest(BaseModel):
     profile: str = "conservative"
     suggestion_ids: Optional[List[str]] = None
+    suggestion_types: Optional[List[str]] = None
 
 
 class CleanSegmentUpdateResponse(BaseModel):
@@ -696,6 +785,16 @@ class EditPlanResponse(BaseModel):
 
     @computed_field
     @property
+    def slide_cues(self) -> List[Dict[str, Any]]:
+        return list(self._payload().get("slide_cues", []))
+
+    @computed_field
+    @property
+    def editorial_blocks(self) -> List[Dict[str, Any]]:
+        return list(self._payload().get("editorial_blocks", []))
+
+    @computed_field
+    @property
     def polish_actions(self) -> List[Dict[str, Any]]:
         return self._payload().get("polish_actions", [])
 
@@ -703,6 +802,11 @@ class EditPlanResponse(BaseModel):
     @property
     def export_metadata(self) -> Dict[str, Any]:
         return self._payload().get("export_metadata", {})
+
+    @computed_field
+    @property
+    def render_plan(self) -> Dict[str, Any]:
+        return self._payload().get("render_plan", {})
 
     def _payload(self) -> Dict[str, Any]:
         from services.edit_plan_payload import normalize_plan_payload
@@ -782,6 +886,25 @@ class CaptionPolicyUpdateRequest(BaseModel):
     ranges: Optional[List[CaptionRangeRequest]] = None
     section_intro_seconds: Optional[float] = Field(default=None, ge=1, le=30)
     reason: Optional[str] = Field(default=None, max_length=500)
+
+
+class LayoutCuesUpdateRequest(BaseModel):
+    layout_cues: List[Dict[str, Any]] = Field(default_factory=list)
+    source: Optional[str] = Field(default="teacher_layout_override", max_length=80)
+
+
+class SlideCuesUpdateRequest(BaseModel):
+    slide_cues: List[Dict[str, Any]] = Field(default_factory=list)
+    source: Optional[str] = Field(default="teacher_slide_override", max_length=80)
+
+
+class EditorialBlocksUpdateRequest(BaseModel):
+    editorial_blocks: List[Dict[str, Any]] = Field(default_factory=list)
+    source: Optional[str] = Field(default="teacher_editorial_override", max_length=80)
+
+
+class LayoutCuesAutoGenerateRequest(BaseModel):
+    profile: str = Field(default="balanced", max_length=40)
 
 
 class AnnotationStyleRequest(BaseModel):
@@ -938,6 +1061,7 @@ class AppSettingsResponse(BaseModel):
     capabilities: Dict[str, "AICapabilitySettings"] = Field(default_factory=dict)
     api_keys: Dict[str, "APIKeyStatus"] = Field(default_factory=dict)
     local_model_paths: Dict[str, Optional[str]] = Field(default_factory=dict)
+    local_model_ids: Dict[str, Optional[str]] = Field(default_factory=dict)
 
 
 class AICapabilitySettings(BaseModel):
@@ -975,13 +1099,21 @@ class LocalTranscriptionModelCatalogItem(BaseModel):
     status: str = "not_downloaded"
     can_download: bool = True
     can_remove: bool = False
+    download_bytes_downloaded: int = 0
+    download_total_bytes: Optional[int] = None
     download_progress_percent: Optional[float] = None
+    download_speed_bytes_per_second: Optional[float] = None
+    download_eta_seconds: Optional[float] = None
     file_path: Optional[str] = None
 
 
 class LocalTranscriptionModelCatalogResponse(BaseModel):
     provider_id: str = "whisper-cpp"
     active_model_id: str
+    runtime_configured: bool = False
+    runtime_status: str = "missing"
+    runtime_message: str = ""
+    runtime_binary_path: Optional[str] = None
     models: List[LocalTranscriptionModelCatalogItem]
 
 
@@ -999,6 +1131,8 @@ class LocalTranscriptionModelDownloadResponse(BaseModel):
     total_bytes: Optional[int] = None
     bytes_downloaded: int = 0
     progress_percent: float = 0.0
+    speed_bytes_per_second: Optional[float] = None
+    eta_seconds: Optional[float] = None
     message: str
     error: Optional[str] = None
     active: bool = False
@@ -1033,6 +1167,7 @@ class AppSettingsUpdateRequest(BaseModel):
     capabilities: Optional[Dict[str, AICapabilitySettingsUpdate]] = None
     api_keys: Optional[Dict[str, APIKeyUpdate]] = None
     local_model_paths: Optional[Dict[str, Optional[str]]] = None
+    local_model_ids: Optional[Dict[str, Optional[str]]] = None
     domain_terms: Optional[List[str]] = Field(default=None, max_length=100)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 

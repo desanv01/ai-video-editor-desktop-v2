@@ -30,7 +30,7 @@ export function StatsPanel({ videoId, plan, onApprove, approving }: Props) {
   const pieData = [
     { name: "Keep", value: plan.segments_keep ?? 0 },
     { name: "Cut", value: plan.segments_cut ?? 0 },
-    { name: "Shorten", value: 0 }, // not tracked in plan model but shown for completeness
+    { name: "Shorten", value: plan.segments_shorten ?? 0 },
     { name: "Highlight", value: plan.segments_highlight ?? 0 },
   ].filter(d => d.value > 0);
 

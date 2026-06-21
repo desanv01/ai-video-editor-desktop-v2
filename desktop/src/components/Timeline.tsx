@@ -1,5 +1,5 @@
-import { useMemo } from "react";
-import type { AnnotationAction, EducationalOverlayAction, EndCardAction, Segment, SegmentAction, TranscriptCutInterval } from "../types/api";
+import { useCallback, useMemo, useRef, useState } from "react";
+import type { AnnotationAction, EditorialBlock, EducationalOverlayAction, EndCardAction, Segment, SegmentAction, TranscriptCutInterval } from "../types/api";
 
 interface Props {
   segments: Segment[];
@@ -37,7 +37,17 @@ export function Timeline({
   onSelectAnnotation,
   onSelectEducationalOverlay,
 }: Props) {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const [isScrubbing, setIsScrubbing] = useState(false);
   const playheadPct = duration > 0 ? (currentTime / duration) * 100 : 0;
+
+  const seekFromClientX = useCallback((clientX: number) => {
+    const track = trackRef.current;
+    if (!track || duration <= 0) return;
+    const rect = track.getBoundingClientRect();
+    const pct = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    onSeek(pct * duration);
+  }, [duration, onSeek]);
 
   const segBars = useMemo(() => {
     if (!duration || duration === 0) return [];
@@ -93,11 +103,22 @@ export function Timeline({
     <div className="w-full space-y-1">
       {/* ── Timeline Bar ── */}
       <div
-        className="relative h-10 bg-surface-overlay rounded-lg overflow-hidden cursor-pointer"
-        onClick={(e) => {
-          const rect = e.currentTarget.getBoundingClientRect();
-          const pct = (e.clientX - rect.left) / rect.width;
-          onSeek(pct * duration);
+        ref={trackRef}
+        className="relative h-10 overflow-hidden rounded-lg bg-surface-overlay cursor-ew-resize touch-none"
+        onPointerDown={(event) => {
+          event.currentTarget.setPointerCapture(event.pointerId);
+          setIsScrubbing(true);
+          seekFromClientX(event.clientX);
+        }}
+        onPointerMove={(event) => {
+          if (isScrubbing) seekFromClientX(event.clientX);
+        }}
+        onPointerUp={(event) => {
+          setIsScrubbing(false);
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }}
+        onPointerCancel={() => {
+          setIsScrubbing(false);
         }}
       >
         {/* Segment bars */}
@@ -109,7 +130,10 @@ export function Timeline({
             }`}
             style={{ left: `${left}%`, width: `${width}%` }}
             title={`${seg.topic_label || "Segment"} (${action})`}
-            onClick={(e) => { e.stopPropagation(); onSelectSegment(seg); }}
+            onPointerDown={(e) => {
+              onSelectSegment(seg);
+              seekFromClientX(e.clientX);
+            }}
           />
         ))}
 
@@ -159,11 +183,12 @@ export function Timeline({
           />
         ))}
 
-        {/* Playhead */}
         <div
-          className="absolute top-0 w-0.5 h-full bg-white z-10 pointer-events-none"
+          className="pointer-events-none absolute top-0 z-20 h-full w-0.5 bg-white shadow-[0_0_12px_rgba(255,255,255,0.55)]"
           style={{ left: `${playheadPct}%` }}
-        />
+        >
+          <div className="absolute -left-2 top-1 h-4 w-4 rounded-full border border-white bg-surface shadow-lg" />
+        </div>
       </div>
 
       {/* ── Time Labels ── */}
@@ -178,6 +203,99 @@ export function Timeline({
           <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-amber-300 inline-block" /> Edu label</span>
           <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-cyan-300 inline-block" /> End card</span>
         </div>
+        <span>{formatTime(duration)}</span>
+      </div>
+    </div>
+  );
+}
+
+interface EditorialTimelineProps {
+  blocks: EditorialBlock[];
+  duration: number;
+  currentTime: number;
+  selectedBlockId: string | null;
+  onSeek: (time: number) => void;
+  onSelectBlock: (block: EditorialBlock) => void;
+}
+
+const EDITORIAL_COLORS = [
+  "bg-sky-500",
+  "bg-emerald-500",
+  "bg-amber-400",
+  "bg-fuchsia-500",
+  "bg-cyan-400",
+  "bg-violet-500",
+];
+
+export function EditorialTimeline({
+  blocks,
+  duration,
+  currentTime,
+  selectedBlockId,
+  onSeek,
+  onSelectBlock,
+}: EditorialTimelineProps) {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const [isScrubbing, setIsScrubbing] = useState(false);
+  const playheadPct = duration > 0 ? Math.min(100, Math.max(0, (currentTime / duration) * 100)) : 0;
+
+  const seekFromClientX = useCallback((clientX: number) => {
+    const track = trackRef.current;
+    if (!track || duration <= 0) return;
+    const rect = track.getBoundingClientRect();
+    const pct = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    onSeek(pct * duration);
+  }, [duration, onSeek]);
+
+  return (
+    <div className="w-full space-y-1">
+      <div
+        ref={trackRef}
+        className="relative h-12 cursor-ew-resize touch-none overflow-hidden rounded-lg bg-surface-overlay"
+        onPointerDown={(event) => {
+          event.currentTarget.setPointerCapture(event.pointerId);
+          setIsScrubbing(true);
+          seekFromClientX(event.clientX);
+        }}
+        onPointerMove={(event) => {
+          if (isScrubbing) seekFromClientX(event.clientX);
+        }}
+        onPointerUp={(event) => {
+          setIsScrubbing(false);
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }}
+        onPointerCancel={() => setIsScrubbing(false)}
+      >
+        {blocks.map((block) => {
+          const left = duration > 0 ? (block.start_time / duration) * 100 : 0;
+          const width = duration > 0 ? Math.max(((block.end_time - block.start_time) / duration) * 100, 0.35) : 0;
+          const color = block.slide_index == null
+            ? "bg-slate-500"
+            : EDITORIAL_COLORS[block.slide_index % EDITORIAL_COLORS.length];
+          return (
+            <button
+              key={block.id}
+              type="button"
+              className={`absolute top-0 h-full border-r border-black/25 ${color} ${selectedBlockId === block.id ? "z-10 ring-2 ring-inset ring-white" : ""}`}
+              style={{ left: `${left}%`, width: `${width}%` }}
+              title={`${block.title}: ${block.slide_index == null ? "Lecturer only" : `Slide ${block.slide_index + 1}`} (${formatTime(block.start_time)}-${formatTime(block.end_time)})`}
+              onPointerDown={(event) => {
+                event.stopPropagation();
+                onSelectBlock(block);
+              }}
+            />
+          );
+        })}
+        <div
+          className="pointer-events-none absolute top-0 z-20 h-full w-0.5 bg-white shadow-[0_0_12px_rgba(255,255,255,0.55)]"
+          style={{ left: `${playheadPct}%` }}
+        >
+          <div className="absolute -left-2 top-1 h-4 w-4 rounded-full border border-white bg-surface shadow-lg" />
+        </div>
+      </div>
+      <div className="flex items-center justify-between gap-3 px-1 text-xs text-gray-500">
+        <span>{formatTime(currentTime)}</span>
+        <span className="truncate">Colors identify lecturer-only and assigned slide blocks</span>
         <span>{formatTime(duration)}</span>
       </div>
     </div>

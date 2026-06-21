@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
+from sqlalchemy import BigInteger
+
 
 APP_DIR = Path(__file__).resolve().parents[1] / "app"
 if str(APP_DIR) not in sys.path:
@@ -15,7 +17,7 @@ config_defaults = {
     "DATABASE_URL": "postgresql+asyncpg://user:pass@localhost/test",
     "APP_DEBUG": False,
     "UPLOAD_PATH": "/tmp/uploads",
-    "MAX_VIDEO_SIZE_MB": 500,
+    "MAX_VIDEO_SIZE_MB": 10240,
     "ASR_PROVIDER": "voxtral",
     "VOXTRAL_MODEL": "voxtral-mini-latest",
     "WHISPER_MODEL": "whisper-1",
@@ -75,11 +77,13 @@ from api.routes.projects import (
     _validate_asset_upload,
 )
 from models.schemas import (
+    NativeImportInitResponse,
     ProjectAssetResponse,
     ProjectAssetUploadResponse,
     ProjectSourceSyncPlanResponse,
     ProjectCreateRequest,
     ProjectDetailResponse,
+    ProjectUpdateRequest,
     VideoUploadResponse,
 )
 from services.source_sync import (
@@ -88,6 +92,7 @@ from services.source_sync import (
     extract_user_sync_offset,
     recommend_sync_offsets,
 )
+from services.upload_limits import max_upload_size_bytes, upload_limit_label
 
 
 class ProjectModelTests(unittest.TestCase):
@@ -121,6 +126,8 @@ class ProjectModelTests(unittest.TestCase):
             {fk.column.table.name for fk in video_columns.project_asset_id.foreign_keys},
             {"project_assets"},
         )
+        self.assertIsInstance(asset_columns.file_size_bytes.type, BigInteger)
+        self.assertIsInstance(video_columns.file_size_bytes.type, BigInteger)
 
     def test_project_enums_persist_wire_values(self):
         self.assertEqual(ProjectStatus.READY.value, "ready")
@@ -207,6 +214,47 @@ class ProjectModelTests(unittest.TestCase):
         self.assertEqual(request.metadata["course"], "CS101")
         self.assertEqual(response.kind, ProjectAssetKind.AUDIO)
         self.assertEqual(response.message, "Asset uploaded successfully.")
+
+    def test_native_import_schema_reports_disk_and_staging_details(self):
+        project_id = uuid4()
+        response = NativeImportInitResponse(
+            token="session-token",
+            project_id=project_id,
+            original_filename="lecture.mp4",
+            mime_type="video/mp4",
+            file_size_bytes=2_730_000_000,
+            max_size_bytes=10 * 1024 * 1024 * 1024,
+            available_disk_bytes=40 * 1024 * 1024 * 1024,
+            required_free_bytes=30 * 1024 * 1024 * 1024,
+            staging_relative_path="staging/native-imports/session-token-lecture.mp4",
+            staging_part_relative_path="staging/native-imports/session-token-lecture.mp4.part",
+            warnings=["1 orphaned or stale staged import file(s) already exist. Review diagnostics before cleanup."],
+        )
+
+        self.assertEqual(response.project_id, project_id)
+        self.assertIn(".part", response.staging_part_relative_path)
+        self.assertGreater(response.available_disk_bytes, response.file_size_bytes)
+
+    def test_project_update_schema_supports_dashboard_rename_and_setup_changes(self):
+        request = ProjectUpdateRequest(
+            title="Renamed lecture",
+            description=None,
+            source_mode=ProjectSourceMode.MULTI_SOURCE,
+            project_type="tutorial",
+            metadata={"dashboard_updated": True},
+        )
+
+        self.assertEqual(request.title, "Renamed lecture")
+        self.assertIsNone(request.description)
+        self.assertEqual(request.source_mode, ProjectSourceMode.MULTI_SOURCE)
+        self.assertEqual(request.project_type, "tutorial")
+        self.assertTrue(request.metadata["dashboard_updated"])
+
+    def test_upload_limit_defaults_to_ten_gigabytes(self):
+        settings = SimpleNamespace(MAX_VIDEO_SIZE_MB=10240)
+
+        self.assertEqual(max_upload_size_bytes(settings), 10 * 1024 * 1024 * 1024)
+        self.assertEqual(upload_limit_label(settings), "10GB")
 
     def test_asset_upload_type_maps_to_project_asset_kind_and_role(self):
         self.assertEqual(_asset_kind_for_upload("video", "lecture.mp4"), ProjectAssetKind.MIXED_VIDEO)
@@ -295,6 +343,7 @@ class ProjectModelTests(unittest.TestCase):
         self.assertEqual(_validate_asset_upload(Upload("webcam.webm"), "webcam"), ".webm")
         self.assertEqual(_validate_asset_upload(Upload("phone.mp4"), "phone_camera"), ".mp4")
         self.assertEqual(_validate_asset_upload(Upload("voice.flac"), "audio"), ".flac")
+        self.assertEqual(_validate_asset_upload(Upload("mic.webm"), "audio"), ".webm")
         self.assertEqual(_validate_asset_upload(Upload("deck.pdf"), "slides"), ".pdf")
         self.assertEqual(_validate_asset_upload(Upload("notes.docx"), "notes"), ".docx")
         self.assertEqual(_validate_asset_upload(Upload("rubric.xlsx"), "materials"), ".xlsx")

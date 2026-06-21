@@ -69,6 +69,15 @@ class WhisperCppModelSelection:
 
 
 @dataclass(frozen=True)
+class WhisperCppRuntimeStatus:
+    configured: bool
+    binary_path: str
+    model_path: str
+    issues: tuple[str, ...]
+    message: str
+
+
+@dataclass(frozen=True)
 class WhisperCppRunResult:
     stdout: str
     stderr: str
@@ -150,6 +159,9 @@ def resolve_whisper_cpp_model_selection(settings) -> WhisperCppModelSelection:
         or getattr(settings, "LOCAL_TRANSCRIPTION_MODEL_PATH", "")
         or ""
     )
+    path_option = _option_for_model_path(model_path)
+    if path_option and option.model_id == "small" and path_option.model_id != "small":
+        option = path_option
     if not model_path:
         model_path = _first_existing_model_path(settings, option)
     binary_path = getattr(settings, "WHISPER_CPP_BINARY_PATH", "") or "whisper-cli"
@@ -159,6 +171,34 @@ def resolve_whisper_cpp_model_selection(settings) -> WhisperCppModelSelection:
         model_path=model_path,
         binary_path=binary_path,
     )
+
+
+def resolve_whisper_cpp_runtime_status(settings) -> WhisperCppRuntimeStatus:
+    selection = resolve_whisper_cpp_model_selection(settings)
+    binary_path = resolve_whisper_cpp_binary_path(selection.binary_path)
+    issues: list[str] = []
+    if not binary_path:
+        issues.append(
+            "WHISPER_CPP_BINARY_PATH must point to whisper-cli/main, or whisper-cli must be on PATH"
+        )
+    if not selection.model_path:
+        issues.append("WHISPER_CPP_MODEL_PATH or LOCAL_TRANSCRIPTION_MODEL_PATH is not set")
+    elif not os.path.isfile(selection.model_path):
+        issues.append(f"Configured whisper.cpp model file does not exist: {selection.model_path}")
+
+    return WhisperCppRuntimeStatus(
+        configured=not issues,
+        binary_path=binary_path,
+        model_path=selection.model_path,
+        issues=tuple(issues),
+        message="whisper.cpp runtime is ready." if not issues else "; ".join(issues),
+    )
+
+
+def resolve_whisper_cpp_binary_path(binary_path: str) -> str:
+    if binary_path and os.path.isfile(binary_path):
+        return binary_path
+    return shutil.which(binary_path or "whisper-cli") or ""
 
 
 def build_whisper_cpp_model_catalog(settings) -> list[WhisperCppModelCatalogEntry]:
@@ -196,6 +236,16 @@ def build_whisper_cpp_model_catalog(settings) -> list[WhisperCppModelCatalogEntr
             )
         )
     return catalog
+
+
+def _option_for_model_path(model_path: str) -> Optional[WhisperCppModelOption]:
+    if not model_path:
+        return None
+    filename = os.path.basename(model_path).lower()
+    for option in WHISPER_CPP_MODEL_OPTIONS:
+        if filename == option.expected_filename.lower():
+            return option
+    return None
 
 
 def _first_existing_model_path(settings, option: WhisperCppModelOption) -> str:
@@ -384,9 +434,7 @@ class WhisperCppTranscriptionProvider(TranscriptionProvider):
         return issues
 
     def _resolved_binary_path(self) -> str:
-        if os.path.isfile(self._binary_path):
-            return self._binary_path
-        return shutil.which(self._binary_path) or ""
+        return resolve_whisper_cpp_binary_path(self._binary_path)
 
     @staticmethod
     async def _run_command(command: list[str], output_json_path: str) -> WhisperCppRunResult:

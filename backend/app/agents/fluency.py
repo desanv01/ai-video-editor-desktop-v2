@@ -16,19 +16,84 @@ to decide which segments to cut/keep.
 
 import os
 import logging
+import re
 from typing import List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from db.models import Video, Transcript, Segment
 from services.ffmpeg import ffmpeg_service
 from services.llm import llm_service
+from providers import ProviderKind
 from config import settings
 
 logger = logging.getLogger(__name__)
 
-FILLER_DETECTION_PROMPT = """You are a speech fluency analyzer for educational video editing. Analyze the transcript and identify delivery issues.
+FALLBACK_FILLER_PHRASES = (
+    # English fillers
+    ("um",),
+    ("uh",),
+    ("erm",),
+    ("er",),
+    ("ah",),
+    ("hmm",),
+    ("mmm",),
+    ("mm",),
+    ("like",),
+    ("basically",),
+    ("actually",),
+    ("right",),
+    ("so",),
+    ("well",),
+    ("okay",),
+    ("anyway",),
+    ("literally",),
+    ("honestly",),
+    ("seriously",),
+    ("obviously",),
+    ("essentially",),
+    ("technically",),
+    ("literally",),
+    # Multi-word fillers
+    ("you", "know"),
+    ("i", "mean"),
+    ("sort", "of"),
+    ("kind", "of"),
+    ("okay", "so"),
+    ("you", "see"),
+    ("you", "know", "what", "i", "mean"),
+    ("i", "guess"),
+    ("i", "think"),
+    ("i", "suppose"),
+    ("the", "thing", "is"),
+    ("as", "i", "was", "saying"),
+    # Malay / Manglish fillers (lecturer context)
+    ("sekejap",),
+    ("kejap",),
+    ("macam",),
+    ("aa",),
+    ("aaa",),
+    ("eeee",),
+    ("ee",),
+    ("jadi",),
+    ("ok",),
+    ("yelah",),
+    ("mcm",),
+    ("tau",),
+    ("kan",),
+    ("boleh",),
+    ("err",),
+    # False start / self-correction markers
+    ("actually", "let", "me", "restart"),
+    ("let", "me", "rephrase"),
+    ("sorry", "let", "me"),
+    ("i", "mean", "let", "me"),
+    ("wait", "no"),
+    ("hold", "on"),
+    ("let", "me", "start", "again"),
+    ("let", "me", "try", "again"),
+)
 
-For each segment, detect:
+FILLER_DETECTION_PROMPT = """You are a speech fluency analyzer
 
 1. FILLER WORDS: "um", "uh", "like", "you know", "so", "basically", "actually", "right", "okay so", "sort of", "kind of", "I mean", "erm", "ah"
    - Count each occurrence separately (e.g., "um...um...like" = 3 fillers)
@@ -104,17 +169,24 @@ async def run_fluency_agent(video_id: str, db: AsyncSession) -> dict:
 
     if not segments:
         logger.warning(f"Agent 3: No segments found for video {video_id}")
-        return {"status": "success", "total_fillers": 0, "total_pause_duration": 0, "segments_updated": 0}
+        raise ValueError(
+            "No Agent 2 segments were available for delivery analysis. "
+            "Content analysis must commit segments before Agent 3 runs."
+        )
 
     logger.info(f"Agent 3: Analyzing {len(segments)} segments for fluency")
 
     # ── Step 3: Linguistic filler detection via LLM ──
     total_fillers = 0
     total_pause_duration = sum(p.get("duration", 0) for p in pauses)
+    batches_attempted = 0
+    batches_failed = 0
+    fallback_segments = 0
 
     batch_size = 8  # Slightly smaller batches = more reliable JSON from LLM
     for batch_start in range(0, len(segments), batch_size):
         batch = segments[batch_start:batch_start + batch_size]
+        batches_attempted += 1
 
         segment_texts = []
         for seg in batch:
@@ -141,6 +213,7 @@ async def run_fluency_agent(video_id: str, db: AsyncSession) -> dict:
             filler_results = response.get("segments", [])
             logger.info(f"  Batch {batch_start//batch_size + 1}: analyzed {len(filler_results)} segments")
         except Exception as e:
+            batches_failed += 1
             logger.warning(f"  Batch {batch_start//batch_size + 1} failed: {e}")
             filler_results = []
 
@@ -151,6 +224,9 @@ async def run_fluency_agent(video_id: str, db: AsyncSession) -> dict:
                 (f for f in filler_results if f.get("segment_index") == seg.segment_index),
                 {}
             )
+            if not filler_data:
+                filler_data = _fallback_fluency_analysis(seg)
+                fallback_segments += 1
 
             seg.filler_count = int(filler_data.get("filler_count", 0))
             seg.filler_words = filler_data.get("filler_words", [])
@@ -184,4 +260,58 @@ async def run_fluency_agent(video_id: str, db: AsyncSession) -> dict:
         "total_pause_duration": round(total_pause_duration, 2),
         "pauses_detected": len(pauses),
         "segments_updated": len(segments),
+        "batches_attempted": batches_attempted,
+        "batches_failed": batches_failed,
+        "fallback_segments": fallback_segments,
+        "chat_provider": llm_service.provider_id_for_kind(ProviderKind.CHAT),
+        "model": settings.AGENT3_MODEL,
     }
+
+
+def _fallback_fluency_analysis(seg: Segment) -> dict:
+    tokens = _normalized_tokens(seg.text or "")
+    filler_words: list[str] = []
+    claimed_indexes: set[int] = set()
+
+    for start_index, _token in enumerate(tokens):
+        if start_index in claimed_indexes:
+            continue
+        # Prefer the longest phrase at a token position so "okay so" and
+        # "you know what I mean" are not fragmented into single-word fillers.
+        for phrase in sorted(FALLBACK_FILLER_PHRASES, key=len, reverse=True):
+            end_index = start_index + len(phrase)
+            if end_index > len(tokens):
+                continue
+            if tuple(tokens[start_index:end_index]) == phrase:
+                filler_words.append(" ".join(phrase))
+                claimed_indexes.update(range(start_index, end_index))
+                break
+
+    has_repetition = _has_repeated_phrase(tokens)
+    penalty = min(0.65, (len(filler_words) * 0.08) + (0.15 if has_repetition else 0.0))
+    return {
+        "segment_index": seg.segment_index,
+        "filler_count": len(filler_words),
+        "filler_words": filler_words,
+        "has_repetition": has_repetition,
+        "repetition_details": "Repeated phrase detected by deterministic fallback" if has_repetition else None,
+        "fluency_score": round(max(0.1, 1.0 - penalty), 2),
+    }
+
+
+def _normalized_tokens(text: str) -> list[str]:
+    return [
+        token
+        for token in (re.sub(r"[^a-z0-9']+", "", raw.lower()) for raw in text.split())
+        if token
+    ]
+
+
+def _has_repeated_phrase(tokens: list[str]) -> bool:
+    if len(tokens) < 4:
+        return False
+    for size in range(1, min(5, len(tokens) // 2) + 1):
+        for index in range(0, len(tokens) - (size * 2) + 1):
+            if tokens[index:index + size] == tokens[index + size:index + (size * 2)]:
+                return True
+    return False

@@ -13,6 +13,7 @@ interface Props {
   onSelectSegment: (seg: Segment) => void;
   onCreateTranscriptCut: (wordStartIndex: number, wordEndIndex: number) => Promise<void>;
   onDeleteTranscriptCut: (decisionId: string) => Promise<void>;
+  onRestoreTranscriptCutWord: (decisionId: string, wordIndex: number) => Promise<void>;
   onUpdateTranscriptCutTrim: (
     decisionId: string,
     update: { start_time: number; end_time: number; pre_roll_seconds: number; post_roll_seconds: number },
@@ -49,30 +50,66 @@ export function TranscriptPanel({
   onSelectSegment,
   onCreateTranscriptCut,
   onDeleteTranscriptCut,
+  onRestoreTranscriptCutWord,
   onUpdateTranscriptCutTrim,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLDivElement>(null);
+  const selectionArmTimerRef = useRef<number | null>(null);
+  const followResumeTimerRef = useRef<number | null>(null);
   const [selection, setSelection] = useState<WordSelection | null>(null);
+  const [followPlayback, setFollowPlayback] = useState(true);
+  const [manualScrollLocked, setManualScrollLocked] = useState(false);
   const [isSelecting, setIsSelecting] = useState(false);
+  const [selectionActionArmed, setSelectionActionArmed] = useState(false);
   const [isSavingCut, setIsSavingCut] = useState(false);
   const [deletingCutId, setDeletingCutId] = useState<string | null>(null);
+  const [restoringCutWordKey, setRestoringCutWordKey] = useState<string | null>(null);
   const [savingTrimId, setSavingTrimId] = useState<string | null>(null);
   const [trimDrafts, setTrimDrafts] = useState<Record<string, TrimDraft>>({});
 
   useEffect(() => {
-    if (activeRef.current && scrollRef.current) {
+    if (followPlayback && !manualScrollLocked && activeRef.current && scrollRef.current) {
       const container = scrollRef.current;
       const el = activeRef.current;
       const top = el.offsetTop - container.offsetTop - container.clientHeight / 3;
       container.scrollTo({ top, behavior: "smooth" });
     }
-  }, [currentTime]);
+  }, [currentTime, followPlayback, manualScrollLocked]);
+
+  const pauseAutoFollow = () => {
+    if (!followPlayback) return;
+    setManualScrollLocked(true);
+    if (followResumeTimerRef.current !== null) {
+      window.clearTimeout(followResumeTimerRef.current);
+    }
+    followResumeTimerRef.current = window.setTimeout(() => {
+      setManualScrollLocked(false);
+      followResumeTimerRef.current = null;
+    }, 5000);
+  };
 
   useEffect(() => {
-    const stopSelecting = () => setIsSelecting(false);
+    const stopSelecting = () => {
+      setIsSelecting(false);
+      if (selectionArmTimerRef.current !== null) {
+        window.clearTimeout(selectionArmTimerRef.current);
+      }
+      selectionArmTimerRef.current = window.setTimeout(() => {
+        setSelectionActionArmed(true);
+        selectionArmTimerRef.current = null;
+      }, 150);
+    };
     window.addEventListener("pointerup", stopSelecting);
-    return () => window.removeEventListener("pointerup", stopSelecting);
+    return () => {
+      window.removeEventListener("pointerup", stopSelecting);
+      if (selectionArmTimerRef.current !== null) {
+        window.clearTimeout(selectionArmTimerRef.current);
+      }
+      if (followResumeTimerRef.current !== null) {
+        window.clearTimeout(followResumeTimerRef.current);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -102,6 +139,9 @@ export function TranscriptPanel({
     }
     return indexes;
   }, [cutDecisions]);
+  const activeCutCount = useMemo(() => {
+    return new Set(cutDecisions.map(decision => decision.id)).size;
+  }, [cutDecisions]);
 
   const selectedRange = selection
     ? {
@@ -116,10 +156,19 @@ export function TranscriptPanel({
   }, [selectedRange, timeline]);
 
   const selectedText = selectedWords.map(word => word.text).join(" ");
+  const selectedSingleWord = selectedRange && selectedRange.start === selectedRange.end
+    ? timeline?.words[selectedRange.start] ?? null
+    : null;
+  const selectedCutDecision = selectedSingleWord ? cutWordIndexes.get(selectedSingleWord.word_index) ?? null : null;
   const hasWordTimeline = Boolean(timeline?.words.length);
 
   const handleWordPointerDown = (word: TranscriptTimelineWord) => {
+    if (selectionArmTimerRef.current !== null) {
+      window.clearTimeout(selectionArmTimerRef.current);
+      selectionArmTimerRef.current = null;
+    }
     setSelection({ anchorIndex: word.word_index, focusIndex: word.word_index });
+    setSelectionActionArmed(false);
     setIsSelecting(true);
     onSeek(word.start_time);
     const segment = word.segment_id ? segmentById.get(word.segment_id) : null;
@@ -137,6 +186,7 @@ export function TranscriptPanel({
     try {
       await onCreateTranscriptCut(selectedRange.start, selectedRange.end);
       setSelection(null);
+      setSelectionActionArmed(false);
     } finally {
       setIsSavingCut(false);
     }
@@ -146,8 +196,23 @@ export function TranscriptPanel({
     setDeletingCutId(decisionId);
     try {
       await onDeleteTranscriptCut(decisionId);
+      setSelection(null);
+      setSelectionActionArmed(false);
     } finally {
       setDeletingCutId(null);
+    }
+  };
+
+  const handleRestoreSelectedCutWord = async () => {
+    if (!selectedSingleWord || !selectedCutDecision) return;
+    const key = `${selectedCutDecision.id}:${selectedSingleWord.word_index}`;
+    setRestoringCutWordKey(key);
+    try {
+      await onRestoreTranscriptCutWord(selectedCutDecision.id, selectedSingleWord.word_index);
+      setSelection(null);
+      setSelectionActionArmed(false);
+    } finally {
+      setRestoringCutWordKey(null);
     }
   };
 
@@ -207,11 +272,31 @@ export function TranscriptPanel({
         <div className="flex items-center justify-between gap-2">
           <div className="min-w-0 text-xs text-gray-500">
             {hasWordTimeline ? `${timeline?.word_count ?? 0} timed words` : "Segment transcript"}
-            {cutDecisions.length > 0 && (
-              <span className="ml-2 text-red-300">{cutDecisions.length} text cuts</span>
+            {activeCutCount > 0 && (
+              <span className="ml-2 text-red-300">{activeCutCount} text cuts</span>
+            )}
+            {selectedRange && (
+              <span className="ml-2 text-accent">{selectedWords.length} selected</span>
+            )}
+            {manualScrollLocked && (
+              <span className="ml-2 text-yellow-300">manual scroll</span>
             )}
           </div>
-          {cutsLoading && <Loader2 className="h-3.5 w-3.5 animate-spin text-gray-500" />}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setFollowPlayback(value => !value);
+                setManualScrollLocked(false);
+              }}
+              className={`rounded px-2 py-1 text-[11px] font-semibold transition-colors ${
+                followPlayback ? "bg-accent/15 text-accent" : "bg-surface-overlay text-gray-400 hover:text-gray-200"
+              }`}
+            >
+              {followPlayback ? "Following" : "Follow"}
+            </button>
+            {cutsLoading && <Loader2 className="h-3.5 w-3.5 animate-spin text-gray-500" />}
+          </div>
         </div>
 
         {selectedRange && (
@@ -220,7 +305,10 @@ export function TranscriptPanel({
               <p className="line-clamp-2 min-w-0 text-xs text-red-100">{selectedText || "Selected transcript words"}</p>
               <button
                 type="button"
-                onClick={() => setSelection(null)}
+                onClick={() => {
+                  setSelection(null);
+                  setSelectionActionArmed(false);
+                }}
                 className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-red-200 hover:bg-red-500/20"
                 aria-label="Clear transcript selection"
                 title="Clear selection"
@@ -228,20 +316,52 @@ export function TranscriptPanel({
                 <X className="h-3.5 w-3.5" />
               </button>
             </div>
-            <button
-              type="button"
-              onClick={handleCutSelection}
-              disabled={isSavingCut}
-              className="flex w-full items-center justify-center gap-1.5 rounded-md bg-red-600 px-2 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {isSavingCut ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Scissors className="h-3.5 w-3.5" />}
-              Cut selected text
-            </button>
+            {selectedCutDecision && selectedSingleWord ? (
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={handleRestoreSelectedCutWord}
+                  disabled={restoringCutWordKey === `${selectedCutDecision.id}:${selectedSingleWord.word_index}`}
+                  className="flex items-center justify-center gap-1.5 rounded-md bg-emerald-600 px-2 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {restoringCutWordKey === `${selectedCutDecision.id}:${selectedSingleWord.word_index}` ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <RotateCcw className="h-3.5 w-3.5" />
+                  )}
+                  Restore word
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDeleteCut(selectedCutDecision.id)}
+                  disabled={deletingCutId === selectedCutDecision.id}
+                  className="flex items-center justify-center gap-1.5 rounded-md bg-red-600 px-2 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {deletingCutId === selectedCutDecision.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                  Remove cut
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleCutSelection}
+                disabled={isSavingCut || !selectionActionArmed}
+                className="flex w-full items-center justify-center gap-1.5 rounded-md bg-red-600 px-2 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isSavingCut ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Scissors className="h-3.5 w-3.5" />}
+                Cut selected text
+              </button>
+            )}
           </div>
         )}
       </div>
 
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto space-y-1 p-2">
+      <div
+        ref={scrollRef}
+        className="min-h-0 flex-1 overflow-y-auto space-y-1 p-2"
+        onWheel={pauseAutoFollow}
+        onPointerDown={pauseAutoFollow}
+      >
         {segments.map(seg => {
           const action = seg.is_teacher_modified && seg.teacher_action ? seg.teacher_action : seg.action;
           const isActive = currentTime >= seg.start_time && currentTime < seg.end_time;
@@ -297,7 +417,14 @@ export function TranscriptPanel({
                           handleWordPointerDown(word);
                         }}
                         onPointerEnter={() => handleWordPointerEnter(word)}
-                        onClick={(event) => event.stopPropagation()}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (cutDecision) {
+                            void onRestoreTranscriptCutWord(cutDecision.id, word.word_index);
+                            setSelection(null);
+                            setSelectionActionArmed(false);
+                          }
+                        }}
                         className={`mr-1 rounded px-1 py-0.5 text-left transition-colors ${
                           cutDecision
                             ? "bg-red-500/20 text-red-200 line-through decoration-red-300 decoration-2"
@@ -338,7 +465,7 @@ export function TranscriptPanel({
           );
         })}
 
-        {cutDecisions.length > 0 && (
+        {activeCutCount > 0 && (
           <div className="space-y-2 px-1 pt-2">
             <p className="px-2 text-[11px] font-semibold uppercase tracking-wider text-gray-500">Text Cut Decisions</p>
             {cutDecisions.map(decision => {

@@ -5,12 +5,13 @@ Project-first API routes for source assets and teaching materials.
 import logging
 import json
 import os
+from pathlib import Path
 import shutil
 import uuid
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,7 +33,15 @@ from db.models import (
     VideoStatus,
 )
 from models.schemas import (
+    NativeImportCancelResponse,
+    NativeImportFinalizeRequest,
+    NativeImportInitRequest,
+    NativeImportInitResponse,
+    NativeImportOrphanReport,
+    PrimaryImportChunkResponse,
+    PrimaryImportStatusResponse,
     ProjectAssetResponse,
+    ProjectAssetMetadataUpdateRequest,
     ProjectAssetSyncUpdateRequest,
     ProjectAssetUploadResponse,
     ProjectCreateRequest,
@@ -41,7 +50,20 @@ from models.schemas import (
     ProjectSourceSyncApplyRequest,
     ProjectSourceSyncAsset,
     ProjectSourceSyncPlanResponse,
+    ProjectUpdateRequest,
     VideoUploadResponse,
+)
+from services.native_semantic_compositor import prewarm_render_proxy
+from services.native_imports import (
+    append_native_import_chunk,
+    cancel_native_import_session,
+    create_native_import_session,
+    get_native_import_received_bytes,
+    list_native_import_orphans,
+    load_native_import_session,
+    mark_native_import_status,
+    quarantine_native_import,
+    resolve_staged_path,
 )
 from services.ffmpeg import ffmpeg_service
 from services.lecture_structure import extract_structure_reference_metadata
@@ -52,10 +74,12 @@ from services.source_sync import (
     merge_sync_metadata,
     recommend_sync_offsets,
 )
+from services.upload_limits import max_upload_size_bytes, upload_limit_label
 
 
 router = APIRouter(prefix="/projects")
 logger = logging.getLogger(__name__)
+UPLOAD_COPY_BUFFER_BYTES = 8 * 1024 * 1024
 
 AssetUploadType = Literal[
     "video",
@@ -70,7 +94,7 @@ AssetUploadType = Literal[
 ]
 
 VIDEO_EXTENSIONS = {".mp4", ".mpeg", ".mpg", ".mov", ".avi", ".webm", ".mkv"}
-AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
+AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".webm"}
 SLIDE_EXTENSIONS = {".ppt", ".pptx", ".pdf"}
 NOTE_EXTENSIONS = {".pdf", ".docx", ".txt", ".md"}
 MATERIAL_EXTENSIONS = {
@@ -86,6 +110,21 @@ MATERIAL_EXTENSIONS = {
     ".json",
     ".zip",
 }
+
+VIDEO_ARTIFACT_SUFFIXES = (
+    "subtitles.srt",
+    "subtitles.vtt",
+    "chapters.txt",
+    "edit_plan.json",
+    "quality_report.json",
+    "mode_comparison.json",
+    "mode_comparison.md",
+    "academic_evidence.json",
+    "academic_evidence.md",
+    "before_after_comparison.json",
+    "timeline_decisions.csv",
+    "evidence_bundle.zip",
+)
 
 ALLOWED_EXTENSIONS_BY_TYPE = {
     "video": VIDEO_EXTENSIONS,
@@ -218,6 +257,14 @@ def _parse_metadata_form(metadata: str | None) -> dict[str, Any]:
     return parsed
 
 
+def _asset_matches_structure(asset: ProjectAsset) -> bool:
+    return asset.role in {
+        ProjectAssetRole.SLIDES,
+        ProjectAssetRole.NOTES,
+        ProjectAssetRole.SUPPORTING_MATERIAL,
+    } or asset.sync_role == ProjectAssetSyncRole.STRUCTURE_REFERENCE
+
+
 def _validate_asset_upload(file: UploadFile, asset_type: AssetUploadType) -> str:
     ext = _extension(file.filename)
     allowed_extensions = ALLOWED_EXTENSIONS_BY_TYPE[asset_type]
@@ -236,6 +283,27 @@ def _asset_storage_path(project_id: UUID, asset_id: UUID, ext: str) -> tuple[str
     return filename, os.path.join(directory, filename)
 
 
+def _remove_file_if_present(path: str | None, removed: set[str]) -> None:
+    if not path:
+        return
+    normalized = os.path.abspath(path)
+    if normalized in removed or not os.path.isfile(normalized):
+        return
+    try:
+        os.remove(normalized)
+        removed.add(normalized)
+    except OSError as exc:
+        logger.warning("Could not remove project file %s: %s", normalized, exc)
+
+
+def _remove_video_artifacts(video_id: UUID, removed: set[str]) -> None:
+    for suffix in VIDEO_ARTIFACT_SUFFIXES:
+        _remove_file_if_present(
+            os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_{suffix}"),
+            removed,
+        )
+
+
 async def _media_metadata(file_path: str, asset_type: AssetUploadType) -> dict:
     if asset_type not in {"video", "screen", "camera", "webcam", "phone_camera", "audio"}:
         return {}
@@ -244,6 +312,169 @@ async def _media_metadata(file_path: str, asset_type: AssetUploadType) -> dict:
     except Exception as exc:
         logger.warning("Could not read media metadata for %s: %s", file_path, exc)
         return {}
+
+
+def _import_session_warnings(session) -> list[str]:
+    warnings: list[str] = []
+    if session.last_error:
+        warnings.append(session.last_error)
+    return warnings
+
+
+def _import_session_status_response(session, *, project_id: UUID) -> PrimaryImportStatusResponse:
+    bytes_received = get_native_import_received_bytes(settings, session)
+    if bytes_received == 0 and session.status in {"finalizing", "finalized"}:
+        bytes_received = session.file_size_bytes
+    total_bytes = session.file_size_bytes
+    percent = round((bytes_received / total_bytes) * 100, 3) if total_bytes else 0.0
+    return PrimaryImportStatusResponse(
+        token=session.token,
+        project_id=project_id,
+        filename=session.original_filename,
+        status=session.status,
+        bytes_received=bytes_received,
+        total_bytes=total_bytes,
+        percent=percent,
+        complete=bytes_received >= total_bytes and total_bytes > 0,
+        updated_at=session.updated_at,
+        warnings=_import_session_warnings(session),
+    )
+
+
+async def _finalize_project_primary_import_session(
+    *,
+    project: Project,
+    session,
+    request: NativeImportFinalizeRequest,
+    upload_type: str,
+    success_message: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession,
+) -> VideoUploadResponse:
+    part_path = resolve_staged_path(settings, session, part=True)
+    staged_path = resolve_staged_path(settings, session, part=False)
+    if part_path.exists():
+        raise HTTPException(409, "Import copy is still in progress because the partial file remains present")
+    if not staged_path.exists():
+        raise HTTPException(409, "Staged import file is missing. Retry the import.")
+
+    actual_size = os.path.getsize(staged_path)
+    if actual_size != session.file_size_bytes or actual_size != request.copied_file_size_bytes:
+        raise HTTPException(
+            409,
+            f"Staged file size mismatch. Expected {session.file_size_bytes} bytes but found {actual_size} bytes.",
+        )
+
+    session = mark_native_import_status(settings, session, "finalizing")
+
+    try:
+        media_metadata = await _media_metadata(str(staged_path), "video")
+    except Exception:
+        media_metadata = {}
+
+    existing_primary_result = await db.execute(
+        select(ProjectAsset).where(
+            ProjectAsset.project_id == project.id,
+            ProjectAsset.is_primary.is_(True),
+        )
+    )
+    for existing_asset in existing_primary_result.scalars():
+        existing_asset.is_primary = False
+
+    asset_id = uuid.uuid4()
+    video_id = uuid.uuid4()
+    ext = _extension(session.original_filename)
+    filename, file_path = _asset_storage_path(project.id, asset_id, ext)
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+    try:
+        os.replace(staged_path, file_path)
+    except OSError as exc:
+        mark_native_import_status(settings, session, "copy_failed")
+        raise HTTPException(500, f"Could not move the staged import into project storage: {exc}") from exc
+
+    asset = ProjectAsset(
+        id=asset_id,
+        project_id=project.id,
+        kind=ProjectAssetKind.MIXED_VIDEO,
+        role=ProjectAssetRole.PRIMARY,
+        source_type=ProjectMediaSourceType.MIXED_VIDEO,
+        sync_role=ProjectAssetSyncRole.PRIMARY_TIMELINE,
+        status=ProjectAssetStatus.READY,
+        is_primary=True,
+        filename=filename,
+        original_filename=session.original_filename,
+        file_path=file_path,
+        file_size_bytes=actual_size,
+        mime_type=session.mime_type,
+        duration_seconds=media_metadata.get("duration"),
+        metadata_json={
+            "legacy_video_id": str(video_id),
+            "source_type": ProjectMediaSourceType.MIXED_VIDEO.value,
+            "sync_role": ProjectAssetSyncRole.PRIMARY_TIMELINE.value,
+            "upload_type": upload_type,
+            "storage_scope": "native_primary_import",
+            "extension": ext,
+            "native_import_token": session.token,
+            "resolution": (
+                f"{media_metadata.get('width')}x{media_metadata.get('height')}"
+                if media_metadata.get("width") and media_metadata.get("height")
+                else None
+            ),
+            "fps": media_metadata.get("fps"),
+        },
+    )
+    db.add(asset)
+
+    video = Video(
+        id=video_id,
+        project_id=project.id,
+        project_asset_id=asset_id,
+        filename=filename,
+        original_filename=session.original_filename,
+        file_path=file_path,
+        file_size_bytes=actual_size,
+        duration_seconds=media_metadata.get("duration"),
+        resolution=(
+            f"{media_metadata.get('width')}x{media_metadata.get('height')}"
+            if media_metadata.get("width") and media_metadata.get("height")
+            else None
+        ),
+        fps=media_metadata.get("fps"),
+        status=VideoStatus.UPLOADED,
+    )
+    db.add(video)
+
+    if project.status == ProjectStatus.DRAFT:
+        project.status = ProjectStatus.READY
+    if project.source_mode != ProjectSourceMode.MULTI_SOURCE:
+        project.source_mode = ProjectSourceMode.SINGLE_VIDEO
+
+    try:
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        quarantined_path = quarantine_native_import(settings, session, Path(file_path), "database_finalize_failure")
+        raise HTTPException(
+            500,
+            "Import finalization failed after file staging. "
+            f"The staged copy was quarantined at {quarantined_path.name}. Error: {exc}",
+        ) from exc
+
+    mark_native_import_status(settings, session, "finalized")
+    background_tasks.add_task(_prewarm_primary_video_proxy, file_path)
+
+    return VideoUploadResponse(
+        id=video_id,
+        project_id=project.id,
+        project_asset_id=asset.id,
+        filename=session.original_filename,
+        status=VideoStatus.UPLOADED,
+        duration_seconds=media_metadata.get("duration"),
+        resolution=video.resolution,
+        file_size_mb=round(actual_size / 1024 / 1024, 1),
+        message=success_message,
+    )
 
 
 async def _upload_project_asset(
@@ -264,13 +495,12 @@ async def _upload_project_asset(
 
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
     with open(file_path, "wb") as saved_file:
-        shutil.copyfileobj(file.file, saved_file)
+        shutil.copyfileobj(file.file, saved_file, length=UPLOAD_COPY_BUFFER_BYTES)
 
     file_size = os.path.getsize(file_path)
-    max_size_bytes = settings.MAX_VIDEO_SIZE_MB * 1024 * 1024
-    if file_size > max_size_bytes:
+    if file_size > max_upload_size_bytes(settings):
         os.remove(file_path)
-        raise HTTPException(413, f"File too large. Maximum: {settings.MAX_VIDEO_SIZE_MB}MB")
+        raise HTTPException(413, f"File too large. Maximum: {upload_limit_label(settings)}")
 
     media_metadata = await _media_metadata(file_path, asset_type)
     kind = _asset_kind_for_upload(asset_type, file.filename)
@@ -456,6 +686,72 @@ async def get_project(project_id: UUID, db: AsyncSession = Depends(get_db)):
     return project
 
 
+@router.patch("/{project_id}", response_model=ProjectDetailResponse, tags=["Projects"])
+async def update_project(
+    project_id: UUID,
+    request: ProjectUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Update project workspace metadata such as title, type, and source mode."""
+    project = await _load_project_with_assets(project_id, db)
+    fields = request.model_fields_set
+
+    if "title" in fields:
+        title = (request.title or "").strip()
+        if not title:
+            raise HTTPException(400, "Project title cannot be empty")
+        project.title = title
+    if "description" in fields:
+        project.description = request.description.strip() if request.description else None
+    if "source_mode" in fields and request.source_mode is not None:
+        project.source_mode = request.source_mode
+    if "project_type" in fields:
+        project.project_type = (request.project_type or "lecture").strip() or "lecture"
+    if "metadata" in fields and request.metadata is not None:
+        project.metadata_json = request.metadata
+
+    await db.commit()
+    project = await _load_project_with_assets(project_id, db)
+    return project
+
+
+@router.delete("/{project_id}", tags=["Projects"])
+async def delete_project(project_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Delete a project and its project-owned assets, videos, and generated artifacts."""
+    result = await db.execute(
+        select(Project)
+        .options(selectinload(Project.assets), selectinload(Project.videos))
+        .where(Project.id == project_id)
+    )
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(404, "Project not found")
+
+    removed_files: set[str] = set()
+    videos = list(project.videos or [])
+    assets = list(project.assets or [])
+
+    for video in videos:
+        _remove_file_if_present(video.file_path, removed_files)
+        _remove_file_if_present(video.audio_path, removed_files)
+        _remove_file_if_present(video.processed_video_path, removed_files)
+        _remove_video_artifacts(video.id, removed_files)
+        await db.delete(video)
+
+    for asset in assets:
+        _remove_file_if_present(asset.file_path, removed_files)
+
+    await db.delete(project)
+    await db.commit()
+    return {
+        "status": "deleted",
+        "project_id": str(project_id),
+        "videos_deleted": len(videos),
+        "assets_deleted": len(assets),
+        "files_deleted": len(removed_files),
+    }
+
+
 @router.get("/{project_id}/assets", response_model=list[ProjectAssetResponse], tags=["Project Assets"])
 async def list_project_assets(project_id: UUID, db: AsyncSession = Depends(get_db)):
     """List uploaded assets for a project."""
@@ -593,6 +889,7 @@ async def upload_project_asset(
 @router.post("/{project_id}/videos/upload", response_model=VideoUploadResponse, tags=["Project Videos"])
 async def upload_project_primary_video(
     project_id: UUID,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ):
@@ -608,13 +905,12 @@ async def upload_project_primary_video(
 
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
     with open(file_path, "wb") as saved_file:
-        shutil.copyfileobj(file.file, saved_file)
+        shutil.copyfileobj(file.file, saved_file, length=UPLOAD_COPY_BUFFER_BYTES)
 
     file_size = os.path.getsize(file_path)
-    max_size_bytes = settings.MAX_VIDEO_SIZE_MB * 1024 * 1024
-    if file_size > max_size_bytes:
+    if file_size > max_upload_size_bytes(settings):
         os.remove(file_path)
-        raise HTTPException(413, f"File too large. Maximum: {settings.MAX_VIDEO_SIZE_MB}MB")
+        raise HTTPException(413, f"File too large. Maximum: {upload_limit_label(settings)}")
 
     media_metadata = await _media_metadata(file_path, "video")
 
@@ -685,6 +981,11 @@ async def upload_project_primary_video(
 
     await db.commit()
 
+    # Normalize large 4K/MOV sources while the user adds notes and reviews the
+    # project. Export then reuses this proxy instead of paying for a second
+    # full-length transcode at render time.
+    background_tasks.add_task(_prewarm_primary_video_proxy, file_path)
+
     return VideoUploadResponse(
         id=video_id,
         project_id=project.id,
@@ -696,6 +997,363 @@ async def upload_project_primary_video(
         file_size_mb=round(file_size / 1024 / 1024, 1),
         message=f"Video uploaded to {project.title}. Add course materials, then start processing.",
     )
+
+
+@router.post(
+    "/{project_id}/imports/native/primary/init",
+    response_model=NativeImportInitResponse,
+    tags=["Project Videos"],
+)
+async def init_native_project_primary_import(
+    project_id: UUID,
+    request: NativeImportInitRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Initialize a native desktop import session for a very large primary video."""
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+
+    ext = _extension(request.original_filename)
+    if ext not in VIDEO_EXTENSIONS:
+        allowed = ", ".join(sorted(VIDEO_EXTENSIONS))
+        raise HTTPException(
+            400,
+            f"Unsupported primary video type: {ext or 'missing extension'}. Allowed: {allowed}",
+        )
+
+    try:
+        session, free_bytes, required_bytes = create_native_import_session(
+            settings=settings,
+            project_id=str(project_id),
+            original_filename=request.original_filename,
+            file_size_bytes=request.file_size_bytes,
+            mime_type=request.mime_type,
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = 507 if "Insufficient disk space" in detail else 400
+        raise HTTPException(status_code, detail) from exc
+
+    warnings: list[str] = []
+    orphan_records, orphan_warnings = list_native_import_orphans(settings, str(project_id))
+    if orphan_records:
+        warnings.append(
+            f"{len(orphan_records)} orphaned or stale staged import file(s) already exist. Review diagnostics before cleanup."
+        )
+    warnings.extend(orphan_warnings)
+
+    return NativeImportInitResponse(
+        token=session.token,
+        project_id=project_id,
+        original_filename=request.original_filename,
+        mime_type=request.mime_type,
+        file_size_bytes=request.file_size_bytes,
+        max_size_bytes=max_upload_size_bytes(settings),
+        available_disk_bytes=free_bytes,
+        required_free_bytes=required_bytes,
+        staging_relative_path=session.staging_relative_path,
+        staging_part_relative_path=session.staging_part_relative_path,
+        warnings=warnings,
+    )
+
+
+@router.post(
+    "/{project_id}/imports/browser/primary/init",
+    response_model=NativeImportInitResponse,
+    tags=["Project Videos"],
+)
+async def init_browser_project_primary_import(
+    project_id: UUID,
+    request: NativeImportInitRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Initialize a resumable browser upload session for a very large primary video."""
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+
+    ext = _extension(request.original_filename)
+    if ext not in VIDEO_EXTENSIONS:
+        allowed = ", ".join(sorted(VIDEO_EXTENSIONS))
+        raise HTTPException(
+            400,
+            f"Unsupported primary video type: {ext or 'missing extension'}. Allowed: {allowed}",
+        )
+
+    try:
+        session, free_bytes, required_bytes = create_native_import_session(
+            settings=settings,
+            project_id=str(project_id),
+            original_filename=request.original_filename,
+            file_size_bytes=request.file_size_bytes,
+            mime_type=request.mime_type,
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = 507 if "Insufficient disk space" in detail else 400
+        raise HTTPException(status_code, detail) from exc
+
+    warnings: list[str] = []
+    orphan_records, orphan_warnings = list_native_import_orphans(settings, str(project_id))
+    if orphan_records:
+        warnings.append(
+            f"{len(orphan_records)} orphaned or stale staged import file(s) already exist. Review diagnostics before cleanup."
+        )
+    warnings.extend(orphan_warnings)
+
+    return NativeImportInitResponse(
+        token=session.token,
+        project_id=project_id,
+        original_filename=request.original_filename,
+        mime_type=request.mime_type,
+        file_size_bytes=request.file_size_bytes,
+        max_size_bytes=max_upload_size_bytes(settings),
+        available_disk_bytes=free_bytes,
+        required_free_bytes=required_bytes,
+        staging_relative_path=session.staging_relative_path,
+        staging_part_relative_path=session.staging_part_relative_path,
+        warnings=warnings,
+    )
+
+
+@router.post(
+    "/{project_id}/imports/native/primary/{token}/finalize",
+    response_model=VideoUploadResponse,
+    tags=["Project Videos"],
+)
+async def finalize_native_project_primary_import(
+    project_id: UUID,
+    token: str,
+    request: NativeImportFinalizeRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """Finalize a native desktop import after the Tauri shell finishes copying the file."""
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+
+    try:
+        session = load_native_import_session(settings, token)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+    if session.project_id != str(project_id):
+        raise HTTPException(409, "Import session does not belong to this project")
+
+    return await _finalize_project_primary_import_session(
+        project=project,
+        session=session,
+        request=request,
+        upload_type="native_primary_import",
+        success_message=f"Video imported natively into {project.title}. Add course materials, then start processing.",
+        background_tasks=background_tasks,
+        db=db,
+    )
+
+
+@router.post(
+    "/{project_id}/imports/native/primary/{token}/cancel",
+    response_model=NativeImportCancelResponse,
+    tags=["Project Videos"],
+)
+async def cancel_native_project_primary_import(
+    project_id: UUID,
+    token: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Cancel a native desktop import and remove any staged partial files."""
+    if not await db.get(Project, project_id):
+        raise HTTPException(404, "Project not found")
+
+    try:
+        session, removed_files = cancel_native_import_session(settings, token)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+    if session.project_id != str(project_id):
+        raise HTTPException(409, "Import session does not belong to this project")
+
+    return NativeImportCancelResponse(
+        token=token,
+        project_id=project_id,
+        cancelled=True,
+        removed_files=removed_files,
+    )
+
+
+@router.get(
+    "/{project_id}/imports/browser/primary/{token}",
+    response_model=PrimaryImportStatusResponse,
+    tags=["Project Videos"],
+)
+async def get_browser_project_primary_import_status(
+    project_id: UUID,
+    token: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return resumable browser upload progress for a primary video import session."""
+    if not await db.get(Project, project_id):
+        raise HTTPException(404, "Project not found")
+
+    try:
+        session = load_native_import_session(settings, token)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+    if session.project_id != str(project_id):
+        raise HTTPException(409, "Import session does not belong to this project")
+
+    return _import_session_status_response(session, project_id=project_id)
+
+
+@router.put(
+    "/{project_id}/imports/browser/primary/{token}/chunk",
+    response_model=PrimaryImportChunkResponse,
+    tags=["Project Videos"],
+)
+async def append_browser_project_primary_import_chunk(
+    project_id: UUID,
+    token: str,
+    request: Request,
+    offset: int = Query(..., ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    """Append one browser upload chunk to a staged primary video import session."""
+    if not await db.get(Project, project_id):
+        raise HTTPException(404, "Project not found")
+
+    try:
+        session = load_native_import_session(settings, token)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+    if session.project_id != str(project_id):
+        raise HTTPException(409, "Import session does not belong to this project")
+
+    chunk = await request.body()
+    try:
+        session, bytes_received, complete = append_native_import_chunk(
+            settings,
+            session,
+            offset=offset,
+            chunk=chunk,
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(500, f"Could not persist upload chunk: {exc}") from exc
+
+    percent = round((bytes_received / session.file_size_bytes) * 100, 3) if session.file_size_bytes else 0.0
+    return PrimaryImportChunkResponse(
+        token=token,
+        project_id=project_id,
+        filename=session.original_filename,
+        status=session.status,
+        bytes_received=bytes_received,
+        total_bytes=session.file_size_bytes,
+        percent=percent,
+        complete=complete,
+        updated_at=session.updated_at,
+        warnings=_import_session_warnings(session),
+        next_offset=bytes_received,
+    )
+
+
+@router.post(
+    "/{project_id}/imports/browser/primary/{token}/finalize",
+    response_model=VideoUploadResponse,
+    tags=["Project Videos"],
+)
+async def finalize_browser_project_primary_import(
+    project_id: UUID,
+    token: str,
+    request: NativeImportFinalizeRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """Finalize a resumable browser upload after all chunks reach staged storage."""
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+
+    try:
+        session = load_native_import_session(settings, token)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+    if session.project_id != str(project_id):
+        raise HTTPException(409, "Import session does not belong to this project")
+
+    return await _finalize_project_primary_import_session(
+        project=project,
+        session=session,
+        request=request,
+        upload_type="browser_chunked_primary_import",
+        success_message=f"Video uploaded to {project.title}. Add course materials, then start processing.",
+        background_tasks=background_tasks,
+        db=db,
+    )
+
+
+@router.post(
+    "/{project_id}/imports/browser/primary/{token}/cancel",
+    response_model=NativeImportCancelResponse,
+    tags=["Project Videos"],
+)
+async def cancel_browser_project_primary_import(
+    project_id: UUID,
+    token: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Cancel a resumable browser upload and remove any staged partial files."""
+    if not await db.get(Project, project_id):
+        raise HTTPException(404, "Project not found")
+
+    try:
+        session, removed_files = cancel_native_import_session(settings, token)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+    if session.project_id != str(project_id):
+        raise HTTPException(409, "Import session does not belong to this project")
+
+    return NativeImportCancelResponse(
+        token=token,
+        project_id=project_id,
+        cancelled=True,
+        removed_files=removed_files,
+    )
+
+
+@router.get(
+    "/{project_id}/imports/native/orphans",
+    response_model=NativeImportOrphanReport,
+    tags=["Project Videos"],
+)
+async def list_native_project_import_orphans(
+    project_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Report orphaned or stale staged import files without deleting them."""
+    if not await db.get(Project, project_id):
+        raise HTTPException(404, "Project not found")
+
+    orphan_records, warnings = list_native_import_orphans(settings, str(project_id))
+    return NativeImportOrphanReport(
+        project_id=project_id,
+        orphans=orphan_records,
+        warnings=warnings,
+    )
+
+
+async def _prewarm_primary_video_proxy(file_path: str) -> None:
+    try:
+        await prewarm_render_proxy(file_path)
+        logger.info("Editing proxy ready for %s", file_path)
+    except Exception as exc:
+        logger.warning("Editing proxy prewarm failed for %s: %s", file_path, exc)
 
 
 @router.post("/{project_id}/assets/video", response_model=ProjectAssetUploadResponse, tags=["Project Assets"])
@@ -857,6 +1515,39 @@ async def update_project_asset_sync_offset(
     metadata_json[SYNC_METADATA_KEY] = source_sync_metadata
     asset.metadata_json = metadata_json
 
+    await db.commit()
+    await db.refresh(asset)
+    return asset
+
+
+@router.patch("/{project_id}/assets/{asset_id}/metadata", response_model=ProjectAssetResponse, tags=["Project Assets"])
+async def update_project_asset_metadata(
+    project_id: UUID,
+    asset_id: UUID,
+    request: ProjectAssetMetadataUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Assign the page range from a shared deck that belongs to this project video."""
+    asset = await db.get(ProjectAsset, asset_id)
+    if not asset or asset.project_id != project_id:
+        raise HTTPException(404, "Project asset not found")
+    if not _asset_matches_structure(asset):
+        raise HTTPException(400, "Page scope can only be assigned to a slide or PDF structure asset")
+
+    try:
+        scope = request.validated_page_scope()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    metadata_json = dict(asset.metadata_json or {})
+    user_metadata = dict(metadata_json.get("user_metadata") or {})
+    if scope is None:
+        user_metadata.pop("slide_page_start", None)
+        user_metadata.pop("slide_page_end", None)
+    else:
+        user_metadata["slide_page_start"], user_metadata["slide_page_end"] = scope
+    metadata_json["user_metadata"] = user_metadata
+    asset.metadata_json = metadata_json
     await db.commit()
     await db.refresh(asset)
     return asset

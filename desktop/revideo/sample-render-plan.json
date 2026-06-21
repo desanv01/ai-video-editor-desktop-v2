@@ -1,0 +1,68 @@
+{
+  "schema_version": "aive.render-plan.v1",
+  "renderer": {
+    "preferred": "revideo",
+    "fallback": "ffmpeg",
+    "composition": "AiveLectureComposition"
+  },
+  "video": {
+    "id": "sample",
+    "project_id": null,
+    "filename": "sample.mp4",
+    "duration_seconds": 1,
+    "source_url": ""
+  },
+  "timeline": {
+    "duration_seconds": 1,
+    "scene_count": 1,
+    "slide_count": 1,
+    "source_duration_seconds": 1
+  },
+  "sources": {},
+  "slides": [
+    {
+      "id": "slide-01-001",
+      "title": "Lab Logistics and Resources",
+      "body": "Instructor explains FPGA borrowing, CDAT access, and lab requirements.",
+      "bullets": ["Borrow FPGA boards", "Access CDAT resources", "Prepare lab submissions"],
+      "source_filename": "tutorial_lab_1.pdf",
+      "source_asset_id": "notes-1",
+      "reference_index": 1
+    }
+  ],
+  "scenes": [
+    {
+      "id": "scene-0001",
+      "source_segment_id": "segment-1",
+      "source_start_time": 0,
+      "source_end_time": 1,
+      "start_time": 0,
+      "end_time": 1,
+      "duration_seconds": 1,
+      "layout": "full_screen_source",
+      "slide_id": "slide-01-001",
+      "slide_title": "Lab Logistics and Resources",
+      "caption_text": "Lab logistics, resources, FPGA boards, and CDAT access.",
+      "topic_label": "Lab logistics",
+      "importance_score": 0.8,
+      "action": "highlight",
+      "transition": {
+        "type": "fade",
+        "duration_seconds": 0.2
+      },
+      "camera": {
+        "enabled": false,
+        "shape": "rounded_rectangle",
+        "corner": "top_right",
+        "size": "medium"
+      },
+      "semantic_match": {
+        "score": 0.7,
+        "strategy": "sample",
+        "source": "tutorial_lab_1.pdf"
+      }
+    }
+  ],
+  "captions": [],
+  "metadata": {}
+}

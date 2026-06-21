@@ -64,7 +64,10 @@ class LayoutSourceSelection:
 
     @property
     def has_screen(self) -> bool:
-        return self.screen is not None and self.screen.asset_id is not None
+        return self.screen is not None and (
+            self.screen.asset_id is not None
+            or self.screen.track == "generated_slides"
+        )
 
     @property
     def has_camera(self) -> bool:
@@ -127,6 +130,49 @@ def plan_layout_cues(
     return normalize_layout_cues(cues, duration_seconds=total_duration)
 
 
+def plan_auto_layout_cues(
+    assets: Iterable[Any] | None,
+    *,
+    duration_seconds: float | None = None,
+    segments: Iterable[Any] | None = None,
+    profile: str = "balanced",
+) -> list[dict[str, Any]]:
+    """
+    Generate studio composition cues from transcript/source signals.
+
+    This keeps the renderer contract identical to normal layout cues while
+    marking the cues as an AI-assisted auto plan that teachers can override.
+    """
+    normalized_profile = str(profile or "balanced").lower()
+    cues = plan_layout_cues(
+        assets,
+        duration_seconds=duration_seconds,
+        segments=segments,
+    )
+    enhanced = []
+    for index, cue in enumerate(cues, start=1):
+        next_cue = dict(cue)
+        next_cue["id"] = f"layout-auto-{index:03d}"
+        next_cue["status"] = "suggested"
+        next_cue["source"] = "ai_auto_layout"
+        next_cue["reason"] = _auto_reason(next_cue, normalized_profile)
+        next_cue["planning"] = {
+            **dict(next_cue.get("planning") or {}),
+            "schema_version": LAYOUT_PLANNER_VERSION,
+            "strategy": "ai_auto_rule_assist",
+            "profile": normalized_profile,
+            "teacher_override_ready": True,
+        }
+        timing = dict(next_cue.get("timing") or {})
+        timing.setdefault("transition_in", _transition_for_layout(next_cue.get("layout")))
+        timing.setdefault("transition_out", timing.get("transition_in", "crossfade"))
+        if normalized_profile == "presentation":
+            timing["transition_duration_seconds"] = max(float(timing.get("transition_duration_seconds") or 0.35), 0.45)
+        next_cue["timing"] = timing
+        enhanced.append(next_cue)
+    return normalize_layout_cues(enhanced, duration_seconds=duration_seconds)
+
+
 def select_layout_sources(assets: Iterable[Any]) -> LayoutSourceSelection:
     """Choose the screen, camera, and audio sources that should anchor layout cues."""
     asset_list = list(assets or [])
@@ -135,14 +181,29 @@ def select_layout_sources(assets: Iterable[Any]) -> LayoutSourceSelection:
     camera_asset = _first_asset(asset_list, CAMERA_VALUES)
     audio_asset = _first_asset(asset_list, AUDIO_VALUES)
     structure_count = sum(1 for asset in asset_list if _asset_matches(asset, STRUCTURE_REFERENCE_VALUES))
+    primary_is_structure_backed_camera = (
+        structure_count > 0
+        and screen_asset is None
+        and camera_asset is None
+        and primary_asset is not None
+    )
 
     screen_choice = None
     if screen_asset is not None:
         screen_choice = _choice(screen_asset, "screen")
-    elif primary_asset is not None:
+    elif primary_is_structure_backed_camera:
+        screen_choice = LayoutSourceChoice(
+            asset_id=None,
+            track="generated_slides",
+            sync_offset_seconds=0.0,
+            role_hint="structure_reference",
+        )
+    elif primary_asset is not None and not primary_is_structure_backed_camera:
         screen_choice = _choice(primary_asset, "primary_timeline")
 
     camera_choice = _choice(camera_asset, "camera") if camera_asset is not None else None
+    if camera_choice is None and primary_is_structure_backed_camera:
+        camera_choice = _choice(primary_asset, "camera")
 
     audio_choice = None
     if audio_asset is not None:
@@ -165,12 +226,42 @@ def select_layout_sources(assets: Iterable[Any]) -> LayoutSourceSelection:
 def layout_planning_summary(cues: Iterable[dict[str, Any]]) -> dict[str, Any]:
     """Return a compact metadata block for edit-plan payloads."""
     cue_list = list(cues or [])
+    strategies = {
+        str((cue.get("planning") or {}).get("strategy"))
+        for cue in cue_list
+        if isinstance(cue, dict) and (cue.get("planning") or {}).get("strategy")
+    }
     return {
         "schema_version": LAYOUT_PLANNER_VERSION,
-        "strategy": "rule_based",
+        "strategy": sorted(strategies)[0] if len(strategies) == 1 else "mixed" if strategies else "rule_based",
         "cues_total": len(cue_list),
         "layouts": sorted({str(cue.get("layout")) for cue in cue_list if cue.get("layout")}),
     }
+
+
+def _auto_reason(cue: dict[str, Any], profile: str) -> str:
+    layout = str(cue.get("layout") or "")
+    base = str(cue.get("reason") or "").strip()
+    if layout == LayoutMode.PICTURE_IN_PICTURE.value:
+        prefix = "AI auto layout keeps slides or screen as the background with the lecturer in picture-in-picture."
+    elif layout == LayoutMode.SIDE_BY_SIDE.value:
+        prefix = "AI auto layout brings the lecturer beside the source for introductions, transitions, or Q&A."
+    elif layout == LayoutMode.FULL_CAMERA_SOURCE.value:
+        prefix = "AI auto layout switches to lecturer full screen for presenter-led moments."
+    else:
+        prefix = "AI auto layout keeps the teaching source unobstructed for slide or screen clarity."
+    if profile == "presentation":
+        prefix += " Presentation profile uses smoother transitions."
+    return f"{prefix} {base}".strip()
+
+
+def _transition_for_layout(layout: Any) -> str:
+    layout_value = str(layout or "")
+    if layout_value == LayoutMode.FULL_SCREEN_SOURCE.value:
+        return "fade"
+    if layout_value == LayoutMode.FULL_CAMERA_SOURCE.value:
+        return "crossfade"
+    return "crossfade"
 
 
 def _screen_camera_intervals(

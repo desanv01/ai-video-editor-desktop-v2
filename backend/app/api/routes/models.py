@@ -1,8 +1,10 @@
 """Model catalog routes for local AI runtimes."""
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
+from db.database import get_db
 from models.schemas import (
     LocalTranscriptionModelCatalogItem,
     LocalTranscriptionModelCatalogResponse,
@@ -13,8 +15,10 @@ from models.schemas import (
 from providers.whisper_cpp import (
     WHISPER_CPP_PROVIDER_ID,
     build_whisper_cpp_model_catalog,
+    resolve_whisper_cpp_runtime_status,
     resolve_whisper_cpp_model_selection,
 )
+from services.app_settings import load_and_apply_persisted_ai_settings
 from services.local_transcription_models import local_transcription_model_service
 
 router = APIRouter(tags=["Settings"])
@@ -24,14 +28,20 @@ router = APIRouter(tags=["Settings"])
     "/settings/models/local-transcription",
     response_model=LocalTranscriptionModelCatalogResponse,
 )
-async def get_local_transcription_model_catalog():
+async def get_local_transcription_model_catalog(db: AsyncSession = Depends(get_db)):
     """Return UI-ready local transcription model metadata and status."""
+    await load_and_apply_persisted_ai_settings(db)
     catalog = build_whisper_cpp_model_catalog(settings)
     selection = resolve_whisper_cpp_model_selection(settings)
+    runtime_status = resolve_whisper_cpp_runtime_status(settings)
 
     return LocalTranscriptionModelCatalogResponse(
         provider_id=WHISPER_CPP_PROVIDER_ID,
         active_model_id=selection.model_id,
+        runtime_configured=runtime_status.configured,
+        runtime_status="ready" if runtime_status.configured else "missing",
+        runtime_message=runtime_status.message,
+        runtime_binary_path=runtime_status.binary_path or None,
         models=[
             LocalTranscriptionModelCatalogItem(
                 model_id=model.model_id,
@@ -50,7 +60,11 @@ async def get_local_transcription_model_catalog():
                 status=_model_status(model.model_id, model.downloaded),
                 can_download=_can_download(model.model_id, model.downloaded),
                 can_remove=_can_remove(model.model_id, model.downloaded),
+                download_bytes_downloaded=_download_bytes(model.model_id),
+                download_total_bytes=_download_total_bytes(model.model_id),
                 download_progress_percent=_download_progress(model.model_id),
+                download_speed_bytes_per_second=_download_speed(model.model_id),
+                download_eta_seconds=_download_eta(model.model_id),
                 file_path=model.file_path,
             )
             for model in catalog
@@ -140,6 +154,34 @@ def _download_progress(model_id: str) -> float | None:
     return job.progress_percent
 
 
+def _download_bytes(model_id: str) -> int:
+    job = local_transcription_model_service.get_job(model_id)
+    if not job or job.status not in {"queued", "downloading"}:
+        return 0
+    return job.bytes_downloaded
+
+
+def _download_total_bytes(model_id: str) -> int | None:
+    job = local_transcription_model_service.get_job(model_id)
+    if not job or job.status not in {"queued", "downloading"}:
+        return None
+    return job.total_bytes
+
+
+def _download_speed(model_id: str) -> float | None:
+    job = local_transcription_model_service.get_job(model_id)
+    if not job or job.status not in {"queued", "downloading"}:
+        return None
+    return job.speed_bytes_per_second
+
+
+def _download_eta(model_id: str) -> float | None:
+    job = local_transcription_model_service.get_job(model_id)
+    if not job or job.status not in {"queued", "downloading"}:
+        return None
+    return job.eta_seconds
+
+
 def _download_response(job) -> LocalTranscriptionModelDownloadResponse:
     selection = resolve_whisper_cpp_model_selection(settings)
     return LocalTranscriptionModelDownloadResponse(
@@ -152,6 +194,8 @@ def _download_response(job) -> LocalTranscriptionModelDownloadResponse:
         total_bytes=job.total_bytes,
         bytes_downloaded=job.bytes_downloaded,
         progress_percent=job.progress_percent,
+        speed_bytes_per_second=job.speed_bytes_per_second,
+        eta_seconds=job.eta_seconds,
         message=job.message,
         error=job.error,
         active=selection.model_id == job.model_id,

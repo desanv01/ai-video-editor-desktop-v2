@@ -5,7 +5,7 @@ Database ORM models — represents the core data entities.
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import (
-    Column, String, Text, Float, Integer, Boolean,
+    Column, String, Text, Float, Integer, BigInteger, Boolean,
     DateTime, ForeignKey, Enum, JSON
 )
 from sqlalchemy.orm import relationship
@@ -173,7 +173,7 @@ class ProjectAsset(Base):
     filename = Column(String(255), nullable=False)
     original_filename = Column(String(255), nullable=False)
     file_path = Column(String(500), nullable=False)
-    file_size_bytes = Column(Integer)
+    file_size_bytes = Column(BigInteger)
     mime_type = Column(String(100))
     duration_seconds = Column(Float)
 
@@ -197,7 +197,7 @@ class Video(Base):
     filename = Column(String(255), nullable=False)
     original_filename = Column(String(255), nullable=False)
     file_path = Column(String(500), nullable=False)
-    file_size_bytes = Column(Integer)
+    file_size_bytes = Column(BigInteger)
     duration_seconds = Column(Float)
     resolution = Column(String(20))       # e.g. "1920x1080"
     fps = Column(Float)

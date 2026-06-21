@@ -24,6 +24,10 @@ class LLMService:
         provider_id = mode_config.api_provider_id or registry.default_provider_id(kind)
         return registry.get(kind, provider_id)
 
+    def provider_id_for_kind(self, kind: ProviderKind) -> str:
+        """Return the provider id that will be used for a capability."""
+        return self._provider_for_kind(kind).metadata.provider_id
+
     async def chat(
         self,
         messages: List[dict],
@@ -77,7 +81,6 @@ class LLMService:
             max_tokens=max_tokens,
             response_format={"type": "json_object"},
         )
-
         try:
             return json.loads(result)
         except json.JSONDecodeError:
@@ -88,7 +91,7 @@ class LLMService:
             elif "```" in result:
                 json_str = result.split("```")[1].split("```")[0].strip()
                 return json.loads(json_str)
-            raise ValueError(f"LLM did not return valid JSON: {result[:200]}")
+            raise  # Re-raise if we can't extract JSON at all
 
     async def embed(self, texts: List[str]) -> List[List[float]]:
         """

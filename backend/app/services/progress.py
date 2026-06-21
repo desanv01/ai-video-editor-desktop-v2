@@ -57,10 +57,10 @@ class PipelineStep:
     LABELS = {
         QUEUED: "Queued for processing",
         EXTRACTING_AUDIO: "Extracting audio from video...",
-        TRANSCRIBING: "Transcribing speech to text (Voxtral)...",
+        TRANSCRIBING: "Transcribing speech to text...",
         EMBEDDING_TRANSCRIPT: "Building knowledge base from transcript...",
         ANALYZING_CONTENT: "Analyzing educational content (Agent 2)...",
-        ANALYZING_FLUENCY: "Detecting filler words and pauses (Agent 3)...",
+        ANALYZING_FLUENCY: "Analyzing delivery signals and pauses (Agent 3)...",
         ANALYZING_VISUAL: "Detecting slide changes (Agent 4)...",
         PLANNING_EDITS: "Generating edit plan (Agent 5)...",
         AWAITING_REVIEW: "Ready for teacher review",
@@ -76,10 +76,11 @@ def init_progress(video_id: str):
         "video_id": video_id,
         "current_step": PipelineStep.QUEUED,
         "steps_completed": [],
+        "steps_failed": {},
         "steps_timing": {},
         "started_at": _utc_now_iso(),
         "error": None,
-        "_step_start_time": None,
+        "_step_start_times": {},
     }
     logger.info(f"Pipeline progress initialized for {video_id}")
 
@@ -92,7 +93,7 @@ def start_step(video_id: str, step: str):
         prog = _progress[video_id]
 
     prog["current_step"] = step
-    prog["_step_start_time"] = time.time()
+    prog.setdefault("_step_start_times", {})[step] = time.time()
     logger.info(f"Pipeline [{video_id[:8]}...] → {PipelineStep.LABELS.get(step, step)}")
 
 
@@ -102,11 +103,12 @@ def complete_step(video_id: str, step: str, result: Optional[dict] = None):
     if not prog:
         return
 
-    elapsed = 0.0
-    if prog.get("_step_start_time"):
-        elapsed = round(time.time() - prog["_step_start_time"], 2)
+    started_at = prog.setdefault("_step_start_times", {}).pop(step, None)
+    elapsed = round(time.time() - started_at, 2) if started_at else 0.0
 
-    prog["steps_completed"].append(step)
+    if step not in prog["steps_completed"]:
+        prog["steps_completed"].append(step)
+    prog.setdefault("steps_failed", {}).pop(step, None)
     prog["steps_timing"][step] = {
         "elapsed_seconds": elapsed,
         "completed_at": _utc_now_iso(),
@@ -117,7 +119,12 @@ def complete_step(video_id: str, step: str, result: Optional[dict] = None):
         summary = {}
         for key in ["word_count", "segment_count", "segments_analyzed",
                      "total_fillers", "scenes_detected", "segments_keep",
-                     "segments_cut", "time_saved_seconds", "provider"]:
+                     "segments_cut", "time_saved_seconds", "provider",
+                     "transcription_route", "batches_attempted",
+                     "batches_failed", "fallback_segments", "pauses_detected",
+                     "segments_updated", "chat_provider", "model",
+                     "analysis_source", "structure_reference_count",
+                     "vision_provider", "skip_reason"]:
             if key in result:
                 summary[key] = result[key]
         if summary:
@@ -134,6 +141,15 @@ def fail_step(video_id: str, step: str, error: str):
 
     prog["current_step"] = PipelineStep.FAILED
     prog["error"] = f"[{step}] {error}"
+    started_at = prog.setdefault("_step_start_times", {}).pop(step, None)
+    elapsed = round(time.time() - started_at, 2) if started_at else 0.0
+    failure = {
+        "error": error,
+        "elapsed_seconds": elapsed,
+        "failed_at": _utc_now_iso(),
+    }
+    prog.setdefault("steps_failed", {})[step] = failure
+    prog.setdefault("steps_timing", {})[step] = failure
     logger.error(f"Pipeline [{video_id[:8]}...] ✗ {step}: {error}")
 
 
@@ -161,6 +177,7 @@ def get_progress(video_id: str) -> dict:
             "current_step_label": "No active processing",
             "progress_percent": 0.0,
             "steps_completed": [],
+            "steps_failed": {},
             "steps_timing": {},
             "total_elapsed_seconds": 0,
             "error": None,
@@ -171,12 +188,13 @@ def get_progress(video_id: str) -> dict:
     total_steps = len(PipelineStep.ALL_STEPS)
     progress_pct = round(min(completed_count / max(total_steps, 1) * 100, 100), 1)
 
-    # Calculate total elapsed
-    total_elapsed = sum(
-        t.get("elapsed_seconds", 0) for t in prog.get("steps_timing", {}).values()
-    )
-
     current = prog.get("current_step", "unknown")
+    step_started_at = prog.setdefault("_step_start_times", {}).get(current)
+    current_step_elapsed = round(time.time() - step_started_at, 2) if step_started_at else 0.0
+    started_at_epoch = _parse_iso_epoch(prog.get("started_at"))
+    total_elapsed = time.time() - started_at_epoch if started_at_epoch else sum(
+        t.get("elapsed_seconds", 0) for t in prog.get("steps_timing", {}).values()
+    ) + current_step_elapsed
 
     return {
         "video_id": video_id,
@@ -184,14 +202,26 @@ def get_progress(video_id: str) -> dict:
         "current_step_label": PipelineStep.LABELS.get(current, current),
         "progress_percent": progress_pct,
         "steps_completed": prog.get("steps_completed", []),
+        "steps_failed": prog.get("steps_failed", {}),
         "steps_timing": {
             k: {sk: sv for sk, sv in v.items() if not sk.startswith("_")}
             for k, v in prog.get("steps_timing", {}).items()
         },
-        "total_elapsed_seconds": round(total_elapsed, 2),
+        "total_elapsed_seconds": round(max(0.0, total_elapsed), 2),
+        "current_step_elapsed_seconds": current_step_elapsed,
         "started_at": prog.get("started_at"),
         "error": prog.get("error"),
     }
+
+
+def _parse_iso_epoch(value: object) -> float | None:
+    if not value:
+        return None
+    try:
+        text = str(value).replace("Z", "+00:00")
+        return datetime.fromisoformat(text).timestamp()
+    except (TypeError, ValueError):
+        return None
 
 
 def cleanup_progress(video_id: str):

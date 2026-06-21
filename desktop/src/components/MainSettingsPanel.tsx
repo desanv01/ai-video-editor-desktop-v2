@@ -34,6 +34,8 @@ import type {
   AppSettings,
   BackendAISettings,
   BackendAISettingsUpdate,
+  ExportPreset,
+  ExportPresetCatalog,
   LocalTranscriptionModel,
   LocalTranscriptionModelCatalog,
 } from "../types/api";
@@ -69,13 +71,16 @@ const API_PROVIDER_OPTIONS: Partial<Record<AIProviderKind, { value: string; labe
     { value: "whisper", label: "OpenAI Whisper" },
   ],
   chat: [
-    { value: "deepseek-chat", label: "DeepSeek Chat" },
+    { value: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
+    { value: "deepseek-v4-pro", label: "DeepSeek V4 Pro" },
   ],
   embedding: [
     { value: "openai-embeddings", label: "OpenAI Embeddings" },
   ],
   vision: [
     { value: "vision-unconfigured", label: "Not configured" },
+    { value: "qwen-3.7-plus", label: "Qwen 3.7 Plus (Alibaba)" },
+    { value: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
   ],
 };
 
@@ -173,6 +178,10 @@ function selectedModelIdFrom(
   settings: BackendAISettings,
   catalog: LocalTranscriptionModelCatalog,
 ): string {
+  const persistedId = settings.local_model_ids?.transcription;
+  if (persistedId && catalog.models.some(model => model.model_id === persistedId)) {
+    return persistedId;
+  }
   const persistedPath = settings.local_model_paths.transcription;
   const pathMatch = catalog.models.find(model => modelMatchesPath(model, persistedPath));
   return pathMatch?.model_id
@@ -188,6 +197,7 @@ function formatModelState(model: LocalTranscriptionModel): string {
   }
   if (model.status === "queued") return "Queued";
   if (model.status === "failed") return "Failed";
+  if (model.active && model.downloaded) return "Active";
   return model.downloaded ? "Ready" : "Not downloaded";
 }
 
@@ -255,6 +265,7 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
   const [backendSettings, setBackendSettings] = useState<BackendAISettings | null>(null);
   const [desktopSettings, setDesktopSettings] = useState<AppSettings>(defaultAppSettings());
   const [catalog, setCatalog] = useState<LocalTranscriptionModelCatalog | null>(null);
+  const [exportCatalog, setExportCatalog] = useState<ExportPresetCatalog | null>(null);
   const [preferredMode, setPreferredMode] = useState<AIProcessingMode>("hybrid");
   const [fallbackEnabled, setFallbackEnabled] = useState(true);
   const [capabilities, setCapabilities] = useState<CapabilityDrafts | null>(null);
@@ -284,13 +295,15 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
       const nextDesktopSettings = await loadDesktopSettings();
       setDesktopSettings(nextDesktopSettings);
 
-      const [nextBackendSettings, nextCatalog] = await Promise.all([
+      const [nextBackendSettings, nextCatalog, nextExportCatalog] = await Promise.all([
         api.getAISettings(),
         api.getLocalTranscriptionModels(),
+        api.getExportPresets(),
       ]);
 
       setBackendSettings(nextBackendSettings);
       setCatalog(nextCatalog);
+      setExportCatalog(nextExportCatalog);
       setPreferredMode(nextBackendSettings.preferred_processing_mode);
       setFallbackEnabled(nextBackendSettings.fallback_enabled);
       setCapabilities(normalizeCapabilities(nextBackendSettings));
@@ -304,12 +317,14 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
     }
   };
 
-  const refreshCatalog = async () => {
+  const refreshCatalog = async (): Promise<LocalTranscriptionModelCatalog | null> => {
     try {
       const nextCatalog = await api.getLocalTranscriptionModels();
       setCatalog(nextCatalog);
+      return nextCatalog;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return null;
     }
   };
 
@@ -368,7 +383,15 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
     try {
       const result = await api.removeLocalTranscriptionModel(model.model_id);
       setNotice(result.message);
-      await refreshCatalog();
+      const nextCatalog = await refreshCatalog();
+      if (nextCatalog) {
+        setSelectedModelId(
+          nextCatalog.models.find(candidate => candidate.active)?.model_id
+            ?? nextCatalog.active_model_id
+            ?? nextCatalog.models[0]?.model_id
+            ?? "small",
+        );
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -456,6 +479,9 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
           fallback_enabled: fallbackEnabled,
           capabilities,
           local_model_paths: localModelPaths,
+          local_model_ids: {
+            transcription: selectedModelId,
+          },
           domain_terms: desktopSettings.domain_terms,
         };
         if (Object.keys(apiKeys).length > 0) {
@@ -550,7 +576,7 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
               <div className="mt-5 rounded-md border border-surface-border bg-surface-overlay p-3">
                 <div className="flex items-center gap-2 text-xs font-semibold text-gray-200">
                   <Gauge className="h-3.5 w-3.5 text-accent" />
-                  {preferredMode.toUpperCase()}
+                  Global mode: {modeLabel(preferredMode)}
                 </div>
                 <p className="mt-2 text-xs leading-5 text-gray-500">
                   {fallbackEnabled ? "Fallback enabled" : "Fallback disabled"}
@@ -615,6 +641,7 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
                   {activeTab === "export" && (
                     <ExportTab
                       desktopSettings={desktopSettings}
+                      exportCatalog={exportCatalog}
                       onDesktopSettingsChange={setDesktopSettings}
                       onChooseFolder={handleChooseExportFolder}
                     />
@@ -714,11 +741,28 @@ function ProvidersTab({
   onUseEnvKey: (provider: string, status: APIKeyStatus) => void;
   onClearKey: (provider: string, status: APIKeyStatus) => void;
 }) {
+  // Always show these API providers even if no key is configured yet
+  const knownProviders = ["mistral", "openai", "deepseek", "alibaba"];
+  const apiKeys: [string, APIKeyStatus][] = knownProviders.map(provider => {
+    const existing = settings.api_keys[provider];
+    return [
+      provider,
+      existing ?? {
+        has_key: false,
+        source: "encrypted_db" as const,
+        display_value: null,
+        env_var: `${provider.toUpperCase()}_API_KEY`,
+        provider,
+        updated_at: null,
+      },
+    ];
+  });
+
   return (
     <PanelStack>
       <SectionHeader title="API Providers" icon={Cloud} />
       <div className="grid gap-3">
-        {Object.entries(settings.api_keys).map(([provider, status]) => (
+        {apiKeys.map(([provider, status]) => (
           <div key={provider} className="rounded-md border border-surface-border bg-surface p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -787,6 +831,22 @@ function LocalModelsTab({
   return (
     <PanelStack>
       <SectionHeader title="Local Whisper" icon={Cpu} />
+      {catalog && (
+        <div className={`rounded-md border px-3 py-2 text-xs ${
+          catalog.runtime_configured
+            ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+            : "border-yellow-500/30 bg-yellow-500/10 text-yellow-100"
+        }`}>
+          <div className="font-semibold">
+            Runtime {catalog.runtime_configured ? "ready" : "missing"}
+          </div>
+          <div className="mt-1 leading-5 text-gray-300">
+            {catalog.runtime_configured
+              ? `Using ${catalog.runtime_binary_path ?? "configured whisper.cpp binary"}`
+              : catalog.runtime_message || "Set WHISPER_CPP_BINARY_PATH to whisper-cli.exe or put whisper-cli on PATH."}
+          </div>
+        </div>
+      )}
       <div className="space-y-2">
         {catalog?.models.map(model => {
           const selected = model.model_id === selectedModelId;
@@ -811,6 +871,11 @@ function LocalModelsTab({
                   <span className="min-w-0">
                     <span className="flex flex-wrap items-center gap-2">
                       <span className="text-sm font-medium text-gray-100">{model.label}</span>
+                      {model.active && model.downloaded && (
+                        <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[11px] font-semibold uppercase text-emerald-300">
+                          Active
+                        </span>
+                      )}
                       <span className="rounded bg-surface-overlay px-1.5 py-0.5 text-[11px] uppercase text-gray-400">
                         {model.tier}
                       </span>
@@ -847,10 +912,11 @@ function LocalModelsTab({
                         type="button"
                         onClick={() => onRemove(model)}
                         disabled={busy}
-                        className="rounded-md p-1.5 text-gray-500 transition-colors hover:bg-surface-overlay hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-60"
+                        className="inline-flex items-center gap-1 rounded-md bg-red-500 px-2 py-1 text-xs font-medium text-white transition-colors hover:bg-red-400 disabled:cursor-not-allowed disabled:opacity-60"
                         aria-label={`Remove ${model.label}`}
                       >
                         {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                        Remove
                       </button>
                     )}
                   </div>
@@ -858,11 +924,23 @@ function LocalModelsTab({
               </div>
 
               {running && model.download_progress_percent !== null && (
-                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-surface-overlay">
-                  <div
-                    className="h-full rounded-full bg-accent"
-                    style={{ width: `${Math.max(2, model.download_progress_percent)}%` }}
-                  />
+                <div className="mt-3">
+                  <div className="h-1.5 overflow-hidden rounded-full bg-surface-overlay">
+                    <div
+                      className="h-full rounded-full bg-accent"
+                      style={{ width: `${Math.max(2, model.download_progress_percent)}%` }}
+                    />
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-gray-500">
+                    <span>
+                      {formatBytes(model.download_bytes_downloaded)}
+                      {` / ${formatBytes(model.download_total_bytes) ?? model.size}`}
+                    </span>
+                    <span>
+                      {formatDownloadSpeed(model.download_speed_bytes_per_second)}
+                      {model.download_eta_seconds !== null ? ` - ${formatEta(model.download_eta_seconds)} left` : ""}
+                    </span>
+                  </div>
                 </div>
               )}
             </div>
@@ -878,7 +956,7 @@ function LocalModelsTab({
             <input
               value={localPaths[kind]}
               onChange={event => onPathChange(kind, event.target.value)}
-              placeholder="Model or runtime path"
+              placeholder={kind === "local_runtime" ? "Path to whisper-cli.exe or local runtime" : "Model or runtime path"}
               className="rounded-md border border-surface-border bg-surface px-3 py-2 text-sm text-gray-100 outline-none focus:border-accent"
             />
           </label>
@@ -890,13 +968,19 @@ function LocalModelsTab({
 
 function ExportTab({
   desktopSettings,
+  exportCatalog,
   onDesktopSettingsChange,
   onChooseFolder,
 }: {
   desktopSettings: AppSettings;
+  exportCatalog: ExportPresetCatalog | null;
   onDesktopSettingsChange: (settings: AppSettings) => void;
   onChooseFolder: () => void;
 }) {
+  const defaultPresets = exportCatalog
+    ? prioritizedExportPresets(exportCatalog)
+    : [];
+
   return (
     <PanelStack>
       <SectionHeader title="Export Folder" icon={FolderOpen} />
@@ -922,14 +1006,30 @@ function ExportTab({
         </label>
       </div>
       <SectionHeader title="Export Defaults" icon={Download} />
-      <div className="grid gap-2 sm:grid-cols-3">
-        {["YouTube 1080p", "LMS MP4", "Audio-only"].map(label => (
-          <div key={label} className="rounded-md border border-surface-border bg-surface px-3 py-3">
-            <div className="text-sm font-semibold text-gray-100">{label}</div>
-            <div className="mt-1 text-xs text-gray-500">Preset shell</div>
-          </div>
-        ))}
-      </div>
+      {defaultPresets.length > 0 ? (
+        <div className="grid gap-2 sm:grid-cols-3">
+          {defaultPresets.map(preset => (
+            <div key={preset.id} className="rounded-md border border-surface-border bg-surface px-3 py-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold text-gray-100">{preset.label}</div>
+                  <div className="mt-1 text-xs text-gray-500">{exportPresetSummary(preset)}</div>
+                </div>
+                {preset.id === exportCatalog?.default_preset_id && (
+                  <span className="shrink-0 rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-accent">
+                    Default
+                  </span>
+                )}
+              </div>
+              <p className="mt-2 line-clamp-2 text-xs leading-5 text-gray-500">{preset.description}</p>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="rounded-md border border-surface-border bg-surface px-3 py-3 text-sm text-gray-500">
+          Export presets will appear when the backend catalog is available.
+        </div>
+      )}
     </PanelStack>
   );
 }
@@ -1223,5 +1323,58 @@ function providerLabel(provider: string): string {
     mistral: "Mistral",
     openai: "OpenAI",
     deepseek: "DeepSeek",
+    alibaba: "Alibaba (Qwen)",
   }[provider] ?? provider;
+}
+
+function modeLabel(mode: AIProcessingMode): string {
+  return MODE_OPTIONS.find(option => option.value === mode)?.label ?? mode;
+}
+
+function prioritizedExportPresets(catalog: ExportPresetCatalog): ExportPreset[] {
+  const presets = catalog.groups.flatMap(group => group.presets);
+  const preferredIds = [catalog.default_preset_id, "lms_mp4", "podcast_audio"];
+  const preferred = preferredIds
+    .map(id => presets.find(preset => preset.id === id))
+    .filter((preset): preset is ExportPreset => Boolean(preset));
+  const fallback = presets.filter(preset => !preferredIds.includes(preset.id));
+  return [...preferred, ...fallback].slice(0, 3);
+}
+
+function exportPresetSummary(preset: ExportPreset): string {
+  if (preset.audio_only) {
+    return `${preset.container.toUpperCase()} ${preset.audio_codec.toUpperCase()} ${preset.audio_bitrate}`;
+  }
+  const size = preset.width && preset.height ? `${preset.width}x${preset.height}` : preset.aspect_ratio ?? "video";
+  return `${size} ${preset.video_codec?.toUpperCase() ?? "VIDEO"} / ${preset.audio_codec.toUpperCase()}`;
+}
+
+function formatBytes(value: number | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  if (value <= 0) return "0 MB";
+  const units = ["B", "KB", "MB", "GB"];
+  let nextValue = value;
+  let unitIndex = 0;
+  while (nextValue >= 1024 && unitIndex < units.length - 1) {
+    nextValue /= 1024;
+    unitIndex += 1;
+  }
+  const precision = nextValue >= 10 || unitIndex === 0 ? 0 : 1;
+  return `${nextValue.toFixed(precision)} ${units[unitIndex]}`;
+}
+
+function formatDownloadSpeed(value: number | null | undefined): string {
+  const formatted = formatBytes(value);
+  return formatted ? `${formatted}/s` : "Calculating speed";
+}
+
+function formatEta(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return "unknown";
+  if (value < 60) return `${Math.max(1, Math.round(value))}s`;
+  const minutes = Math.floor(value / 60);
+  const seconds = Math.round(value % 60);
+  if (minutes < 60) return `${minutes}m ${seconds}s`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours}h ${remainingMinutes}m`;
 }

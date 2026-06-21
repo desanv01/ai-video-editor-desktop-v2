@@ -191,6 +191,33 @@ class TopicSegmentationTests(unittest.TestCase):
         self.assertEqual(result["sections"][1]["label"], "Optimization Objectives")
         self.assertEqual(result["sections"][1]["structure_reference"]["reference_role"], "pdf_notes")
 
+    def test_project_type_profile_enforces_shorter_tutorial_sections(self):
+        segments = [
+            _segment(index, index * 120.0, (index + 1) * 120.0, topic="Live Coding", text="editor code demo")
+            for index in range(5)
+        ]
+
+        lecture = analyze_topic_sections(
+            segments=segments,
+            timeline_words=[],
+            duration_seconds=600.0,
+            project_type="lecture",
+        )
+        tutorial = analyze_topic_sections(
+            segments=segments,
+            timeline_words=[],
+            duration_seconds=600.0,
+            project_type="tutorial",
+        )
+
+        self.assertEqual(lecture["summary"]["project_type"], "lecture")
+        self.assertEqual(tutorial["summary"]["project_type"], "tutorial")
+        self.assertEqual(lecture["summary"]["target_section_duration_seconds"], 600)
+        self.assertEqual(tutorial["summary"]["target_section_duration_seconds"], 300)
+        self.assertEqual(lecture["summary"]["sections_total"], 1)
+        self.assertGreater(tutorial["summary"]["sections_total"], lecture["summary"]["sections_total"])
+        self.assertTrue(tutorial["sections"][1]["source_signals"]["duration_target"])
+
 
 def _segment(
     index,

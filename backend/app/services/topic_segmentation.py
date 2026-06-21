@@ -14,6 +14,28 @@ CONTENT_SHIFT_THRESHOLD = 0.72
 MIN_BOUNDARY_SPACING_SECONDS = 30.0
 SLIDE_BOUNDARY_SPACING_SECONDS = 8.0
 STRUCTURE_MATCH_THRESHOLD = 0.18
+PROJECT_TYPE_SECTION_PROFILES = {
+    "lecture": {
+        "label": "Lecture",
+        "max_section_duration_seconds": 10 * 60,
+        "duration_boundary_confidence": 0.58,
+    },
+    "mooc": {
+        "label": "MOOC",
+        "max_section_duration_seconds": 8 * 60,
+        "duration_boundary_confidence": 0.68,
+    },
+    "tutorial": {
+        "label": "Tutorial",
+        "max_section_duration_seconds": 5 * 60,
+        "duration_boundary_confidence": 0.66,
+    },
+    "workshop": {
+        "label": "Workshop",
+        "max_section_duration_seconds": 12 * 60,
+        "duration_boundary_confidence": 0.52,
+    },
+}
 
 GENERIC_TOPICS = {"", "unknown", "general", "topic", "lecture", "content"}
 TRANSITION_CUES = (
@@ -81,8 +103,10 @@ def analyze_topic_sections(
     timeline_words: Iterable[dict[str, Any]] | None = None,
     duration_seconds: float | None = None,
     structure_references: Iterable[dict[str, Any]] | None = None,
+    project_type: str | None = None,
 ) -> dict[str, Any]:
     """Generate suggested lecture sections from transcript, visual, and teaching material cues."""
+    profile = _project_type_profile(project_type)
     segment_list = [
         segment
         for segment in sorted(list(segments or []), key=lambda item: item.segment_index)
@@ -100,12 +124,13 @@ def analyze_topic_sections(
         }
 
     boundaries = _detect_boundaries(segment_list, words, references)
+    boundaries = _enforce_project_type_duration_boundaries(segment_list, boundaries, profile)
     sections = _build_sections(segment_list, boundaries, duration_seconds, words, references)
     chapters = [_chapter_from_section(section) for section in sections]
 
     return {
         "schema_version": SECTION_SCHEMA_VERSION,
-        "summary": _summary(sections, references),
+        "summary": _summary(sections, references, profile),
         "sections": sections,
         "chapters": chapters,
         "youtube_format": "\n".join(
@@ -171,6 +196,65 @@ def _detect_boundaries(
         last_boundary_time = float(current.start_time or 0.0)
 
     return boundaries
+
+
+def _project_type_profile(project_type: str | None) -> dict[str, Any]:
+    key = str(project_type or "lecture").strip().lower().replace("-", "_")
+    profile = PROJECT_TYPE_SECTION_PROFILES.get(key) or PROJECT_TYPE_SECTION_PROFILES["lecture"]
+    return {"id": key if key in PROJECT_TYPE_SECTION_PROFILES else "lecture", **profile}
+
+
+def _enforce_project_type_duration_boundaries(
+    segments: list[Any],
+    boundaries: list[dict[str, Any]],
+    profile: dict[str, Any],
+) -> list[dict[str, Any]]:
+    max_duration = float(profile["max_section_duration_seconds"])
+    if max_duration <= 0 or len(segments) < 2:
+        return boundaries
+
+    boundaries_by_index = {int(boundary["segment_index"]): dict(boundary) for boundary in boundaries}
+    ordered = sorted(segments, key=lambda segment: segment.segment_index)
+    section_start = ordered[0]
+
+    for segment in ordered[1:]:
+        segment_index = int(segment.segment_index)
+        if segment_index in boundaries_by_index:
+            section_start = segment
+            continue
+
+        elapsed = float(segment.start_time or 0.0) - float(section_start.start_time or 0.0)
+        if elapsed < max_duration:
+            continue
+
+        boundaries_by_index[segment_index] = {
+            "segment_index": segment.segment_index,
+            "confidence": profile["duration_boundary_confidence"],
+            "reason": (
+                f"{profile['label']} target section duration reached "
+                f"({int(max_duration // 60)} min)"
+            ),
+            "signals": {
+                "topic_change": False,
+                "long_pause": False,
+                "content_shift": False,
+                "transition_cue": False,
+                "slide_change": bool(getattr(segment, "has_slide_change", False)),
+                "structure_title_change": False,
+                "pause_seconds": 0.0,
+                "content_shift_score": 0.0,
+                "structure_match_confidence": 0.0,
+                "structure_title": None,
+                "structure_reference_role": None,
+                "duration_target": True,
+                "project_type": profile["id"],
+                "max_section_duration_seconds": max_duration,
+            },
+            "structure_match": None,
+        }
+        section_start = segment
+
+    return [boundaries_by_index[index] for index in sorted(boundaries_by_index)]
 
 
 def _boundary_candidate(
@@ -329,7 +413,9 @@ def _chapter_from_section(section: dict[str, Any]) -> dict[str, Any]:
 def _summary(
     sections: list[dict[str, Any]],
     references: list[dict[str, Any]] | None = None,
+    profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    profile_payload = profile or _project_type_profile(None)
     return {
         "sections_total": len(sections),
         "chapters_total": len(sections),
@@ -350,6 +436,8 @@ def _summary(
             if section.get("structure_reference")
             or (section.get("source_signals") or {}).get("slide_change")
         ),
+        "project_type": profile_payload["id"],
+        "target_section_duration_seconds": profile_payload["max_section_duration_seconds"],
     }
 
 

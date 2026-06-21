@@ -14,6 +14,7 @@ if str(APP_DIR) not in sys.path:
 from services.ffmpeg import FFmpegService  # noqa: E402
 from services.layout_model import build_layout_cue  # noqa: E402
 from services.render_jobs import RenderCancelled  # noqa: E402
+from config import settings  # noqa: E402
 import services.renderer as renderer  # noqa: E402
 
 
@@ -186,6 +187,25 @@ class LayoutModeCommandTests(unittest.TestCase):
         self.assertIn("acrossfade=d=0.5", filter_complex)
         self.assertIn("acrossfade=d=0.4", filter_complex)
 
+    def test_slideshow_concat_path_escaping_normalizes_windows_paths(self):
+        escaped = FFmpegService._concat_file_path(r"C:\slides\week 1\page'one.png")
+
+        self.assertEqual(escaped, "C:/slides/week 1/page'\\''one.png")
+
+    def test_render_validation_rejects_short_video_stream(self):
+        with self.assertRaisesRegex(RuntimeError, "video stream is too short"):
+            renderer._validate_rendered_video_output(
+                metadata={
+                    "has_video": True,
+                    "duration": 436.98,
+                    "video_duration": 87.43,
+                    "audio_duration": 436.98,
+                    "video_frame_count": 2100,
+                },
+                expected_duration=436.0,
+                output_path="broken.mp4",
+            )
+
     def test_maps_supported_aspect_ratios_to_even_render_canvases(self):
         self.assertEqual(FFmpegService.output_dimensions_for_aspect_ratio("16:9"), (1920, 1080))
         self.assertEqual(FFmpegService.output_dimensions_for_aspect_ratio("4:3"), (1440, 1080))
@@ -203,6 +223,115 @@ class LayoutModeCommandTests(unittest.TestCase):
         self.assertIn("Alignment=8", style)
         self.assertIn("BorderStyle=3", style)
         self.assertIn("PrimaryColour=&H00FCFAF8", style)
+
+    def test_hardware_encoder_auto_prefers_nvenc_when_available(self):
+        original_mode = settings.FFMPEG_HARDWARE_ACCELERATION
+        original_cache = FFmpegService._encoder_cache
+        try:
+            settings.FFMPEG_HARDWARE_ACCELERATION = "auto"
+            FFmpegService._encoder_cache = {"h264_nvenc", "h264_qsv"}
+
+            self.assertEqual(FFmpegService._preferred_h264_encoder(), "h264_nvenc")
+        finally:
+            settings.FFMPEG_HARDWARE_ACCELERATION = original_mode
+            FFmpegService._encoder_cache = original_cache
+
+    def test_hardware_encoder_command_can_fallback_to_cpu(self):
+        cmd = [
+            "ffmpeg",
+            "-i",
+            "input.mp4",
+            "-c:v",
+            "h264_nvenc",
+            "-preset",
+            "p4",
+            "-rc",
+            "vbr",
+            "-cq",
+            "20",
+            "-c:a",
+            "aac",
+            "out.mp4",
+        ]
+
+        fallback = FFmpegService._cpu_fallback_command(cmd)
+
+        self.assertIn("libx264", fallback)
+        self.assertIn("veryfast", fallback)
+        self.assertNotIn("h264_nvenc", fallback)
+        self.assertNotIn("p4", fallback)
+        self.assertNotIn("-rc", fallback)
+        self.assertNotIn("-cq", fallback)
+
+    def test_slideshow_single_image_does_not_use_concat_filter(self):
+        captured = {}
+
+        async def fake_run(cmd, **_kwargs):
+            captured["cmd"] = cmd
+            return b"", b"", 0
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "slide.png"
+            image_path.write_text("fake", encoding="utf-8")
+            output_path = Path(temp_dir) / "slides.mp4"
+            with patch.object(FFmpegService, "_run_process_with_encoder_fallback", new=fake_run):
+                asyncio.run(
+                    FFmpegService.create_slideshow_clip(
+                        str(output_path),
+                        image_paths=[str(image_path)],
+                        durations=[437.04],
+                    )
+                )
+
+        cmd = captured["cmd"]
+        filter_complex = cmd[cmd.index("-filter_complex") + 1]
+        self.assertIn("trim=duration=437.040", filter_complex)
+        self.assertNotIn("concat=n=1", filter_complex)
+        self.assertIn("-t", cmd)
+        self.assertIn("437.040", cmd)
+
+    def test_slideshow_multiple_images_use_single_concat_input(self):
+        captured = {}
+
+        async def fake_run(cmd, **_kwargs):
+            captured["cmd"] = cmd
+            manifest_path = Path(cmd[cmd.index("-i") + 1])
+            captured["manifest"] = manifest_path.read_text(encoding="utf-8")
+            return b"", b"", 0
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_paths = []
+            for index in range(36):
+                image_path = Path(temp_dir) / f"slide-{index:02d}.png"
+                image_path.write_text("fake", encoding="utf-8")
+                image_paths.append(str(image_path))
+            output_path = Path(temp_dir) / "slides.mp4"
+            with patch.object(FFmpegService, "_run_process_with_encoder_fallback", new=fake_run):
+                asyncio.run(
+                    FFmpegService.create_slideshow_clip(
+                        str(output_path),
+                        image_paths=image_paths,
+                        durations=[1.25] * len(image_paths),
+                    )
+                )
+
+            self.assertFalse(Path(f"{output_path}.ffconcat").exists())
+
+        cmd = captured["cmd"]
+        self.assertEqual(cmd.count("-i"), 2)
+        self.assertEqual(cmd[cmd.index("-f") + 1], "concat")
+        self.assertNotIn("concat=n=36", cmd[cmd.index("-filter_complex") + 1])
+        self.assertEqual(captured["manifest"].count("duration 1.250000"), 36)
+        self.assertEqual(captured["manifest"].count("file '"), 37)
+
+    def test_ffmpeg_error_message_keeps_actionable_tail(self):
+        stderr = b"ffmpeg version banner\n" + (b"x" * 100) + b"\nResource temporarily unavailable\nConversion failed!"
+
+        message = FFmpegService._stderr_message(stderr, 80)
+
+        self.assertTrue(message.startswith("[earlier FFmpeg output omitted]"))
+        self.assertIn("Resource temporarily unavailable", message)
+        self.assertIn("Conversion failed!", message)
 
     def test_caption_srt_can_target_highlight_ranges_only(self):
         first = SimpleNamespace(id="seg-1", text="Keep this normal explanation.", topic_label="Intro")
@@ -415,6 +544,240 @@ class FFmpegProcessCancellationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PictureInPictureRenderSelectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_generates_exact_pdf_page_slideshow_for_uploaded_notes(self):
+        try:
+            import fitz
+        except ImportError:
+            self.skipTest("PyMuPDF is not installed in this local test environment")
+
+        class FakeFFmpeg:
+            def __init__(self):
+                self.slideshow_calls = []
+
+            async def create_slideshow_clip(self, output_path, **kwargs):
+                self.slideshow_calls.append({"output_path": output_path, **kwargs})
+                Path(output_path).write_text("slideshow", encoding="utf-8")
+
+        fake = FakeFFmpeg()
+        original_ffmpeg = renderer.ffmpeg_service
+        original_temp_path = renderer.settings.TEMP_PATH
+        renderer.ffmpeg_service = fake
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                renderer.settings.TEMP_PATH = temp_dir
+                pdf_path = Path(temp_dir) / "lecture-notes.pdf"
+                doc = fitz.open()
+                page = doc.new_page(width=400, height=225)
+                page.insert_textbox(fitz.Rect(32, 48, 360, 120), "Exact PDF Slide", fontsize=24)
+                doc.save(pdf_path)
+                doc.close()
+
+                video = SimpleNamespace(id="video-pdf", duration_seconds=40.0)
+                notes = SimpleNamespace(
+                    id="notes-pdf",
+                    role="notes",
+                    kind="pdf_notes",
+                    sync_role="structure_reference",
+                    source_type="pdf_notes",
+                    filename="lecture-notes.pdf",
+                    original_filename="lecture-notes.pdf",
+                    file_path=str(pdf_path),
+                    metadata_json={
+                        "structure_reference": {
+                            "title": "Lecture Notes",
+                            "reference_role": "pdf_notes",
+                            "document_format": "pdf",
+                            "items": [{"index": 1, "title": "Exact PDF Slide", "text": "Rendered from the PDF page."}],
+                        }
+                    },
+                )
+
+                generated = await renderer._generated_slide_background_asset(video, [notes], {"layout_cues": []})
+
+                self.assertTrue(Path(fake.slideshow_calls[0]["image_paths"][0]).exists())
+
+            self.assertIsNotNone(generated)
+            self.assertEqual(generated.metadata_json["render_mode"], "rasterized_pages")
+            self.assertEqual(generated.metadata_json["rasterized_slide_count"], 1)
+            self.assertEqual(generated.metadata_json["rasterized_sources"], ["pdf"])
+            self.assertEqual(len(fake.slideshow_calls), 1)
+            self.assertEqual(len(fake.slideshow_calls[0]["image_paths"]), 1)
+            self.assertEqual(fake.slideshow_calls[0]["durations"], [40.0])
+        finally:
+            renderer.ffmpeg_service = original_ffmpeg
+            renderer.settings.TEMP_PATH = original_temp_path
+
+    async def test_generated_background_prefers_rasterized_slides_when_available(self):
+        class FakeFFmpeg:
+            def __init__(self):
+                self.slideshow_calls = []
+
+            async def create_slideshow_clip(self, output_path, **kwargs):
+                self.slideshow_calls.append({"output_path": output_path, **kwargs})
+                Path(output_path).write_text("slideshow", encoding="utf-8")
+
+        fake = FakeFFmpeg()
+        original_ffmpeg = renderer.ffmpeg_service
+        original_temp_path = renderer.settings.TEMP_PATH
+        renderer.ffmpeg_service = fake
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                renderer.settings.TEMP_PATH = temp_dir
+                image_path = Path(temp_dir) / "page.png"
+                image_path.write_text("fake-image", encoding="utf-8")
+                video = SimpleNamespace(id="video-raster", duration_seconds=30.0)
+                notes = SimpleNamespace(
+                    id="notes-1",
+                    role="notes",
+                    kind="pdf_notes",
+                    sync_role="structure_reference",
+                    source_type="pdf_notes",
+                    filename="lecture-notes.pdf",
+                    original_filename="lecture-notes.pdf",
+                    file_path=str(Path(temp_dir) / "lecture-notes.pdf"),
+                    metadata_json={
+                        "structure_reference": {
+                            "title": "Lecture Notes",
+                            "reference_role": "pdf_notes",
+                            "items": [{"index": 1, "title": "Rendered", "text": "Rendered page."}],
+                        }
+                    },
+                )
+
+                with patch.object(
+                    renderer,
+                    "_render_structure_reference_images",
+                    return_value=[{"path": str(image_path), "render_source": "pdf"}],
+                ):
+                    generated = await renderer._generated_slide_background_asset(video, [notes], {"layout_cues": []})
+
+            self.assertEqual(generated.metadata_json["render_mode"], "rasterized_pages")
+            self.assertEqual(generated.metadata_json["rasterized_slide_count"], 1)
+            self.assertEqual(fake.slideshow_calls[0]["image_paths"], [str(image_path)])
+            self.assertEqual(fake.slideshow_calls[0]["durations"], [30.0])
+        finally:
+            renderer.ffmpeg_service = original_ffmpeg
+            renderer.settings.TEMP_PATH = original_temp_path
+
+    async def test_generates_slide_background_from_uploaded_structure_reference(self):
+        class FakeFFmpeg:
+            def __init__(self):
+                self.color_calls = []
+                self.overlay_calls = []
+
+            async def create_solid_color_clip(self, output_path, **kwargs):
+                self.color_calls.append({"output_path": output_path, **kwargs})
+                Path(output_path).write_text("base", encoding="utf-8")
+
+            async def burn_ass_overlay(self, input_path, ass_path, output_path, **kwargs):
+                self.overlay_calls.append(
+                    {
+                        "input_path": input_path,
+                        "ass_path": ass_path,
+                        "output_path": output_path,
+                        **kwargs,
+                    }
+                )
+                Path(output_path).write_text("slides", encoding="utf-8")
+
+        fake = FakeFFmpeg()
+        original_ffmpeg = renderer.ffmpeg_service
+        original_temp_path = renderer.settings.TEMP_PATH
+        renderer.ffmpeg_service = fake
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                renderer.settings.TEMP_PATH = temp_dir
+                video = SimpleNamespace(id="video-1", duration_seconds=60.0)
+                notes = SimpleNamespace(
+                    id="notes-1",
+                    role="notes",
+                    kind="pdf_notes",
+                    sync_role="structure_reference",
+                    source_type="pdf_notes",
+                    filename="lecture-notes.pdf",
+                    original_filename="lecture-notes.pdf",
+                    metadata_json={
+                        "structure_reference": {
+                            "title": "Lecture Notes",
+                            "reference_role": "pdf_notes",
+                            "document_format": "pdf",
+                            "items": [
+                                {"index": 1, "title": "Setup", "text": "Install tools and prepare the workspace."},
+                                {"index": 2, "title": "Simulation", "text": "Run the command-line simulation flow."},
+                            ],
+                        }
+                    },
+                )
+
+                generated = await renderer._generated_slide_background_asset(video, [notes], {"layout_cues": []})
+
+            self.assertIsNotNone(generated)
+            self.assertTrue(generated.file_path.endswith("generated_slides.mp4"))
+            self.assertEqual(generated.metadata_json["track"], "generated_slides")
+            self.assertEqual(generated.metadata_json["structure_reference_count"], 1)
+            self.assertEqual(fake.color_calls[0]["duration_seconds"], 60.0)
+            self.assertEqual(len(fake.overlay_calls), 1)
+        finally:
+            renderer.ffmpeg_service = original_ffmpeg
+            renderer.settings.TEMP_PATH = original_temp_path
+
+    async def test_generated_slide_pip_uses_camera_audio_when_no_audio_asset_exists(self):
+        class FakeFFmpeg:
+            def __init__(self):
+                self.pip_calls = []
+
+            async def render_picture_in_picture_clip(self, **kwargs):
+                self.pip_calls.append(kwargs)
+                Path(kwargs["output_path"]).write_text("pip", encoding="utf-8")
+
+        fake = FakeFFmpeg()
+        original_ffmpeg = renderer.ffmpeg_service
+        renderer.ffmpeg_service = fake
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                output_path = str(Path(temp_dir) / "pip.mp4")
+                cue = build_layout_cue(
+                    cue_id="generated-pip",
+                    layout="picture_in_picture",
+                    start_time=0.0,
+                    end_time=10.0,
+                    camera_source_id="camera",
+                )
+                cue["sources"]["screen"]["asset_id"] = None
+                cue["sources"]["screen"]["track"] = "generated_slides"
+                context = renderer.LayoutRenderContext(
+                    cues=[cue],
+                    assets_by_id={
+                        "camera": SimpleNamespace(file_path="camera.mp4", sync_offset_seconds=0.25),
+                    },
+                    assets_by_track={
+                        "generated_slides": SimpleNamespace(
+                            file_path="generated_slides.mp4",
+                            sync_offset_seconds=0.0,
+                            kind="generated_slides",
+                            source_type="generated_slides",
+                            metadata_json={"generated": True, "track": "generated_slides"},
+                        ),
+                    },
+                )
+
+                rendered = await renderer._render_layout_span(
+                    cue=cue,
+                    layout_context=context,
+                    output_path=output_path,
+                    fallback_video_path="legacy.mp4",
+                    start_time=0.0,
+                    end_time=10.0,
+                )
+
+            self.assertEqual(rendered, "picture_in_picture")
+            self.assertEqual(fake.pip_calls[0]["screen_path"], "generated_slides.mp4")
+            self.assertEqual(fake.pip_calls[0]["camera_path"], "camera.mp4")
+            self.assertEqual(fake.pip_calls[0]["audio_path"], "camera.mp4")
+            self.assertEqual(fake.pip_calls[0]["camera_sync_offset"], 0.25)
+        finally:
+            renderer.ffmpeg_service = original_ffmpeg
+
     async def test_audio_only_export_uses_cleaned_ranges_and_audio_asset(self):
         class FakeFFmpeg:
             def __init__(self):
@@ -560,6 +923,59 @@ class PictureInPictureRenderSelectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(spans[0][2])
         self.assertEqual(spans[1][2]["layout"], "picture_in_picture")
         self.assertIsNone(spans[2][2])
+
+    def test_layout_spans_drop_micro_ranges_before_ffmpeg(self):
+        cue = build_layout_cue(
+            cue_id="micro",
+            layout="picture_in_picture",
+            start_time=10.0,
+            end_time=10.000004,
+            screen_source_id="screen",
+            camera_source_id="camera",
+        )
+
+        spans = renderer._layout_spans_for_range(
+            {
+                "source_start_time": 10.0,
+                "source_end_time": 10.000004,
+            },
+            [cue],
+        )
+
+        self.assertEqual(spans, [])
+
+    async def test_render_range_clips_skips_micro_ranges_without_ffmpeg_call(self):
+        class FakeFFmpeg:
+            def __init__(self):
+                self.trim_calls = []
+
+            async def trim_video(self, **kwargs):
+                self.trim_calls.append(kwargs)
+                Path(kwargs["output_path"]).write_text("trim", encoding="utf-8")
+
+        fake = FakeFFmpeg()
+        original_ffmpeg = renderer.ffmpeg_service
+        renderer.ffmpeg_service = fake
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                clip_paths, clip_durations, layout_counts = await renderer._render_range_clips(
+                    video=SimpleNamespace(file_path="legacy.mp4"),
+                    render_range={
+                        "source_start_time": 10.0,
+                        "source_end_time": 10.000004,
+                        "action": "keep",
+                    },
+                    range_index=0,
+                    clip_dir=temp_dir,
+                    layout_context=None,
+                )
+
+            self.assertEqual(clip_paths, [])
+            self.assertEqual(clip_durations, [])
+            self.assertEqual(layout_counts, {})
+            self.assertEqual(fake.trim_calls, [])
+        finally:
+            renderer.ffmpeg_service = original_ffmpeg
 
     async def test_renders_only_pip_span_with_compositor(self):
         class FakeFFmpeg:

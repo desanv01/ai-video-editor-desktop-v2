@@ -30,19 +30,23 @@ from providers.processing_modes import (
     ProcessingMode,
     parse_processing_mode,
 )
+from providers.whisper_cpp import normalize_whisper_cpp_model_id
 
 DEFAULT_SETTINGS_ID = "default"
+LOCAL_MODEL_IDS_KEY = "_model_ids"
 
 API_KEY_ENV_VARS = {
     "mistral": "MISTRAL_API_KEY",
     "openai": "OPENAI_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
+    "alibaba": "ALIBABA_API_KEY",
 }
 
 API_KEY_SETTINGS_FIELDS = {
     "mistral": "MISTRAL_API_KEY",
     "openai": "OPENAI_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
+    "alibaba": "ALIBABA_API_KEY",
 }
 
 
@@ -153,6 +157,56 @@ def _default_local_model_paths() -> dict[str, Optional[str]]:
     }
 
 
+def _default_local_model_ids() -> dict[str, Optional[str]]:
+    return {
+        ProviderKind.TRANSCRIPTION.value: normalize_whisper_cpp_model_id(
+            settings.WHISPER_CPP_MODEL_ID
+            or settings.LOCAL_TRANSCRIPTION_MODEL_ID
+            or "small"
+        ),
+    }
+
+
+def _stored_local_model_paths(record: AppAISettings) -> dict[str, Optional[str]]:
+    return {
+        key: value
+        for key, value in (record.local_model_paths_json or {}).items()
+        if key != LOCAL_MODEL_IDS_KEY
+    }
+
+
+def _stored_local_model_ids(record: AppAISettings) -> dict[str, Optional[str]]:
+    stored_ids = (record.local_model_paths_json or {}).get(LOCAL_MODEL_IDS_KEY)
+    if isinstance(stored_ids, dict):
+        return {
+            key: (
+                normalize_whisper_cpp_model_id(value)
+                if key == ProviderKind.TRANSCRIPTION.value and value
+                else value
+            )
+            for key, value in stored_ids.items()
+        }
+    return _default_local_model_ids()
+
+
+def _persist_local_model_state(
+    record: AppAISettings,
+    *,
+    paths: Optional[dict[str, Optional[str]]] = None,
+    model_ids: Optional[dict[str, Optional[str]]] = None,
+) -> None:
+    current_paths = _stored_local_model_paths(record) or _default_local_model_paths()
+    current_ids = _stored_local_model_ids(record) or _default_local_model_ids()
+    if paths is not None:
+        current_paths.update(paths)
+    if model_ids is not None:
+        current_ids.update(model_ids)
+    record.local_model_paths_json = {
+        **current_paths,
+        LOCAL_MODEL_IDS_KEY: current_ids,
+    }
+
+
 def _encrypt_secret(secret: str) -> str:
     if not settings.APP_SETTINGS_SECRET_KEY:
         raise HTTPException(
@@ -200,7 +254,10 @@ async def get_or_create_ai_settings(db: AsyncSession) -> AppAISettings:
         fallback_enabled=settings.AI_PROVIDER_FALLBACK_ENABLED,
         capabilities_json=_default_capabilities(),
         api_keys_json=_default_api_keys(),
-        local_model_paths_json=_default_local_model_paths(),
+        local_model_paths_json={
+            **_default_local_model_paths(),
+            LOCAL_MODEL_IDS_KEY: _default_local_model_ids(),
+        },
         domain_terms_json=settings.domain_terms_list,
     )
     db.add(record)
@@ -245,13 +302,19 @@ def apply_settings_record(record: AppAISettings) -> None:
     if fallback_order:
         settings.AI_TRANSCRIPTION_HYBRID_FALLBACK_ORDER = ",".join(fallback_order)
 
-    local_paths = record.local_model_paths_json or {}
+    local_paths = _stored_local_model_paths(record)
+    local_model_ids = _stored_local_model_ids(record)
     settings.LOCAL_TRANSCRIPTION_MODEL_PATH = local_paths.get(ProviderKind.TRANSCRIPTION.value) or ""
     settings.WHISPER_CPP_MODEL_PATH = settings.LOCAL_TRANSCRIPTION_MODEL_PATH
+    selected_transcription_model_id = local_model_ids.get(ProviderKind.TRANSCRIPTION.value) or "small"
+    settings.LOCAL_TRANSCRIPTION_MODEL_ID = normalize_whisper_cpp_model_id(selected_transcription_model_id)
+    settings.WHISPER_CPP_MODEL_ID = settings.LOCAL_TRANSCRIPTION_MODEL_ID
     settings.LOCAL_CHAT_MODEL_PATH = local_paths.get(ProviderKind.CHAT.value) or ""
     settings.LOCAL_EMBEDDING_MODEL_PATH = local_paths.get(ProviderKind.EMBEDDING.value) or ""
     settings.LOCAL_VISION_MODEL_PATH = local_paths.get(ProviderKind.VISION.value) or ""
     settings.LOCAL_RUNTIME_PATH = local_paths.get(ProviderKind.LOCAL_RUNTIME.value) or ""
+    if settings.LOCAL_RUNTIME_PATH:
+        settings.WHISPER_CPP_BINARY_PATH = settings.LOCAL_RUNTIME_PATH
 
     for provider, entry in (record.api_keys_json or {}).items():
         settings_field = API_KEY_SETTINGS_FIELDS.get(provider)
@@ -306,7 +369,8 @@ def settings_response(record: AppAISettings) -> AppSettingsResponse:
         fallback_enabled=record.fallback_enabled,
         capabilities=capabilities,
         api_keys=api_keys,
-        local_model_paths=record.local_model_paths_json or {},
+        local_model_paths=_stored_local_model_paths(record),
+        local_model_ids=_stored_local_model_ids(record),
     )
 
 
@@ -374,11 +438,21 @@ async def update_ai_settings(
         record.capabilities_json = capabilities
 
     if request.local_model_paths:
-        local_paths = dict(record.local_model_paths_json or _default_local_model_paths())
+        local_paths = dict(_stored_local_model_paths(record) or _default_local_model_paths())
         for kind, path in request.local_model_paths.items():
             _validate_provider_kind(kind)
             local_paths[kind] = path.strip() if isinstance(path, str) and path.strip() else None
-        record.local_model_paths_json = local_paths
+        _persist_local_model_state(record, paths=local_paths)
+
+    if request.local_model_ids:
+        model_ids = dict(_stored_local_model_ids(record) or _default_local_model_ids())
+        for kind, model_id in request.local_model_ids.items():
+            _validate_provider_kind(kind)
+            normalized = model_id.strip() if isinstance(model_id, str) and model_id.strip() else None
+            if kind == ProviderKind.TRANSCRIPTION.value and normalized:
+                normalized = normalize_whisper_cpp_model_id(normalized)
+            model_ids[kind] = normalized
+        _persist_local_model_state(record, model_ids=model_ids)
 
     if request.api_keys:
         api_keys = dict(record.api_keys_json or _default_api_keys())

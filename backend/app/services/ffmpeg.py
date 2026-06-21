@@ -5,14 +5,27 @@ This is the core "tool" layer that MCP servers and agents call.
 
 import asyncio
 import json
+import logging
 import os
+import re
 import subprocess
+from collections import Counter
 from typing import Any, Callable, List, Tuple, Optional
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class FFmpegService:
     """All ffmpeg operations used by the pipeline."""
+    _encoder_cache: set[str] | None = None
+
+    @staticmethod
+    def _stderr_message(stderr: bytes, limit: int | None = None) -> str:
+        message = stderr.decode(errors="replace")
+        if limit is None or len(message) <= limit:
+            return message
+        return f"[earlier FFmpeg output omitted]\n{message[-limit:]}"
 
     @staticmethod
     async def _run_process(
@@ -43,11 +56,67 @@ class FFmpegService:
 
         stdout, stderr = await communicate_task
         if proc.returncode != 0 and not allow_failure:
-            message = stderr.decode()
-            if stderr_limit is not None:
-                message = message[:stderr_limit]
+            message = FFmpegService._stderr_message(stderr, stderr_limit)
             raise RuntimeError(f"{error_prefix}: {message}")
         return stdout, stderr, int(proc.returncode or 0)
+
+    @staticmethod
+    async def _run_process_with_encoder_fallback(
+        cmd: list[str],
+        *,
+        error_prefix: str,
+        stderr_limit: int | None = None,
+        cancel_check: Callable[[], None] | None = None,
+        allow_failure: bool = False,
+    ) -> tuple[bytes, bytes, int]:
+        used_encoder = FFmpegService._encoder_from_command(cmd)
+        logger.info(
+            "FFmpeg render starting — encoder=%s, fallback_allowed=%s",
+            used_encoder,
+            bool(getattr(settings, "FFMPEG_HARDWARE_FALLBACK_TO_CPU", True)),
+        )
+        stdout, stderr, returncode = await FFmpegService._run_process(
+            cmd,
+            error_prefix=error_prefix,
+            stderr_limit=stderr_limit,
+            cancel_check=cancel_check,
+            allow_failure=True,
+        )
+        if returncode == 0 or not FFmpegService._command_uses_hardware_encoder(cmd):
+            if returncode == 0:
+                logger.info("FFmpeg render succeeded — encoder=%s", used_encoder)
+            if returncode != 0 and not allow_failure:
+                message = FFmpegService._stderr_message(stderr, stderr_limit)
+                raise RuntimeError(f"{error_prefix}: {message}")
+            return stdout, stderr, returncode
+
+        logger.warning(
+            "FFmpeg hardware encoder '%s' FAILED (returncode=%s, stderr=%s) — checking fallback policy",
+            used_encoder,
+            returncode,
+            (FFmpegService._stderr_message(stderr, 500) if stderr else "(no stderr)"),
+        )
+        if not bool(getattr(settings, "FFMPEG_HARDWARE_FALLBACK_TO_CPU", True)):
+            logger.error(
+                "FFmpeg HW fallback DISABLED — raising error instead of silently degrading to CPU.",
+            )
+            if not allow_failure:
+                message = FFmpegService._stderr_message(stderr, stderr_limit)
+                raise RuntimeError(f"{error_prefix}: {message}")
+            return stdout, stderr, returncode
+
+        logger.warning(
+            "FFmpeg HW fallback ENABLED — switching from '%s' to libx264 (CPU).",
+            used_encoder,
+        )
+        fallback_cmd = FFmpegService._cpu_fallback_command(cmd)
+        return await FFmpegService._run_process(
+            fallback_cmd,
+            error_prefix=f"{error_prefix} (hardware encoder failed, CPU fallback also failed)",
+            stderr_limit=stderr_limit,
+            cancel_check=cancel_check,
+            allow_failure=allow_failure,
+        )
 
     @staticmethod
     async def get_video_metadata(video_path: str) -> dict:
@@ -78,6 +147,30 @@ class FFmpegService:
         video_stream = next((s for s in data.get("streams", []) if s["codec_type"] == "video"), {})
         audio_stream = next((s for s in data.get("streams", []) if s["codec_type"] == "audio"), {})
 
+        def stream_float(stream: dict, key: str) -> float:
+            try:
+                return float(stream.get(key) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        def stream_int(stream: dict, key: str) -> int:
+            try:
+                return int(stream.get(key) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        def fps_value(rate: str | None) -> float:
+            if not rate:
+                return 0.0
+            try:
+                numerator, denominator = str(rate).split("/", 1)
+                denominator_value = float(denominator)
+                if denominator_value == 0:
+                    return 0.0
+                return float(numerator) / denominator_value
+            except (TypeError, ValueError):
+                return 0.0
+
         return {
             "duration": float(fmt.get("duration", 0)),
             "size_bytes": int(fmt.get("size", 0)),
@@ -87,10 +180,17 @@ class FFmpegService:
             "audio_tags": audio_stream.get("tags", {}),
             "width": int(video_stream.get("width", 0)),
             "height": int(video_stream.get("height", 0)),
-            "fps": eval(video_stream.get("r_frame_rate", "0/1")) if video_stream.get("r_frame_rate") else 0,
+            "fps": fps_value(video_stream.get("r_frame_rate")),
             "video_codec": video_stream.get("codec_name", ""),
             "audio_codec": audio_stream.get("codec_name", ""),
             "audio_sample_rate": int(audio_stream.get("sample_rate", 0)),
+            "has_video": bool(video_stream),
+            "has_audio": bool(audio_stream),
+            "video_duration": stream_float(video_stream, "duration"),
+            "audio_duration": stream_float(audio_stream, "duration"),
+            "video_bit_rate": stream_int(video_stream, "bit_rate"),
+            "audio_bit_rate": stream_int(audio_stream, "bit_rate"),
+            "video_frame_count": stream_int(video_stream, "nb_frames"),
         }
 
     @staticmethod
@@ -183,6 +283,58 @@ class FFmpegService:
         await FFmpegService._run_process(
             cmd,
             error_prefix="Trim failed",
+            cancel_check=cancel_check,
+        )
+        return output_path
+
+    @staticmethod
+    async def trim_video_accurate(
+        video_path: str,
+        output_path: str,
+        start_time: float,
+        end_time: float,
+        *,
+        cancel_check: Callable[[], None] | None = None,
+    ) -> str:
+        """Trim a segment from the video with re-encoding for frame-accurate cuts.
+
+        Unlike ``trim_video`` which uses ``-c copy`` (stream copy) and can only
+        cut at keyframe boundaries, this method re-encodes so cuts are precise
+        to the requested frame.  Essential when the output will be concatenated
+        with other clips and A/V sync must be maintained.
+
+        Uses hardware-accelerated decode + encode when an NVIDIA GPU with NVENC
+        is available; falls through to the standard encoder-fallback pathway
+        otherwise.
+        """
+        duration = max(0.001, float(end_time) - float(start_time))
+        encoder = FFmpegService._preferred_h264_encoder()
+
+        cmd: list[str] = ["ffmpeg"]
+
+        # ── Hardware-accelerated decode (NVIDIA only — other backends use
+        #     different hwaccel flags so we keep it simple) ────────────────
+        if encoder == "h264_nvenc":
+            cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
+
+        # ── Input seeking (``-ss`` before ``-i`` is fast but relies on
+        #     nearest keyframe, then we re-encode precisely) ───────────────
+        cmd.extend([
+            "-ss", str(start_time),
+            "-i", video_path,
+            "-t", str(duration),
+        ])
+
+        # ── Re-encode video through the standard encoder pathway ─────────
+        cmd.extend(FFmpegService._video_encoder_args(None, "p1" if encoder == "h264_nvenc" else "veryfast"))
+        cmd.extend(["-c:a", "aac", "-b:a", "128k"])
+
+        # ── Output ───────────────────────────────────────────────────────
+        cmd.extend(["-movflags", "+faststart", "-y", output_path])
+
+        await FFmpegService._run_process(
+            cmd,
+            error_prefix="Accurate trim failed",
             cancel_check=cancel_check,
         )
         return output_path
@@ -395,7 +547,7 @@ class FFmpegService:
             camera_size=camera_size,
             margin_percent=margin_percent,
         )
-        await FFmpegService._run_process(
+        await FFmpegService._run_process_with_encoder_fallback(
             cmd,
             error_prefix="Picture-in-picture render failed",
             stderr_limit=800,
@@ -433,7 +585,7 @@ class FFmpegService:
             output_width=output_width,
             output_height=output_height,
         )
-        await FFmpegService._run_process(
+        await FFmpegService._run_process_with_encoder_fallback(
             cmd,
             error_prefix="Side-by-side render failed",
             stderr_limit=800,
@@ -467,7 +619,7 @@ class FFmpegService:
             output_width=output_width,
             output_height=output_height,
         )
-        await FFmpegService._run_process(
+        await FFmpegService._run_process_with_encoder_fallback(
             cmd,
             error_prefix="Full-source render failed",
             stderr_limit=800,
@@ -495,7 +647,7 @@ class FFmpegService:
             fade_in=fade_in,
             fade_out=fade_out,
         )
-        await FFmpegService._run_process(
+        await FFmpegService._run_process_with_encoder_fallback(
             cmd,
             error_prefix="Clip fade render failed",
             stderr_limit=800,
@@ -585,16 +737,11 @@ class FFmpegService:
             "[v]",
             "-map",
             audio_map,
-            "-c:v",
-            "libx264",
-            "-preset",
-            "fast",
-            "-crf",
-            "23",
+            *FFmpegService._video_encoder_args(None, "veryfast"),
             "-c:a",
             "aac",
             "-b:a",
-            "128k",
+            "192k",
             "-shortest",
             "-movflags",
             "+faststart",
@@ -737,12 +884,7 @@ class FFmpegService:
             input_path,
             "-vf",
             video_filter,
-            "-c:v",
-            "libx264",
-            "-preset",
-            "fast",
-            "-crf",
-            "23",
+            *FFmpegService._video_encoder_args(None, "veryfast"),
             "-c:a",
             "copy",
             "-movflags",
@@ -834,30 +976,338 @@ class FFmpegService:
         }.get(corner_value, (right, bottom))
 
     @staticmethod
-    def _encoded_video_output_args(filter_complex: str, audio_map: str, output_path: str) -> list[str]:
-        return [
+    def _encoded_video_output_args(
+        filter_complex: str,
+        audio_map: str,
+        output_path: str,
+        *,
+        video_bitrate: str | None = None,
+        audio_bitrate: str | None = "192k",
+        encoder_preset: str = "veryfast",
+    ) -> list[str]:
+        args = [
             "-filter_complex",
             filter_complex,
             "-map",
             "[v]",
             "-map",
             audio_map,
-            "-c:v",
-            "libx264",
-            "-preset",
-            "fast",
-            "-crf",
-            "23",
+        ]
+        args.extend(FFmpegService._video_encoder_args(video_bitrate, encoder_preset))
+        args.extend([
             "-c:a",
             "aac",
             "-b:a",
-            "128k",
+            FFmpegService._normalize_audio_bitrate(audio_bitrate),
             "-shortest",
             "-movflags",
             "+faststart",
             "-y",
             output_path,
-        ]
+        ])
+        return args
+
+    @staticmethod
+    def _normalize_audio_bitrate(value: object) -> str:
+        text = str(value or "192k").strip().lower().replace(" ", "")
+        if text.endswith("kbps"):
+            return f"{text[:-4]}k"
+        if text.endswith("mbps"):
+            return f"{text[:-4]}M"
+        if text.endswith(("k", "m")):
+            return text
+        if text.isdigit():
+            return f"{text}k"
+        return "192k"
+
+    @staticmethod
+    def _normalize_video_bitrate(value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip().lower().replace(" ", "")
+        if not text:
+            return None
+        if text.endswith("mbps"):
+            return f"{text[:-4]}M"
+        if text.endswith("kbps"):
+            return f"{text[:-4]}k"
+        if text.endswith(("m", "k")):
+            return text
+        if text.isdigit():
+            return f"{text}k"
+        return None
+
+    @staticmethod
+    def _video_quality_args(video_bitrate: object | None) -> list[str]:
+        normalized = FFmpegService._normalize_video_bitrate(video_bitrate)
+        if not normalized:
+            return ["-crf", "20"]
+        maxrate = normalized
+        bufsize = FFmpegService._double_bitrate(normalized)
+        return ["-b:v", normalized, "-maxrate", maxrate, "-bufsize", bufsize]
+
+    @staticmethod
+    def _video_encoder_args(video_bitrate: object | None = None, encoder_preset: str = "veryfast") -> list[str]:
+        encoder = FFmpegService._preferred_h264_encoder()
+        normalized = FFmpegService._normalize_video_bitrate(video_bitrate)
+        if encoder == "h264_nvenc":
+            args = ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr"]
+            if normalized:
+                args.extend(["-b:v", normalized, "-maxrate", normalized, "-bufsize", FFmpegService._double_bitrate(normalized)])
+            else:
+                args.extend(["-cq", "20"])
+            return args
+        if encoder == "h264_qsv":
+            args = ["-c:v", "h264_qsv"]
+            if normalized:
+                args.extend(["-b:v", normalized])
+            else:
+                args.extend(["-global_quality", "20"])
+            return args
+        if encoder == "h264_vaapi":
+            args = ["-c:v", "h264_vaapi"]
+            if normalized:
+                args.extend(["-b:v", normalized])
+            return args
+        if encoder == "h264_amf":
+            args = ["-c:v", "h264_amf", "-quality", "speed"]
+            if normalized:
+                args.extend(["-b:v", normalized])
+            else:
+                args.extend(["-qp_i", "20", "-qp_p", "22", "-qp_b", "24"])
+            return args
+
+        return ["-c:v", "libx264", "-preset", encoder_preset or "veryfast", *FFmpegService._video_quality_args(video_bitrate)]
+
+    @staticmethod
+    def _preferred_h264_encoder() -> str | None:
+        mode = str(getattr(settings, "FFMPEG_HARDWARE_ACCELERATION", "auto") or "auto").strip().lower()
+        if mode in {"off", "none", "false", "cpu", "libx264"}:
+            logger.info("FFmpeg HW acceleration explicitly disabled (mode=%s) — using CPU libx264", mode)
+            return None
+        explicit = {
+            "nvenc": "h264_nvenc",
+            "nvidia": "h264_nvenc",
+            "qsv": "h264_qsv",
+            "intel": "h264_qsv",
+            "vaapi": "h264_vaapi",
+            "amf": "h264_amf",
+            "amd": "h264_amf",
+        }
+        available = FFmpegService._available_h264_encoders()
+        if mode in explicit:
+            encoder = explicit[mode]
+            if encoder in available:
+                logger.info("FFmpeg HW encoder selected: %s (explicit mode=%s)", encoder, mode)
+                return encoder
+            else:
+                logger.warning(
+                    "FFmpeg HW encoder '%s' requested via mode=%s but NOT AVAILABLE — falling back to CPU libx264",
+                    encoder, mode,
+                )
+                return None
+        for encoder in ("h264_nvenc", "h264_qsv", "h264_vaapi", "h264_amf"):
+            if encoder in available:
+                logger.info("FFmpeg HW encoder selected: %s (auto-detected)", encoder)
+                return encoder
+        logger.warning(
+            "FFmpeg HW acceleration mode=auto but NO hardware encoder detected (available=%s) — using CPU libx264",
+            available,
+        )
+        return None
+
+    @staticmethod
+    def _available_h264_encoders() -> set[str]:
+        if isinstance(FFmpegService._encoder_cache, set):
+            return FFmpegService._encoder_cache
+        try:
+            proc = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-encoders"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+            )
+            output = f"{proc.stdout}\n{proc.stderr}"
+        except Exception:
+            output = ""
+        encoders = {
+            encoder
+            for encoder in ("h264_nvenc", "h264_qsv", "h264_vaapi", "h264_amf")
+            if encoder in output
+        }
+        FFmpegService._encoder_cache = encoders
+        return encoders
+
+    # ── Public HW encoder probe / resolution ──
+
+    @staticmethod
+    async def probe_hw_encoder(encoder_name: str = "h264_nvenc") -> dict:
+        """Check if a hardware encoder is available and actually working.
+
+        Returns:
+            {'available': True/False, 'encoder': str, 'details': str,
+             'fallback': 'libx264', 'verified': True/False}
+        The 'verified' flag indicates the encoder passed a short test-encode.
+        """
+        result: dict = {
+            "available": False,
+            "encoder": encoder_name,
+            "details": "",
+            "fallback": "libx264",
+            "verified": False,
+        }
+        # Step 1: check if encoder is compiled in
+        registered = FFmpegService._available_h264_encoders()
+        if encoder_name not in registered:
+            result["details"] = (
+                f"Encoder '{encoder_name}' is NOT registered in ffmpeg -encoders. "
+                f"Available HW encoders: {sorted(registered) if registered else 'none'}"
+            )
+            logger.warning("probe_hw_encoder: %s — NOT FOUND in ffmpeg encoders list", encoder_name)
+            return result
+
+        result["available"] = True
+        result["details"] = f"Encoder '{encoder_name}' found in ffmpeg -encoders output."
+
+        # Step 2: try a short test encode to verify it actually works
+        try:
+            logger.info("probe_hw_encoder: attempting test encode with %s", encoder_name)
+            test_cmd = [
+                "ffmpeg", "-y",
+                "-f", "lavfi", "-i", f"testsrc2=size=128x128:rate=1:d=1",
+                "-c:v", encoder_name,
+                "-preset", "p1" if encoder_name == "h264_nvenc" else "veryfast",
+                "-t", "1",
+                "-f", "null", "-",
+            ]
+            stdout, stderr, code = await FFmpegService._run_process(
+                test_cmd,
+                error_prefix=f"Test encode with {encoder_name}",
+                allow_failure=True,
+            )
+            if code == 0:
+                result["verified"] = True
+                result["details"] += " Test encode PASSED."
+                logger.info("probe_hw_encoder: %s test encode SUCCESS", encoder_name)
+            else:
+                result["details"] += (
+                    f" Test encode FAILED (exit code {code}): "
+                    f"{stderr.decode()[:200] if stderr else '(no stderr)'}"
+                )
+                logger.warning(
+                    "probe_hw_encoder: %s test encode FAILED (exit code %d). "
+                    "Encoder is listed but not functional — likely driver/Docker passthrough issue.",
+                    encoder_name, code,
+                )
+        except Exception as exc:
+            result["details"] += f" Test encode raised exception: {exc}"
+            logger.error("probe_hw_encoder: %s test encode exception: %s", encoder_name, exc)
+
+        return result
+
+    @staticmethod
+    async def resolve_video_encoder(settings_obj=None) -> str:
+        """Return the best available video encoder string.
+
+        If hardware acceleration is enabled and a working HW encoder is detected,
+        returns e.g. 'h264_nvenc'. Otherwise returns 'libx264'.
+
+        This is the canonical entry point for callers that need to know which
+        encoder will actually be used *before* building the ffmpeg command.
+        """
+        preferred = FFmpegService._preferred_h264_encoder()
+        if preferred is None:
+            logger.info("resolve_video_encoder: no HW encoder available — returning libx264")
+            return "libx264"
+
+        logger.info(
+            "resolve_video_encoder: HW encoder candidate '%s' — verifying with test encode",
+            preferred,
+        )
+        probe = await FFmpegService.probe_hw_encoder(preferred)
+        if probe["verified"]:
+            logger.info(
+                "resolve_video_encoder: verified HW encoder '%s' — using it for rendering",
+                preferred,
+            )
+            return preferred
+
+        logger.warning(
+            "resolve_video_encoder: HW encoder '%s' listed but failed test encode — "
+            "falling back to libx264. Probe details: %s",
+            preferred, probe["details"],
+        )
+        return "libx264"
+
+    @staticmethod
+    def _command_uses_hardware_encoder(cmd: list[str]) -> bool:
+        hardware_encoders = {"h264_nvenc", "h264_qsv", "h264_vaapi", "h264_amf"}
+        return any(part in hardware_encoders for part in cmd)
+
+    @staticmethod
+    def _encoder_from_command(cmd: list[str]) -> str:
+        """Extract the video encoder name from a command, e.g. 'h264_nvenc' or 'libx264'."""
+        hardware_encoders = {"h264_nvenc", "h264_qsv", "h264_vaapi", "h264_amf"}
+        for i, part in enumerate(cmd):
+            if i > 0 and cmd[i - 1] == "-c:v":
+                if part in hardware_encoders:
+                    return part
+                if part == "libx264":
+                    return "libx264"
+        # Fallback: scan for known encoder strings anywhere in cmd
+        for part in cmd:
+            if part in hardware_encoders:
+                return part
+            if part == "libx264":
+                return "libx264"
+        return "unknown"
+
+    @staticmethod
+    def _cpu_fallback_command(cmd: list[str]) -> list[str]:
+        fallback: list[str] = []
+        skip_next = False
+        hardware_options = {
+            "-cq",
+            "-global_quality",
+            "-qp_i",
+            "-qp_p",
+            "-qp_b",
+            "-quality",
+            "-rc",
+        }
+        for index, part in enumerate(cmd):
+            if skip_next:
+                skip_next = False
+                continue
+            if index > 0 and cmd[index - 1] == "-c:v" and part in {"h264_nvenc", "h264_qsv", "h264_vaapi", "h264_amf"}:
+                fallback.append("libx264")
+                continue
+            if part in hardware_options:
+                skip_next = True
+                continue
+            if index > 0 and cmd[index - 1] == "-preset" and part in {"p1", "p2", "p3", "p4", "p5", "p6", "p7"}:
+                fallback.append("veryfast")
+                continue
+            fallback.append(part)
+        if "-preset" not in fallback:
+            insert_at = fallback.index("libx264") + 1 if "libx264" in fallback else len(fallback) - 1
+            fallback[insert_at:insert_at] = ["-preset", "veryfast"]
+        if "-crf" not in fallback and "-b:v" not in fallback:
+            insert_at = fallback.index("libx264") + 1 if "libx264" in fallback else len(fallback) - 1
+            fallback[insert_at:insert_at] = ["-crf", "20"]
+        return fallback
+
+    @staticmethod
+    def _double_bitrate(value: str) -> str:
+        suffix = value[-1]
+        number_text = value[:-1] if suffix.lower() in {"k", "m"} else value
+        try:
+            doubled = float(number_text) * 2
+        except ValueError:
+            return value
+        number = int(doubled) if doubled.is_integer() else round(doubled, 2)
+        return f"{number}{suffix}" if suffix.lower() in {"k", "m"} else str(number)
 
     @staticmethod
     def _xfade_transition_name(transition: str) -> str:
@@ -877,58 +1327,121 @@ class FFmpegService:
         clip_paths: List[str],
         output_path: str,
         cancel_check: Callable[[], None] | None = None,
+        *,
+        video_bitrate: str | None = None,
+        audio_bitrate: str | None = "192k",
+        output_width: int | None = None,
+        output_height: int | None = None,
+        fps: int | None = 30,
+        prefer_stream_copy: bool = False,
     ) -> str:
         """
         Concatenate multiple video clips into one.
-        Tries stream copy first (fast), falls back to re-encode if codecs mismatch.
-        """
-        list_path = output_path + ".txt"
-        with open(list_path, "w") as f:
-            for clip in clip_paths:
-                f.write(f"file '{clip}'\n")
 
-        try:
-            # Attempt 1: stream copy (fast, no quality loss)
-            cmd = [
-                "ffmpeg",
-                "-f", "concat", "-safe", "0",
-                "-i", list_path,
-                "-c", "copy",
+        Uses the FFmpeg concat **filter** (decodes all clips to raw frames
+        first) instead of the concat **demuxer**, because the demuxer is
+        fragile across clips with different GOP / keyframe structures — even
+        when all clips share the same encoder.  The filter path is slower
+        (everything must be decoded) but 100 % reliable.
+        """
+        n = len(clip_paths)
+        if n == 0:
+            raise ValueError("No clips to concatenate")
+        if n == 1:
+            # Single clip — just re-encode to normalise
+            cmd_single = [
+                "ffmpeg", "-i", clip_paths[0],
+            ]
+            vf = FFmpegService._concat_video_filter(output_width, output_height, fps)
+            if vf:
+                cmd_single.extend(["-vf", vf])
+            cmd_single.extend([
+                *FFmpegService._video_encoder_args(video_bitrate, "veryfast"),
+                "-c:a", "aac", "-b:a", FFmpegService._normalize_audio_bitrate(audio_bitrate),
+                "-ar", "48000", "-ac", "2",
                 "-movflags", "+faststart",
                 "-y", output_path,
-            ]
-            _, stderr, returncode = await FFmpegService._run_process(
-                cmd,
-                error_prefix="Concat failed",
-                cancel_check=cancel_check,
-                allow_failure=True,
+            ])
+            _, stderr_s, rc = await FFmpegService._run_process_with_encoder_fallback(
+                cmd_single, error_prefix="Concat single clip",
+                cancel_check=cancel_check, allow_failure=False,
             )
+            if rc != 0:
+                raise RuntimeError(f"Single-clip concat failed: {stderr_s.decode()[:800]}")
+            return output_path
 
-            if returncode != 0:
-                # Attempt 2: re-encode (handles codec mismatches between clips)
-                cmd_reencode = [
-                    "ffmpeg",
-                    "-f", "concat", "-safe", "0",
-                    "-i", list_path,
-                    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                    "-c:a", "aac", "-b:a", "128k",
-                    "-movflags", "+faststart",
-                    "-y", output_path,
-                ]
-                _, stderr2, returncode2 = await FFmpegService._run_process(
-                    cmd_reencode,
-                    error_prefix="Concat failed",
-                    cancel_check=cancel_check,
-                    allow_failure=True,
+        # ── Stream-copy fast path (only when explicitly asked) ──────────
+        if prefer_stream_copy:
+            list_path = output_path + ".txt"
+            with open(list_path, "w") as f:
+                for clip in clip_paths:
+                    f.write(f"file '{clip}'\n")
+            try:
+                cmd = ["ffmpeg", "-f", "concat", "-safe", "0", "-i", list_path,
+                       "-c", "copy", "-movflags", "+faststart", "-y", output_path]
+                _, _, rc = await FFmpegService._run_process(
+                    cmd, error_prefix="Concat copy",
+                    cancel_check=cancel_check, allow_failure=True,
                 )
+                if rc == 0:
+                    return output_path
+            finally:
+                if os.path.exists(list_path):
+                    os.remove(list_path)
 
-                if returncode2 != 0:
-                    raise RuntimeError(f"Concat failed (both copy and re-encode): {stderr2.decode()[:500]}")
-        finally:
-            if os.path.exists(list_path):
-                os.remove(list_path)
+        # ── Concat FILTER path (reliable) ──────────────────────────────
+        # Build: ffmpeg -i c0 -i c1 ... -filter_complex "[0:v][0:a][1:v][1:a]concat=n=...:v=1:a=1[vraw][araw];[vraw]<video_filter>[outv];[araw]anull[outa]" -map "[outv]" -map "[outa]" ...
+        cmd = ["ffmpeg"]
+        for clip in clip_paths:
+            cmd.extend(["-i", clip])
 
+        filter_chunks = "".join(f"[{i}:v][{i}:a]" for i in range(n))
+        concat_part = f"{filter_chunks}concat=n={n}:v=1:a=1[vraw][araw]"
+
+        vf = FFmpegService._concat_video_filter(output_width, output_height, fps)
+        if vf:
+            filter_complex = f"{concat_part};[vraw]{vf}[outv];[araw]anull[outa]"
+        else:
+            filter_complex = f"{concat_part};[vraw]null[outv];[araw]anull[outa]"
+
+        cmd.extend([
+            "-filter_complex", filter_complex,
+            "-map", "[outv]", "-map", "[outa]",
+            *FFmpegService._video_encoder_args(video_bitrate, "veryfast"),
+            "-c:a", "aac", "-b:a", FFmpegService._normalize_audio_bitrate(audio_bitrate),
+            "-ar", "48000", "-ac", "2",
+            "-movflags", "+faststart",
+            "-y", output_path,
+        ])
+
+        logger.info("Concat: starting concat FILTER render — %d clips", n)
+        _, stderr, returncode = await FFmpegService._run_process_with_encoder_fallback(
+            cmd,
+            error_prefix="Concat filter",
+            cancel_check=cancel_check,
+            allow_failure=False,
+        )
+        if returncode != 0:
+            raise RuntimeError(f"Concat filter failed: {stderr.decode()[:800]}")
+
+        logger.info("Concat: finished successfully — %d clips → %s", n, output_path)
         return output_path
+
+    @staticmethod
+    def _concat_video_filter(output_width: int | None, output_height: int | None, fps: int | None) -> str:
+        filters: list[str] = []
+        if fps:
+            filters.append(f"fps={int(fps)}")
+        if output_width and output_height:
+            width = max(2, int(output_width))
+            height = max(2, int(output_height))
+            filters.extend([
+                f"scale={width}:{height}:force_original_aspect_ratio=decrease",
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
+                "setsar=1",
+            ])
+        filters.append("format=yuv420p")
+        return ",".join(filters)
 
     @staticmethod
     async def concat_videos_with_transitions(
@@ -939,6 +1452,9 @@ class FFmpegService:
         output_path: str,
         output_width: int = 1920,
         output_height: int = 1080,
+        video_bitrate: str | None = None,
+        audio_bitrate: str | None = "192k",
+        fps: int | None = 30,
         cancel_check: Callable[[], None] | None = None,
     ) -> str:
         """Concatenate clips through FFmpeg xfade/acrossfade visual transitions."""
@@ -949,8 +1465,11 @@ class FFmpegService:
             output_path=output_path,
             output_width=output_width,
             output_height=output_height,
+            video_bitrate=video_bitrate,
+            audio_bitrate=audio_bitrate,
+            fps=fps,
         )
-        await FFmpegService._run_process(
+        await FFmpegService._run_process_with_encoder_fallback(
             cmd,
             error_prefix="Transition concat failed",
             stderr_limit=800,
@@ -967,6 +1486,9 @@ class FFmpegService:
         output_path: str,
         output_width: int = 1920,
         output_height: int = 1080,
+        video_bitrate: str | None = None,
+        audio_bitrate: str | None = "192k",
+        fps: int | None = 30,
     ) -> list[str]:
         """Build an FFmpeg filter graph that renders crossfade/wipe boundaries."""
         if len(clip_paths) < 2:
@@ -991,7 +1513,7 @@ class FFmpegService:
                 f"[{index}:v]setpts=PTS-STARTPTS,"
                 f"scale={output_width}:{output_height}:force_original_aspect_ratio=decrease,"
                 f"pad={output_width}:{output_height}:(ow-iw)/2:(oh-ih)/2,"
-                f"setsar=1,format=yuv420p[v{index}]"
+                f"setsar=1,fps={int(fps or 30)},format=yuv420p[v{index}]"
             )
             filter_parts.append(f"[{index}:a]asetpts=PTS-STARTPTS[a{index}]")
 
@@ -1043,16 +1565,15 @@ class FFmpegService:
             f"[{current_video}]",
             "-map",
             f"[{current_audio}]",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "fast",
-            "-crf",
-            "23",
+            *FFmpegService._video_encoder_args(video_bitrate, "veryfast"),
             "-c:a",
             "aac",
             "-b:a",
-            "128k",
+            FFmpegService._normalize_audio_bitrate(audio_bitrate),
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
             "-movflags",
             "+faststart",
             "-y",
@@ -1080,22 +1601,111 @@ class FFmpegService:
             "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
             "-t", str(duration),
             "-shortest",
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "23",
+            *FFmpegService._video_encoder_args(None, "veryfast"),
             "-pix_fmt", "yuv420p",
             "-c:a", "aac",
-            "-b:a", "128k",
+            "-b:a", "192k",
             "-movflags", "+faststart",
             "-y",
             output_path,
         ]
-        await FFmpegService._run_process(
+        await FFmpegService._run_process_with_encoder_fallback(
             cmd,
             error_prefix="Color clip generation failed",
             stderr_limit=800,
             cancel_check=cancel_check,
         )
+        return output_path
+
+    @staticmethod
+    async def create_slideshow_clip(
+        output_path: str,
+        *,
+        image_paths: list[str],
+        durations: list[float],
+        width: int = 1920,
+        height: int = 1080,
+        background_color: str = "#101827",
+        cancel_check: Callable[[], None] | None = None,
+    ) -> str:
+        """Create a silent MP4 slideshow from pre-rendered page/slide images."""
+        if not image_paths:
+            raise ValueError("At least one image is required for slideshow generation")
+        safe_durations = [
+            max(0.1, float(durations[index] if index < len(durations) else durations[-1] if durations else 1.0))
+            for index, _ in enumerate(image_paths)
+        ]
+        total_duration = round(sum(safe_durations), 3)
+        color = FFmpegService._ffmpeg_color(background_color)
+        manifest_path: str | None = None
+        if len(image_paths) == 1:
+            cmd = ["ffmpeg", "-loop", "1", "-t", f"{safe_durations[0]:.3f}", "-i", image_paths[0]]
+            video_filter = (
+                f"[0:v]scale={int(width)}:{int(height)}:force_original_aspect_ratio=decrease,"
+                f"pad={int(width)}:{int(height)}:(ow-iw)/2:(oh-ih)/2:color={color},"
+                f"setsar=1,fps=30,format=yuv420p,trim=duration={safe_durations[0]:.3f},"
+                "setpts=PTS-STARTPTS[v]"
+            )
+        else:
+            # A filter input per page exhausts FFmpeg filter threads on larger decks.
+            # FFconcat supplies the same timed image sequence through one video stream.
+            manifest_path = f"{output_path}.ffconcat"
+            manifest_lines = ["ffconcat version 1.0"]
+            for image_path, duration in zip(image_paths, safe_durations):
+                manifest_lines.extend([
+                    f"file '{FFmpegService._concat_file_path(image_path)}'",
+                    f"duration {duration:.6f}",
+                ])
+            # Repeating the final image makes the concat demuxer apply its duration.
+            manifest_lines.append(f"file '{FFmpegService._concat_file_path(image_paths[-1])}'")
+            with open(manifest_path, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write("\n".join(manifest_lines) + "\n")
+            cmd = ["ffmpeg", "-safe", "0", "-f", "concat", "-i", manifest_path]
+            video_filter = (
+                f"[0:v]scale={int(width)}:{int(height)}:force_original_aspect_ratio=decrease,"
+                f"pad={int(width)}:{int(height)}:(ow-iw)/2:(oh-ih)/2:color={color},"
+                "setsar=1,fps=30,format=yuv420p[v]"
+            )
+
+        cmd.extend([
+            "-f", "lavfi",
+            "-t", f"{total_duration:.3f}",
+            "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+        ])
+        cmd.extend([
+            "-filter_complex",
+            video_filter,
+            "-map",
+            "[v]",
+            "-map",
+            "1:a",
+            "-t",
+            f"{total_duration:.3f}",
+            *FFmpegService._video_encoder_args(None, "veryfast"),
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-movflags",
+            "+faststart",
+            "-y",
+            output_path,
+        ])
+        try:
+            await FFmpegService._run_process_with_encoder_fallback(
+                cmd,
+                error_prefix="Slideshow generation failed",
+                stderr_limit=1600,
+                cancel_check=cancel_check,
+            )
+        finally:
+            if manifest_path:
+                try:
+                    os.remove(manifest_path)
+                except FileNotFoundError:
+                    pass
         return output_path
 
     @staticmethod
@@ -1153,11 +1763,13 @@ class FFmpegService:
         cmd = [
             "ffmpeg", "-i", video_path,
             "-vf", f"subtitles={FFmpegService._escape_subtitle_path(srt_path)}:force_style='{force_style}'",
+            *FFmpegService._video_encoder_args(None, "veryfast"),
             "-c:a", "copy",
+            "-movflags", "+faststart",
             "-y",
             output_path
         ]
-        await FFmpegService._run_process(
+        await FFmpegService._run_process_with_encoder_fallback(
             cmd,
             error_prefix="Subtitle burn failed",
             cancel_check=cancel_check,
@@ -1175,11 +1787,13 @@ class FFmpegService:
         cmd = [
             "ffmpeg", "-i", video_path,
             "-vf", f"subtitles={FFmpegService._escape_subtitle_path(ass_path)}",
+            *FFmpegService._video_encoder_args(None, "veryfast"),
             "-c:a", "copy",
+            "-movflags", "+faststart",
             "-y",
             output_path,
         ]
-        await FFmpegService._run_process(
+        await FFmpegService._run_process_with_encoder_fallback(
             cmd,
             error_prefix="ASS overlay burn failed",
             stderr_limit=800,
@@ -1235,6 +1849,15 @@ class FFmpegService:
         except ValueError:
             text = "111827"
         return f"0x{text}"
+
+    @staticmethod
+    def _concat_file_path(path: str) -> str:
+        raw_path = str(path or "")
+        # os.path.abspath on Linux treats a Windows drive path as relative and
+        # incorrectly prefixes the container working directory (for example,
+        # /app/C:/...). Preserve drive-qualified paths before normalizing.
+        normalized = raw_path if re.match(r"^[A-Za-z]:[\\/]", raw_path) else os.path.abspath(raw_path)
+        return normalized.replace("\\", "/").replace("'", r"'\''")
 
     @staticmethod
     def _escape_subtitle_path(path: str) -> str:
@@ -1313,6 +1936,210 @@ class FFmpegService:
         millis = int((seconds % 1) * 1000)
         return f"{hrs:02d}:{mins:02d}:{secs:02d},{millis:03d}"
 
+    # ------------------------------------------------------------------
+    # Letterboxing / black-bar detection and cropping (P2)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def detect_crop_parameters(video_path: str) -> dict | None:
+        """Run cropdetect on the first ~24 frames to find black-bar crop parameters.
+
+        Returns a dict with w, h, x, y, and a ready-to-use crop_filter string,
+        or None if no meaningful crop was detected.
+        """
+        cmd = [
+            "ffmpeg",
+            "-i", video_path,
+            "-vf", "cropdetect=24:2",
+            "-f", "null", "-",
+        ]
+
+        try:
+            _, stderr, _ = await FFmpegService._run_process(
+                cmd,
+                error_prefix="Crop detection failed",
+                allow_failure=True,
+                stderr_limit=20000,
+            )
+        except Exception as exc:
+            logger.warning(
+                "detect_crop_parameters: ffmpeg cropdetect raised %s — returning None",
+                exc,
+            )
+            return None
+
+        output = stderr.decode(errors="replace")
+
+        # Parse every "crop=W:H:X:Y" line that cropdetect prints to stderr.
+        matches: list[tuple[str, str, str, str]] = re.findall(
+            r"crop=(\d+):(\d+):(\d+):(\d+)", output
+        )
+        if not matches:
+            logger.info(
+                "detect_crop_parameters: no crop= values found in cropdetect output"
+            )
+            return None
+
+        # Most-frequently-detected crop is the stable letterbox boundary.
+        counter = Counter(matches)
+        (w_str, h_str, x_str, y_str), count = counter.most_common(1)[0]
+
+        w, h, x, y = int(w_str), int(h_str), int(x_str), int(y_str)
+        crop_filter = f"crop={w}:{h}:{x}:{y}"
+
+        logger.info(
+            "detect_crop_parameters: most common crop=%s (appeared %d/%d times)",
+            crop_filter,
+            count,
+            len(matches),
+        )
+
+        return {
+            "w": w,
+            "h": h,
+            "x": x,
+            "y": y,
+            "crop_filter": crop_filter,
+        }
+
+    @staticmethod
+    async def has_letterboxing(video_path: str, threshold: float = 0.10) -> bool:
+        """Quick check whether the video has significant black bars.
+
+        Returns True when the black-bar height exceeds *threshold* of the
+        total frame height (default 10 %).
+        """
+        crop = await FFmpegService.detect_crop_parameters(video_path)
+        if crop is None:
+            return False
+
+        # Get full frame dimensions from ffprobe.
+        meta = await FFmpegService.get_video_metadata(video_path)
+        frame_height = meta.get("height", 0) or 0
+        if frame_height <= 0:
+            return False
+
+        bar_height = frame_height - crop["h"]
+        return bar_height > (frame_height * threshold)
+
+    @staticmethod
+    async def auto_crop_video(
+        input_path: str,
+        output_path: str,
+        crop_params: dict | None = None,
+        *,
+        cancel_check: Callable[[], None] | None = None,
+    ) -> str:
+        """Re-encode *input_path* with the detected letterbox crop applied.
+
+        When *crop_params* is None the method runs ``detect_crop_parameters``
+        first.  The video is re-encoded through the standard hardware-encoder
+        pathway (with automatic CPU fallback).
+        """
+        if crop_params is None:
+            crop_params = await FFmpegService.detect_crop_parameters(input_path)
+
+        if not crop_params:
+            logger.info(
+                "auto_crop_video: no crop needed for %s — copying (no re-encode)",
+                input_path,
+            )
+            import shutil
+            shutil.copy2(input_path, output_path)
+            return output_path
+
+        crop_filter = crop_params["crop_filter"] + ",format=yuv420p"
+        encoder_args = FFmpegService._video_encoder_args(None, "veryfast")
+
+        cmd = [
+            "ffmpeg",
+            "-i", input_path,
+            "-vf", crop_filter,
+            *encoder_args,
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-movflags", "+faststart",
+            "-y",
+            output_path,
+        ]
+
+        await FFmpegService._run_process_with_encoder_fallback(
+            cmd,
+            error_prefix="Auto-crop re-encode failed",
+            stderr_limit=800,
+            cancel_check=cancel_check,
+        )
+        logger.info("auto_crop_video: cropped → %s", output_path)
+        return output_path
+
+    @staticmethod
+    async def preprocess_for_compatibility(
+        input_path: str,
+        output_path: str,
+        cancel_check: Callable[[], None] | None = None,
+    ) -> str:
+        """Convert iPhone .MOV / HEVC to 1080p H.264 MP4 for compatibility.
+
+        Detects the best available H.264 encoder (hardware or CPU) and
+        transcodes the input to a standardised format that the render
+        pipeline can handle efficiently:
+
+        - 1920x1080 (auto-scaling, preserving aspect ratio)
+        - Constant 24 fps
+        - H.264 video (hardware-accelerated when available)
+        - AAC 128k audio
+
+        Returns the output path on success.
+        """
+        encoder = FFmpegService._preferred_h264_encoder()
+        video_args: list[str]
+
+        if encoder == "h264_nvenc":
+            video_args = [
+                "-c:v", "h264_nvenc",
+                "-preset", "p2",
+                "-rc", "vbr",
+                "-b:v", "5M",
+                "-maxrate", "5M",
+                "-bufsize", "10M",
+            ]
+        elif encoder == "h264_qsv":
+            video_args = ["-c:v", "h264_qsv", "-b:v", "5M"]
+        elif encoder == "h264_vaapi":
+            video_args = ["-c:v", "h264_vaapi", "-b:v", "5M"]
+        elif encoder == "h264_amf":
+            video_args = [
+                "-c:v", "h264_amf",
+                "-quality", "speed",
+                "-b:v", "5M",
+            ]
+        else:
+            video_args = [
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-crf", "23",
+            ]
+
+        cmd = [
+            "ffmpeg",
+            "-i", input_path,
+            "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=24",
+            *video_args,
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-movflags", "+faststart",
+            "-y",
+            output_path,
+        ]
+
+        await FFmpegService._run_process_with_encoder_fallback(
+            cmd,
+            error_prefix="Preprocessing compatibility transcode failed",
+            stderr_limit=800,
+            cancel_check=cancel_check,
+        )
+        return output_path
+
 
 def _even_int(value: float) -> int:
     number = int(round(float(value or 0)))
@@ -1343,7 +2170,5 @@ def _normalize_audio_bitrate(value: str | None) -> str:
     if text.isdigit():
         return f"{text}k"
     return "192k"
-
-
 # Singleton
 ffmpeg_service = FFmpegService()

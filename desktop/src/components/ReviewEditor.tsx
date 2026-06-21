@@ -2,7 +2,7 @@ import { forwardRef, useState, useEffect, useCallback, useMemo } from "react";
 import type { CSSProperties, VideoHTMLAttributes } from "react";
 import { useSegments, usePlaybackSync, useProcessingStatus } from "../hooks/useApi";
 import { useCommandShortcuts } from "../hooks/useCommandShortcuts";
-import { Timeline } from "./Timeline";
+import { EditorialTimeline, Timeline } from "./Timeline";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { CommandPalette, type CommandPaletteCommand } from "./CommandPalette";
 import {
@@ -10,6 +10,7 @@ import {
   GUIDED_WORKFLOW_STEPS,
   GuidedWorkflowPanel,
   GuidedWorkflowStepper,
+  layoutCueAtTime,
   layoutPreviewSettingsFromCue,
   type LayoutPreviewSettings,
   type GuidedWorkflowStepId,
@@ -23,6 +24,7 @@ import type {
   EducationalOverlayAction,
   EndCardAction,
   EditPlan,
+  CleanApplyResult,
   SegmentAction,
   RevalidationResult,
   EditDecisionSync,
@@ -30,6 +32,10 @@ import type {
   TranscriptCutDecisionRequest,
   TranscriptCutTrimUpdateRequest,
   TranscriptTimeline,
+  ProjectAsset,
+  SemanticRenderPlan,
+  EditorialBlock,
+  Video,
 } from "../types/api";
 import {
   Activity,
@@ -110,6 +116,15 @@ type EditHistoryEntry =
   | TranscriptCutTrimHistoryEntry;
 type HistoryDirection = "undo" | "redo";
 
+type GeneratedSlidePreview = {
+  enabled: boolean;
+  title: string;
+  subtitle: string;
+  sourceName: string;
+  bullets: string[];
+  imageUrl?: string | null;
+};
+
 export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) {
   const { segments, loading, reload: reloadSegments, applySegmentOverride, acceptAllHighConfidence } = useSegments(videoId);
   const { currentTime, setCurrentTime, isPlaying, setIsPlaying, videoRef, seekTo, togglePlay } = usePlaybackSync();
@@ -117,6 +132,8 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   const [activeWorkflowStep, setActiveWorkflowStep] = useState<GuidedWorkflowStepId>("transcribe");
   const [completedWorkflowSteps, setCompletedWorkflowSteps] = useState<Set<GuidedWorkflowStepId>>(() => new Set());
   const [layoutPreviewSettings, setLayoutPreviewSettings] = useState<LayoutPreviewSettings>(DEFAULT_LAYOUT_PREVIEW_SETTINGS);
+  const [layoutDraftDirty, setLayoutDraftDirty] = useState(false);
+  const [layoutDraftBlockId, setLayoutDraftBlockId] = useState<string | null>(null);
   const [leftPanelTab, setLeftPanelTab] = useState<LeftPanelTab>("transcript");
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [plan, setPlan] = useState<EditPlan | null>(null);
@@ -128,6 +145,9 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   const [transcriptTimeline, setTranscriptTimeline] = useState<TranscriptTimeline | null>(null);
   const [transcriptCuts, setTranscriptCuts] = useState<TranscriptCutDecision[]>([]);
   const [editDecisionSync, setEditDecisionSync] = useState<EditDecisionSync | null>(null);
+  const [semanticRenderPlan, setSemanticRenderPlan] = useState<SemanticRenderPlan | null>(null);
+  const [videoDetail, setVideoDetail] = useState<Video | null>(null);
+  const [projectAssets, setProjectAssets] = useState<ProjectAsset[]>([]);
   const [transcriptCutsLoading, setTranscriptCutsLoading] = useState(false);
   const [undoStack, setUndoStack] = useState<EditHistoryEntry[]>([]);
   const [redoStack, setRedoStack] = useState<EditHistoryEntry[]>([]);
@@ -142,14 +162,63 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
     api.getEditPlan(videoId).then(setPlan).catch(() => {});
   }, [videoId]);
 
+  const refreshSemanticRenderPlan = useCallback(async () => {
+    try {
+      const renderPlan = await api.regenerateSemanticRenderPlan(videoId);
+      setSemanticRenderPlan(renderPlan);
+    } catch {
+      setSemanticRenderPlan(null);
+    }
+  }, [videoId]);
+
   useEffect(() => {
-    setLayoutPreviewSettings(layoutPreviewSettingsFromCue(plan?.layout_cues[0]));
-  }, [plan?.layout_cues]);
+    void refreshSemanticRenderPlan();
+  }, [refreshSemanticRenderPlan]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.getVideo(videoId)
+      .then(video => {
+        if (cancelled) return;
+        setVideoDetail(video);
+        if (!video.project_id) {
+          setProjectAssets([]);
+          return;
+        }
+        api.listProjectAssets(video.project_id)
+          .then(assets => {
+            if (!cancelled) setProjectAssets(assets);
+          })
+          .catch(() => {
+            if (!cancelled) setProjectAssets([]);
+          });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setVideoDetail(null);
+          setProjectAssets([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [videoId]);
+
+  useEffect(() => {
+    if (activeWorkflowStep === "layout" && layoutDraftDirty) return;
+    setLayoutPreviewSettings(layoutPreviewSettingsFromCue(layoutCueAtTime(plan?.layout_cues ?? [], currentTime) ?? plan?.layout_cues[0]));
+  }, [activeWorkflowStep, currentTime, layoutDraftDirty, plan?.layout_cues]);
 
   useEffect(() => {
     setUndoStack([]);
     setRedoStack([]);
   }, [videoId]);
+
+  useEffect(() => {
+    if (videoDetail?.status === "rendering" || processingStatus?.current_step === "rendering") {
+      setActiveWorkflowStep("export");
+    }
+  }, [processingStatus?.current_step, videoDetail?.status]);
 
   useEffect(() => {
     setSelectedSegment(prev => {
@@ -210,12 +279,40 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   const videoSrc = api.getVideoStreamUrl(videoId);
   const syncedCutIntervals = editDecisionSync?.cut_intervals ?? [];
   const syncedExportPlan = editDecisionSync?.export_plan ?? null;
+  const visibleTranscriptCuts = useMemo(() => dedupeTranscriptCuts(transcriptCuts), [transcriptCuts]);
   const annotations = useMemo(() => annotationsFromPlan(plan), [plan]);
   const educationalOverlays = useMemo(() => educationalOverlaysFromPlan(plan), [plan]);
   const endCards = useMemo(() => endCardsFromPlan(plan), [plan]);
   const enabledEndCardDuration = endCards.reduce((total, card) => total + (card.enabled ? card.duration_seconds : 0), 0);
   const contentDuration = duration || plan?.original_duration || 0;
   const effectiveDuration = contentDuration + enabledEndCardDuration;
+  const activeLayoutCue = layoutCueAtTime(plan?.layout_cues ?? [], currentTime) ?? plan?.layout_cues?.[0] ?? null;
+  const editorialBlocks = plan?.editorial_blocks ?? [];
+  const activeEditorialBlock = (
+    layoutDraftDirty && layoutDraftBlockId
+      ? editorialBlocks.find((block) => block.id === layoutDraftBlockId)
+      : null
+  ) ?? editorialBlocks.find(
+    (block) => currentTime >= block.start_time && currentTime < block.end_time,
+  ) ?? editorialBlocks[0] ?? null;
+  const activeRenderScene = useMemo(
+    () => activeRenderSceneAtTime(semanticRenderPlan, currentTime),
+    [currentTime, semanticRenderPlan],
+  );
+  const slidePreview = useMemo(
+    () => buildSemanticSlidePreview(semanticRenderPlan, activeRenderScene) ?? buildGeneratedSlidePreview({
+      cue: activeLayoutCue,
+      currentTime,
+      segments,
+      chapters,
+      projectAssets,
+    }),
+    [activeLayoutCue, activeRenderScene, chapters, currentTime, projectAssets, segments, semanticRenderPlan],
+  );
+  const previewLayoutSettings = useMemo(
+    () => layoutSettingsFromRenderScene(layoutPreviewSettings, activeRenderScene),
+    [activeRenderScene, layoutPreviewSettings],
+  );
 
   const handleTimeUpdate = useCallback(() => {
     if (videoRef.current) {
@@ -243,7 +340,6 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
 
   const handleSelectSegment = useCallback((seg: Segment) => {
     setSelectedSegment(seg);
-    setActiveWorkflowStep("clean");
   }, []);
 
   const handleSelectAnnotation = useCallback((annotation: AnnotationAction) => {
@@ -261,7 +357,13 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   }, [seekTo]);
 
   const pushHistory = useCallback((entry: EditHistoryEntry) => {
-    setUndoStack(prev => [...prev, entry].slice(-50));
+    setUndoStack(prev => {
+      const next = [...prev, entry];
+      if (prev.length === 50) {
+        console.warn("Undo stack limit reached (50). Oldest entry dropped.");
+      }
+      return next.slice(-50);
+    });
     setRedoStack([]);
   }, []);
 
@@ -270,7 +372,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
       const result = await api.revalidatePlan(videoId);
       setWarnings(result);
     } catch {
-      // Revalidation is helpful context, but editing should continue if it fails.
+      console.warn("Revalidation failed (non-fatal), editing continues");
     }
   }, [videoId]);
 
@@ -278,10 +380,16 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
     try {
       const updatedPlan = await api.getEditPlan(videoId);
       setPlan(updatedPlan);
+      void refreshSemanticRenderPlan();
     } catch {
       // Plan stats are secondary UI context; the edit operation already completed.
     }
-  }, [videoId]);
+  }, [refreshSemanticRenderPlan, videoId]);
+
+  const handlePlanUpdated = useCallback((updatedPlan: EditPlan) => {
+    setPlan(updatedPlan);
+    void refreshSemanticRenderPlan();
+  }, [refreshSemanticRenderPlan]);
 
   const refreshEditDecisionSync = useCallback(async () => {
     try {
@@ -309,29 +417,37 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
 
   const handleUpdateAction = useCallback(async (segId: string, action: SegmentAction, note?: string) => {
     const segment = segments.find(candidate => candidate.id === segId);
-    const before = segment ? snapshotSegmentOverride(segment) : null;
-    const after: SegmentOverrideSnapshot | null = before
-      ? {
-          ...before,
-          teacher_action: action,
-          teacher_note: note || null,
-          is_teacher_modified: true,
-        }
-      : null;
-
-    await applySegmentOverride(segId, action, note || null, true);
-
-    if (before && after && !sameSegmentOverrideSnapshot(before, after)) {
-      pushHistory({
-        id: createHistoryId(),
-        kind: "segment_override",
-        label: `Segment ${before.segment_index} ${action}`,
-        before,
-        after,
-      });
+    if (!segment) {
+      console.error("handleUpdateAction: segment not found in local state", segId);
+      alert("Cannot update: segment not found");
+      return;
     }
-    await refreshEditWarnings();
-    await refreshEditDecisionSync();
+    const before = snapshotSegmentOverride(segment);
+    const after: SegmentOverrideSnapshot = {
+      ...before,
+      teacher_action: action,
+      teacher_note: note || null,
+      is_teacher_modified: true,
+    };
+
+    try {
+      await applySegmentOverride(segId, action, note || null, true);
+
+      if (!sameSegmentOverrideSnapshot(before, after)) {
+        pushHistory({
+          id: createHistoryId(),
+          kind: "segment_override",
+          label: `Segment ${before.segment_index} ${action}`,
+          before,
+          after,
+        });
+      }
+      await refreshEditWarnings();
+      await refreshEditDecisionSync();
+    } catch (err) {
+      console.error("handleUpdateAction: failed to persist segment change", err);
+      // Error already surfaced by applySegmentOverride; avoid duplicate alert
+    }
   }, [applySegmentOverride, pushHistory, refreshEditDecisionSync, refreshEditWarnings, segments]);
 
   const handleCreateTranscriptCut = useCallback(async (wordStartIndex: number, wordEndIndex: number) => {
@@ -340,39 +456,78 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
       word_end_index: wordEndIndex,
       teacher_note: "Marked for cut from transcript text selection",
     };
-    const decision = await api.createTranscriptCutDecision(videoId, request);
-    setTranscriptCuts(prev => [...prev, decision]);
-    pushHistory({
-      id: createHistoryId(),
-      kind: "transcript_cut_create",
-      label: "Transcript text cut",
-      decision,
-      request,
-    });
-    setActiveWorkflowStep("clean");
-    await refreshEditPlan();
-    await refreshEditDecisionSync();
+    try {
+      const decision = await api.createTranscriptCutDecision(videoId, request);
+      setTranscriptCuts(prev => [...prev, decision]);
+      pushHistory({
+        id: createHistoryId(),
+        kind: "transcript_cut_create",
+        label: "Transcript text cut",
+        decision,
+        request,
+      });
+      setActiveWorkflowStep("clean");
+      await refreshEditPlan();
+      await refreshEditDecisionSync();
+    } catch (err) {
+      console.error("handleCreateTranscriptCut: API call failed", err);
+      alert(`Failed to create transcript cut: ${err}`);
+    }
   }, [pushHistory, refreshEditDecisionSync, refreshEditPlan, videoId]);
 
   const handleDeleteTranscriptCut = useCallback(async (decisionId: string) => {
     const decision = transcriptCuts.find(candidate => candidate.id === decisionId);
-    await api.deleteTranscriptCutDecision(videoId, decisionId);
-    setTranscriptCuts(prev => prev.filter(decision => decision.id !== decisionId));
-    if (decision) {
-      pushHistory({
-        id: createHistoryId(),
-        kind: "transcript_cut_delete",
-        label: "Remove transcript cut",
-        decision,
-        request: {
-          word_start_index: decision.word_start_index,
-          word_end_index: decision.word_end_index,
-          teacher_note: decision.teacher_note,
-        },
-      });
+    try {
+      await api.deleteTranscriptCutDecision(videoId, decisionId);
+      setTranscriptCuts(prev => prev.filter(decision => decision.id !== decisionId));
+      if (decision) {
+        pushHistory({
+          id: createHistoryId(),
+          kind: "transcript_cut_delete",
+          label: "Remove transcript cut",
+          decision,
+          request: {
+            word_start_index: decision.word_start_index,
+            word_end_index: decision.word_end_index,
+            teacher_note: decision.teacher_note,
+          },
+        });
+      }
+      await refreshEditPlan();
+      await refreshEditDecisionSync();
+    } catch (err) {
+      console.error("handleDeleteTranscriptCut: API call failed", err);
+      alert(`Failed to delete transcript cut: ${err}`);
     }
-    await refreshEditPlan();
-    await refreshEditDecisionSync();
+  }, [pushHistory, refreshEditDecisionSync, refreshEditPlan, transcriptCuts, videoId]);
+
+  const handleRestoreTranscriptCutWord = useCallback(async (decisionId: string, wordIndex: number) => {
+    const decision = transcriptCuts.find(candidate => candidate.id === decisionId);
+    try {
+      const nextCuts = await api.restoreTranscriptCutWord(videoId, decisionId, {
+        word_index: wordIndex,
+        teacher_note: "Restored one word from transcript cut",
+      });
+      setTranscriptCuts(nextCuts);
+      if (decision) {
+        pushHistory({
+          id: createHistoryId(),
+          kind: "transcript_cut_delete",
+          label: "Restore one cut word",
+          decision,
+          request: {
+            word_start_index: decision.word_start_index,
+            word_end_index: decision.word_end_index,
+            teacher_note: decision.teacher_note,
+          },
+        });
+      }
+      await refreshEditPlan();
+      await refreshEditDecisionSync();
+    } catch (err) {
+      console.error("handleRestoreTranscriptCutWord: API call failed", err);
+      alert(`Failed to restore cut word: ${err}`);
+    }
   }, [pushHistory, refreshEditDecisionSync, refreshEditPlan, transcriptCuts, videoId]);
 
   const handleUpdateTranscriptCutTrim = useCallback(async (
@@ -380,20 +535,25 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
     update: Required<Pick<TranscriptCutTrimUpdateRequest, "start_time" | "end_time" | "pre_roll_seconds" | "post_roll_seconds">>,
   ) => {
     const before = transcriptCuts.find(candidate => candidate.id === decisionId) ?? null;
-    const updated = await api.updateTranscriptCutTrim(videoId, decisionId, update);
-    setTranscriptCuts(prev => prev.map(decision => decision.id === decisionId ? updated : decision));
-    if (before && !sameTranscriptCutTiming(before, updated)) {
-      pushHistory({
-        id: createHistoryId(),
-        kind: "transcript_cut_trim_update",
-        label: "Adjust transcript cut trim",
-        before,
-        after: updated,
-      });
+    try {
+      const updated = await api.updateTranscriptCutTrim(videoId, decisionId, update);
+      setTranscriptCuts(prev => prev.map(decision => decision.id === decisionId ? updated : decision));
+      if (before && !sameTranscriptCutTiming(before, updated)) {
+        pushHistory({
+          id: createHistoryId(),
+          kind: "transcript_cut_trim_update",
+          label: "Adjust transcript cut trim",
+          before,
+          after: updated,
+        });
+      }
+      setActiveWorkflowStep("clean");
+      await refreshEditPlan();
+      await refreshEditDecisionSync();
+    } catch (err) {
+      console.error("handleUpdateTranscriptCutTrim: API call failed", err);
+      alert(`Failed to update cut trim: ${err}`);
     }
-    setActiveWorkflowStep("clean");
-    await refreshEditPlan();
-    await refreshEditDecisionSync();
   }, [pushHistory, refreshEditDecisionSync, refreshEditPlan, transcriptCuts, videoId]);
 
   const handleAcceptAll = useCallback(async () => {
@@ -406,32 +566,74 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
       is_teacher_modified: true,
     }));
 
-    const count = await acceptAllHighConfidence(0.85);
-    if (count && count > 0) {
-      pushHistory({
-        id: createHistoryId(),
-        kind: "bulk_segment_override",
-        label: `Auto-accept ${count} segments`,
-        before,
-        after,
-      });
-      setCompletedWorkflowSteps(prev => new Set(prev).add("clean"));
-      await refreshEditWarnings();
-      await refreshEditDecisionSync();
-      alert(`Auto-accepted ${count} high-confidence segments`);
-    } else {
-      alert("No segments to auto-accept (all already reviewed or below threshold)");
+    try {
+      const count = await acceptAllHighConfidence(0.85);
+      if (count && count > 0) {
+        pushHistory({
+          id: createHistoryId(),
+          kind: "bulk_segment_override",
+          label: `Auto-accept ${count} segments`,
+          before,
+          after,
+        });
+        setCompletedWorkflowSteps(prev => new Set(prev).add("clean"));
+        await refreshEditWarnings();
+        await refreshEditDecisionSync();
+        alert(`Auto-accepted ${count} high-confidence segments`);
+      } else {
+        alert("No segments to auto-accept (all already reviewed or below threshold)");
+      }
+    } catch (err) {
+      console.error("handleAcceptAll: API call failed", err);
+      // Error already surfaced by acceptAllHighConfidence; avoid duplicate alert
     }
   }, [acceptAllHighConfidence, pushHistory, refreshEditDecisionSync, refreshEditWarnings, segments]);
 
-  const handleCleanApplied = useCallback(async () => {
+  const handleCleanApplied = useCallback(async (result?: CleanApplyResult) => {
+    if (result) {
+      const updatedSegmentIds = new Set(result.updated_segments.map(update => update.segment_id));
+      const before = segments
+        .filter(segment => updatedSegmentIds.has(segment.id))
+        .map(snapshotSegmentOverride);
+      const updatesById = new Map(result.updated_segments.map(update => [update.segment_id, update]));
+      const after = before.map(snapshot => {
+        const update = updatesById.get(snapshot.segment_id);
+        return {
+          ...snapshot,
+          teacher_action: normalizeSegmentAction(update?.teacher_action) ?? snapshot.teacher_action,
+          teacher_note: update?.teacher_note ?? null,
+          is_teacher_modified: true,
+        };
+      });
+
+      if (before.length > 0) {
+        pushHistory({
+          id: createHistoryId(),
+          kind: "bulk_segment_override",
+          label: `Auto-clean ${before.length} segments`,
+          before,
+          after,
+        });
+      }
+
+      for (const decision of result.created_transcript_cuts) {
+        pushHistory({
+          id: createHistoryId(),
+          kind: "transcript_cut_create",
+          label: `Auto-clean transcript cut: ${truncateHistoryLabel(decision.text || "cut")}`,
+          decision,
+          request: transcriptCutRequestFromDecision(decision),
+        });
+      }
+    }
+
     await Promise.all([
       reloadSegments(),
       loadTranscriptEditingData(),
       refreshEditPlan(),
       refreshEditWarnings(),
     ]);
-  }, [loadTranscriptEditingData, refreshEditPlan, refreshEditWarnings, reloadSegments]);
+  }, [loadTranscriptEditingData, pushHistory, refreshEditPlan, refreshEditWarnings, reloadSegments, segments]);
 
   const handleApprove = useCallback(async (exportPresetId?: string) => {
     setApproving(true);
@@ -442,6 +644,23 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
       setPlan(updatedPlan);
       setCompletedWorkflowSteps(prev => new Set(prev).add("export"));
     } catch (e) {
+      try {
+        const [status, updatedPlan] = await Promise.all([
+          api.getProcessingStatus(videoId),
+          api.getEditPlan(videoId),
+        ]);
+        const renderAccepted = Boolean(
+          status.render_job && ["queued", "running", "cancel_requested"].includes(status.render_job.status),
+        );
+        if (renderAccepted) {
+          setPlan(updatedPlan);
+          setRenderPollVersion(value => value + 1);
+          setCompletedWorkflowSteps(prev => new Set(prev).add("export"));
+          return;
+        }
+      } catch {
+        // Preserve the original approval error when status reconciliation also fails.
+      }
       alert(`Approval failed: ${e}`);
     } finally {
       setApproving(false);
@@ -700,19 +919,19 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   const activeWorkflowLabel = GUIDED_WORKFLOW_STEPS.find((step) => step.id === activeWorkflowStep)?.label ?? "Editor";
   const reviewedSegments = segments.filter((segment) => segment.is_teacher_modified).length;
   const warningCount = (warnings?.warnings.length ?? 0) + (warnings?.consequence_alerts.length ?? 0);
-  const sourceName = videoFilename || "Lecture source";
+  const sourceName = videoFilename || videoDetail?.original_filename || "Lecture source";
 
   return (
-    <div className="flex h-full flex-col bg-surface text-gray-100">
+    <div className="flex h-full min-h-0 flex-col bg-surface text-gray-100">
       <GuidedWorkflowStepper
         activeStep={activeWorkflowStep}
         completedStepIds={completedWorkflowSteps}
         onStepChange={setActiveWorkflowStep}
       />
 
-      <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_178px] overflow-hidden">
-        <div className="grid min-h-0 grid-cols-[minmax(280px,320px)_minmax(420px,1fr)_minmax(340px,390px)] overflow-hidden border-b border-surface-border">
-          <aside className="flex min-w-0 flex-col border-r border-surface-border bg-surface-raised">
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(300px,400px)_minmax(480px,1fr)_minmax(360px,460px)] grid-rows-[minmax(0,1fr)_118px] overflow-hidden xl:grid-cols-[minmax(340px,430px)_minmax(620px,1fr)_minmax(390px,480px)] xl:grid-rows-[minmax(0,1fr)_128px]">
+        <div className="contents">
+          <aside className="row-span-2 flex min-h-0 min-w-0 flex-col border-r border-surface-border bg-surface-raised">
             <div className="border-b border-surface-border px-3 py-3">
               <div className="mb-3 flex items-center justify-between gap-2">
                 <div className="min-w-0">
@@ -752,7 +971,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
                 <TranscriptPanel
                   segments={segments}
                   timeline={transcriptTimeline}
-                  cutDecisions={transcriptCuts}
+                  cutDecisions={visibleTranscriptCuts}
                   cutsLoading={transcriptCutsLoading}
                   currentTime={currentTime}
                   onSeek={seekTo}
@@ -760,6 +979,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
                   onSelectSegment={handleSelectSegment}
                   onCreateTranscriptCut={handleCreateTranscriptCut}
                   onDeleteTranscriptCut={handleDeleteTranscriptCut}
+                  onRestoreTranscriptCutWord={handleRestoreTranscriptCutWord}
                   onUpdateTranscriptCutTrim={handleUpdateTranscriptCutTrim}
                 />
               ) : (
@@ -774,8 +994,8 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
             </div>
           </aside>
 
-          <main className="flex min-w-0 flex-col bg-[#15151f]">
-            <div className="flex items-center justify-between gap-4 border-b border-surface-border bg-surface-raised px-4 py-3">
+          <main className="col-start-2 row-start-1 flex min-h-0 min-w-0 flex-col border-b border-surface-border bg-[#15151f]">
+            <div className="flex items-center justify-between gap-4 border-b border-surface-border bg-surface-raised px-4 py-2">
               <div className="min-w-0">
                 <p className="text-[11px] font-semibold uppercase tracking-wider text-accent">{activeWorkflowLabel} workspace</p>
                 <h2 className="truncate text-sm font-semibold text-white">{sourceName}</h2>
@@ -825,14 +1045,15 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
               </div>
             </div>
 
-            <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black px-6 py-5">
+            <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black px-4 py-3 xl:px-5 xl:py-4">
               <div className="absolute left-4 top-4 z-10 rounded bg-black/65 px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-gray-300">
                 Program preview
               </div>
               <LayoutProgramPreview
                 ref={videoRef}
                 src={videoSrc}
-                settings={layoutPreviewSettings}
+                settings={previewLayoutSettings}
+                generatedSlidePreview={slidePreview}
                 annotations={annotations}
                 educationalOverlays={educationalOverlays}
                 endCards={endCards}
@@ -858,7 +1079,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
             </div>
           </main>
 
-          <aside className="min-w-0 overflow-hidden border-l border-surface-border bg-surface-raised">
+          <aside className="col-start-3 row-span-2 row-start-1 min-h-0 min-w-0 overflow-hidden border-l border-surface-border bg-surface-raised">
             <GuidedWorkflowPanel
               activeStep={activeWorkflowStep}
               completedStepIds={completedWorkflowSteps}
@@ -878,7 +1099,11 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
               renderStatus={processingStatus}
               renderCancelling={renderCancelling}
               onLayoutSettingsChange={setLayoutPreviewSettings}
-              onPolishPlanUpdated={setPlan}
+              onLayoutDraftDirtyChange={(dirty, blockId) => {
+                setLayoutDraftDirty(dirty);
+                setLayoutDraftBlockId(dirty ? blockId ?? activeEditorialBlock?.id ?? null : null);
+              }}
+              onPolishPlanUpdated={handlePlanUpdated}
               onSelectedAnnotationChange={setSelectedAnnotationId}
               onSelectedEducationalOverlayChange={setSelectedEducationalOverlayId}
               onAcceptAll={handleAcceptAll}
@@ -895,19 +1120,25 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
           </aside>
         </div>
 
-        <footer className="flex min-h-0 flex-col bg-surface-raised">
+        <footer className="col-start-2 row-start-2 flex min-h-0 flex-col bg-surface-raised">
           <div className="flex items-center justify-between gap-4 border-b border-surface-border px-4 py-2">
             <div className="min-w-0">
-              <h2 className="text-sm font-semibold text-white">Review Timeline</h2>
-              <p className="text-xs text-gray-500">Segment decisions, current playhead, and teacher review status</p>
+              <h2 className="text-sm font-semibold text-white">
+                {activeWorkflowStep === "layout" ? "Content Layout Timeline" : "Review Timeline"}
+              </h2>
+              <p className="text-xs text-gray-500">
+                {activeWorkflowStep === "layout"
+                  ? "The same AI teaching blocks shown in Content Layout Decisions"
+                  : "Segment decisions, current playhead, and teacher review status"}
+              </p>
             </div>
             <div className="flex items-center gap-3 text-xs">
-              <button
+              {activeWorkflowStep !== "layout" && <button
                 onClick={handleAcceptAll}
                 className="flex items-center gap-1.5 rounded-md bg-green-600/20 px-3 py-1.5 font-semibold text-green-300 transition-all hover:bg-green-600/30"
               >
                 <CheckSquare className="h-3.5 w-3.5" /> Accept All High-Confidence
-              </button>
+              </button>}
               {warningCount > 0 && (
                 <span className="flex items-center gap-1 rounded bg-yellow-500/10 px-2 py-1 text-yellow-300">
                   <AlertTriangle className="h-3.5 w-3.5" />
@@ -917,25 +1148,39 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 px-4 py-3">
-            <Timeline
-              segments={segments}
-              duration={effectiveDuration}
-              currentTime={currentTime}
-              onSeek={seekTo}
-              onSelectSegment={handleSelectSegment}
-              selectedSegmentId={selectedSegment?.id ?? null}
-              cutIntervals={syncedCutIntervals}
-              annotations={annotations}
-              educationalOverlays={educationalOverlays}
-              endCards={endCards}
-              onSelectAnnotation={handleSelectAnnotation}
-              onSelectEducationalOverlay={handleSelectEducationalOverlay}
-            />
+          <div className="min-h-0 flex-1 overflow-hidden px-4 py-2">
+            {activeWorkflowStep === "layout" && editorialBlocks.length > 0 ? (
+              <EditorialTimeline
+                blocks={editorialBlocks}
+                duration={contentDuration}
+                currentTime={currentTime}
+                selectedBlockId={activeEditorialBlock?.id ?? null}
+                onSeek={seekTo}
+                onSelectBlock={(block: EditorialBlock) => {
+                  if (layoutDraftDirty) return;
+                  seekTo(Math.min(block.end_time - 0.001, block.start_time + 0.001));
+                }}
+              />
+            ) : (
+              <Timeline
+                segments={segments}
+                duration={effectiveDuration}
+                currentTime={currentTime}
+                onSeek={seekTo}
+                onSelectSegment={handleSelectSegment}
+                selectedSegmentId={selectedSegment?.id ?? null}
+                cutIntervals={syncedCutIntervals}
+                annotations={annotations}
+                educationalOverlays={educationalOverlays}
+                endCards={endCards}
+                onSelectAnnotation={handleSelectAnnotation}
+                onSelectEducationalOverlay={handleSelectEducationalOverlay}
+              />
+            )}
             <div className="mt-2 flex items-center justify-between text-xs text-gray-500">
-              <span>{segments.length} transcript segments</span>
+              <span>{activeWorkflowStep === "layout" ? `${editorialBlocks.length} teaching blocks` : `${segments.length} transcript segments`}</span>
               <span>
-                {syncedExportPlan?.transcript_cut_count ?? 0} transcript cuts synced to preview, timeline, and export
+                {syncedExportPlan?.transcript_cut_count ?? visibleTranscriptCuts.length} transcript cuts synced to preview, timeline, and export
                 {enabledEndCardDuration > 0 ? `, plus ${formatDuration(enabledEndCardDuration)} end card` : ""}
               </span>
             </div>
@@ -997,6 +1242,7 @@ type LayoutProgramPreviewProps = Pick<
 > & {
   src: string;
   settings: LayoutPreviewSettings;
+  generatedSlidePreview: GeneratedSlidePreview;
   annotations: AnnotationAction[];
   educationalOverlays: EducationalOverlayAction[];
   endCards: EndCardAction[];
@@ -1005,7 +1251,7 @@ type LayoutProgramPreviewProps = Pick<
 };
 
 const LayoutProgramPreview = forwardRef<HTMLVideoElement, LayoutProgramPreviewProps>(function LayoutProgramPreview(
-  { src, settings, annotations, educationalOverlays, endCards, currentTime, contentDuration, ...videoProps },
+  { src, settings, generatedSlidePreview, annotations, educationalOverlays, endCards, currentTime, contentDuration, ...videoProps },
   ref,
 ) {
   const activeAnnotations = annotations.filter(
@@ -1019,10 +1265,15 @@ const LayoutProgramPreview = forwardRef<HTMLVideoElement, LayoutProgramPreviewPr
     <video
       ref={ref}
       src={src}
-      className={settings.layout === "full_camera_source" ? "h-full w-full bg-black object-cover" : "h-full w-full bg-black object-contain"}
+      className="h-full w-full bg-black object-contain"
       {...videoProps}
     />
   );
+  const slideSurface = (
+    <GeneratedSlidePreviewSurface preview={generatedSlidePreview} />
+  );
+  const shouldUseSlideScreen = generatedSlidePreview.enabled && settings.layout !== "full_camera_source";
+  const playbackOnlyVideo = shouldUseSlideScreen && settings.layout === "full_screen_source";
 
   return (
     <div
@@ -1039,18 +1290,35 @@ const LayoutProgramPreview = forwardRef<HTMLVideoElement, LayoutProgramPreviewPr
             className="relative min-w-0 bg-black transition-all ease-out"
             style={{ transitionDuration: `${settings.transitionDurationSeconds}s` }}
           >
-            {video}
+            {shouldUseSlideScreen ? slideSurface : video}
           </div>
-          <CameraPreviewSurface settings={settings} variant="panel" />
+          <div
+            className="relative min-w-0 bg-black transition-all ease-out"
+            style={{ transitionDuration: `${settings.transitionDurationSeconds}s` }}
+          >
+            {shouldUseSlideScreen ? video : <CameraPreviewSurface settings={settings} variant="panel" />}
+          </div>
         </div>
       ) : (
         <div
           className="absolute inset-0 bg-black transition-all ease-out"
           style={{ transitionDuration: `${settings.transitionDurationSeconds}s` }}
         >
-          {video}
+          {playbackOnlyVideo ? <div className="pointer-events-none absolute h-px w-px opacity-0">{video}</div> : shouldUseSlideScreen ? slideSurface : video}
           {settings.layout === "picture_in_picture" && (
-            <CameraPreviewSurface settings={settings} variant="inset" />
+            shouldUseSlideScreen ? (
+              <div
+                className={`absolute z-10 overflow-hidden border border-white/25 bg-black shadow-xl ${cameraShapeClass(settings.cameraShape)}`}
+                style={{
+                  ...cameraInsetStyle(settings),
+                  transition: `all ${settings.transitionDurationSeconds}s ease-out`,
+                }}
+              >
+                {video}
+              </div>
+            ) : (
+              <CameraPreviewSurface settings={settings} variant="inset" />
+            )
           )}
         </div>
       )}
@@ -1064,6 +1332,44 @@ const LayoutProgramPreview = forwardRef<HTMLVideoElement, LayoutProgramPreviewPr
     </div>
   );
 });
+
+function GeneratedSlidePreviewSurface({ preview }: { preview: GeneratedSlidePreview }) {
+  if (preview.imageUrl) {
+    return (
+      <div className="flex h-full w-full items-center justify-center bg-black">
+        <img src={preview.imageUrl} alt={preview.title || "Lecture slide"} className="h-full w-full object-contain" />
+      </div>
+    );
+  }
+  const bullets = preview.bullets.length > 0 ? preview.bullets : [preview.subtitle].filter(Boolean);
+  return (
+    <div className="flex h-full w-full flex-col justify-between bg-[#f8fafc] px-[6%] py-[5%] text-[#111827]">
+      <div className="min-w-0">
+        <div className="mb-3 inline-flex max-w-full items-center gap-2 rounded bg-[#2563eb]/10 px-3 py-1 text-[clamp(10px,1.2vw,14px)] font-semibold uppercase text-[#1d4ed8]">
+          <span className="h-2 w-2 rounded-full bg-[#2563eb]" />
+          <span className="truncate">{preview.sourceName}</span>
+        </div>
+        <h3 className="max-w-[88%] text-[clamp(22px,3vw,46px)] font-bold leading-tight text-[#111827]">
+          {preview.title}
+        </h3>
+        {preview.subtitle && (
+          <p className="mt-3 max-w-[78%] text-[clamp(13px,1.45vw,22px)] leading-snug text-[#475569]">
+            {preview.subtitle}
+          </p>
+        )}
+      </div>
+      <div className="grid max-w-[82%] gap-3">
+        {bullets.slice(0, 4).map((bullet, index) => (
+          <div key={`${bullet}-${index}`} className="flex items-start gap-3 rounded border border-[#cbd5e1] bg-white/80 px-4 py-3 shadow-sm">
+            <span className="mt-1 h-2.5 w-2.5 flex-none rounded-full bg-[#f59e0b]" />
+            <span className="text-[clamp(12px,1.35vw,20px)] font-medium leading-snug text-[#1f2937]">{compactPreviewText(bullet, 150)}</span>
+          </div>
+        ))}
+      </div>
+      <div className="h-1.5 w-32 rounded-full bg-[#7c3aed]" />
+    </div>
+  );
+}
 
 function AnnotationPreviewOverlay({ annotation }: { annotation: AnnotationAction }) {
   const style = annotation.style;
@@ -1257,6 +1563,160 @@ function transcriptCutTrimRequest(decision: TranscriptCutDecision): TranscriptCu
     post_roll_seconds: decision.post_roll_seconds ?? 0,
     teacher_note: decision.teacher_note,
   };
+}
+
+function transcriptCutRequestFromDecision(decision: TranscriptCutDecision): TranscriptCutDecisionRequest {
+  return {
+    word_start_index: decision.word_start_index,
+    word_end_index: decision.word_end_index,
+    teacher_note: decision.teacher_note,
+  };
+}
+
+function normalizeSegmentAction(value: SegmentAction | string | undefined): SegmentAction | null {
+  if (value === "keep" || value === "cut" || value === "shorten" || value === "highlight") {
+    return value;
+  }
+  return null;
+}
+
+function truncateHistoryLabel(value: string): string {
+  const text = value.trim().replace(/\s+/g, " ");
+  return text.length > 34 ? `${text.slice(0, 31)}...` : text;
+}
+
+function dedupeTranscriptCuts(decisions: TranscriptCutDecision[]): TranscriptCutDecision[] {
+  const seen = new Set<string>();
+  return decisions.filter(decision => {
+    const key = decision.id || `${decision.word_start_index}-${decision.word_end_index}-${decision.start_time}-${decision.end_time}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+
+function activeRenderSceneAtTime(renderPlan: SemanticRenderPlan | null, currentTime: number): SemanticRenderPlan["scenes"][number] | null {
+  if (!renderPlan?.scenes?.length) return null;
+  return renderPlan.scenes.find(
+    (scene) => currentTime >= scene.source_start_time && currentTime < scene.source_end_time,
+  ) ?? renderPlan.scenes.find(
+    (scene) => currentTime >= scene.start_time && currentTime < scene.end_time,
+  ) ?? renderPlan.scenes[0] ?? null;
+}
+
+function buildSemanticSlidePreview(
+  renderPlan: SemanticRenderPlan | null,
+  scene: SemanticRenderPlan["scenes"][number] | null,
+): GeneratedSlidePreview | null {
+  if (!renderPlan || !scene) return null;
+  const slide = renderPlan.slides.find((item) => item.id === scene.slide_id);
+  if (!slide) return null;
+  return {
+    enabled: true,
+    title: compactPreviewText(slide.title || scene.slide_title || "Teaching slide", 72),
+    subtitle: compactPreviewText(slide.body || scene.caption_text || scene.topic_label, 220),
+    sourceName: compactPreviewText(slide.source_filename || "AI teaching slide", 70),
+    imageUrl: slide.image_url,
+    bullets: (slide.bullets?.length ? slide.bullets : [scene.caption_text])
+      .filter((item): item is string => Boolean(item && item.trim()))
+      .map((item) => compactPreviewText(item, 150))
+      .slice(0, 4),
+  };
+}
+
+function layoutSettingsFromRenderScene(
+  current: LayoutPreviewSettings,
+  scene: SemanticRenderPlan["scenes"][number] | null,
+): LayoutPreviewSettings {
+  if (!scene) return current;
+  const layout = normalizePreviewLayout(scene.layout, current.layout);
+  return {
+    ...current,
+    layout,
+    cameraShape: scene.camera.shape === "circle" ? "circle" : current.cameraShape,
+    cameraCorner: normalizeCameraCorner(scene.camera.corner, current.cameraCorner),
+    transitionPreset: scene.transition.type || current.transitionPreset,
+    transitionDurationSeconds: normalizePreviewTransitionDuration(scene.transition.duration_seconds, current.transitionDurationSeconds),
+  };
+}
+
+function normalizePreviewLayout(value: unknown, fallback: LayoutPreviewSettings["layout"]): LayoutPreviewSettings["layout"] {
+  if (value === "picture_in_picture" || value === "side_by_side" || value === "full_screen_source" || value === "full_camera_source") {
+    return value;
+  }
+  return fallback;
+}
+
+function normalizeCameraCorner(value: unknown, fallback: LayoutPreviewSettings["cameraCorner"]): LayoutPreviewSettings["cameraCorner"] {
+  if (value === "top_left" || value === "top_right" || value === "bottom_left" || value === "bottom_right") {
+    return value;
+  }
+  return fallback;
+}
+
+function normalizePreviewTransitionDuration(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(2, Math.max(0, Math.round(value * 100) / 100));
+}
+
+function buildGeneratedSlidePreview({
+  cue,
+  currentTime,
+  segments,
+  chapters,
+  projectAssets,
+}: {
+  cue: EditPlan["layout_cues"][number] | null;
+  currentTime: number;
+  segments: Segment[];
+  chapters: Chapter[];
+  projectAssets: ProjectAsset[];
+}): GeneratedSlidePreview {
+  const structureAssets = projectAssets.filter((asset) =>
+    asset.role === "slides" ||
+    asset.role === "notes" ||
+    asset.role === "supporting_material" ||
+    asset.kind === "slide_deck" ||
+    asset.kind === "pdf_notes" ||
+    asset.kind === "course_material",
+  );
+  const hasGeneratedSlideCue = cue?.sources?.screen?.track === "generated_slides" || cue?.sources?.screen?.asset_id === "generated_slides";
+  const enabled = hasGeneratedSlideCue || structureAssets.length > 0;
+  const activeSegment = segments.find((segment) => currentTime >= segment.start_time && currentTime <= segment.end_time) ?? segments[0] ?? null;
+  const activeChapter = chapters.find((chapter, index) => {
+    const next = chapters[index + 1];
+    const end = next?.timestamp ?? Number.POSITIVE_INFINITY;
+    return currentTime >= chapter.timestamp && currentTime < end;
+  }) ?? chapters[0] ?? null;
+  const sourceName = structureAssets[0]?.original_filename || structureAssets[0]?.filename || "Generated lecture slides";
+  const title = compactPreviewText(
+    activeSegment?.topic_label || activeChapter?.label || structureAssets[0]?.original_filename || "Teaching slide",
+    72,
+  );
+  const subtitle = compactPreviewText(activeSegment?.summary || activeSegment?.text || activeChapter?.label || "", 180);
+  const bullets = [
+    activeSegment?.summary,
+    activeSegment?.text,
+    activeChapter?.label,
+    ...structureAssets.slice(0, 2).map((asset) => asset.original_filename || asset.filename),
+  ]
+    .filter((item): item is string => Boolean(item && item.trim()))
+    .map((item) => compactPreviewText(item, 150));
+
+  return {
+    enabled,
+    title,
+    subtitle,
+    sourceName: compactPreviewText(sourceName, 70),
+    bullets: Array.from(new Set(bullets)).slice(0, 4),
+  };
+}
+
+function compactPreviewText(value: string | null | undefined, limit = 120): string {
+  const text = (value || "").trim().replace(/\s+/g, " ");
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 3)).trim()}...`;
 }
 
 function annotationsFromPlan(plan: EditPlan | null): AnnotationAction[] {

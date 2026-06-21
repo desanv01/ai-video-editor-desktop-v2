@@ -6,10 +6,12 @@ import os
 import uuid
 import shutil
 import logging
+import json
 from datetime import datetime, timezone
 from typing import List
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -29,8 +31,11 @@ from models.schemas import (
     CleanAnalyzeResponse, CleanApplyRequest, CleanApplyResponse,
     TopicSegmentationResponse,
     TranscriptCutDecisionRequest, TranscriptCutDecisionResponse, TranscriptCutTrimUpdateRequest,
+    TranscriptCutWordRestoreRequest,
     TranscriptTimelineResponse,
     EditPlanResponse, EditPlanApproveRequest, CaptionPolicyUpdateRequest,
+    LayoutCuesUpdateRequest, LayoutCuesAutoGenerateRequest, SlideCuesUpdateRequest,
+    EditorialBlocksUpdateRequest,
     AnnotationActionsUpdateRequest, EducationalOverlayActionsUpdateRequest,
     EndCardActionsUpdateRequest,
     ExportPresetCatalogResponse,
@@ -54,6 +59,7 @@ from services.transcript_edit_decisions import (
     create_transcript_cut_decision,
     list_transcript_cut_decisions,
     remove_transcript_cut_decision,
+    restore_word_from_transcript_cut,
     update_transcript_cut_trim,
 )
 from services.clean_tools import analyze_clean_suggestions, apply_clean_suggestions
@@ -64,7 +70,14 @@ from services.edit_plan_payload import (
     update_educational_overlays,
     update_end_cards,
     update_export_metadata,
+    update_layout_cues,
+    update_slide_cues,
+    update_editorial_blocks,
     update_sections_payload,
+)
+from services.semantic_render_plan import (
+    build_semantic_render_plan,
+    with_semantic_render_plan,
 )
 from services.export_artifacts import (
     artifact_records,
@@ -86,21 +99,26 @@ from services.export_presets import get_export_preset, list_grouped_export_prese
 from services.topic_segmentation import analyze_topic_sections
 from services.progress import get_progress as get_pipeline_progress
 from services.render_jobs import (
+    create_render_job_with_status,
+    get_active_render_job,
     get_latest_render_job,
-    create_render_job,
     request_render_cancel,
 )
+from services.upload_limits import max_upload_size_bytes, upload_limit_label
 from services.app_settings import (
     get_or_create_ai_settings,
+    load_and_apply_persisted_ai_settings,
     settings_response,
     update_ai_settings,
 )
+from providers.whisper_cpp import resolve_whisper_cpp_runtime_status
 from rag.vector_store import rag_service
 from config import settings
 
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+UPLOAD_COPY_BUFFER_BYTES = 8 * 1024 * 1024
 
 
 # ═══════════════════════════════════════════
@@ -126,18 +144,64 @@ async def upload_video(
 
     os.makedirs(settings.UPLOAD_PATH, exist_ok=True)
     with open(file_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+        shutil.copyfileobj(file.file, f, length=UPLOAD_COPY_BUFFER_BYTES)
 
     file_size = os.path.getsize(file_path)
-    if file_size > settings.MAX_VIDEO_SIZE_MB * 1024 * 1024:
+    if file_size > max_upload_size_bytes(settings):
         os.remove(file_path)
-        raise HTTPException(413, f"File too large. Maximum: {settings.MAX_VIDEO_SIZE_MB}MB")
+        raise HTTPException(413, f"File too large. Maximum: {upload_limit_label(settings)}")
 
     # Get video metadata
     try:
         metadata = await ffmpeg_service.get_video_metadata(file_path)
     except Exception:
         metadata = {}
+
+    # ── P1: Preprocess iPhone 4K .MOV / HEVC for compatibility ──
+    # Detect files that need conversion: .MOV extension or HEVC/H.265 codec.
+    # Convert to 1080p H.264 MP4 to avoid slowdown in the render pipeline.
+    ext_lower = ext.lower()
+    video_codec = str(metadata.get("video_codec", "")).lower() if metadata else ""
+    needs_preprocessing = (
+        ext_lower == ".mov"
+        or video_codec in {"hevc", "h265", "hvc1"}
+        or metadata.get("width", 0) > 1920
+        or metadata.get("height", 0) > 1080
+    )
+    was_preprocessed = False
+    if needs_preprocessing:
+        logger.info(
+            "Preprocessing upload %s (ext=%s, codec=%s, %dx%d) for compatibility",
+            file.filename, ext_lower, video_codec,
+            metadata.get("width", 0), metadata.get("height", 0),
+        )
+        preprocessed_filename = f"{video_id}_preprocessed.mp4"
+        preprocessed_path = os.path.join(settings.UPLOAD_PATH, preprocessed_filename)
+        try:
+            await ffmpeg_service.preprocess_for_compatibility(
+                input_path=file_path,
+                output_path=preprocessed_path,
+            )
+            # Swap to the preprocessed file
+            old_path = file_path
+            file_path = preprocessed_path
+            filename = preprocessed_filename
+            ext = ".mp4"
+            file_size = os.path.getsize(file_path)
+            # Re-read metadata from the converted file
+            try:
+                metadata = await ffmpeg_service.get_video_metadata(file_path)
+            except Exception:
+                pass
+            was_preprocessed = True
+            # Remove the original large file to free space
+            try:
+                os.remove(old_path)
+            except OSError:
+                logger.warning("Could not remove original file after preprocessing: %s", old_path)
+        except Exception as exc:
+            logger.error("Preprocessing failed for %s, falling back to original: %s", file.filename, exc)
+            # Continue with the original file — preprocessing is a best-effort optimisation
 
     # Create database record
     project = Project(
@@ -162,7 +226,7 @@ async def upload_video(
         original_filename=file.filename,
         file_path=file_path,
         file_size_bytes=file_size,
-        mime_type=file.content_type,
+        mime_type="video/mp4" if was_preprocessed else file.content_type,
         duration_seconds=metadata.get("duration"),
         metadata_json={
             "legacy_video_id": str(video_id),
@@ -170,6 +234,7 @@ async def upload_video(
             "sync_role": ProjectAssetSyncRole.PRIMARY_TIMELINE.value,
             "resolution": f"{metadata.get('width', 0)}x{metadata.get('height', 0)}" if metadata else None,
             "fps": metadata.get("fps"),
+            **({"preprocessed": True, "preprocessed_from_original_filename": file.filename} if was_preprocessed else {}),
         },
     )
     db.add(asset)
@@ -236,6 +301,11 @@ async def start_video_processing(
             "message": "This video has already been processed.",
         }
 
+    await load_and_apply_persisted_ai_settings(db)
+    preflight_error = _local_transcription_preflight_error()
+    if preflight_error:
+        raise HTTPException(409, preflight_error)
+
     video.status = VideoStatus.PROCESSING
     video.error_message = None
     await db.commit()
@@ -297,13 +367,28 @@ async def get_processing_status(video_id: str, db: AsyncSession = Depends(get_db
     progress = get_pipeline_progress(str(video_id))
     render_job = get_latest_render_job(str(video_id))
     render_active = bool(render_job and render_job.get("status") in {"queued", "running", "cancel_requested"})
+    if video.status == VideoStatus.RENDERING and not render_active:
+        terminal_status = str((render_job or {}).get("status") or "")
+        if terminal_status == "completed":
+            video.status = VideoStatus.COMPLETED
+            video.error_message = None
+        else:
+            video.status = VideoStatus.FAILED
+            video.error_message = str(
+                (render_job or {}).get("error")
+                or "Render interrupted because the backend stopped before completion. Start Export again."
+            )
+        await db.commit()
+        await db.refresh(video)
     current_step = progress.get("current_step", video.status.value)
     current_step_label = progress.get("current_step_label", video.status.value)
     progress_percent = progress.get("progress_percent", 0)
+    total_elapsed_seconds = progress.get("total_elapsed_seconds", 0)
     if render_active or video.status == VideoStatus.RENDERING:
         current_step = "rendering"
         current_step_label = (render_job or {}).get("phase_label") or "Rendering final video..."
         progress_percent = (render_job or {}).get("progress_percent", progress_percent)
+        total_elapsed_seconds = (render_job or {}).get("elapsed_seconds", total_elapsed_seconds)
 
     return {
         "video_id": str(video.id),
@@ -314,8 +399,9 @@ async def get_processing_status(video_id: str, db: AsyncSession = Depends(get_db
         "current_step_label": current_step_label,
         "progress_percent": progress_percent,
         "steps_completed": progress.get("steps_completed", []),
+        "steps_failed": progress.get("steps_failed", {}),
         "steps_timing": progress.get("steps_timing", {}),
-        "total_elapsed_seconds": progress.get("total_elapsed_seconds", 0),
+        "total_elapsed_seconds": total_elapsed_seconds,
         "render_job": render_job,
     }
 
@@ -483,6 +569,56 @@ async def update_transcript_cut_trim_settings(
     return decision
 
 
+@router.post(
+    "/videos/{video_id}/transcript/cuts/{decision_id}/restore-word",
+    response_model=List[TranscriptCutDecisionResponse],
+    tags=["Transcript"],
+)
+async def restore_transcript_cut_word(
+    video_id: str,
+    decision_id: str,
+    request: TranscriptCutWordRestoreRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Restore a single word from a cut decision and split the remaining cut range."""
+    result = await db.execute(
+        select(Video)
+        .options(selectinload(Video.transcript), selectinload(Video.segments), selectinload(Video.edit_plan))
+        .where(Video.id == video_id)
+    )
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(404, "Video not found")
+    if not video.transcript:
+        raise HTTPException(404, "Transcript not found")
+    if not video.edit_plan:
+        raise HTTPException(404, "Edit plan not found")
+
+    timeline = build_transcript_timeline(
+        video_id=video.id,
+        transcript=video.transcript,
+        review_segments=video.segments,
+        duration_seconds=video.duration_seconds,
+    )
+
+    try:
+        decisions = restore_word_from_transcript_cut(
+            plan=video.edit_plan,
+            timeline_words=timeline["words"],
+            decision_id=decision_id,
+            word_index=request.word_index,
+            teacher_note=request.teacher_note,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        if "not found" in message:
+            raise HTTPException(404, message) from exc
+        raise HTTPException(400, message) from exc
+
+    await db.commit()
+    return decisions
+
+
 @router.get(
     "/videos/{video_id}/edit-decision-sync",
     response_model=EditDecisionSyncResponse,
@@ -604,6 +740,7 @@ async def apply_clean_tools(
             timeline_words=timeline_words,
             profile_id=request.profile,
             suggestion_ids=set(request.suggestion_ids) if request.suggestion_ids else None,
+            suggestion_types=set(request.suggestion_types) if request.suggestion_types else None,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -682,6 +819,55 @@ async def get_edit_plan(video_id: str, db: AsyncSession = Depends(get_db)):
     return plan
 
 
+@router.get("/videos/{video_id}/render-plan", tags=["Edit Plan"])
+async def get_semantic_render_plan(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Return the shared preview/export render plan for a reviewed lecture."""
+    video, plan, segments, transcript, assets = await _load_render_plan_context(video_id, db)
+    render_plan = build_semantic_render_plan(
+        video=video,
+        plan=plan,
+        segments=segments,
+        transcript=transcript,
+        assets=assets,
+    )
+    plan.plan_json = with_semantic_render_plan(plan.plan_json, render_plan)
+    await db.commit()
+    return render_plan
+
+
+@router.post("/videos/{video_id}/render-plan/regenerate", tags=["Edit Plan"])
+async def regenerate_semantic_render_plan(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Regenerate and persist the semantic render plan after teacher changes."""
+    video, plan, segments, transcript, assets = await _load_render_plan_context(video_id, db)
+    render_plan = build_semantic_render_plan(
+        video=video,
+        plan=plan,
+        segments=segments,
+        transcript=transcript,
+        assets=assets,
+    )
+    plan.plan_json = with_semantic_render_plan(plan.plan_json, render_plan)
+    await db.commit()
+    return render_plan
+
+
+@router.get("/videos/{video_id}/render-plan/slides/{slide_id}", tags=["Edit Plan"])
+async def get_semantic_render_slide(video_id: str, slide_id: str, db: AsyncSession = Depends(get_db)):
+    """Serve the exact extracted PDF/PPTX page used by preview and export."""
+    _video, plan, _segments, _transcript, _assets = await _load_render_plan_context(video_id, db)
+    payload = normalize_plan_payload(plan.plan_json)
+    render_plan = payload.get("render_plan") if isinstance(payload.get("render_plan"), dict) else {}
+    slide = next(
+        (item for item in render_plan.get("slides", []) if isinstance(item, dict) and str(item.get("id")) == slide_id),
+        None,
+    )
+    path = os.path.realpath(str((slide or {}).get("image_path") or ""))
+    storage_root = os.path.realpath(settings.VIDEO_STORAGE_PATH)
+    if not path or not path.startswith(storage_root + os.sep) or not os.path.isfile(path):
+        raise HTTPException(404, "Rendered slide page not found")
+    return FileResponse(path, media_type="image/png", filename=os.path.basename(path))
+
+
 @router.put("/videos/{video_id}/plan/captions", response_model=EditPlanResponse, tags=["Edit Plan"])
 async def update_plan_captions(
     video_id: str,
@@ -700,6 +886,171 @@ async def update_plan_captions(
         plan.plan_json,
         request.model_dump(exclude_none=True),
     )
+    await db.commit()
+    await db.refresh(plan)
+    return plan
+
+
+@router.put("/videos/{video_id}/plan/layout-cues", response_model=EditPlanResponse, tags=["Edit Plan"])
+async def update_plan_layout_cues(
+    video_id: str,
+    request: LayoutCuesUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Persist studio layout cues for preview, timeline composition, and export."""
+    result = await db.execute(
+        select(EditPlan).where(EditPlan.video_id == video_id)
+    )
+    plan = result.scalar_one_or_none()
+    if not plan:
+        raise HTTPException(404, "Edit plan not found")
+
+    plan.plan_json = update_layout_cues(
+        plan.plan_json,
+        request.layout_cues,
+        source=request.source or "teacher_layout_override",
+    )
+    await db.flush()
+    video, plan, segments, transcript, assets = await _load_render_plan_context(video_id, db)
+    render_plan = build_semantic_render_plan(
+        video=video,
+        plan=plan,
+        segments=segments,
+        transcript=transcript,
+        assets=assets,
+    )
+    plan.plan_json = with_semantic_render_plan(plan.plan_json, render_plan)
+    await db.commit()
+    await db.refresh(plan)
+    return plan
+
+
+@router.put("/videos/{video_id}/plan/slide-cues", response_model=EditPlanResponse, tags=["Edit Plan"])
+async def update_plan_slide_cues(
+    video_id: str,
+    request: SlideCuesUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Persist teacher-corrected slide timing without changing layout or export settings."""
+    result = await db.execute(select(EditPlan).where(EditPlan.video_id == video_id))
+    plan = result.scalar_one_or_none()
+    if not plan:
+        raise HTTPException(404, "Edit plan not found")
+
+    plan.plan_json = update_slide_cues(
+        plan.plan_json,
+        request.slide_cues,
+        source=request.source or "teacher_slide_override",
+    )
+    await db.flush()
+    video, plan, segments, transcript, assets = await _load_render_plan_context(video_id, db)
+    render_plan = build_semantic_render_plan(
+        video=video,
+        plan=plan,
+        segments=segments,
+        transcript=transcript,
+        assets=assets,
+    )
+    plan.plan_json = with_semantic_render_plan(plan.plan_json, render_plan)
+    await db.commit()
+    await db.refresh(plan)
+    return plan
+
+
+@router.put("/videos/{video_id}/plan/editorial-blocks", response_model=EditPlanResponse, tags=["Edit Plan"])
+async def update_plan_editorial_blocks(
+    video_id: str,
+    request: EditorialBlocksUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Persist combined slide and layout decisions, then refresh preview/export parity."""
+    result = await db.execute(select(EditPlan).where(EditPlan.video_id == video_id))
+    plan = result.scalar_one_or_none()
+    if not plan:
+        raise HTTPException(404, "Edit plan not found")
+
+    plan.plan_json = update_editorial_blocks(
+        plan.plan_json,
+        request.editorial_blocks,
+        source=request.source or "teacher_editorial_override",
+    )
+    await db.flush()
+    video, plan, segments, transcript, assets = await _load_render_plan_context(video_id, db)
+    render_plan = build_semantic_render_plan(
+        video=video,
+        plan=plan,
+        segments=segments,
+        transcript=transcript,
+        assets=assets,
+    )
+    plan.plan_json = with_semantic_render_plan(plan.plan_json, render_plan)
+    await db.commit()
+    await db.refresh(plan)
+    return plan
+
+
+@router.post("/videos/{video_id}/plan/layout-cues/auto", response_model=EditPlanResponse, tags=["Edit Plan"])
+async def auto_generate_plan_layout_cues(
+    video_id: str,
+    request: LayoutCuesAutoGenerateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Regenerate the combined semantic slide/layout plan and refresh preview/export."""
+    plan_result = await db.execute(
+        select(EditPlan).where(EditPlan.video_id == video_id)
+    )
+    plan = plan_result.scalar_one_or_none()
+    if not plan:
+        raise HTTPException(404, "Edit plan not found")
+
+    video_result = await db.execute(select(Video).where(Video.id == video_id))
+    video = video_result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(404, "Video not found")
+
+    from agents.visual_structure import run_visual_structure_agent
+
+    visual_result = await run_visual_structure_agent(video_id, db)
+    blocks = list(visual_result.get("editorial_blocks") or [])
+    if not blocks:
+        raise HTTPException(422, "The AI could not produce a semantic editorial plan for this video")
+    plan.plan_json = update_editorial_blocks(
+        plan.plan_json,
+        blocks,
+        source="agent4_editorial_plan",
+    )
+    payload = normalize_plan_payload(plan.plan_json)
+    metadata = dict(payload.get("metadata") or {})
+    metadata["editorial_planning"] = {
+        "status": visual_result.get("planning_status") or "verified",
+        "warnings": list(visual_result.get("planning_warnings") or []),
+        "degraded_reason": visual_result.get("degraded_reason"),
+    }
+    payload["metadata"] = metadata
+    payload["visual_analysis"] = {
+        **dict(payload.get("visual_analysis") or {}),
+        "analysis_source": visual_result.get("analysis_source"),
+        "vision_provider": visual_result.get("vision_provider"),
+        "slide_scope": visual_result.get("slide_scope"),
+        "slide_timeline": list(visual_result.get("slide_timeline") or []),
+        "editorial_blocks": blocks,
+        "slide_assets": list(visual_result.get("slide_assets") or []),
+        "planning_status": visual_result.get("planning_status") or "verified",
+        "planning_warnings": list(visual_result.get("planning_warnings") or []),
+        "degraded_reason": visual_result.get("degraded_reason"),
+        "document_preflight": visual_result.get("document_preflight"),
+    }
+    plan.plan_json = payload
+    await db.flush()
+    video, plan, segments, transcript, assets = await _load_render_plan_context(video_id, db)
+    render_plan = build_semantic_render_plan(
+        video=video,
+        plan=plan,
+        segments=segments,
+        transcript=transcript,
+        assets=assets,
+    )
+    plan.plan_json = with_semantic_render_plan(plan.plan_json, render_plan)
     await db.commit()
     await db.refresh(plan)
     return plan
@@ -800,9 +1151,29 @@ async def approve_edit_plan(
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
+    active_render_job = get_active_render_job(video_id)
+    if active_render_job:
+        return {
+            "status": "already_rendering",
+            "message": "Rendering is already in progress for this video.",
+            "video_id": video_id,
+            "export_preset_id": active_render_job.get("preset_id") or selected_preset["id"],
+            "render_job": active_render_job,
+        }
+
+    video, plan, segments, transcript, assets = await _load_render_plan_context(video_id, db, existing_plan=plan)
+    render_plan = build_semantic_render_plan(
+        video=video,
+        plan=plan,
+        segments=segments,
+        transcript=transcript,
+        assets=assets,
+    )
+
     plan.is_approved = True
     plan.approved_at = datetime.now(timezone.utc).replace(tzinfo=None)
     plan.teacher_notes = request.teacher_notes
+    plan.plan_json = with_semantic_render_plan(plan.plan_json, render_plan)
     plan.plan_json = update_export_metadata(
         plan.plan_json,
         target_presets=[selected_preset["id"]],
@@ -812,15 +1183,19 @@ async def approve_edit_plan(
     if video:
         video.status = VideoStatus.RENDERING
         video.error_message = None
-    render_job = create_render_job(video_id, selected_preset["id"])
+    render_job, render_job_created = create_render_job_with_status(video_id, selected_preset["id"])
     await db.commit()
 
-    # Start rendering in background
-    background_tasks.add_task(_render_video_bg, video_id, render_job["job_id"])
+    if render_job_created:
+        background_tasks.add_task(_render_video_bg, video_id, render_job["job_id"])
 
     return {
-        "status": "approved",
-        "message": "Edit plan approved. Rendering started.",
+        "status": "approved" if render_job_created else "already_rendering",
+        "message": (
+            "Edit plan approved. Rendering started."
+            if render_job_created
+            else "Rendering is already in progress for this video."
+        ),
         "video_id": video_id,
         "export_preset_id": selected_preset["id"],
         "render_job": render_job,
@@ -844,6 +1219,43 @@ async def cancel_render(video_id: str, db: AsyncSession = Depends(get_db)):
         "video_id": video_id,
         "render_job": render_job,
     }
+
+
+async def _load_render_plan_context(
+    video_id: str,
+    db: AsyncSession,
+    *,
+    existing_plan: EditPlan | None = None,
+) -> tuple[Video, EditPlan, list[Segment], Transcript | None, list[ProjectAsset]]:
+    video = await db.get(Video, video_id)
+    if not video:
+        raise HTTPException(404, "Video not found")
+
+    plan = existing_plan
+    if plan is None:
+        result = await db.execute(select(EditPlan).where(EditPlan.video_id == video_id))
+        plan = result.scalar_one_or_none()
+    if not plan:
+        raise HTTPException(404, "Edit plan not found")
+
+    segment_result = await db.execute(
+        select(Segment).where(Segment.video_id == video_id).order_by(Segment.start_time)
+    )
+    segments = list(segment_result.scalars().all())
+    if not segments:
+        raise HTTPException(404, "No transcript segments found for render plan")
+
+    transcript_result = await db.execute(select(Transcript).where(Transcript.video_id == video_id))
+    transcript = transcript_result.scalar_one_or_none()
+
+    assets: list[ProjectAsset] = []
+    if video.project_id:
+        asset_result = await db.execute(
+            select(ProjectAsset).where(ProjectAsset.project_id == video.project_id)
+        )
+        assets = list(asset_result.scalars().all())
+
+    return video, plan, segments, transcript, assets
 
 
 @router.post("/videos/{video_id}/plan/revalidate", tags=["Edit Plan"])
@@ -908,6 +1320,7 @@ async def get_chapters(video_id: str, db: AsyncSession = Depends(get_db)):
         structure_references=build_structure_references_from_assets(
             video.project.assets if video.project else []
         ),
+        project_type=video.project.project_type if video.project else None,
     )
     if video.edit_plan:
         video.edit_plan.plan_json = update_sections_payload(video.edit_plan.plan_json, analysis)
@@ -918,6 +1331,166 @@ async def get_chapters(video_id: str, db: AsyncSession = Depends(get_db)):
         "chapters_count": len(analysis["chapters"]),
         **analysis,
     }
+
+
+@router.post("/videos/{video_id}/section-clips/export", tags=["Export"])
+async def export_section_clips(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Export one MP4 clip per generated lecture section or subtopic."""
+    video = await _load_video_for_chapter_analysis(video_id, db)
+    analysis = await _chapter_analysis_for_video(video)
+    chapters = analysis.get("chapters") or []
+    if not chapters:
+        raise HTTPException(400, "No chapter markers are available for section clip export")
+
+    source_path = video.file_path if video.file_path and os.path.exists(video.file_path) else video.processed_video_path
+    source_kind = "source_video" if source_path == video.file_path else "rendered_fallback"
+    if not source_path or not os.path.exists(source_path):
+        raise HTTPException(404, "Source video for section clip export was not found")
+
+    try:
+        metadata = await ffmpeg_service.get_video_metadata(source_path)
+        base_duration = float(metadata.get("duration") or video.duration_seconds or 0.0)
+    except Exception:
+        base_duration = float(video.duration_seconds or 0.0)
+
+    clip_dir = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_section_clips")
+    os.makedirs(clip_dir, exist_ok=True)
+    clips = _section_clip_specs(chapters, base_duration)
+    if not clips:
+        raise HTTPException(400, "Chapter markers did not produce valid section clip ranges")
+    exported_clips = []
+
+    for index, clip in enumerate(clips, start=1):
+        output_path = os.path.join(
+            clip_dir,
+            f"{index:02d}_{_safe_filename(clip['label'])}.mp4",
+        )
+        await ffmpeg_service.trim_video(
+            source_path,
+            output_path,
+            clip["start_time"],
+            clip["end_time"],
+        )
+        exported_clips.append({
+            **clip,
+            "clip_index": index,
+            "filename": os.path.basename(output_path),
+            "path": output_path,
+            "download_url": f"/api/v1/videos/{video_id}/section-clips/{index}/download",
+        })
+
+    manifest = {
+        "schema_version": "section-clips.v1",
+        "video_id": video_id,
+        "source_path": source_path,
+        "source_kind": source_kind,
+        "project_type": video.project.project_type if video.project else "lecture",
+        "clip_count": len(exported_clips),
+        "clips": exported_clips,
+        "chapter_summary": analysis.get("summary") or {},
+    }
+    manifest_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_section_clips_manifest.json")
+    with open(manifest_path, "w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, indent=2)
+
+    return manifest
+
+
+@router.get("/videos/{video_id}/section-clips/manifest", tags=["Export"])
+async def download_section_clip_manifest(video_id: str):
+    """Download the section/subtopic clip export manifest."""
+    path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_section_clips_manifest.json")
+    if not os.path.exists(path):
+        raise HTTPException(404, "Section clip manifest is not available yet")
+    from fastapi.responses import FileResponse
+
+    return FileResponse(path=path, media_type="application/json", filename=f"{video_id}_section_clips_manifest.json")
+
+
+@router.get("/videos/{video_id}/section-clips/{clip_index}/download", tags=["Export"])
+async def download_section_clip(video_id: str, clip_index: int):
+    """Download one exported section/subtopic clip."""
+    manifest_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_section_clips_manifest.json")
+    if not os.path.exists(manifest_path):
+        raise HTTPException(404, "Section clip manifest is not available yet")
+    with open(manifest_path, "r", encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    clip = next((item for item in manifest.get("clips", []) if item.get("clip_index") == clip_index), None)
+    if not clip or not os.path.exists(clip.get("path", "")):
+        raise HTTPException(404, "Section clip file is not available")
+    from fastapi.responses import FileResponse
+
+    return FileResponse(path=clip["path"], media_type="video/mp4", filename=clip["filename"])
+
+
+async def _load_video_for_chapter_analysis(video_id: str, db: AsyncSession) -> Video:
+    result = await db.execute(
+        select(Video)
+        .options(
+            selectinload(Video.transcript),
+            selectinload(Video.segments),
+            selectinload(Video.edit_plan),
+            selectinload(Video.project).selectinload(Project.assets),
+        )
+        .where(Video.id == video_id)
+    )
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(404, "Video not found")
+    return video
+
+
+async def _chapter_analysis_for_video(video: Video) -> dict:
+    timeline_words = []
+    if video.transcript:
+        timeline = build_transcript_timeline(
+            video_id=video.id,
+            transcript=video.transcript,
+            review_segments=video.segments,
+            duration_seconds=video.duration_seconds,
+        )
+        timeline_words = timeline["words"]
+
+    analysis = analyze_topic_sections(
+        segments=video.segments,
+        timeline_words=timeline_words,
+        duration_seconds=video.duration_seconds,
+        structure_references=build_structure_references_from_assets(
+            video.project.assets if video.project else []
+        ),
+        project_type=video.project.project_type if video.project else None,
+    )
+    return analysis
+
+
+def _section_clip_specs(chapters: list[dict], duration_seconds: float) -> list[dict]:
+    specs: list[dict] = []
+    for index, chapter in enumerate(chapters):
+        start_time = float(chapter.get("timestamp") or 0.0)
+        next_start = (
+            float(chapters[index + 1].get("timestamp") or duration_seconds)
+            if index + 1 < len(chapters)
+            else duration_seconds
+        )
+        end_time = max(start_time, next_start)
+        if end_time <= start_time:
+            continue
+        specs.append({
+            "label": chapter.get("label") or f"Section {index + 1}",
+            "start_time": round(start_time, 3),
+            "end_time": round(end_time, 3),
+            "duration_seconds": round(end_time - start_time, 3),
+            "chapter_timestamp": chapter.get("formatted"),
+            "segment_index": chapter.get("segment_index"),
+        })
+    return specs
+
+
+def _safe_filename(value: object) -> str:
+    text = str(value or "section").strip().lower()
+    text = "".join(character if character.isalnum() else "_" for character in text)
+    text = "_".join(part for part in text.split("_") if part)
+    return (text or "section")[:80]
 
 
 # ═══════════════════════════════════════════
@@ -973,7 +1546,7 @@ async def upload_course_material(
     os.makedirs(settings.UPLOAD_PATH, exist_ok=True)
 
     with open(save_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+        shutil.copyfileobj(file.file, f, length=UPLOAD_COPY_BUFFER_BYTES)
 
     # Extract text
     try:
@@ -1123,8 +1696,12 @@ async def download_rendered_video(video_id: str, db: AsyncSession = Depends(get_
     video = await db.get(Video, video_id)
     if not video:
         raise HTTPException(404, "Video not found")
+    if video.status == VideoStatus.RENDERING:
+        raise HTTPException(409, "Rendered output is still being finalized")
     if not video.processed_video_path or not os.path.exists(video.processed_video_path):
         raise HTTPException(404, "Rendered output not available yet")
+    if os.path.getsize(video.processed_video_path) <= 0:
+        raise HTTPException(409, "Rendered output is not ready for download")
 
     extension = os.path.splitext(video.processed_video_path)[1].lower() or ".mp4"
     media_type = {
@@ -1139,6 +1716,11 @@ async def download_rendered_video(video_id: str, db: AsyncSession = Depends(get_
         path=video.processed_video_path,
         media_type=media_type,
         filename=f"{base_name}{suffix}{extension}",
+        headers={
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "private, no-transform",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 
@@ -1620,6 +2202,38 @@ async def _ensure_evaluation_exports(video_id: str, db: AsyncSession) -> dict[st
     return paths
 
 
+def _local_transcription_preflight_error() -> str | None:
+    """Return a user-facing error when local transcription cannot run."""
+    mode = (settings.AI_TRANSCRIPTION_MODE or settings.AI_PROCESSING_MODE or "api").strip().lower()
+    fallback_enabled = (
+        settings.AI_TRANSCRIPTION_FALLBACK_ENABLED
+        if settings.AI_TRANSCRIPTION_FALLBACK_ENABLED is not None
+        else settings.AI_PROVIDER_FALLBACK_ENABLED
+    )
+    fallback_order = [
+        item.strip().lower()
+        for item in (settings.AI_TRANSCRIPTION_HYBRID_FALLBACK_ORDER or "").split(",")
+        if item.strip()
+    ]
+    local_is_required = (mode == "local" and not bool(fallback_enabled)) or (
+        mode == "hybrid"
+        and not bool(fallback_enabled)
+        and (not fallback_order or fallback_order[0] == "local")
+    )
+    if not local_is_required:
+        return None
+
+    runtime = resolve_whisper_cpp_runtime_status(settings)
+    if runtime.configured:
+        return None
+
+    return (
+        "Local transcription is selected but whisper.cpp is not ready. "
+        f"{runtime.message}. Set the Local runtime path to whisper-cli.exe, configure "
+        "WHISPER_CPP_BINARY_PATH, or switch transcription to API/Hybrid fallback."
+    )
+
+
 def _evaluation_artifact_paths(video: Video) -> dict[str, str | None]:
     video_id = str(video.id)
     output_kind = (
@@ -1713,6 +2327,8 @@ async def _process_video_bg(video_id: str):
 
             video.status = VideoStatus.PROCESSING
             await db.commit()
+
+            await load_and_apply_persisted_ai_settings(db)
 
             # Ensure Qdrant collection exists
             await rag_service.ensure_collection()

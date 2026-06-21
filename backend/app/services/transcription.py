@@ -66,6 +66,7 @@ PROMPT_LEAK_MARKERS = (
     "preserving the original language",
     "do not translate",
     "normalize the speech into a single language",
+    "this meeting is being transcribed",
 )
 
 WORD_CLEAN_RE = re.compile(r"[^a-z0-9]+")
@@ -225,6 +226,14 @@ class TranscriptionService:
                 provider_ids.extend(
                     self._api_transcription_provider_ids(mode_config.api_provider_id)
                 )
+
+        if (
+            mode_config.mode == ProcessingMode.LOCAL
+            and mode_config.fallback_enabled
+        ):
+            provider_ids.extend(
+                self._api_transcription_provider_ids(mode_config.api_provider_id)
+            )
 
         return self._dedupe_provider_ids(provider_ids)
 

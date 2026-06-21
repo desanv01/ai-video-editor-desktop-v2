@@ -1,154 +1,165 @@
-# 🎬 AI-Agent Assisted Video Editing Framework
+# AI-Agent Assisted Video Editing Framework
 
-> Automated Generation of Educational Content using Multi-Agent AI
+Final Year Project implementation for producing reviewable educational-video edits from lecture recordings and uploaded course material.
 
-A multi-agent system that automatically processes raw lecture recordings into polished educational videos. Uses 5 specialized AI agents orchestrated by LangGraph with a teacher-in-the-loop review interface.
+The application is a teacher-supervised system. AI-generated transcript evidence, curriculum-grounded content labels, fluency findings, slide/page decisions, and edit recommendations remain reviewable before the approved plan is rendered.
 
-## Architecture
+## Implemented workflow
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│                     LangGraph Orchestrator                    │
-│                                                              │
-│  ┌─────────┐   ┌──────────────┐   ┌────────────────────┐   │
-│  │ Agent 1  │   │   Agent 2     │   │    Agent 5         │   │
-│  │ Whisper  │──▶│ Content + RAG │──▶│  Edit Planner      │   │
-│  │ ASR      │   │ (DeepSeek)   │   │  (DeepSeek)        │   │
-│  └─────────┘   └──────────────┘   └─────────┬──────────┘   │
-│                 ┌──────────────┐              │              │
-│                 │   Agent 3     │──────────────┤              │
-│                 │ Fluency/Filler│              │              │
-│                 │ (DeepSeek)   │              ▼              │
-│                 └──────────────┘   ┌────────────────────┐   │
-│                 ┌──────────────┐   │ Teacher Review UI   │   │
-│                 │   Agent 4     │──▶│ (React + Tailwind) │   │
-│                 │ PySceneDetect│   └─────────┬──────────┘   │
-│                 └──────────────┘              │              │
-│                                               ▼              │
-│                                    ┌────────────────────┐   │
-│                                    │  FFmpeg Renderer    │   │
-│                                    │  MP4 + SRT Output   │   │
-│                                    └────────────────────┘   │
-└──────────────────────────────────────────────────────────────┘
-```
-
-## Tech Stack
-
-| Component        | Technology                              |
-|------------------|-----------------------------------------|
-| Backend          | FastAPI (Python 3.12)                   |
-| Orchestration    | LangGraph                               |
-| ASR              | OpenAI Whisper API                      |
-| LLM              | DeepSeek V3 (reasoning + JSON output)   |
-| Embeddings       | OpenAI text-embedding-3-small           |
-| Vector DB        | Qdrant                                  |
-| Database         | PostgreSQL 16                           |
-| Task Queue       | Redis + Celery                          |
-| Video Processing | FFmpeg                                  |
-| Scene Detection  | PySceneDetect                           |
-| Frontend         | React + Tailwind CSS (planned)          |
-| Deployment       | Docker Compose                          |
-
-## Quick Start
-
-### Prerequisites
-- Docker & Docker Compose
-- OpenAI API key
-- DeepSeek API key
-
-### 1. Clone & Configure
-
-```bash
-git clone <your-repo-url>
-cd ai-video-editor
-cp .env.example .env
-# Edit .env with your API keys
+```text
+Project and asset upload
+        |
+        v
+Agent 1: transcription
+        |
+        v
+Transcript embedding and course-material retrieval
+        |
+        v
+Agent 2: curriculum-grounded content analysis
+        |
+        +-------------------------+
+        |                         |
+        v                         v
+Agent 3: fluency analysis   Agent 4: semantic visual planning
+        |                         |
+        +------------+------------+
+                     |
+                     v
+             Agent 5: edit planning
+                     |
+                     v
+          Teacher review and overrides
+                     |
+                     v
+       Semantic render plan and final export
 ```
 
-### 2. Start Services
+The processing pipeline pauses after edit planning. Rendering is started only after teacher approval.
 
-```bash
-docker-compose up -d
+## Main components
+
+| Layer | Implementation |
+|---|---|
+| Desktop interface | React 19, TypeScript, Tailwind CSS, Tauri 2 |
+| Backend API | FastAPI and Pydantic |
+| Persistence | PostgreSQL, SQLAlchemy and Alembic |
+| Retrieval | Qdrant with configurable embeddings |
+| Orchestration | Asynchronous five-agent pipeline with stage progress |
+| Speech recognition | Configurable hosted, local and hybrid routes |
+| Language models | Provider-routed structured generation |
+| Course materials | PDF, PPTX and DOCX extraction with page/slide metadata |
+| Rendering | FFmpeg native compositor and Revideo integration |
+| Evidence | JSON, CSV, Markdown, subtitle and chapter artefacts |
+
+## Repository structure
+
+```text
+backend/
+  app/
+    agents/                 Five processing agents and orchestrator
+    api/routes/             Project, video, review and settings endpoints
+    db/                     SQLAlchemy database configuration and models
+    models/                 Pydantic request and response schemas
+    providers/              Speech/LLM provider adapters and defaults
+    rag/                    Qdrant vector-store integration
+    services/               Rendering, planning, export and support services
+    alembic/versions/       Database migrations
+  tests/                    Canonical automated test suite
+  revideo/                  Backend Revideo project support
+desktop/
+  src/                      React teacher-facing desktop interface
+  src-tauri/                Tauri desktop shell and backend bootstrap
+  revideo/                  Revideo scene and render entry points
+docs/
+  reproducibility/          Source-package and thesis reproduction guidance
+scripts/                    Verification and source-package utilities
 ```
 
-### 3. Access
+## Development setup
 
-- **API Docs:** http://localhost:8000/docs
-- **Qdrant Dashboard:** http://localhost:6333/dashboard
+### Requirements
 
-### 4. Upload a Video
+- Docker Desktop with Docker Compose
+- FFmpeg and FFprobe
+- Node.js compatible with the lockfile
+- Rust toolchain for Tauri builds
+- Provider credentials for the selected hosted AI routes
 
-```bash
-curl -X POST http://localhost:8000/api/v1/videos/upload \
-  -F "file=@lecture.mp4"
+Copy the configuration template and provide local values:
+
+```powershell
+Copy-Item .env.example .env
 ```
 
-## API Endpoints
+Never commit `.env`; it is intentionally ignored.
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/videos/upload` | Upload video & start processing |
-| GET | `/api/v1/videos` | List all videos |
-| GET | `/api/v1/videos/{id}` | Get video details |
-| GET | `/api/v1/videos/{id}/status` | Get processing status |
-| GET | `/api/v1/videos/{id}/segments` | Get analyzed segments |
-| PUT | `/api/v1/videos/{id}/segments/{sid}` | Teacher overrides segment |
-| PUT | `/api/v1/videos/{id}/segments/bulk` | Bulk update segments |
-| GET | `/api/v1/videos/{id}/plan` | Get edit plan |
-| POST | `/api/v1/videos/{id}/plan/approve` | Approve & trigger render |
-| GET | `/api/v1/videos/{id}/report` | Quality metrics report |
-| POST | `/api/v1/materials/upload` | Upload course materials for RAG |
+### Backend services
 
-## Project Structure
-
-```
-ai-video-editor/
-├── docker-compose.yml
-├── .env.example
-├── .gitignore
-├── README.md
-└── backend/
-    ├── Dockerfile
-    ├── requirements.txt
-    └── app/
-        ├── main.py                    # FastAPI entry point
-        ├── config.py                  # Settings (env vars)
-        ├── api/routes/
-        │   └── videos.py             # All API endpoints
-        ├── agents/
-        │   ├── orchestrator.py        # LangGraph pipeline
-        │   ├── transcription.py       # Agent 1: Whisper ASR
-        │   ├── content_understanding.py # Agent 2: LLM + RAG
-        │   ├── fluency.py            # Agent 3: Filler detection
-        │   ├── visual_structure.py    # Agent 4: PySceneDetect
-        │   └── edit_planner.py        # Agent 5: Decision maker
-        ├── services/
-        │   ├── ffmpeg.py              # FFmpeg operations
-        │   ├── whisper.py             # Whisper API client
-        │   ├── llm.py                 # DeepSeek/OpenAI client
-        │   └── renderer.py           # Final video assembly
-        ├── rag/
-        │   └── vector_store.py        # Qdrant operations
-        ├── db/
-        │   ├── database.py            # SQLAlchemy setup
-        │   └── models.py             # ORM models
-        └── models/
-            └── schemas.py             # Pydantic schemas
+```powershell
+docker compose up -d --build
 ```
 
-## Pipeline Flow
+The API is available at `http://localhost:8000`, with interactive documentation at `/docs`.
 
-1. **Upload** → Video saved, metadata extracted via ffprobe
-2. **Transcribe** → Audio extracted (ffmpeg) → Whisper API → time-aligned transcript
-3. **Embed** → Transcript chunks embedded into Qdrant for RAG
-4. **Analyze** (parallel):
-   - Agent 2: Content importance scoring with RAG context
-   - Agent 3: Filler word + silence detection
-   - Agent 4: Scene/slide boundary detection
-5. **Plan** → Agent 5 fuses all signals → KEEP/CUT/SHORTEN/HIGHLIGHT per segment
-6. **Review** → Teacher reviews in UI, accepts/overrides suggestions
-7. **Render** → ffmpeg trims + concatenates + burns subtitles → final MP4
+### Desktop development
 
-## License
+```powershell
+Set-Location desktop
+npm install
+npm run dev
+```
 
-This project is developed as a Final Year Project (FYP).
+For the native desktop application:
+
+```powershell
+npx tauri dev
+```
+
+## Verification
+
+Run the canonical backend tests from the repository root:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"
+```
+
+Build the frontend:
+
+```powershell
+npm run build --prefix desktop
+```
+
+Validate Rust integration:
+
+```powershell
+cargo check --manifest-path desktop\src-tauri\Cargo.toml
+```
+
+## Reproducible source package
+
+The thesis source package is generated with:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\generate_thesis_source_package.py
+```
+
+The generator creates a sanitised archive, source manifest, summary and SHA-256 checksum under `output/thesis_source_package/`. Dependencies, credentials, media, caches, generated outputs and local analysis folders are excluded.
+
+See [docs/reproducibility/REPRODUCIBILITY_GUIDE.md](docs/reproducibility/REPRODUCIBILITY_GUIDE.md) for the final-freeze and appendix workflow.
+
+## Security and privacy
+
+Do not include the following in a source release or thesis submission:
+
+- `.env` or API keys
+- uploaded recordings or course material without permission
+- database dumps containing personal data
+- provider logs containing credentials
+- generated media unless explicitly required as evaluation evidence
+
+Use `.env.example` to document configuration fields safely.
+
+## Project status
+
+This repository is an academic prototype developed for a Final Year Project. Reported evaluation findings must be tied to a specific Git commit, source-package checksum, provider/model configuration, and evaluation date.

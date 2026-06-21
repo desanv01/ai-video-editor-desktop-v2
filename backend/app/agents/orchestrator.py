@@ -37,15 +37,56 @@ from services.progress import (
 from services.render_jobs import (
     RenderCancelled,
     cancel_render_job,
+    claim_render_job,
     complete_render_job,
     fail_render_job,
-    start_render_job,
 )
 from rag.vector_store import rag_service
-from db.models import Video, VideoStatus
+from db.models import ProjectAsset, Video, VideoStatus
 from db.database import async_session
 
 logger = logging.getLogger(__name__)
+
+
+def classify_video_type(project_assets: list) -> str:
+    """
+    Inspect project assets and classify the video type for pipeline routing.
+    
+    Returns one of:
+    - "camera_with_slides": Camera/face video + PDF slide deck → use slide alignment
+    - "screen_recording": Screen capture → use existing PySceneDetect
+    - "mixed_pip": Already composited PiP → use existing PySceneDetect
+    - "camera_only": Face video with no slides → skip visual analysis
+    """
+    # sync_role values to check for:
+    CAMERA_ROLES = {"camera_overlay", "camera"}
+    SCREEN_ROLES = {"screen_reference", "screen"}
+    SLIDE_ROLES = {"structure_reference"}
+    
+    has_camera = any(
+        getattr(a, 'sync_role', None) in CAMERA_ROLES
+        or getattr(a, 'role', None) in CAMERA_ROLES
+        for a in project_assets
+    )
+    has_slides = any(
+        getattr(a, 'sync_role', None) in SLIDE_ROLES
+        or getattr(a, 'role', None) == 'slides'
+        or getattr(a, 'kind', None) in ('slide_deck', 'pdf_notes')
+        for a in project_assets
+    )
+    has_screen = any(
+        getattr(a, 'sync_role', None) in SCREEN_ROLES
+        or getattr(a, 'role', None) in SCREEN_ROLES
+        for a in project_assets
+    )
+
+    if has_camera and has_slides:
+        return "camera_with_slides"
+    if has_screen:
+        return "screen_recording"
+    if has_camera and not has_slides:
+        return "camera_only"
+    return "mixed_pip"
 
 
 # ═══════════════════════════════════════════
@@ -71,6 +112,20 @@ async def run_processing_pipeline(video_id: str, db_session) -> dict:
     """
     init_progress(video_id)
 
+    # Detect video type for pipeline routing
+    try:
+        video = await db_session.get(Video, video_id)
+        if video and video.project_id:
+            from sqlalchemy import select
+            assets_result = await db_session.execute(
+                select(ProjectAsset).where(ProjectAsset.project_id == video.project_id)
+            )
+            project_assets = list(assets_result.scalars().all())
+            video_type = classify_video_type(project_assets)
+            logger.info(f"Pipeline: classified video {video_id} as '{video_type}'")
+    except Exception:
+        pass  # Non-fatal — just log
+
     try:
         # ── Phase 1: Transcription ──
         start_step(video_id, PipelineStep.TRANSCRIBING)
@@ -94,27 +149,37 @@ async def run_processing_pipeline(video_id: str, db_session) -> dict:
             PipelineStep.ANALYZING_CONTENT,
             run_content_understanding_agent,
         )
+        if result_content.get("status") == "failed":
+            return result_content
+
+        # Parallel agents use their own sessions, so commit the segments that
+        # Agent 2 just created before Agent 3 and Agent 4 try to read them.
+        await db_session.commit()
 
         # ── Phase 3.2 + 3.3: Fluency + Visual — parallel with SEPARATE sessions ──
         # Both UPDATE the Segments created by Agent 2
         # They write to different columns, so separate sessions avoid conflicts
-        start_step(video_id, PipelineStep.ANALYZING_FLUENCY)
-
         async def _run_fluency():
+            start_step(video_id, PipelineStep.ANALYZING_FLUENCY)
             async with async_session() as session:
-                return await _run_node(
+                result = await _run_node(
                     video_id, session,
                     PipelineStep.ANALYZING_FLUENCY,
                     run_fluency_agent,
                 )
+                await session.commit()
+                return result
 
         async def _run_visual():
+            start_step(video_id, PipelineStep.ANALYZING_VISUAL)
             async with async_session() as session:
-                return await _run_node(
+                result = await _run_node(
                     video_id, session,
                     PipelineStep.ANALYZING_VISUAL,
                     run_visual_structure_agent,
                 )
+                await session.commit()
+                return result
 
         result_fluency, result_visual = await asyncio.gather(
             _run_fluency(),
@@ -132,6 +197,90 @@ async def run_processing_pipeline(video_id: str, db_session) -> dict:
             PipelineStep.PLANNING_EDITS,
             run_edit_planner_agent,
         )
+
+        # Persist Agent 4's time-ranged slide choices in the edit-plan envelope.
+        if isinstance(result_visual, dict) and isinstance(result_visual.get("slide_timeline"), list):
+            from db.models import EditPlan
+            from sqlalchemy import select
+            from services.edit_plan_payload import normalize_plan_payload, update_editorial_blocks
+
+            visual_plan_result = await db_session.execute(
+                select(EditPlan).where(EditPlan.video_id == video_id)
+            )
+            visual_plan = visual_plan_result.scalar_one_or_none()
+            if visual_plan:
+                visual_payload = normalize_plan_payload(visual_plan.plan_json)
+                editorial_blocks = list(result_visual.get("editorial_blocks") or [])
+                if editorial_blocks:
+                    visual_payload = update_editorial_blocks(
+                        visual_payload,
+                        editorial_blocks,
+                        source="agent4_editorial_plan",
+                    )
+                else:
+                    visual_payload["slide_cues"] = list(result_visual.get("slide_timeline") or [])
+                metadata = dict(visual_payload.get("metadata") or {})
+                metadata["editorial_planning"] = {
+                    "status": result_visual.get("planning_status") or "verified",
+                    "warnings": list(result_visual.get("planning_warnings") or []),
+                    "degraded_reason": result_visual.get("degraded_reason"),
+                }
+                visual_payload["metadata"] = metadata
+                visual_payload["visual_analysis"] = {
+                    "analysis_source": result_visual.get("analysis_source"),
+                    "vision_provider": result_visual.get("vision_provider"),
+                    "slide_scope": result_visual.get("slide_scope"),
+                    "slide_timeline": list(result_visual.get("slide_timeline") or []),
+                    "editorial_blocks": editorial_blocks,
+                    "slide_assets": list(result_visual.get("slide_assets") or []),
+                    "planning_status": result_visual.get("planning_status") or "verified",
+                    "planning_warnings": list(result_visual.get("planning_warnings") or []),
+                    "degraded_reason": result_visual.get("degraded_reason"),
+                    "document_preflight": result_visual.get("document_preflight"),
+                }
+                visual_plan.plan_json = visual_payload
+                await db_session.flush()
+
+        # ── Phase 4.5: Auto-clean — apply moderate cleaning suggestions ──
+        try:
+            from services.clean_tools import apply_clean_suggestions
+            from db.models import EditPlan, Segment, Transcript
+            from sqlalchemy import select
+            
+            # Reload segments created/updated by Agents 2–4
+            seg_result = await db_session.execute(
+                select(Segment).where(Segment.video_id == video_id).order_by(Segment.segment_index)
+            )
+            segments = list(seg_result.scalars().all())
+            
+            # Load the plan and transcript for clean suggestions
+            plan_result = await db_session.execute(
+                select(EditPlan).where(EditPlan.video_id == video_id)
+            )
+            plan = plan_result.scalar_one_or_none()
+            
+            transcript_result = await db_session.execute(
+                select(Transcript).where(Transcript.video_id == video_id)
+            )
+            transcript = transcript_result.scalar_one_or_none()
+            
+            if plan and segments:
+                timeline_words = (transcript.words_json or []) if transcript else None
+                
+                # Run apply_clean_suggestions in a thread since it's synchronous
+                clean_result = await asyncio.to_thread(
+                    apply_clean_suggestions,
+                    plan=plan,
+                    segments=segments,
+                    timeline_words=timeline_words,
+                    profile_id="conservative",
+                    suggestion_ids=None,
+                    suggestion_types=None,
+                )
+                logger.info(f"Auto-clean applied: {clean_result.get('summary', {})}")
+                await db_session.flush()
+        except Exception as clean_err:
+            logger.warning(f"Auto-clean failed (non-fatal): {clean_err}")
 
         # ── Pipeline complete — awaiting teacher review ──
         start_step(video_id, PipelineStep.AWAITING_REVIEW)
@@ -175,8 +324,12 @@ async def run_render_pipeline(video_id: str, db_session, render_job_id: str | No
     Separate from the main pipeline because it's triggered
     by the teacher clicking "Approve" in the desktop app.
     """
+    claimed_job = claim_render_job(render_job_id, video_id)
+    if not claimed_job:
+        logger.warning("Skipping duplicate render worker for video %s", video_id)
+        return {"status": "already_running"}
+
     start_step(video_id, PipelineStep.RENDERING)
-    start_render_job(render_job_id, video_id)
 
     try:
         result = await render_final_video(
@@ -253,7 +406,7 @@ async def _run_node(
         fail_step(video_id, step_name, str(e))
 
         # Non-critical agents can fail without stopping the pipeline
-        critical_steps = {PipelineStep.TRANSCRIBING}
+        critical_steps = {PipelineStep.TRANSCRIBING, PipelineStep.ANALYZING_CONTENT}
         if step_name in critical_steps:
             # Transcription failure is fatal — can't proceed
             video = await db_session.get(Video, video_id)
