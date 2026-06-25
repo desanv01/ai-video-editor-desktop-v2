@@ -2,7 +2,22 @@
 
 Final Year Project implementation for producing reviewable educational-video edits from lecture recordings and uploaded course material.
 
-The application is a teacher-supervised system. AI-generated transcript evidence, curriculum-grounded content labels, fluency findings, slide/page decisions, and edit recommendations remain reviewable before the approved plan is rendered.
+The system is a teacher-supervised AI video editor. It transcribes lecture recordings, grounds editing decisions in uploaded course material, plans visual layouts against real slide/page assets, lets the teacher review and override the proposed edit plan, then renders the approved result with FFmpeg/Revideo-based export paths.
+
+## Current project state
+
+This repository contains the final thesis source snapshot of the project, including the full desktop/backend implementation, verification assets, synthetic evaluation fixtures, reproducibility notes, and the thesis evidence/context pack.
+
+| Item | Status |
+|---|---|
+| Main workflow | Implemented end to end from upload through reviewable edit planning and export |
+| Desktop application | React 19, TypeScript, Tailwind CSS, Tauri 2 |
+| Backend API | FastAPI, Pydantic, SQLAlchemy, Alembic |
+| AI routing | Hosted, local, and hybrid provider paths for speech/LLM workflows |
+| Course material support | PDF, PPTX, DOCX extraction plus renderable slide/page assets |
+| Rendering | Native FFmpeg compositor, semantic render plans, Revideo integration, export artifacts |
+| Evidence package | Static audit, test results, evaluation templates, source-package reproduction guide |
+| Verification date | 21 June 2026 |
 
 ## Implemented workflow
 
@@ -35,22 +50,17 @@ Agent 3: fluency analysis   Agent 4: semantic visual planning
        Semantic render plan and final export
 ```
 
-The processing pipeline pauses after edit planning. Rendering is started only after teacher approval.
+The processing pipeline pauses after edit planning. Rendering is started only after teacher approval, so AI-generated transcript evidence, curriculum labels, slide/page decisions, layout choices, and cut recommendations remain reviewable.
 
-## Main components
+## Main capabilities
 
-| Layer | Implementation |
-|---|---|
-| Desktop interface | React 19, TypeScript, Tailwind CSS, Tauri 2 |
-| Backend API | FastAPI and Pydantic |
-| Persistence | PostgreSQL, SQLAlchemy and Alembic |
-| Retrieval | Qdrant with configurable embeddings |
-| Orchestration | Asynchronous five-agent pipeline with stage progress |
-| Speech recognition | Configurable hosted, local and hybrid routes |
-| Language models | Provider-routed structured generation |
-| Course materials | PDF, PPTX and DOCX extraction with page/slide metadata |
-| Rendering | FFmpeg native compositor and Revideo integration |
-| Evidence | JSON, CSV, Markdown, subtitle and chapter artefacts |
+- Guided desktop workflow for project creation, media upload, processing, review, layout inspection, and export.
+- Configurable AI providers with hosted API, local transcription, and hybrid processing modes.
+- Transcript timeline, word-level decisions, sectioning, clean-step suggestions, and manual teacher overrides.
+- Course-material grounding through extracted text, RAG metadata, and exact PDF/PPTX page rendering.
+- Semantic visual planner that aligns lecture windows with slide/page candidates and layout cues.
+- Export presets, progress tracking, cancellation support, audio-only export, evaluation reports, and artifact bundles.
+- Privacy-safe synthetic media fixtures and evaluation templates for thesis/demo evidence.
 
 ## Repository structure
 
@@ -58,7 +68,7 @@ The processing pipeline pauses after edit planning. Rendering is started only af
 backend/
   app/
     agents/                 Five processing agents and orchestrator
-    api/routes/             Project, video, review and settings endpoints
+    api/routes/             Project, media, review, model and debug endpoints
     db/                     SQLAlchemy database configuration and models
     models/                 Pydantic request and response schemas
     providers/              Speech/LLM provider adapters and defaults
@@ -66,15 +76,35 @@ backend/
     services/               Rendering, planning, export and support services
     alembic/versions/       Database migrations
   tests/                    Canonical automated test suite
-  revideo/                  Backend Revideo project support
+  revideo/                  Backend Revideo render support
 desktop/
   src/                      React teacher-facing desktop interface
   src-tauri/                Tauri desktop shell and backend bootstrap
-  revideo/                  Revideo scene and render entry points
+  revideo/                  Desktop-side Revideo scene and render entry points
 docs/
+  fyp_context_pack/         Thesis/report evidence, inventories, results and audit notes
   reproducibility/          Source-package and thesis reproduction guidance
-scripts/                    Verification and source-package utilities
+fixtures/
+  synthetic_media/          Privacy-safe synthetic evaluation source fixtures
+scripts/                    Verification, setup and source-package utilities
 ```
+
+## Evidence and thesis documents
+
+Start here when reviewing or writing about the project:
+
+- [FYP context pack overview](docs/fyp_context_pack/00_README.md)
+- [Executive project snapshot](docs/fyp_context_pack/01_EXECUTIVE_PROJECT_SNAPSHOT.md)
+- [System architecture](docs/fyp_context_pack/03_SYSTEM_ARCHITECTURE.md)
+- [Rendering/export evidence](docs/fyp_context_pack/09_RENDERING_EXPORT_AND_MEDIA_PROCESSING.md)
+- [Testing, build and quality status](docs/fyp_context_pack/15_TESTING_BUILD_AND_QUALITY_STATUS.md)
+- [Evaluation readiness and measurement](docs/fyp_context_pack/16_EVALUATION_READINESS_AND_MEASUREMENT.md)
+- [Final audit verdict](docs/fyp_context_pack/25_FINAL_AUDIT_VERDICT.md)
+- [Render regression fix update](docs/fyp_context_pack/27_RENDER_FIX_UPDATE_2026-06-16.md)
+- [Reproducibility guide](docs/reproducibility/REPRODUCIBILITY_GUIDE.md)
+- [Verification results](docs/reproducibility/VERIFICATION_RESULTS.md)
+
+The context pack is code-grounded and intended to support Chapters 1-5, technical-paper compression, figure recreation, and evaluation planning. It should not be treated as human-study results unless the corresponding evaluation has actually been run.
 
 ## Development setup
 
@@ -82,9 +112,10 @@ scripts/                    Verification and source-package utilities
 
 - Docker Desktop with Docker Compose
 - FFmpeg and FFprobe
-- Node.js compatible with the lockfile
+- Node.js compatible with the lockfiles
 - Rust toolchain for Tauri builds
-- Provider credentials for the selected hosted AI routes
+- Python virtual environment with the backend requirements installed
+- Provider credentials for selected hosted AI routes
 
 Copy the configuration template and provide local values:
 
@@ -118,23 +149,16 @@ npx tauri dev
 
 ## Verification
 
-Run the canonical backend tests from the repository root:
+The final thesis source snapshot was checked with:
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"
-```
-
-Build the frontend:
-
-```powershell
 npm run build --prefix desktop
-```
-
-Validate Rust integration:
-
-```powershell
 cargo check --manifest-path desktop\src-tauri\Cargo.toml
+docker compose config --quiet
 ```
+
+The recorded result is in [docs/reproducibility/VERIFICATION_RESULTS.md](docs/reproducibility/VERIFICATION_RESULTS.md): 193 backend tests passed, the React/TypeScript production build completed, Tauri/Rust integration passed, and Docker Compose configuration validated.
 
 ## Reproducible source package
 

@@ -1,0 +1,12 @@
+layer,technology,version,purpose,evidence
+Desktop,Tauri,2.x,Native shell/bootstrap/import,desktop/src-tauri/Cargo.toml
+Frontend,React,19.x,Lecturer UI,desktop/package.json
+Frontend,Vite/TypeScript,6.4.2 / current package,Build/tooling,desktop/package.json
+Backend,FastAPI,requirements-pinned,HTTP API,backend/requirements.txt
+ORM,SQLAlchemy async,requirements-pinned,PostgreSQL persistence,backend/app/db
+Database,PostgreSQL,16 image,Relational state,docker-compose.yml
+Vector DB,Qdrant,container image,RAG vectors,docker-compose.yml
+Cache,Redis,7-alpine,"Configured, active use not found",docker-compose.yml
+Media,FFmpeg/FFprobe,runtime,Media processing/rendering,backend/app/services/ffmpeg.py
+Documents,PyMuPDF/python-pptx/python-docx,requirements-pinned,Extraction/page rendering,backend/requirements.txt
+MCP,Python MCP,requirements-pinned,Optional 25-tool integration,backend/app/mcp

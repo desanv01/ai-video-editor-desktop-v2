@@ -1,0 +1,6 @@
+case_id,video_title,source,domain,duration_minutes,has_slides,manual_order,manual_active_edit_minutes,manual_total_elapsed_minutes,manual_quality_rating,agent_order,agent_processing_minutes,teacher_active_review_minutes,render_minutes,agent_total_elapsed_minutes,recommendations,teacher_overrides,override_rate,keep_count,cut_count,shorten_count,highlight_count,slide_decisions,correct_slide_decisions,incorrect_slide_decisions,uncertain_slide_decisions,lecturer_only_decisions,content_preservation_rating,render_success,subtitle_success,chapter_success,export_consistent,provider_models,failure_notes
+1,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+2,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+3,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+4,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+5,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,

@@ -1,0 +1,25 @@
+extension,language,file_count,non_empty_lines
+.css,CSS,1,63
+.example,Other,1,0
+.html,HTML,1,12
+.ini,Other,1,0
+.js,JavaScript,2,32
+.json,JSON,16,6969
+.log,Other,4,0
+.mako,Other,1,0
+.md,Markdown,20,5537
+.mjs,JavaScript module,2,172
+.nsh,NSIS,1,4
+.py,Python,136,42043
+.rs,Rust,3,811
+.sh,Shell,2,99
+.srt,Other,1,0
+.svg,Other,5,0
+.toml,TOML,1,18
+.ts,TypeScript,9,2361
+.tsx,TypeScript React,16,10720
+.txt,Other,1,0
+.vtt,Other,1,0
+.wav,Other,1,0
+.yml,YAML,2,159
+[no extension],Other,3,0

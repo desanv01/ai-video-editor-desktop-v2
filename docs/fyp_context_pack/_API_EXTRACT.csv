@@ -1,0 +1,116 @@
+method,route,symbol,response_model,tags,path,line
+POST,/transcribe,debug_transcribe,,,backend/app/api/routes/debug.py,24
+POST,/extract-audio,debug_extract_audio,,,backend/app/api/routes/debug.py,149
+GET,/config,debug_config,,,backend/app/api/routes/debug.py,213
+GET,/rag/stats,debug_rag_stats,,,backend/app/api/routes/debug.py,253
+POST,/rag/search,debug_rag_search,,,backend/app/api/routes/debug.py,263
+POST,/rag/extract-text,debug_extract_text,,,backend/app/api/routes/debug.py,299
+POST,/rag/reset,debug_rag_reset,,,backend/app/api/routes/debug.py,368
+POST,/agents/run/{agent_name},debug_run_agent,,,backend/app/api/routes/debug.py,382
+GET,/agents/segments/{video_id},debug_view_segments,,,backend/app/api/routes/debug.py,447
+GET,/agents/scenes/{video_id},debug_view_scenes,,,backend/app/api/routes/debug.py,498
+POST,/render/force-approve/{video_id},debug_force_approve,,,backend/app/api/routes/debug.py,536
+POST,/render/run/{video_id},debug_render,,,backend/app/api/routes/debug.py,561
+GET,/render/exports/{video_id},debug_view_exports,,,backend/app/api/routes/debug.py,592
+GET,/settings/models/local-transcription,get_local_transcription_model_catalog,LocalTranscriptionModelCatalogResponse,,backend/app/api/routes/models.py,31
+POST,/settings/models/local-transcription/{model_id}/download,download_local_transcription_model,LocalTranscriptionModelDownloadResponse,,backend/app/api/routes/models.py,80
+GET,/settings/models/local-transcription/{model_id}/download,get_local_transcription_model_download,LocalTranscriptionModelDownloadResponse,,backend/app/api/routes/models.py,97
+DELETE,/settings/models/local-transcription/{model_id},remove_local_transcription_model,LocalTranscriptionModelRemoveResponse,,backend/app/api/routes/models.py,112
+POST,,create_project,ProjectDetailResponse,['Projects'],backend/app/api/routes/projects.py,635
+GET,,list_projects,None,['Projects'],backend/app/api/routes/projects.py,669
+GET,/{project_id},get_project,ProjectDetailResponse,['Projects'],backend/app/api/routes/projects.py,676
+PATCH,/{project_id},update_project,ProjectDetailResponse,['Projects'],backend/app/api/routes/projects.py,690
+DELETE,/{project_id},delete_project,,['Projects'],backend/app/api/routes/projects.py,719
+GET,/{project_id}/assets,list_project_assets,None,['Project Assets'],backend/app/api/routes/projects.py,756
+GET,/{project_id}/source-sync,get_project_source_sync_plan,ProjectSourceSyncPlanResponse,['Project Source Sync'],backend/app/api/routes/projects.py,829
+POST,/{project_id}/source-sync/apply-metadata,apply_project_source_sync_metadata,ProjectSourceSyncPlanResponse,['Project Source Sync'],backend/app/api/routes/projects.py,836
+POST,/{project_id}/assets/upload,upload_project_asset,ProjectAssetUploadResponse,['Project Assets'],backend/app/api/routes/projects.py,870
+POST,/{project_id}/videos/upload,upload_project_primary_video,VideoUploadResponse,['Project Videos'],backend/app/api/routes/projects.py,890
+POST,/{project_id}/imports/native/primary/init,init_native_project_primary_import,NativeImportInitResponse,['Project Videos'],backend/app/api/routes/projects.py,1007
+POST,/{project_id}/imports/browser/primary/init,init_browser_project_primary_import,NativeImportInitResponse,['Project Videos'],backend/app/api/routes/projects.py,1066
+POST,/{project_id}/imports/native/primary/{token}/finalize,finalize_native_project_primary_import,VideoUploadResponse,['Project Videos'],backend/app/api/routes/projects.py,1125
+POST,/{project_id}/imports/native/primary/{token}/cancel,cancel_native_project_primary_import,NativeImportCancelResponse,['Project Videos'],backend/app/api/routes/projects.py,1161
+GET,/{project_id}/imports/browser/primary/{token},get_browser_project_primary_import_status,PrimaryImportStatusResponse,['Project Videos'],backend/app/api/routes/projects.py,1191
+PUT,/{project_id}/imports/browser/primary/{token}/chunk,append_browser_project_primary_import_chunk,PrimaryImportChunkResponse,['Project Videos'],backend/app/api/routes/projects.py,1216
+POST,/{project_id}/imports/browser/primary/{token}/finalize,finalize_browser_project_primary_import,VideoUploadResponse,['Project Videos'],backend/app/api/routes/projects.py,1269
+POST,/{project_id}/imports/browser/primary/{token}/cancel,cancel_browser_project_primary_import,NativeImportCancelResponse,['Project Videos'],backend/app/api/routes/projects.py,1305
+GET,/{project_id}/imports/native/orphans,list_native_project_import_orphans,NativeImportOrphanReport,['Project Videos'],backend/app/api/routes/projects.py,1335
+POST,/{project_id}/assets/video,upload_project_video_asset,ProjectAssetUploadResponse,['Project Assets'],backend/app/api/routes/projects.py,1360
+POST,/{project_id}/assets/screen,upload_project_screen_asset,ProjectAssetUploadResponse,['Project Assets'],backend/app/api/routes/projects.py,1372
+POST,/{project_id}/assets/camera,upload_project_camera_asset,ProjectAssetUploadResponse,['Project Assets'],backend/app/api/routes/projects.py,1383
+POST,/{project_id}/assets/webcam,upload_project_webcam_asset,ProjectAssetUploadResponse,['Project Assets'],backend/app/api/routes/projects.py,1394
+POST,/{project_id}/assets/phone-camera,upload_project_phone_camera_asset,ProjectAssetUploadResponse,['Project Assets'],backend/app/api/routes/projects.py,1405
+POST,/{project_id}/assets/audio,upload_project_audio_asset,ProjectAssetUploadResponse,['Project Assets'],backend/app/api/routes/projects.py,1416
+POST,/{project_id}/assets/slides,upload_project_slide_asset,ProjectAssetUploadResponse,['Project Assets'],backend/app/api/routes/projects.py,1428
+POST,/{project_id}/assets/notes,upload_project_notes_asset,ProjectAssetUploadResponse,['Project Assets'],backend/app/api/routes/projects.py,1439
+POST,/{project_id}/assets/materials,upload_project_supporting_material_asset,ProjectAssetUploadResponse,['Project Assets'],backend/app/api/routes/projects.py,1450
+GET,/{project_id}/assets/{asset_id},get_project_asset,ProjectAssetResponse,['Project Assets'],backend/app/api/routes/projects.py,1461
+PUT,/{project_id}/assets/{asset_id}/sync,update_project_asset_sync_offset,ProjectAssetResponse,['Project Source Sync'],backend/app/api/routes/projects.py,1474
+PATCH,/{project_id}/assets/{asset_id}/metadata,update_project_asset_metadata,ProjectAssetResponse,['Project Assets'],backend/app/api/routes/projects.py,1524
+GET,/{project_id}/assets/{asset_id}/download,download_project_asset,,['Project Assets'],backend/app/api/routes/projects.py,1557
+DELETE,/{project_id}/assets/{asset_id},delete_project_asset,,['Project Assets'],backend/app/api/routes/projects.py,1577
+POST,/videos/upload,upload_video,VideoUploadResponse,['Videos'],backend/app/api/routes/videos.py,129
+POST,/videos/{video_id}/process,start_video_processing,,['Videos'],backend/app/api/routes/videos.py,273
+GET,/videos,list_videos,None,['Videos'],backend/app/api/routes/videos.py,323
+GET,/videos/{video_id},get_video,VideoDetailResponse,['Videos'],backend/app/api/routes/videos.py,332
+GET,/videos/{video_id}/status,get_processing_status,,['Videos'],backend/app/api/routes/videos.py,353
+GET,/videos/{video_id}/transcript/timeline,get_transcript_timeline,TranscriptTimelineResponse,['Transcript'],backend/app/api/routes/videos.py,414
+GET,/videos/{video_id}/transcript/cuts,get_transcript_cut_decisions,None,['Transcript'],backend/app/api/routes/videos.py,440
+POST,/videos/{video_id}/transcript/cuts,create_transcript_cut,TranscriptCutDecisionResponse,['Transcript'],backend/app/api/routes/videos.py,454
+DELETE,/videos/{video_id}/transcript/cuts/{decision_id},delete_transcript_cut,,['Transcript'],backend/app/api/routes/videos.py,513
+PUT,/videos/{video_id}/transcript/cuts/{decision_id}/trim,update_transcript_cut_trim_settings,TranscriptCutDecisionResponse,['Transcript'],backend/app/api/routes/videos.py,538
+POST,/videos/{video_id}/transcript/cuts/{decision_id}/restore-word,restore_transcript_cut_word,None,['Transcript'],backend/app/api/routes/videos.py,577
+GET,/videos/{video_id}/edit-decision-sync,get_edit_decision_sync,EditDecisionSyncResponse,['Edit Plan'],backend/app/api/routes/videos.py,627
+GET,/videos/{video_id}/clean/analyze,analyze_clean_tools,CleanAnalyzeResponse,['Clean'],backend/app/api/routes/videos.py,654
+POST,/videos/{video_id}/clean/apply,apply_clean_tools,CleanApplyResponse,['Clean'],backend/app/api/routes/videos.py,695
+GET,/videos/{video_id}/segments,get_segments,None,['Review'],backend/app/api/routes/videos.py,753
+PUT,/videos/{video_id}/segments/{segment_id},update_segment,,['Review'],backend/app/api/routes/videos.py,764
+PUT,/videos/{video_id}/segments/bulk,bulk_update_segments,,['Review'],backend/app/api/routes/videos.py,787
+GET,/videos/{video_id}/plan,get_edit_plan,EditPlanResponse,['Edit Plan'],backend/app/api/routes/videos.py,811
+GET,/videos/{video_id}/render-plan,get_semantic_render_plan,,['Edit Plan'],backend/app/api/routes/videos.py,823
+POST,/videos/{video_id}/render-plan/regenerate,regenerate_semantic_render_plan,,['Edit Plan'],backend/app/api/routes/videos.py,839
+GET,/videos/{video_id}/render-plan/slides/{slide_id},get_semantic_render_slide,,['Edit Plan'],backend/app/api/routes/videos.py,855
+PUT,/videos/{video_id}/plan/captions,update_plan_captions,EditPlanResponse,['Edit Plan'],backend/app/api/routes/videos.py,872
+PUT,/videos/{video_id}/plan/layout-cues,update_plan_layout_cues,EditPlanResponse,['Edit Plan'],backend/app/api/routes/videos.py,895
+PUT,/videos/{video_id}/plan/slide-cues,update_plan_slide_cues,EditPlanResponse,['Edit Plan'],backend/app/api/routes/videos.py,929
+PUT,/videos/{video_id}/plan/editorial-blocks,update_plan_editorial_blocks,EditPlanResponse,['Edit Plan'],backend/app/api/routes/videos.py,961
+POST,/videos/{video_id}/plan/layout-cues/auto,auto_generate_plan_layout_cues,EditPlanResponse,['Edit Plan'],backend/app/api/routes/videos.py,993
+PUT,/videos/{video_id}/plan/annotations,update_plan_annotations,EditPlanResponse,['Edit Plan'],backend/app/api/routes/videos.py,1060
+PUT,/videos/{video_id}/plan/educational-overlays,update_plan_educational_overlays,EditPlanResponse,['Edit Plan'],backend/app/api/routes/videos.py,1083
+PUT,/videos/{video_id}/plan/end-cards,update_plan_end_cards,EditPlanResponse,['Edit Plan'],backend/app/api/routes/videos.py,1106
+GET,/export/presets,get_export_presets,ExportPresetCatalogResponse,['Export'],backend/app/api/routes/videos.py,1129
+POST,/videos/{video_id}/plan/approve,approve_edit_plan,,['Edit Plan'],backend/app/api/routes/videos.py,1135
+POST,/videos/{video_id}/render/cancel,cancel_render,,['Export'],backend/app/api/routes/videos.py,1206
+POST,/videos/{video_id}/plan/revalidate,revalidate_plan,,['Edit Plan'],backend/app/api/routes/videos.py,1262
+GET,/videos/{video_id}/chapters,get_chapters,TopicSegmentationResponse,['Edit Plan'],backend/app/api/routes/videos.py,1281
+POST,/videos/{video_id}/section-clips/export,export_section_clips,,['Export'],backend/app/api/routes/videos.py,1337
+GET,/videos/{video_id}/section-clips/manifest,download_section_clip_manifest,,['Export'],backend/app/api/routes/videos.py,1400
+GET,/videos/{video_id}/section-clips/{clip_index}/download,download_section_clip,,['Export'],backend/app/api/routes/videos.py,1411
+GET,/videos/{video_id}/report,get_quality_report,,['Reports'],backend/app/api/routes/videos.py,1501
+GET,/videos/{video_id}/mode-comparison,get_mode_comparison_report,,['Reports'],backend/app/api/routes/videos.py,1510
+POST,/materials/upload,upload_course_material,CourseMaterialUploadResponse,['Course Materials'],backend/app/api/routes/videos.py,1520
+GET,/materials,list_course_materials,None,['Course Materials'],backend/app/api/routes/videos.py,1593
+DELETE,/materials/{material_id},delete_course_material,,['Course Materials'],backend/app/api/routes/videos.py,1602
+GET,/settings,get_settings,AppSettingsResponse,['Settings'],backend/app/api/routes/videos.py,1625
+GET,/settings/ai,get_ai_settings,AppSettingsResponse,['Settings'],backend/app/api/routes/videos.py,1632
+PUT,/settings/ai,update_settings,AppSettingsResponse,['Settings'],backend/app/api/routes/videos.py,1639
+PUT,/settings/domain-terms,update_domain_terms,,['Settings'],backend/app/api/routes/videos.py,1648
+GET,/videos/{video_id}/stream,stream_original_video,,['Videos'],backend/app/api/routes/videos.py,1674
+GET,/videos/{video_id}/download,download_rendered_video,,['Videos'],backend/app/api/routes/videos.py,1692
+GET,/videos/{video_id}/subtitles,download_subtitles,,['Videos'],backend/app/api/routes/videos.py,1728
+GET,/videos/{video_id}/subtitles/vtt,download_subtitles_vtt,,['Export'],backend/app/api/routes/videos.py,1744
+GET,/videos/{video_id}/chapters/download,download_chapters,,['Export'],backend/app/api/routes/videos.py,1760
+GET,/videos/{video_id}/plan/export,download_plan_export,,['Export'],backend/app/api/routes/videos.py,1776
+GET,/videos/{video_id}/report/export,download_quality_report_export,,['Export'],backend/app/api/routes/videos.py,1792
+GET,/videos/{video_id}/mode-comparison/export,download_mode_comparison_export,,['Export'],backend/app/api/routes/videos.py,1809
+GET,/videos/{video_id}/mode-comparison/summary,download_mode_comparison_summary,,['Export'],backend/app/api/routes/videos.py,1826
+GET,/videos/{video_id}/evidence/export,download_academic_evidence_export,,['Export'],backend/app/api/routes/videos.py,1843
+GET,/videos/{video_id}/evidence/summary,download_academic_evidence_summary,,['Export'],backend/app/api/routes/videos.py,1860
+GET,/videos/{video_id}/evidence/before-after,download_before_after_comparison,,['Export'],backend/app/api/routes/videos.py,1877
+GET,/videos/{video_id}/evidence/timeline-decisions,download_timeline_decisions,,['Export'],backend/app/api/routes/videos.py,1894
+GET,/videos/{video_id}/evidence/provider-mode,download_provider_mode_trace,,['Export'],backend/app/api/routes/videos.py,1911
+GET,/videos/{video_id}/evidence/metrics-summary,download_metrics_summary,,['Export'],backend/app/api/routes/videos.py,1928
+GET,/videos/{video_id}/evidence/bundle,download_academic_evidence_bundle,,['Export'],backend/app/api/routes/videos.py,1945
+GET,/videos/{video_id}/exports,list_exports,,['Export'],backend/app/api/routes/videos.py,1964
+GET,/,root,,['Health'],backend/app/main.py,98
+GET,/health,health_check,,['Health'],backend/app/main.py,108

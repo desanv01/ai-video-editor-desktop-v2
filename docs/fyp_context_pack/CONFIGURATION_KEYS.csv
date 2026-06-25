@@ -1,0 +1,18 @@
+key,source,default_redacted,user_configurable,secret,use,thesis_relevance
+DATABASE_URL,backend/app/config.py,postgresql+asyncpg://...,yes,secret-like,active,PostgreSQL connection
+QDRANT_URL,backend/app/config.py,http://qdrant:6333,yes,no,active,Vector database
+REDIS_URL,backend/app/config.py,redis://redis:6379/0,yes,no,configured-only,Redis is a Compose dependency but no active client use was found
+ASR_PROVIDER,backend/app/config.py,voxtral,yes,no,active,Hosted transcription default
+AGENT2_MODEL,backend/app/config.py,deepseek-v4-flash,yes,no,active,Content analysis
+AGENT3_MODEL,backend/app/config.py,deepseek-v4-flash,yes,no,active,Fluency analysis
+AGENT5_MODEL,backend/app/config.py,deepseek-v4-pro,yes,no,active,Edit planning
+EMBEDDING_MODEL,backend/app/config.py,text-embedding-3-small,yes,no,active,1536-dimensional vectors
+CHUNK_SIZE,backend/app/config.py,300,yes,no,active,RAG chunk tokens
+CHUNK_OVERLAP,backend/app/config.py,50,yes,no,active,RAG overlap tokens
+MAX_UPLOAD_SIZE_MB,backend/app/config.py,10240,yes,no,active,Upload limit
+ENABLE_NATIVE_SEMANTIC_COMPOSITOR,backend/app/config.py,true,yes,no,active,Primary semantic renderer
+ENABLE_REVIDEO_RENDERER,backend/app/config.py,false,yes,no,optional,Browser/Puppeteer renderer
+APP_DEBUG,backend/app/config.py,true in source; desktop writes false,yes,no,active,Controls debug routes
+APP_SETTINGS_SECRET_KEY,backend/app/config.py,empty,yes,secret,optional,Required to persist encrypted API keys
+VITE_API_URL,desktop/src/lib/api.ts,http://localhost:8000,yes,no,active,Browser backend default; desktop bootstrap overrides to 127.0.0.1:18000
+AIVE_HOST_*,docker-compose.desktop.yml,no safe default,launcher,path,active,Desktop bind-mount paths; raw Compose validation fails without launcher values

@@ -1,0 +1,10 @@
+name,path,line
+save_project,desktop/src-tauri/src/lib.rs,179
+load_project,desktop/src-tauri/src/lib.rs,186
+save_settings,desktop/src-tauri/src/lib.rs,192
+load_settings,desktop/src-tauri/src/lib.rs,203
+get_app_data_dir,desktop/src-tauri/src/lib.rs,213
+get_app_storage_layout,desktop/src-tauri/src/lib.rs,218
+bootstrap_desktop_backend,desktop/src-tauri/src/lib.rs,234
+start_native_primary_import,desktop/src-tauri/src/lib.rs,358
+cancel_native_import,desktop/src-tauri/src/lib.rs,524

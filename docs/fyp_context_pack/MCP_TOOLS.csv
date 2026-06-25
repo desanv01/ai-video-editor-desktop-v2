@@ -1,0 +1,26 @@
+server,tool,purpose,status,evidence
+video-tools,get_video_metadata,Inspect streams/format,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/video_tools_server.py:1
+video-tools,extract_audio,Extract audio with FFmpeg,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/video_tools_server.py:1
+video-tools,trim_video,Trim media,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/video_tools_server.py:1
+video-tools,concatenate_videos,Concatenate media,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/video_tools_server.py:1
+video-tools,detect_silence,Detect silence,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/video_tools_server.py:1
+video-tools,extract_frame,Extract still frame,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/video_tools_server.py:1
+video-tools,generate_subtitles,Create subtitle file,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/video_tools_server.py:1
+video-tools,burn_subtitles,Burn captions into video,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/video_tools_server.py:1
+knowledge-tools,search_knowledge,Qdrant search,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/knowledge_tools_server.py:1
+knowledge-tools,ingest_course_material,Embed material,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/knowledge_tools_server.py:1
+knowledge-tools,ingest_transcript,Embed transcript,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/knowledge_tools_server.py:1
+knowledge-tools,list_materials,List material sources,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/knowledge_tools_server.py:1
+knowledge-tools,delete_material,Delete vectors,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/knowledge_tools_server.py:1
+knowledge-tools,extract_text,Extract document text,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/knowledge_tools_server.py:1
+knowledge-tools,get_collection_stats,Inspect collection,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/knowledge_tools_server.py:1
+pipeline-tools,list_videos,List persisted videos,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/pipeline_tools_server.py:1
+pipeline-tools,get_video_status,Read pipeline status,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/pipeline_tools_server.py:1
+pipeline-tools,run_agent,Run selected processing stage,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/pipeline_tools_server.py:1
+pipeline-tools,get_segments,Read segments,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/pipeline_tools_server.py:1
+pipeline-tools,get_edit_plan,Read edit plan,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/pipeline_tools_server.py:1
+pipeline-tools,update_segment,Apply teacher action,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/pipeline_tools_server.py:1
+pipeline-tools,approve_edit_plan,Approve plan,PARTIALLY_IMPLEMENTED,backend/app/mcp/pipeline_tools_server.py:1
+pipeline-tools,revalidate_plan,Run plan validation,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/pipeline_tools_server.py:1
+pipeline-tools,get_quality_report,Read quality report,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/pipeline_tools_server.py:1
+pipeline-tools,get_chapters,Read chapter markers,IMPLEMENTED_BUT_NOT_CONNECTED,backend/app/mcp/pipeline_tools_server.py:1

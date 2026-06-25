@@ -1,0 +1,10 @@
+provider,purpose,route,current_use,status,evidence
+voxtral,ASR,hosted,default hosted transcription,CONFIGURATION_DEPENDENT,backend/app/providers/defaults.py:24-36 register_default_providers
+openai-whisper,ASR,hosted,upload-size constrained fallback,CONFIGURATION_DEPENDENT,backend/app/providers/defaults.py:38-49 register_default_providers
+whisper.cpp,ASR,local,local executable/model route,CONFIGURATION_DEPENDENT,backend/app/providers/defaults.py:51-61 register_default_providers
+deepseek-v4-flash,chat,hosted,default Agents 2 and 3,CONFIGURATION_DEPENDENT,backend/app/providers/defaults.py:63-74 register_default_providers
+deepseek-v4-pro,chat,hosted,default Agent 5,CONFIGURATION_DEPENDENT,backend/app/providers/defaults.py:76-84 register_default_providers
+openai-embeddings,embedding,hosted,default Qdrant embedding source,CONFIGURATION_DEPENDENT,backend/app/providers/defaults.py:86-94 register_default_providers
+qwen-3.7-plus,vision/chat,hosted,slide visual interpretation route,CONFIGURATION_DEPENDENT,backend/app/providers/defaults.py:96-104 register_default_providers
+unconfigured-vision,vision,placeholder,capability placeholder,PLANNED,backend/app/providers/defaults.py:105-107 register_default_providers
+local-runtime,chat/embedding/vision,placeholder,local non-ASR provider placeholder,PLANNED,backend/app/providers/placeholders.py:1-80
