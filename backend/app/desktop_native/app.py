@@ -81,6 +81,14 @@ def create_native_app(runtime: NativeDesktopRuntime) -> FastAPI:
     async def engine_control() -> dict[str, Any]:
         return runtime.engine_control_payload("ready")
 
+    @app.post("/engine-control/shutdown", tags=["Engine"])
+    async def engine_control_shutdown(request: Request) -> dict[str, str]:
+        callback = getattr(request.app.state, "request_shutdown", None)
+        if not callable(callback):
+            raise HTTPException(status_code=503, detail="Native engine shutdown is not available yet.")
+        callback()
+        return {"status": "accepted"}
+
     @app.get("/", tags=["Health"])
     async def root() -> dict[str, str]:
         return {

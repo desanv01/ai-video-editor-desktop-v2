@@ -112,6 +112,66 @@ export interface DiagnosticSnapshotResult {
   remediationCodes: string[];
 }
 
+export type SupervisorPhase =
+  | "stopped"
+  | "resolving"
+  | "starting"
+  | "waiting-for-handshake"
+  | "probing"
+  | "ready"
+  | "degraded"
+  | "stopping"
+  | "crashed-backoff"
+  | "repair-required"
+  | "fatal";
+
+export interface EngineCapabilitiesPayload {
+  schemaVersion: "desktop.capabilities.v1";
+  componentId: string;
+  componentVersion: string;
+  generatedAt: string;
+  requested: string[];
+  items: Array<{
+    id: string;
+    state: "available" | "degraded" | "unavailable";
+    source: "component" | "backend" | "model" | "host";
+    version?: string;
+    detail?: string;
+    remediationCodes?: string[];
+  }>;
+}
+
+export interface SupervisorStatus {
+  schemaVersion: "desktop.supervisor-status.v1";
+  state: SupervisorPhase;
+  engineReady: boolean;
+  componentId: string | null;
+  componentVersion: string | null;
+  host: string | null;
+  port: number | null;
+  pid: number | null;
+  protocolVersion: string | null;
+  retryCount: number;
+  maxRetries: number;
+  detail: string;
+  remediationCodes: string[];
+  lastError: string | null;
+  nextRetryAtEpochMs: number | null;
+  capabilities: EngineCapabilitiesPayload | null;
+  logPath: string | null;
+  rollbackRequested: boolean;
+}
+
+export interface SupervisorDiagnostics {
+  schemaVersion: "desktop.supervisor-diagnostics.v1";
+  status: SupervisorStatus;
+  ownedProcess: boolean;
+  recoveryMetadataPath: string;
+  staleRecoveryMetadata: boolean;
+  logTail: string[];
+  sessionPolicy: string;
+}
+
 export type BootEvent =
   | { type: "shell-ready" }
   | { type: "component-scan"; componentState: ComponentInstallationState | "invalid" }
@@ -142,6 +202,27 @@ export function deriveBootState(componentState: ComponentInstallationState | "in
 
 export function engineViewsEnabled(result: Pick<DesktopV2BootstrapResult, "bootState" | "engineReady">): boolean {
   return result.bootState === "engine-available" && result.engineReady;
+}
+
+export function supervisorViewsEnabled(status: Pick<SupervisorStatus, "state" | "engineReady"> | null): boolean {
+  return status?.state === "ready" && status.engineReady;
+}
+
+export function supervisorStateLabel(status: SupervisorStatus | null, loading = false): string {
+  if (loading) return "Starting shell";
+  switch (status?.state) {
+    case "resolving": return "Checking components";
+    case "starting": return "Starting engine";
+    case "waiting-for-handshake": return "Waiting for engine";
+    case "probing": return "Checking readiness";
+    case "ready": return "Engine ready";
+    case "degraded": return "Engine degraded";
+    case "stopping": return "Stopping engine";
+    case "crashed-backoff": return "Recovering engine";
+    case "repair-required": return "Repair required";
+    case "fatal": return "Engine unavailable";
+    default: return "Shell ready";
+  }
 }
 
 export type AppRoute = "browser-editor" | "desktop-v2-shell";

@@ -117,57 +117,48 @@ export function StatsPanel({ videoId, plan, onApprove, approving }: Props) {
       {plan.is_approved && (
         <div className="space-y-2">
           <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Downloads</h3>
-          <a href={api.getVideoDownloadUrl(videoId)} target="_blank" rel="noreferrer"
-            className="flex items-center gap-2 w-full py-2.5 bg-green-600 hover:bg-green-700 rounded-lg text-white text-center justify-center font-medium transition-all">
-            <Download className="w-4 h-4" /> Edited Video (MP4)
-          </a>
-          <a href={api.getSubtitleDownloadUrl(videoId)} target="_blank" rel="noreferrer"
-            className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
-            <Download className="w-3 h-3" /> Subtitles (SRT)
-          </a>
-          <a href={api.getSubtitleVttUrl(videoId)} target="_blank" rel="noreferrer"
-            className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
-            <Download className="w-3 h-3" /> Subtitles (VTT)
-          </a>
-          <a href={api.getChaptersDownloadUrl(videoId)} target="_blank" rel="noreferrer"
-            className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
-            <Download className="w-3 h-3" /> Chapter Markers
-          </a>
-          <a href={api.getPlanExportUrl(videoId)} target="_blank" rel="noreferrer"
-            className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
-            <Download className="w-3 h-3" /> Edit Plan (JSON)
-          </a>
-          <a href={api.getQualityReportExportUrl(videoId)} target="_blank" rel="noreferrer"
-            className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
-            <Download className="w-3 h-3" /> Quality Report
-          </a>
-          <a href={api.getModeComparisonSummaryUrl(videoId)} target="_blank" rel="noreferrer"
-            className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
-            <Download className="w-3 h-3" /> Mode Comparison
-          </a>
-          <a href={api.getBeforeAfterComparisonUrl(videoId)} target="_blank" rel="noreferrer"
-            className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
-            <Download className="w-3 h-3" /> Before/After
-          </a>
-          <a href={api.getTimelineDecisionsUrl(videoId)} target="_blank" rel="noreferrer"
-            className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
-            <Download className="w-3 h-3" /> Timeline Decisions
-          </a>
-          <a href={api.getProviderModeTraceUrl(videoId)} target="_blank" rel="noreferrer"
-            className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
-            <Download className="w-3 h-3" /> Provider Mode
-          </a>
-          <a href={api.getMetricsSummaryUrl(videoId)} target="_blank" rel="noreferrer"
-            className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
-            <Download className="w-3 h-3" /> Metrics Summary
-          </a>
-          <a href={api.getAcademicEvidenceBundleUrl(videoId)} target="_blank" rel="noreferrer"
-            className="flex items-center gap-2 w-full py-2 bg-surface-overlay hover:bg-surface-border rounded-lg text-gray-200 text-center justify-center transition-all text-sm">
-            <Download className="w-3 h-3" /> Evidence Bundle
-          </a>
+          <StatsDownloadLink href={api.getVideoDownloadUrl(videoId)} label="Edited Video (MP4)" primary />
+          <StatsDownloadLink href={api.getSubtitleDownloadUrl(videoId)} label="Subtitles (SRT)" />
+          <StatsDownloadLink href={api.getSubtitleVttUrl(videoId)} label="Subtitles (VTT)" />
+          <StatsDownloadLink href={api.getChaptersDownloadUrl(videoId)} label="Chapter Markers" />
+          <StatsDownloadLink href={api.getPlanExportUrl(videoId)} label="Edit Plan (JSON)" />
+          <StatsDownloadLink href={api.getQualityReportExportUrl(videoId)} label="Quality Report" />
+          <StatsDownloadLink href={api.getModeComparisonSummaryUrl(videoId)} label="Mode Comparison" />
+          <StatsDownloadLink href={api.getBeforeAfterComparisonUrl(videoId)} label="Before/After" />
+          <StatsDownloadLink href={api.getTimelineDecisionsUrl(videoId)} label="Timeline Decisions" />
+          <StatsDownloadLink href={api.getProviderModeTraceUrl(videoId)} label="Provider Mode" />
+          <StatsDownloadLink href={api.getMetricsSummaryUrl(videoId)} label="Metrics Summary" />
+          <StatsDownloadLink href={api.getAcademicEvidenceBundleUrl(videoId)} label="Evidence Bundle" />
         </div>
       )}
     </div>
+  );
+}
+
+function StatsDownloadLink({ href, label, primary = false }: { href: string; label: string; primary?: boolean }) {
+  const [busy, setBusy] = useState(false);
+  const isBridgeResource = href.startsWith("bridge:");
+  const handleClick = (event: React.MouseEvent<HTMLAnchorElement>) => {
+    if (!isBridgeResource) return;
+    event.preventDefault();
+    setBusy(true);
+    void api.downloadEngineResource(href, label).finally(() => setBusy(false));
+  };
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      onClick={handleClick}
+      aria-disabled={busy}
+      className={`flex items-center gap-2 w-full rounded-lg text-center justify-center transition-all ${
+        primary
+          ? "py-2.5 bg-green-600 hover:bg-green-700 text-white font-medium"
+          : "py-2 bg-surface-overlay hover:bg-surface-border text-gray-200 text-sm"
+      }`}
+    >
+      <Download className={primary ? "w-4 h-4" : "w-3 h-3"} /> {busy ? "Preparing…" : label}
+    </a>
   );
 }
 

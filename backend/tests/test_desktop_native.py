@@ -218,6 +218,7 @@ class NativeDesktopTests(unittest.TestCase):
             creationflags=creationflags,
         )
         base = f"http://127.0.0.1:{port}"
+        output = ""
         try:
             deadline = time.time() + 30
             while time.time() < deadline:
@@ -268,3 +269,7 @@ class NativeDesktopTests(unittest.TestCase):
                     self.fail(f"native engine did not shut down gracefully: {output}")
                 self.assertEqual(process.returncode, 0, output)
                 self.assertIn("native engine graceful shutdown complete", output)
+                self.assertIn('"type":"aive-engine-startup"', output)
+                self.assertIn('"host":"127.0.0.1"', output)
+                self.assertIn(f'"port":{port}', output)
+                self.assertNotIn(token, output)

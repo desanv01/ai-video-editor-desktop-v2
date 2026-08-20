@@ -72,7 +72,7 @@ pub struct ComponentError {
 pub type ManagerResult<T> = Result<T, ComponentError>;
 
 impl ComponentError {
-    fn new(code: &str, message: impl Into<String>, retryable: bool) -> Self {
+    pub(crate) fn new(code: &str, message: impl Into<String>, retryable: bool) -> Self {
         let remediation_codes = match code {
             "ELEVATION_REQUIRED" | "STORAGE_NOT_WRITABLE" => {
                 vec!["STORAGE_NOT_WRITABLE".to_string()]
@@ -426,6 +426,26 @@ pub struct ActivationResult {
     pub active_path: String,
     pub previous_version: Option<String>,
     pub state: String,
+}
+
+/// A read-only launch plan assembled from a verified active component.
+///
+/// The supervisor is deliberately not allowed to launch a path copied from
+/// the WebView or from an arbitrary environment variable.  This value is
+/// produced only after the active metadata, signed manifest, exact installed
+/// inventory, and entrypoint boundary have all been checked.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifiedActiveComponent {
+    pub component_id: String,
+    pub component_version: String,
+    pub active_path: String,
+    pub executable_path: String,
+    pub entrypoint: String,
+    pub arguments: Vec<String>,
+    pub working_directory: Option<String>,
+    pub capabilities: Vec<String>,
+    pub manifest_path: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1038,6 +1058,110 @@ impl ComponentManager {
             artifact_bytes: manifest.artifact.byte_size,
             requires_elevation: manifest.requirements.requires_elevation,
             dependencies,
+        })
+    }
+
+    /// Resolve an active component for a process launch without performing
+    /// any activation or fallback discovery.  In particular, this never
+    /// searches PATH, Docker, or a global tool installation.
+    pub fn verified_active_component(
+        &self,
+        component_id: &str,
+        expected_type: ComponentType,
+        policy: SourcePolicy,
+    ) -> ManagerResult<VerifiedActiveComponent> {
+        validate_component_id(component_id)?;
+        let Some((metadata_path, activation)) = self.read_activation(component_id)? else {
+            return Err(ComponentError::new(
+                "COMPONENT_NOT_ACTIVE",
+                format!("No active {component_id} component is selected in ProgramData."),
+                false,
+            ));
+        };
+        if activation.state != "active"
+            || activation.component_id != component_id
+            || activation.component_version.is_empty()
+        {
+            return Err(ComponentError::new(
+                "ACTIVATION_METADATA_INVALID",
+                "The component activation record is not at a valid active checkpoint.",
+                false,
+            ));
+        }
+
+        let manifest = self.read_manifest(component_id, &activation.component_version, policy)?;
+        if manifest.component.id != component_id
+            || manifest.component.version != activation.component_version
+            || manifest.component.component_type != expected_type
+        {
+            return Err(ComponentError::new(
+                "COMPONENT_VERSION_INCOMPATIBLE",
+                "The active component identity does not match its signed manifest.",
+                false,
+            ));
+        }
+        if expected_type == ComponentType::Backend && manifest.entrypoint.kind != "executable" {
+            return Err(ComponentError::new(
+                "ENTRYPOINT_INVALID",
+                "The active core-engine component must expose a native executable entrypoint.",
+                false,
+            ));
+        }
+        if manifest.requirements.requires_elevation {
+            return Err(ComponentError::new(
+                "ELEVATION_REQUIRED",
+                "The active component requires an elevated installation or repair operation.",
+                false,
+            ));
+        }
+
+        let active_path = PathBuf::from(&activation.active_path);
+        ensure_safe_existing_path(&self.paths.components_root, &active_path)?;
+        let expected_active_path = self.published_path(&manifest)?;
+        if path_key(&active_path.to_string_lossy()) != path_key(&expected_active_path.to_string_lossy())
+        {
+            return Err(ComponentError::new(
+                "ACTIVATION_METADATA_INVALID",
+                "The active path does not match the immutable version selected by the manifest.",
+                false,
+            ));
+        }
+        verify_installed_inventory(&active_path, &manifest)?;
+
+        let executable_path = active_path.join(&manifest.entrypoint.relative_path);
+        ensure_safe_existing_path(&active_path, &executable_path)?;
+        if !executable_path.is_file() || is_reparse_or_symlink(&executable_path) {
+            return Err(ComponentError::new(
+                "ENTRYPOINT_MISSING",
+                "The signed component entrypoint is missing or unsafe.",
+                false,
+            ));
+        }
+        let working_directory = if let Some(relative) = &manifest.entrypoint.working_directory {
+            let path = active_path.join(relative);
+            ensure_safe_existing_path(&active_path, &path)?;
+            if !path.is_dir() || is_reparse_or_symlink(&path) {
+                return Err(ComponentError::new(
+                    "WORKING_DIRECTORY_INVALID",
+                    "The signed component working directory is missing or unsafe.",
+                    false,
+                ));
+            }
+            Some(path.to_string_lossy().to_string())
+        } else {
+            None
+        };
+
+        Ok(VerifiedActiveComponent {
+            component_id: manifest.component.id,
+            component_version: manifest.component.version,
+            active_path: active_path.to_string_lossy().to_string(),
+            executable_path: executable_path.to_string_lossy().to_string(),
+            entrypoint: manifest.entrypoint.relative_path,
+            arguments: manifest.entrypoint.arguments,
+            working_directory,
+            capabilities: manifest.capabilities,
+            manifest_path: metadata_path.to_string_lossy().to_string(),
         })
     }
 
@@ -4821,6 +4945,16 @@ mod tests {
             .active_path
             .as_deref()
             .is_some_and(|path| path.contains("Components")));
+        let verified = root
+            .manager
+            .verified_active_component(
+                "synthetic",
+                ComponentType::Utility,
+                SourcePolicy::development_test(),
+            )
+            .expect("verified launch plan");
+        assert_eq!(verified.component_version, "1.0.0");
+        assert!(verified.executable_path.ends_with("synthetic-engine.exe"));
     }
 
     #[test]

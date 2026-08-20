@@ -156,6 +156,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   const [renderCancelling, setRenderCancelling] = useState(false);
   const [renderPollVersion, setRenderPollVersion] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [videoSrc, setVideoSrc] = useState("");
   const { status: processingStatus } = useProcessingStatus(videoId, 1500, renderPollVersion);
 
   useEffect(() => {
@@ -276,7 +277,30 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
     });
   }, [segments.length, plan?.is_approved]);
 
-  const videoSrc = api.getVideoStreamUrl(videoId);
+  useEffect(() => {
+    const resource = api.getVideoStreamUrl(videoId);
+    if (!api.isNativeBridgeEnabled()) {
+      setVideoSrc(resource);
+      return;
+    }
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    const parsed = new URL(resource, window.location.href);
+    void api.fetchEngineResource(parsed.pathname + parsed.search)
+      .then(blob => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setVideoSrc(objectUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setVideoSrc("");
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [videoId]);
+
   const syncedCutIntervals = editDecisionSync?.cut_intervals ?? [];
   const syncedExportPlan = editDecisionSync?.export_plan ?? null;
   const visibleTranscriptCuts = useMemo(() => dedupeTranscriptCuts(transcriptCuts), [transcriptCuts]);

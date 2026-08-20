@@ -2502,17 +2502,34 @@ function RenderProgressCard({
 }
 
 function DownloadLink({ href, label, primary = false }: { href: string; label: string; primary?: boolean }) {
+  const [busy, setBusy] = useState(false);
+  const nativeBridgeResource = href.startsWith("bridge:");
+  const handleClick = async (event: React.MouseEvent<HTMLAnchorElement>) => {
+    if (!nativeBridgeResource) return;
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await api.downloadEngineResource(href, label);
+    } catch {
+      // The surrounding editor status remains the source of remediation;
+      // do not surface a raw bridge/localhost fetch error in the shell.
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <a
       href={href}
       target="_blank"
       rel="noreferrer"
+      onClick={handleClick}
+      aria-disabled={busy}
       className={`flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold transition-colors ${
         primary ? "bg-green-600 text-white hover:bg-green-700" : "bg-surface-overlay text-gray-200 hover:bg-surface-border"
       }`}
     >
-      <Download className="h-4 w-4" />
-      {label}
+      <Download className={`h-4 w-4 ${busy ? "animate-pulse" : ""}`} />
+      {busy ? "Preparing download…" : label}
     </a>
   );
 }

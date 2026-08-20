@@ -18,6 +18,7 @@ from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parent
 APP_ROOT = BACKEND_ROOT / "app"
+STARTUP_HANDSHAKE_PROTOCOL = "desktop.engine-handshake.v1"
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
@@ -131,6 +132,10 @@ async def _serve(args: argparse.Namespace) -> None:
         lifespan="on",
     )
     server = uvicorn.Server(config)
+    # The supervisor uses an authenticated in-process control route for a
+    # graceful stop.  The callback is installed only after the server object
+    # exists and is never serialized into engine-control payloads.
+    app.state.request_shutdown = lambda: setattr(server, "should_exit", True)
     loop = asyncio.get_running_loop()
 
     def request_shutdown(*_signal_args) -> None:  # type: ignore[no-untyped-def]
@@ -155,6 +160,26 @@ async def _serve(args: argparse.Namespace) -> None:
         sockets = server.servers[0].sockets
         if sockets:
             runtime.assigned_port = int(sockets[0].getsockname()[1])
+    if not runtime.assigned_port:
+        raise RuntimeError("native engine did not receive an OS-assigned loopback port")
+    # This is the only startup handshake.  It intentionally contains no
+    # bearer token, data path, command line, or environment value.  The
+    # supervisor already knows the token it generated and authenticates all
+    # subsequent readiness/capability requests itself.
+    print(
+        json.dumps(
+            {
+                "type": "aive-engine-startup",
+                "protocolVersion": STARTUP_HANDSHAKE_PROTOCOL,
+                "host": "127.0.0.1",
+                "port": runtime.assigned_port,
+                "pid": os.getpid(),
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        flush=True,
+    )
     try:
         await server.main_loop()
     finally:

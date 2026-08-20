@@ -19,7 +19,9 @@ import {
   type ComponentStatus,
   type DesktopV2BootstrapResult,
   type ShellInfo,
+  type SupervisorStatus,
   normalizeShellFailure,
+  supervisorStateLabel,
 } from "../desktopV2";
 import * as api from "../lib/api";
 
@@ -56,9 +58,10 @@ export class DesktopV2ErrorBoundary extends Component<ErrorBoundaryProps, ErrorB
   }
 }
 
-export function DesktopV2Shell() {
+export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void }) {
   const [shellInfo, setShellInfo] = useState<ShellInfo | null>(null);
   const [bootstrap, setBootstrap] = useState<DesktopV2BootstrapResult | null>(null);
+  const [supervisor, setSupervisor] = useState<SupervisorStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [failure, setFailure] = useState<ReturnType<typeof normalizeShellFailure> | null>(null);
   const [panel, setPanel] = useState<ShellPanel>("setup");
@@ -82,6 +85,20 @@ export function DesktopV2Shell() {
       if (result.bootState === "recoverable-error") setPanel("diagnostics");
     } catch (error) {
       setFailure(normalizeShellFailure(error));
+    }
+
+    try {
+      const status = await api.getSupervisorStatus();
+      setSupervisor(status);
+      if (status.state !== "stopped" && status.state !== "repair-required" && status.state !== "fatal") {
+        if (status.engineReady) onEngineReady();
+      } else {
+        const started = await api.startSupervisor();
+        setSupervisor(started);
+        if (started.engineReady) onEngineReady();
+      }
+    } catch (_error) {
+      setSupervisor(null);
     } finally {
       setLoading(false);
     }
@@ -90,6 +107,30 @@ export function DesktopV2Shell() {
   useEffect(() => {
     void loadShell();
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        const stopListening = await listen<SupervisorStatus>("desktop-engine-status", event => {
+          if (cancelled) return;
+          setSupervisor(event.payload);
+          if (event.payload.engineReady) onEngineReady();
+        });
+        if (cancelled) stopListening();
+        else unlisten = stopListening;
+      } catch {
+        // The shell remains useful if an event subscription is unavailable;
+        // the explicit refresh action still queries the supervisor.
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [onEngineReady]);
 
   const displayInfo = shellInfo ?? bootstrap?.shellInfo ?? null;
   const componentStatuses = bootstrap?.componentStatus ?? [
@@ -114,6 +155,7 @@ export function DesktopV2Shell() {
   const bootLabel = useMemo(() => {
     if (loading) return "Starting shell";
     if (failure) return "Recoverable shell error";
+    if (supervisor) return supervisorStateLabel(supervisor);
     switch (bootstrap?.bootState) {
       case "engine-available":
         return "Engine component available";
@@ -126,7 +168,20 @@ export function DesktopV2Shell() {
       default:
         return "Starting shell";
     }
-  }, [bootstrap?.bootState, failure, loading]);
+  }, [bootstrap?.bootState, failure, loading, supervisor]);
+
+  const handleSupervisorAction = async (action: "retry" | "restart" | "stop") => {
+    try {
+      const next = action === "retry"
+        ? await api.retrySupervisor()
+        : action === "restart"
+          ? await api.restartSupervisor()
+          : await api.stopSupervisor();
+      setSupervisor(next);
+    } catch {
+      setDiagnosticMessage("The supervisor action could not be completed. Review Diagnostics and try again.");
+    }
+  };
 
   const handleDiagnostics = async () => {
     setPanel("diagnostics");
@@ -182,7 +237,7 @@ export function DesktopV2Shell() {
           </nav>
           <div className="mt-8 rounded-xl border border-surface-border bg-surface-overlay p-3 text-xs leading-5 text-gray-400">
             <LockKeyhole className="mb-2 h-4 w-4 text-accent" />
-            Shell launch is local-only. Backend, Docker, downloads, and engine processes are gated until a later supervisor is ready.
+            Shell launch is local-only. Backend, Docker, downloads, and engine processes remain gated until the authenticated supervisor is ready.
           </div>
         </aside>
 
@@ -213,11 +268,11 @@ export function DesktopV2Shell() {
                     <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Boot state</p>
                     <h2 className="mt-2 text-xl font-semibold text-white">{bootLabel}</h2>
                   </div>
-                  <BootStateIcon state={loading ? "starting" : failure ? "recoverable-error" : bootstrap?.bootState ?? "starting"} />
+                  <BootStateIcon state={loading ? "starting" : failure ? "recoverable-error" : supervisor?.state ?? bootstrap?.bootState ?? "starting"} />
                 </div>
                 {loading ? (
                   <p className="mt-5 rounded-xl border border-accent/30 bg-accent/10 p-4 text-sm leading-6 text-accent-100">
-                    Reading local shell paths and activation metadata. No backend or engine startup is performed.
+                    Reading verified activation metadata and starting the owned native engine supervisor.
                   </p>
                 ) : failure ? (
                   <div className="mt-5 rounded-xl border border-amber-400/30 bg-amber-500/10 p-4">
@@ -251,6 +306,8 @@ export function DesktopV2Shell() {
               </section>
             </div>
 
+            <SupervisorPanel supervisor={supervisor} onAction={handleSupervisorAction} />
+
             <div className="mt-4 grid gap-4 lg:grid-cols-3">
               <ActionCard
                 icon={<Wrench className="h-5 w-5" />}
@@ -269,9 +326,9 @@ export function DesktopV2Shell() {
               <ActionCard
                 icon={<ServerOff className="h-5 w-5" />}
                 title="Engine-dependent views"
-                detail="Editor, API, uploads, and rendering remain gated until a later supervisor marks the engine ready."
-                action="Currently unavailable"
-                disabled
+                detail={supervisor?.engineReady ? "Authenticated editor, settings, uploads, and rendering are unlocked." : "Editor, API, uploads, and rendering remain gated until authenticated readiness."}
+                action={supervisor?.engineReady ? "Opening editor…" : "Waiting for readiness"}
+                disabled={!supervisor?.engineReady}
               />
             </div>
 
@@ -350,6 +407,56 @@ function ComponentStatusCard({ status }: { status: ComponentStatus }) {
   );
 }
 
+function SupervisorPanel({
+  supervisor,
+  onAction,
+}: {
+  supervisor: SupervisorStatus | null;
+  onAction: (action: "retry" | "restart" | "stop") => Promise<void>;
+}) {
+  const state = supervisor?.state ?? "stopped";
+  const recoverable = state === "crashed-backoff" || state === "fatal" || state === "repair-required" || state === "degraded";
+  return (
+    <section className="mt-4 rounded-2xl border border-surface-border bg-surface-raised p-5">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Native engine supervisor</p>
+          <h2 className="mt-2 text-xl font-semibold text-white">{supervisorStateLabel(supervisor)}</h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-gray-400">
+            {supervisor?.detail ?? "The supervisor has not started a native engine process."}
+          </p>
+          {supervisor?.lastError ? <p className="mt-2 text-xs text-amber-200">{supervisor.lastError}</p> : null}
+          {supervisor?.remediationCodes.length ? (
+            <p className="mt-2 text-xs text-amber-200/80">Remediation: {supervisor.remediationCodes.join(" · ")}</p>
+          ) : null}
+        </div>
+        <div className="flex shrink-0 flex-wrap gap-2">
+          {recoverable ? (
+            <button type="button" onClick={() => void onAction("retry")} className="rounded-lg bg-accent px-3 py-2 text-xs font-medium text-white hover:bg-accent-hover">
+              Retry engine
+            </button>
+          ) : null}
+          {state === "ready" || state === "degraded" ? (
+            <button type="button" onClick={() => void onAction("restart")} className="rounded-lg border border-surface-border px-3 py-2 text-xs font-medium text-gray-200 hover:border-accent">
+              Restart
+            </button>
+          ) : null}
+          {state !== "stopped" && state !== "stopping" ? (
+            <button type="button" onClick={() => void onAction("stop")} className="rounded-lg border border-amber-400/30 px-3 py-2 text-xs font-medium text-amber-100 hover:bg-amber-500/10">
+              Stop
+            </button>
+          ) : null}
+        </div>
+      </div>
+      <div className="mt-4 grid gap-3 text-xs sm:grid-cols-3">
+        <DiagnosticValue label="Process ownership" value={supervisor?.pid ? `Owned PID ${supervisor.pid}` : "No process owned"} />
+        <DiagnosticValue label="Loopback readiness" value={supervisor?.port ? `${supervisor.host}:${supervisor.port}` : "Not announced"} />
+        <DiagnosticValue label="Recovery budget" value={supervisor ? `${supervisor.retryCount}/${supervisor.maxRetries} attempts` : "0/3 attempts"} />
+      </div>
+    </section>
+  );
+}
+
 function ActionCard({
   icon,
   title,
@@ -388,8 +495,9 @@ function ShellNavButton({ active, icon, label, onClick }: { active: boolean; ico
 }
 
 function BootStateIcon({ state }: { state: string }) {
-  if (state === "starting") return <RefreshCw className="h-6 w-6 animate-spin text-accent" />;
-  if (state === "recoverable-error") return <AlertTriangle className="h-6 w-6 text-amber-300" />;
+  if (["starting", "resolving", "waiting-for-handshake", "probing", "stopping", "crashed-backoff"].includes(state)) return <RefreshCw className="h-6 w-6 animate-spin text-accent" />;
+  if (["recoverable-error", "repair-required", "fatal"].includes(state)) return <AlertTriangle className="h-6 w-6 text-amber-300" />;
+  if (state === "degraded") return <AlertTriangle className="h-6 w-6 text-amber-300" />;
   if (state === "setup-required") return <Wrench className="h-6 w-6 text-amber-300" />;
   if (state === "engine-available") return <ServerOff className="h-6 w-6 text-blue-300" />;
   return <CheckCircle2 className="h-6 w-6 text-emerald-400" />;

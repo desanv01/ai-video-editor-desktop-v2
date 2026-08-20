@@ -14,6 +14,7 @@ use tauri::{AppHandle, Emitter, Manager, State, Window};
 pub mod contracts;
 pub mod component_manager;
 pub mod desktop_v2;
+pub mod supervisor;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ProjectFile {
@@ -362,11 +363,13 @@ fn bootstrap_desktop_backend(app: AppHandle) -> Result<DesktopBootstrapResult, S
 async fn start_native_primary_import(
     window: Window,
     registry_state: State<'_, NativeImportRegistry>,
+    supervisor_state: State<'_, supervisor::SupervisorState>,
     project_id: String,
     source_path: String,
-    backend_url: String,
+    _backend_url: String,
 ) -> Result<NativeImportCommandResult, String> {
     let registry = registry_state.inner().clone();
+    let supervisor = supervisor_state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let source = fs::canonicalize(Path::new(&source_path))
             .map_err(|e| format!("Could not access selected file: {e}"))?;
@@ -378,24 +381,16 @@ async fn start_native_primary_import(
             .to_string();
         let file_size_bytes = metadata.len();
         let mime_type = infer_mime_type(&source);
-        let client = Client::builder()
-            .timeout(Duration::from_secs(120))
-            .build()
-            .map_err(|e| format!("Could not create HTTP client: {e}"))?;
-        let api_base = api_base_url(&backend_url);
-
-        let init_response = client
-            .post(format!("{api_base}/projects/{project_id}/imports/native/primary/init"))
-            .json(&NativeImportInitRequest {
+        let init_response: NativeImportInitResponse = supervisor.api_request_json(
+            "POST",
+            &format!("/api/v1/projects/{project_id}/imports/native/primary/init"),
+            Some(&NativeImportInitRequest {
                 original_filename: filename.clone(),
                 file_size_bytes,
                 mime_type: mime_type.clone(),
-            })
-            .send()
-            .and_then(|res| res.error_for_status())
-            .map_err(|e| format!("Could not initialize native import: {e}"))?
-            .json::<NativeImportInitResponse>()
-            .map_err(|e| format!("Could not parse native import session: {e}"))?;
+            }),
+        )
+        .map_err(|e| format!("Could not initialize native import through the authenticated engine bridge: {e}"))?;
 
         let cancel_flag = registry.register(&init_response.token);
         emit_native_import_progress(
@@ -457,17 +452,16 @@ async fn start_native_primary_import(
                 },
             );
 
-            let finalize_response = client
-                .post(format!(
-                    "{api_base}/projects/{project_id}/imports/native/primary/{}/finalize",
-                    init_response.token
-                ))
-                .json(&NativeImportFinalizeRequest { copied_file_size_bytes: file_size_bytes })
-                .send()
-                .and_then(|res| res.error_for_status())
-                .map_err(|e| format!("Could not finalize native import: {e}"))?
-                .json::<NativeImportFinalizeResponse>()
-                .map_err(|e| format!("Could not parse finalize response: {e}"))?;
+            let finalize_response: NativeImportFinalizeResponse = supervisor
+                .api_request_json(
+                    "POST",
+                    &format!(
+                        "/api/v1/projects/{project_id}/imports/native/primary/{}/finalize",
+                        init_response.token
+                    ),
+                    Some(&NativeImportFinalizeRequest { copied_file_size_bytes: file_size_bytes }),
+                )
+                .map_err(|e| format!("Could not finalize native import through the authenticated engine bridge: {e}"))?;
 
             emit_native_import_progress(
                 &window,
@@ -494,12 +488,14 @@ async fn start_native_primary_import(
         })();
 
         if cancel_flag.load(Ordering::Relaxed) {
-            let _ = client
-                .post(format!(
-                    "{api_base}/projects/{project_id}/imports/native/primary/{}/cancel",
+            let _: Result<serde_json::Value, String> = supervisor.api_request_json(
+                "POST",
+                &format!(
+                    "/api/v1/projects/{project_id}/imports/native/primary/{}/cancel",
                     init_response.token
-                ))
-                .send();
+                ),
+                Option::<&serde_json::Value>::None,
+            );
             emit_native_import_progress(
                 &window,
                 &NativeImportProgressEvent {
@@ -854,20 +850,12 @@ fn wait_for_http_health(url: &str, timeout: Duration) -> Result<(), String> {
     Err(format!("Backend health check did not become ready at {url}"))
 }
 
-fn api_base_url(raw: &str) -> String {
-    let trimmed = raw.trim_end_matches('/');
-    if trimmed.ends_with("/api/v1") {
-        trimmed.to_string()
-    } else {
-        format!("{trimmed}/api/v1")
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(NativeImportRegistry::default())
         .manage(component_manager::ComponentManagerState::default())
+        .manage(supervisor::SupervisorState::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             save_project,
@@ -899,7 +887,21 @@ pub fn run() {
             desktop_v2::get_safe_log_directory,
             desktop_v2::desktop_v2_bootstrap,
             desktop_v2::generate_diagnostic_snapshot,
+            supervisor::supervisor_status,
+            supervisor::supervisor_start,
+            supervisor::supervisor_stop,
+            supervisor::supervisor_restart,
+            supervisor::supervisor_retry,
+            supervisor::supervisor_diagnostics,
+            supervisor::engine_api_request,
         ])
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                if let Some(state) = window.try_state::<supervisor::SupervisorState>() {
+                    state.stop_for_app_close();
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { UploadPanel } from "./components/UploadPanel";
 import { ProcessingView } from "./components/ProcessingView";
 import { ReviewEditor } from "./components/ReviewEditor";
@@ -26,6 +26,8 @@ type AppRoute = {
 
 export default function App() {
   const [isTauriRuntime, setIsTauriRuntime] = useState<boolean | null>(null);
+  const [nativeEngineReady, setNativeEngineReady] = useState(false);
+  const handleEngineReady = useCallback(() => setNativeEngineReady(true), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -39,7 +41,11 @@ export default function App() {
 
   if (isTauriRuntime === null) return <RuntimeDetectionScreen />;
   return resolveAppRoute(isTauriRuntime) === "desktop-v2-shell"
-    ? <DesktopV2ErrorBoundary><DesktopV2Shell /></DesktopV2ErrorBoundary>
+    ? <DesktopV2ErrorBoundary>
+      {nativeEngineReady
+        ? <BrowserEditorApp nativeMode />
+        : <DesktopV2Shell onEngineReady={handleEngineReady} />}
+    </DesktopV2ErrorBoundary>
     : <BrowserEditorApp />;
 }
 function RuntimeDetectionScreen() {
@@ -49,7 +55,7 @@ function RuntimeDetectionScreen() {
     </div>
   );
 }
-function BrowserEditorApp() {
+export function BrowserEditorApp({ nativeMode = false }: { nativeMode?: boolean }) {
   const [view, setView] = useState<View>("dashboard");
   const [videoId, setVideoId] = useState<string | null>(null);
   const [videoFilename, setVideoFilename] = useState<string>("");
@@ -59,16 +65,19 @@ function BrowserEditorApp() {
   useEffect(() => {
     (async () => {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        const settings = await invoke<{ backend_url?: string }>("load_settings");
-        if (settings?.backend_url) api.setBaseUrl(settings.backend_url);
+        api.setNativeBridgeEnabled(nativeMode);
+        if (!nativeMode) {
+          const { invoke } = await import("@tauri-apps/api/core");
+          const settings = await invoke<{ backend_url?: string }>("load_settings");
+          if (settings?.backend_url) api.setBaseUrl(settings.backend_url);
+        }
       } catch {
         // Browser dev mode uses the default localhost backend.
       }
 
       await restoreRouteFromHash();
     })();
-  }, []);
+  }, [nativeMode]);
 
   const restoreRouteFromHash = async () => {
     const route = parseRouteHash();

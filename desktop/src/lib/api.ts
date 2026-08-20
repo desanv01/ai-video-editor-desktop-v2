@@ -50,9 +50,12 @@ import type {
   ResolvedDesktopPaths,
   SafeLogDirectoryResult,
   ShellInfo,
+  SupervisorDiagnostics,
+  SupervisorStatus,
 } from "../desktopV2";
 
 let BASE_URL = "http://localhost:8000/api/v1";
+let NATIVE_BRIDGE_ENABLED = false;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const APPROVAL_TIMEOUT_MS = 10 * 60_000;
 const VIDEO_UPLOAD_TIMEOUT_MS = 60 * 60_000;
@@ -64,7 +67,19 @@ export function setBaseUrl(url: string) {
 }
 
 export function getBackendBaseUrl(): string {
-  return BASE_URL.replace(/\/api\/v1$/, "");
+  return NATIVE_BRIDGE_ENABLED ? "bridge://engine" : BASE_URL.replace(/\/api\/v1$/, "");
+}
+
+export function setNativeBridgeEnabled(enabled: boolean): void {
+  NATIVE_BRIDGE_ENABLED = enabled;
+}
+
+export function isNativeBridgeEnabled(): boolean {
+  return NATIVE_BRIDGE_ENABLED;
+}
+
+function resourceUrl(path: string): string {
+  return NATIVE_BRIDGE_ENABLED ? `bridge://engine-resource${path}` : `${BASE_URL}${path}`;
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -87,6 +102,9 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
+  if (NATIVE_BRIDGE_ENABLED) {
+    return nativeBridgeFetch(url, options, timeoutMs);
+  }
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   const upstreamSignal = options.signal;
@@ -114,6 +132,64 @@ async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: nu
     window.clearTimeout(timeout);
     upstreamSignal?.removeEventListener("abort", abortFromUpstream);
   }
+}
+
+type NativeBridgeResponse = {
+  status: number;
+  headers: Record<string, string>;
+  bodyBase64: string;
+};
+
+async function nativeBridgeFetch(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const parsed = new URL(url, window.location.href);
+  const headers = new Headers(options.headers);
+  let bodyBase64: string | undefined;
+  let contentType = headers.get("Content-Type");
+
+  if (options.body !== undefined && options.body !== null) {
+    let bodyBytes: ArrayBuffer;
+    if (typeof options.body === "string") {
+      bodyBytes = new TextEncoder().encode(options.body).buffer;
+    } else {
+      const encodedRequest = new Request("http://desktop-v2-bridge.invalid", {
+        method: options.method ?? "GET",
+        headers,
+        body: options.body as BodyInit,
+      });
+      bodyBytes = await encodedRequest.arrayBuffer();
+      contentType = contentType ?? encodedRequest.headers.get("Content-Type");
+    }
+    const bodyView = new Uint8Array(bodyBytes);
+    let binary = "";
+    for (const byte of bodyView) binary += String.fromCharCode(byte);
+    bodyBase64 = btoa(binary);
+  }
+
+  const invokePromise = invoke<NativeBridgeResponse>("engine_api_request", {
+    request: {
+      method: options.method ?? "GET",
+      path: parsed.pathname + parsed.search,
+      bodyBase64,
+      contentType: contentType ?? undefined,
+      timeoutMs,
+    },
+  });
+  let timer: number | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = window.setTimeout(() => reject(new Error(`Engine request timed out after ${Math.round(timeoutMs / 1000)} seconds`)), timeoutMs);
+  });
+  let result: NativeBridgeResponse;
+  try {
+    result = await Promise.race([invokePromise, timeoutPromise]);
+  } finally {
+    if (timer !== undefined) window.clearTimeout(timer);
+  }
+
+  const raw = atob(result.bodyBase64);
+  const body = new Uint8Array(raw.length);
+  for (let index = 0; index < raw.length; index += 1) body[index] = raw.charCodeAt(index);
+  return new Response(body, { status: result.status, headers: result.headers });
 }
 
 async function errorFromResponse(prefix: string, res: Response): Promise<Error> {
@@ -259,10 +335,31 @@ export async function isTauriDesktopRuntime(): Promise<boolean> {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke<ShellInfo>("get_shell_info");
+    setNativeBridgeEnabled(true);
     return true;
   } catch {
     return false;
   }
+}
+
+export async function fetchEngineResource(path: string, timeoutMs = VIDEO_UPLOAD_TIMEOUT_MS): Promise<Blob> {
+  const res = await fetchWithTimeout(`${BASE_URL}${path}`, {}, timeoutMs);
+  if (!res.ok) throw await errorFromResponse("Engine resource request failed", res);
+  return res.blob();
+}
+
+export async function downloadEngineResource(resource: string, filename: string): Promise<void> {
+  const parsed = new URL(resource, window.location.href);
+  const path = parsed.protocol === "bridge:" ? parsed.pathname + parsed.search : parsed.pathname + parsed.search;
+  const blob = await fetchEngineResource(path);
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = filename.replace(/[^A-Za-z0-9._ -]/g, "_");
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 }
 
 export async function getShellInfo(): Promise<ShellInfo> {
@@ -293,6 +390,36 @@ export async function bootstrapDesktopV2Shell(): Promise<DesktopV2BootstrapResul
 export async function generateDesktopDiagnosticSnapshot(): Promise<DiagnosticSnapshotResult> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<DiagnosticSnapshotResult>("generate_diagnostic_snapshot");
+}
+
+export async function getSupervisorStatus(): Promise<SupervisorStatus> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<SupervisorStatus>("supervisor_status");
+}
+
+export async function startSupervisor(): Promise<SupervisorStatus> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<SupervisorStatus>("supervisor_start");
+}
+
+export async function stopSupervisor(): Promise<SupervisorStatus> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<SupervisorStatus>("supervisor_stop");
+}
+
+export async function restartSupervisor(): Promise<SupervisorStatus> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<SupervisorStatus>("supervisor_restart");
+}
+
+export async function retrySupervisor(): Promise<SupervisorStatus> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<SupervisorStatus>("supervisor_retry");
+}
+
+export async function getSupervisorDiagnostics(): Promise<SupervisorDiagnostics> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<SupervisorDiagnostics>("supervisor_diagnostics");
 }
 
 export async function getAppStorageLayout(): Promise<AppStorageLayout> {
@@ -583,7 +710,7 @@ export async function deleteProjectAsset(projectId: string, assetId: string): Pr
 }
 
 export function getProjectAssetDownloadUrl(projectId: string, assetId: string): string {
-  return `${BASE_URL}/projects/${projectId}/assets/${assetId}/download`;
+  return resourceUrl(`/projects/${projectId}/assets/${assetId}/download`);
 }
 
 // ═══════════════════════════════════════════
@@ -930,19 +1057,19 @@ export async function removeLocalTranscriptionModel(
 // ═══════════════════════════════════════════
 
 export function getVideoDownloadUrl(videoId: string): string {
-  return `${BASE_URL}/videos/${videoId}/download`;
+  return resourceUrl(`/videos/${videoId}/download`);
 }
 
 export function getSubtitleDownloadUrl(videoId: string): string {
-  return `${BASE_URL}/videos/${videoId}/subtitles`;
+  return resourceUrl(`/videos/${videoId}/subtitles`);
 }
 
 export function getSubtitleVttUrl(videoId: string): string {
-  return `${BASE_URL}/videos/${videoId}/subtitles/vtt`;
+  return resourceUrl(`/videos/${videoId}/subtitles/vtt`);
 }
 
 export function getChaptersDownloadUrl(videoId: string): string {
-  return `${BASE_URL}/videos/${videoId}/chapters/download`;
+  return resourceUrl(`/videos/${videoId}/chapters/download`);
 }
 
 export async function exportSectionClips(videoId: string): Promise<SectionClipExportManifest> {
@@ -950,53 +1077,53 @@ export async function exportSectionClips(videoId: string): Promise<SectionClipEx
 }
 
 export function getSectionClipsManifestUrl(videoId: string): string {
-  return `${BASE_URL}/videos/${videoId}/section-clips/manifest`;
+  return resourceUrl(`/videos/${videoId}/section-clips/manifest`);
 }
 
 export function getPlanExportUrl(videoId: string): string {
-  return `${BASE_URL}/videos/${videoId}/plan/export`;
+  return resourceUrl(`/videos/${videoId}/plan/export`);
 }
 
 export function getQualityReportExportUrl(videoId: string): string {
-  return `${BASE_URL}/videos/${videoId}/report/export`;
+  return resourceUrl(`/videos/${videoId}/report/export`);
 }
 
 export function getModeComparisonExportUrl(videoId: string): string {
-  return `${BASE_URL}/videos/${videoId}/mode-comparison/export`;
+  return resourceUrl(`/videos/${videoId}/mode-comparison/export`);
 }
 
 export function getModeComparisonSummaryUrl(videoId: string): string {
-  return `${BASE_URL}/videos/${videoId}/mode-comparison/summary`;
+  return resourceUrl(`/videos/${videoId}/mode-comparison/summary`);
 }
 
 export function getAcademicEvidenceExportUrl(videoId: string): string {
-  return `${BASE_URL}/videos/${videoId}/evidence/export`;
+  return resourceUrl(`/videos/${videoId}/evidence/export`);
 }
 
 export function getAcademicEvidenceSummaryUrl(videoId: string): string {
-  return `${BASE_URL}/videos/${videoId}/evidence/summary`;
+  return resourceUrl(`/videos/${videoId}/evidence/summary`);
 }
 
 export function getAcademicEvidenceBundleUrl(videoId: string): string {
-  return `${BASE_URL}/videos/${videoId}/evidence/bundle`;
+  return resourceUrl(`/videos/${videoId}/evidence/bundle`);
 }
 
 export function getBeforeAfterComparisonUrl(videoId: string): string {
-  return `${BASE_URL}/videos/${videoId}/evidence/before-after`;
+  return resourceUrl(`/videos/${videoId}/evidence/before-after`);
 }
 
 export function getTimelineDecisionsUrl(videoId: string): string {
-  return `${BASE_URL}/videos/${videoId}/evidence/timeline-decisions`;
+  return resourceUrl(`/videos/${videoId}/evidence/timeline-decisions`);
 }
 
 export function getProviderModeTraceUrl(videoId: string): string {
-  return `${BASE_URL}/videos/${videoId}/evidence/provider-mode`;
+  return resourceUrl(`/videos/${videoId}/evidence/provider-mode`);
 }
 
 export function getMetricsSummaryUrl(videoId: string): string {
-  return `${BASE_URL}/videos/${videoId}/evidence/metrics-summary`;
+  return resourceUrl(`/videos/${videoId}/evidence/metrics-summary`);
 }
 
 export function getVideoStreamUrl(videoId: string): string {
-  return `${BASE_URL}/videos/${videoId}/stream`;
+  return resourceUrl(`/videos/${videoId}/stream`);
 }
