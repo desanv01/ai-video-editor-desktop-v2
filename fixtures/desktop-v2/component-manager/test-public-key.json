@@ -1,0 +1,6 @@
+{
+  "warning": "NON-PRODUCTION TEST KEY ONLY; NEVER TRUST THIS ROOT FOR RELEASE COMPONENTS",
+  "keyId": "test-fixture-2026",
+  "algorithm": "ed25519",
+  "publicKeyBase64": "hfqZ1Gk2qemcp+23vgMKpdMauxUlEXuBWF3NilhYA44="
+}

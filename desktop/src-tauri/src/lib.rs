@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State, Window};
 
 pub mod contracts;
+pub mod component_manager;
 pub mod desktop_v2;
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -866,6 +867,7 @@ fn api_base_url(raw: &str) -> String {
 pub fn run() {
     tauri::Builder::default()
         .manage(NativeImportRegistry::default())
+        .manage(component_manager::ComponentManagerState::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             save_project,
@@ -877,6 +879,20 @@ pub fn run() {
             bootstrap_desktop_backend,
             start_native_primary_import,
             cancel_native_import,
+            component_manager::component_intake_manifest,
+            component_manager::component_resolve_plan,
+            component_manager::component_status,
+            component_manager::component_download,
+            component_manager::component_pause,
+            component_manager::component_cancel,
+            component_manager::component_retry,
+            component_manager::component_verify,
+            component_manager::component_stage,
+            component_manager::component_activate,
+            component_manager::component_rollback,
+            component_manager::component_repair,
+            component_manager::component_uninstall,
+            component_manager::component_recover,
             desktop_v2::get_shell_info,
             desktop_v2::get_canonical_paths,
             desktop_v2::inspect_activation_metadata,
