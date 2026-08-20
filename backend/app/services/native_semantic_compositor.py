@@ -15,6 +15,7 @@ import shutil
 from typing import Any, Callable
 
 from services.ffmpeg import FFmpegService
+from services.tooling import ffmpeg_binary
 
 
 ProgressCallback = Callable[[float, str], None]
@@ -178,7 +179,7 @@ async def _render_bounded_scene_sequence(
                 escaped = scene_output.replace("\\", "/").replace("'", "'\\''")
                 handle.write(f"file '{escaped}'\n")
         concat_command = [
-            "ffmpeg", "-hide_banner", "-nostdin", "-y",
+            ffmpeg_binary(), "-hide_banner", "-nostdin", "-y",
             "-f", "concat", "-safe", "0", "-i", concat_path,
             "-map", "0:v:0", "-c", "copy", "-an",
             "-movflags", "+faststart", assembled_video_path,
@@ -206,7 +207,7 @@ async def _render_bounded_scene_sequence(
         if progress_callback:
             progress_callback(0.997, "Muxing final video and audio")
         mux_command = [
-            "ffmpeg", "-hide_banner", "-nostdin", "-y",
+            ffmpeg_binary(), "-hide_banner", "-nostdin", "-y",
             "-i", assembled_video_path, "-i", assembled_audio_path,
             "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-shortest",
             "-movflags", "+faststart", output_path,
@@ -252,7 +253,7 @@ async def _ensure_render_proxy(
         if progress_callback:
             progress_callback(0.0, "Waiting for reusable 1080p editing proxy")
         command = [
-            "ffmpeg", "-hide_banner", "-nostdin", "-y", "-i", source_video_path,
+            ffmpeg_binary(), "-hide_banner", "-nostdin", "-y", "-i", source_video_path,
             "-map", "0:v:0", "-map", "0:a:0?",
             "-vf", (
                 f"scale={output_width}:{output_height}:force_original_aspect_ratio=decrease,"
@@ -419,7 +420,7 @@ def _build_bounded_scene_command(
     source_start = float(scene.get("source_start_time") or 0.0)
     layout = str(scene.get("layout") or "picture_in_picture")
     cmd = [
-        "ffmpeg", "-hide_banner", "-nostdin", "-y",
+        ffmpeg_binary(), "-hide_banner", "-nostdin", "-y",
         "-ss", f"{source_start:.3f}", "-t", f"{duration:.3f}", "-i", source_video_path,
         "-loop", "1", "-t", f"{duration:.3f}", "-i", slide_path,
     ]
@@ -495,7 +496,7 @@ def _build_bounded_audio_command(
     audio_bitrate: str | None,
 ) -> list[str]:
     """Assemble all source ranges and encode AAC once to avoid per-scene priming."""
-    command = ["ffmpeg", "-hide_banner", "-nostdin", "-y"]
+    command = [ffmpeg_binary(), "-hide_banner", "-nostdin", "-y"]
     filters: list[str] = []
     concat_inputs: list[str] = []
     for index, scene in enumerate(scenes):

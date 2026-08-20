@@ -1,0 +1,2 @@
+Test-only command fixtures for Desktop V2 native engine probes. They are not
+FFmpeg binaries and must never be shipped as production components.

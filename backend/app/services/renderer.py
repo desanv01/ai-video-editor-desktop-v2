@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from db.models import Video, Transcript, Segment, EditPlan, ProjectAsset, SegmentAction, VideoStatus
 from services.ffmpeg import ffmpeg_service, FFmpegService
+from services.tooling import ffmpeg_binary
 from services.progress import start_step, complete_step, PipelineStep
 from services.render_jobs import RenderCancelled, ensure_not_cancelled, update_render_job
 from services.edit_plan_payload import (
@@ -383,7 +384,7 @@ async def _fast_ffmpeg_concat_path(
         video_filter = (video_filter + srt_filter) if video_filter else srt_filter.lstrip(",")
 
     cmd = [
-        "ffmpeg",
+        ffmpeg_binary(),
         "-f", "concat", "-safe", "0",
         "-i", concat_list_path,
     ]
@@ -1746,7 +1747,7 @@ async def _render_slide_composited_clip(
     elif layout_mode == "full_camera_source":
         # Face full-screen, no slide. Just trim the video.
         cmd = [
-            "ffmpeg",
+            ffmpeg_binary(),
             "-ss", str(start_time),
             "-i", video.file_path,
             "-t", str(duration),
@@ -1769,7 +1770,7 @@ async def _render_slide_composited_clip(
         if returncode != 0:
             # Fall back to full re-encode with hw acceleration
             cmd_encode = [
-                "ffmpeg",
+                ffmpeg_binary(),
                 "-ss", str(start_time),
                 "-i", video.file_path,
                 "-t", str(duration),
@@ -1800,7 +1801,7 @@ async def _render_slide_composited_clip(
 
     # Build FFmpeg command for layout modes that need filter_complex
     cmd = [
-        "ffmpeg",
+        ffmpeg_binary(),
         "-loop", "1",
         "-i", slide_image_path,
         "-ss", str(start_time),

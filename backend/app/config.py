@@ -8,6 +8,12 @@ import json
 
 
 class Settings(BaseSettings):
+    # ── Runtime profile ──
+    # Docker remains the default.  The native desktop profile is selected
+    # explicitly by the Phase 4 engine entrypoint and never inferred from a
+    # missing service or a failed connection attempt.
+    RUNTIME_PROFILE: str = "docker"
+
     # ── API Keys ──
     OPENAI_API_KEY: str = ""
     DEEPSEEK_API_KEY: str = ""
@@ -19,11 +25,13 @@ class Settings(BaseSettings):
 
     # ── Database ──
     DATABASE_URL: str = "postgresql+asyncpg://aive:aive_secret@db:5432/aive_db"
+    DESKTOP_DB_PATH: str = ""
 
     # ── Qdrant ──
     QDRANT_HOST: str = "qdrant"
     QDRANT_PORT: int = 6333
     QDRANT_COLLECTION: str = "course_materials"
+    DESKTOP_VECTOR_ROOT: str = ""
 
     # ── Redis ──
     REDIS_URL: str = "redis://redis:6379/0"
@@ -133,12 +141,29 @@ class Settings(BaseSettings):
     REVIDEO_RENDERER_BASE_PORT: int = 9300
     REVIDEO_RENDERER_TIMEOUT_SECONDS: int = 1800
 
+    # ── Explicit native desktop tool/component paths ──
+    FFMPEG_COMPONENT_ROOT: str = ""
+    FFMPEG_BINARY_PATH: str = ""
+    FFPROBE_BINARY_PATH: str = ""
+    DESKTOP_COMPONENT_ROOT: str = ""
+    DESKTOP_ENGINE_COMPONENT_ROOT: str = ""
+    DESKTOP_SESSION_ID: str = ""
+    DESKTOP_BEARER_TOKEN: str = ""
+
     # ── Context Biasing (domain-specific terms for ASR accuracy) ──
     DOMAIN_TERMS: str = "[]"                   # JSON array of terms, e.g. '["polymorphism","quicksort"]'
 
     @property
     def domain_terms_list(self) -> List[str]:
         return json.loads(self.DOMAIN_TERMS)
+
+    @property
+    def is_native_desktop(self) -> bool:
+        """Whether the explicit Docker-free desktop profile is active."""
+        return self.RUNTIME_PROFILE.strip().lower() in {
+            "desktop-native",
+            "native-desktop",
+        }
 
     # ── App ──
     APP_ENV: str = "development"

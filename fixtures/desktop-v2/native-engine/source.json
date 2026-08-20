@@ -1,0 +1,6 @@
+{
+  "source": "local-desktop-v2-worktree",
+  "repository": "https://example.test/ai-video-editor",
+  "purpose": "test-signed component packaging metadata",
+  "productionInputRequired": true
+}

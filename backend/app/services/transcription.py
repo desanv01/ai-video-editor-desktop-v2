@@ -28,6 +28,7 @@ import re
 from typing import List, Optional
 from openai import AsyncOpenAI
 from config import settings
+from services.tooling import ffmpeg_binary, ffprobe_binary
 from providers.defaults import get_provider_registry
 from providers.interfaces import (
     ProviderCapability,
@@ -779,7 +780,7 @@ class TranscriptionService:
             actual_duration = min(chunk_duration, total_duration - offset)
 
             cmd = [
-    "ffmpeg", "-i", audio_path,
+    ffmpeg_binary(), "-i", audio_path,
     "-ss", str(offset),
     "-t", str(actual_duration),
     "-acodec", "libmp3lame",
@@ -880,7 +881,7 @@ class TranscriptionService:
     async def _get_audio_duration(audio_path: str) -> float:
         """Get audio duration in seconds using ffprobe."""
         cmd = [
-            "ffprobe", "-v", "quiet",
+            ffprobe_binary(), "-v", "quiet",
             "-show_entries", "format=duration",
             "-of", "csv=p=0",
             audio_path,

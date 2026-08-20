@@ -203,6 +203,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--component-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--component-id", required=True)
+    parser.add_argument(
+        "--component-type",
+        choices=("backend", "database", "vector-store", "ffmpeg", "model", "renderer", "utility"),
+        default="utility",
+    )
     parser.add_argument("--version", required=True)
     parser.add_argument("--display-name", default="Synthetic Desktop V2 Component")
     parser.add_argument("--publisher", default="AI Video Editor")
@@ -225,7 +230,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--notice-file", default="LICENSES/NOTICE.txt")
     parser.add_argument("--self-test-command", nargs="+")
     parser.add_argument(
+        "--self-test-argument",
+        action="append",
+        default=[],
+        help="Append an argument to --self-test-command; use = form for values beginning with '-'.",
+    )
+    parser.add_argument(
         "--dependency", action="append", default=[], metavar="ID=CONSTRAINT"
+    )
+    parser.add_argument(
+        "--capability",
+        action="append",
+        default=[],
+        metavar="CAPABILITY",
+        help="Manifest capability; may be repeated (defaults to api).",
     )
     return parser.parse_args()
 
@@ -289,7 +307,9 @@ def main() -> int:
             }
         )
     if args.self_test_command:
-        self_test_command = args.self_test_command
+        self_test_command = args.self_test_command + args.self_test_argument
+    elif args.self_test_argument:
+        raise ValueError("--self-test-argument requires --self-test-command")
     elif args.target_os == "windows":
         self_test_command = ["cmd.exe", "/D", "/C", "exit 0"]
     else:
@@ -316,7 +336,7 @@ def main() -> int:
         "schemaVersion": "desktop.component-manifest.v1",
         "component": {
             "id": args.component_id,
-            "type": "utility",
+            "type": args.component_type,
             "version": args.version,
             "channel": "stable",
         },
@@ -350,7 +370,7 @@ def main() -> int:
             "arguments": ["--self-test"],
         },
         "dependencies": dependencies,
-        "capabilities": ["api"],
+        "capabilities": args.capability or ["api"],
         "metadata": {
             "displayName": args.display_name,
             "publisher": args.publisher,

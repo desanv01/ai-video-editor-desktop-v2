@@ -1,0 +1,2 @@
+# Reproducible build-only dependency; runtime components do not need PyInstaller.
+PyInstaller==6.11.1

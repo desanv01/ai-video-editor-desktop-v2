@@ -12,6 +12,7 @@ import subprocess
 from collections import Counter
 from typing import Any, Callable, List, Tuple, Optional
 from config import settings
+from services.tooling import ffmpeg_binary, ffprobe_binary
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +123,7 @@ class FFmpegService:
     async def get_video_metadata(video_path: str) -> dict:
         """Extract video metadata (duration, resolution, fps, codec)."""
         cmd = [
-            "ffprobe", "-v", "quiet",
+            ffprobe_binary(), "-v", "quiet",
             "-print_format", "json",
             "-show_format", "-show_streams",
             video_path
@@ -197,7 +198,7 @@ class FFmpegService:
     async def extract_audio(video_path: str, output_path: str, format: str = "wav") -> str:
         """Extract audio track from video file."""
         cmd = [
-            "ffmpeg", "-i", video_path,
+            ffmpeg_binary(), "-i", video_path,
             "-vn",                          # no video
             "-acodec", "pcm_s16le" if format == "wav" else "libmp3lame",
             "-ar", "16000",                 # 16kHz — optimal for Whisper
@@ -223,7 +224,7 @@ class FFmpegService:
     ) -> List[dict]:
         """Detect silent regions using ffmpeg silencedetect filter."""
         cmd = [
-            "ffmpeg", "-i", audio_path,
+            ffmpeg_binary(), "-i", audio_path,
             "-af", f"silencedetect=noise={threshold_db}dB:d={min_duration}",
             "-f", "null", "-"
         ]
@@ -271,7 +272,7 @@ class FFmpegService:
     ) -> str:
         """Trim a segment from the video without re-encoding (fast)."""
         cmd = [
-            "ffmpeg",
+            ffmpeg_binary(),
             "-ss", str(start_time),
             "-i", video_path,
             "-t", str(end_time - start_time),
@@ -310,7 +311,7 @@ class FFmpegService:
         duration = max(0.001, float(end_time) - float(start_time))
         encoder = FFmpegService._preferred_h264_encoder()
 
-        cmd: list[str] = ["ffmpeg"]
+        cmd: list[str] = [ffmpeg_binary()]
 
         # ── Hardware-accelerated decode (NVIDIA only — other backends use
         #     different hwaccel flags so we keep it simple) ────────────────
@@ -384,7 +385,7 @@ class FFmpegService:
         duration = max(0.001, float(end_time) - float(start_time))
         codec = _ffmpeg_audio_codec(audio_codec)
         return [
-            "ffmpeg",
+            ffmpeg_binary(),
             "-ss",
             str(FFmpegService._source_timestamp(start_time, sync_offset)),
             "-t",
@@ -419,7 +420,7 @@ class FFmpegService:
     ) -> str:
         """Compress long pauses inside an audio-only clip."""
         cmd = [
-            "ffmpeg",
+            ffmpeg_binary(),
             "-i",
             input_path,
             "-vn",
@@ -471,7 +472,7 @@ class FFmpegService:
 
         try:
             cmd = [
-                "ffmpeg",
+                ffmpeg_binary(),
                 "-f",
                 "concat",
                 "-safe",
@@ -705,7 +706,7 @@ class FFmpegService:
         )
 
         cmd = [
-            "ffmpeg",
+            ffmpeg_binary(),
             "-ss",
             str(FFmpegService._source_timestamp(start_time, screen_sync_offset)),
             "-t",
@@ -783,7 +784,7 @@ class FFmpegService:
         )
 
         cmd = [
-            "ffmpeg",
+            ffmpeg_binary(),
             "-ss",
             str(FFmpegService._source_timestamp(start_time, screen_sync_offset)),
             "-t",
@@ -836,7 +837,7 @@ class FFmpegService:
         )
 
         cmd = [
-            "ffmpeg",
+            ffmpeg_binary(),
             "-ss",
             str(FFmpegService._source_timestamp(start_time, source_sync_offset)),
             "-t",
@@ -879,7 +880,7 @@ class FFmpegService:
             filters.append(f"fade=t=out:st={round(start, 3)}:d={round(fade_duration, 3)}")
         video_filter = ",".join(filters) if filters else "null"
         return [
-            "ffmpeg",
+            ffmpeg_binary(),
             "-i",
             input_path,
             "-vf",
@@ -1122,7 +1123,7 @@ class FFmpegService:
             return FFmpegService._encoder_cache
         try:
             proc = subprocess.run(
-                ["ffmpeg", "-hide_banner", "-encoders"],
+                [ffmpeg_binary(), "-hide_banner", "-encoders"],
                 capture_output=True,
                 text=True,
                 timeout=8,
@@ -1174,7 +1175,7 @@ class FFmpegService:
         try:
             logger.info("probe_hw_encoder: attempting test encode with %s", encoder_name)
             test_cmd = [
-                "ffmpeg", "-y",
+                ffmpeg_binary(), "-y",
                 "-f", "lavfi", "-i", f"testsrc2=size=128x128:rate=1:d=1",
                 "-c:v", encoder_name,
                 "-preset", "p1" if encoder_name == "h264_nvenc" else "veryfast",
@@ -1350,7 +1351,7 @@ class FFmpegService:
         if n == 1:
             # Single clip — just re-encode to normalise
             cmd_single = [
-                "ffmpeg", "-i", clip_paths[0],
+                ffmpeg_binary(), "-i", clip_paths[0],
             ]
             vf = FFmpegService._concat_video_filter(output_width, output_height, fps)
             if vf:
@@ -1377,7 +1378,7 @@ class FFmpegService:
                 for clip in clip_paths:
                     f.write(f"file '{clip}'\n")
             try:
-                cmd = ["ffmpeg", "-f", "concat", "-safe", "0", "-i", list_path,
+                cmd = [ffmpeg_binary(), "-f", "concat", "-safe", "0", "-i", list_path,
                        "-c", "copy", "-movflags", "+faststart", "-y", output_path]
                 _, _, rc = await FFmpegService._run_process(
                     cmd, error_prefix="Concat copy",
@@ -1391,7 +1392,7 @@ class FFmpegService:
 
         # ── Concat FILTER path (reliable) ──────────────────────────────
         # Build: ffmpeg -i c0 -i c1 ... -filter_complex "[0:v][0:a][1:v][1:a]concat=n=...:v=1:a=1[vraw][araw];[vraw]<video_filter>[outv];[araw]anull[outa]" -map "[outv]" -map "[outa]" ...
-        cmd = ["ffmpeg"]
+        cmd = [ffmpeg_binary()]
         for clip in clip_paths:
             cmd.extend(["-i", clip])
 
@@ -1501,7 +1502,7 @@ class FFmpegService:
             for item in transitions
             if item.get("boundary_index") is not None
         }
-        inputs: list[str] = ["ffmpeg"]
+        inputs: list[str] = [ffmpeg_binary()]
         for path in clip_paths:
             inputs.extend(["-i", path])
 
@@ -1594,7 +1595,7 @@ class FFmpegService:
         color = FFmpegService._ffmpeg_color(background_color)
         duration = max(0.1, float(duration_seconds or 0.1))
         cmd = [
-            "ffmpeg",
+            ffmpeg_binary(),
             "-f", "lavfi",
             "-i", f"color=c={color}:s={int(width)}x{int(height)}:r=30",
             "-f", "lavfi",
@@ -1639,7 +1640,7 @@ class FFmpegService:
         color = FFmpegService._ffmpeg_color(background_color)
         manifest_path: str | None = None
         if len(image_paths) == 1:
-            cmd = ["ffmpeg", "-loop", "1", "-t", f"{safe_durations[0]:.3f}", "-i", image_paths[0]]
+            cmd = [ffmpeg_binary(), "-loop", "1", "-t", f"{safe_durations[0]:.3f}", "-i", image_paths[0]]
             video_filter = (
                 f"[0:v]scale={int(width)}:{int(height)}:force_original_aspect_ratio=decrease,"
                 f"pad={int(width)}:{int(height)}:(ow-iw)/2:(oh-ih)/2:color={color},"
@@ -1660,7 +1661,7 @@ class FFmpegService:
             manifest_lines.append(f"file '{FFmpegService._concat_file_path(image_paths[-1])}'")
             with open(manifest_path, "w", encoding="utf-8", newline="\n") as handle:
                 handle.write("\n".join(manifest_lines) + "\n")
-            cmd = ["ffmpeg", "-safe", "0", "-f", "concat", "-i", manifest_path]
+            cmd = [ffmpeg_binary(), "-safe", "0", "-f", "concat", "-i", manifest_path]
             video_filter = (
                 f"[0:v]scale={int(width)}:{int(height)}:force_original_aspect_ratio=decrease,"
                 f"pad={int(width)}:{int(height)}:(ow-iw)/2:(oh-ih)/2:color={color},"
@@ -1722,7 +1723,7 @@ class FFmpegService:
         and compress long internal pauses.
         """
         cmd = [
-            "ffmpeg", "-i", input_path,
+            ffmpeg_binary(), "-i", input_path,
             "-af", (
                 f"silenceremove=start_periods=1:start_duration=0.1:start_threshold={threshold_db}dB"
                 f":stop_periods=-1:stop_duration={min_silence}:stop_threshold={threshold_db}dB"
@@ -1761,7 +1762,7 @@ class FFmpegService:
             style=style,
         )
         cmd = [
-            "ffmpeg", "-i", video_path,
+            ffmpeg_binary(), "-i", video_path,
             "-vf", f"subtitles={FFmpegService._escape_subtitle_path(srt_path)}:force_style='{force_style}'",
             *FFmpegService._video_encoder_args(None, "veryfast"),
             "-c:a", "copy",
@@ -1785,7 +1786,7 @@ class FFmpegService:
     ) -> str:
         """Burn an ASS overlay track into the video while preserving audio."""
         cmd = [
-            "ffmpeg", "-i", video_path,
+            ffmpeg_binary(), "-i", video_path,
             "-vf", f"subtitles={FFmpegService._escape_subtitle_path(ass_path)}",
             *FFmpegService._video_encoder_args(None, "veryfast"),
             "-c:a", "copy",
@@ -1867,7 +1868,7 @@ class FFmpegService:
     async def extract_frame(video_path: str, timestamp: float, output_path: str) -> str:
         """Extract a single frame at a given timestamp."""
         cmd = [
-            "ffmpeg",
+            ffmpeg_binary(),
             "-ss", str(timestamp),
             "-i", video_path,
             "-frames:v", "1",
@@ -1894,7 +1895,7 @@ class FFmpegService:
         """Extract frames at regular intervals for scene detection."""
         os.makedirs(output_dir, exist_ok=True)
         cmd = [
-            "ffmpeg", "-i", video_path,
+            ffmpeg_binary(), "-i", video_path,
             "-vf", f"fps=1/{interval}",
             "-q:v", "2",
             "-y",
@@ -1948,7 +1949,7 @@ class FFmpegService:
         or None if no meaningful crop was detected.
         """
         cmd = [
-            "ffmpeg",
+            ffmpeg_binary(),
             "-i", video_path,
             "-vf", "cropdetect=24:2",
             "-f", "null", "-",
@@ -2052,7 +2053,7 @@ class FFmpegService:
         encoder_args = FFmpegService._video_encoder_args(None, "veryfast")
 
         cmd = [
-            "ffmpeg",
+            ffmpeg_binary(),
             "-i", input_path,
             "-vf", crop_filter,
             *encoder_args,
@@ -2121,7 +2122,7 @@ class FFmpegService:
             ]
 
         cmd = [
-            "ffmpeg",
+            ffmpeg_binary(),
             "-i", input_path,
             "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=24",
             *video_args,

@@ -1,0 +1,3 @@
+Desktop V2 native engine packaging fixture notice.
+This file is only for local test-signed component packaging; production
+release automation must supply the complete third-party notices bundle.

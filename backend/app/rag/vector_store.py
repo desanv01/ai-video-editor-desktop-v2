@@ -17,12 +17,48 @@ import asyncio
 import logging
 from typing import List, Optional, Dict, Any
 
-from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import (
-    Distance, VectorParams, PointStruct,
-    Filter, FieldCondition, MatchValue,
-    models as qmodels,
-)
+try:
+    from qdrant_client import AsyncQdrantClient
+    from qdrant_client.models import (
+        Distance, VectorParams, PointStruct,
+        Filter, FieldCondition, MatchValue,
+        models as qmodels,
+    )
+except ImportError:  # Native SQLite fallback remains usable without qdrant-client.
+    from types import SimpleNamespace
+
+    class _Distance:
+        COSINE = "Cosine"
+
+    class VectorParams:
+        def __init__(self, *, size: int, distance: str):
+            self.size = size
+            self.distance = distance
+
+    class PointStruct:
+        def __init__(self, *, id: str, vector: list[float], payload: dict):
+            self.id = id
+            self.vector = vector
+            self.payload = payload
+
+    class MatchValue:
+        def __init__(self, *, value):
+            self.value = value
+
+    class FieldCondition:
+        def __init__(self, *, key: str, match: MatchValue):
+            self.key = key
+            self.match = match
+
+    class Filter:
+        def __init__(self, *, must: list):
+            self.must = must
+
+    Distance = _Distance()
+    qmodels = SimpleNamespace(
+        FilterSelector=lambda *, filter: SimpleNamespace(filter=filter)
+    )
+    AsyncQdrantClient = None
 from services.llm import llm_service
 from config import settings
 
@@ -38,12 +74,23 @@ class RAGService:
     """Manages the Qdrant vector knowledge base for course materials and transcripts."""
 
     def __init__(self):
-        self.client = AsyncQdrantClient(
-            host=settings.QDRANT_HOST,
-            port=settings.QDRANT_PORT,
-        )
         self.collection_name = settings.QDRANT_COLLECTION
         self.embedding_dim = settings.EMBEDDING_DIMENSIONS
+        self.capability = None
+        if getattr(settings, "is_native_desktop", False):
+            from desktop_native.vector_store import create_local_vector_client
+
+            self.client, self.capability = create_local_vector_client(
+                settings.DESKTOP_VECTOR_ROOT,
+                dimensions=self.embedding_dim,
+            )
+        else:
+            if AsyncQdrantClient is None:
+                raise RuntimeError("qdrant-client is required for the Docker profile")
+            self.client = AsyncQdrantClient(
+                host=settings.QDRANT_HOST,
+                port=settings.QDRANT_PORT,
+            )
 
     # ═══════════════════════════════════════════
     #  COLLECTION LIFECYCLE
