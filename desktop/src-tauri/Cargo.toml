@@ -1,7 +1,7 @@
 [package]
 name = "ai-video-editor"
-version = "1.0.0"
-description = "AI-Agent Assisted Video Editing Framework"
+version = "2.0.0"
+description = "AI Video Editor Desktop V2 thin shell"
 authors = ["FYP Student"]
 edition = "2021"
 

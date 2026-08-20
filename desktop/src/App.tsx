@@ -4,8 +4,10 @@ import { ProcessingView } from "./components/ProcessingView";
 import { ReviewEditor } from "./components/ReviewEditor";
 import { MainSettingsPanel } from "./components/MainSettingsPanel";
 import { ProjectDashboard } from "./components/ProjectDashboard";
+import { DesktopV2ErrorBoundary, DesktopV2Shell } from "./components/DesktopV2Shell";
+import { resolveAppRoute } from "./desktopV2";
 import { Clapperboard, FolderOpen, Settings } from "lucide-react";
-import type { AppSettings, DesktopBootstrapResult, Project, Video } from "./types/api";
+import type { Project, Video } from "./types/api";
 import * as api from "./lib/api";
 
 type View = "dashboard" | "upload" | "processing" | "review";
@@ -23,42 +25,45 @@ type AppRoute = {
 };
 
 export default function App() {
+  const [isTauriRuntime, setIsTauriRuntime] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api.isTauriDesktopRuntime().then(isTauri => {
+      if (!cancelled) setIsTauriRuntime(isTauri);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (isTauriRuntime === null) return <RuntimeDetectionScreen />;
+  return resolveAppRoute(isTauriRuntime) === "desktop-v2-shell"
+    ? <DesktopV2ErrorBoundary><DesktopV2Shell /></DesktopV2ErrorBoundary>
+    : <BrowserEditorApp />;
+}
+function RuntimeDetectionScreen() {
+  return (
+    <div className="flex h-screen items-center justify-center bg-surface text-gray-300">
+      <div className="rounded-xl border border-surface-border bg-surface-raised px-5 py-4 text-sm">Preparing AI Video Editor…</div>
+    </div>
+  );
+}
+function BrowserEditorApp() {
   const [view, setView] = useState<View>("dashboard");
   const [videoId, setVideoId] = useState<string | null>(null);
   const [videoFilename, setVideoFilename] = useState<string>("");
   const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [desktopBootstrap, setDesktopBootstrap] = useState<{
-    loading: boolean;
-    result: DesktopBootstrapResult | null;
-    error: string | null;
-  }>({
-    loading: false,
-    result: null,
-    error: null,
-  });
-
   useEffect(() => {
     (async () => {
-      const nativeDesktop = await api.isNativeDesktop().catch(() => false);
-      if (nativeDesktop) {
-        setDesktopBootstrap({ loading: true, result: null, error: null });
-        try {
-          const result = await api.bootstrapDesktopBackend();
-          api.setBaseUrl(result.backendUrl);
-          setDesktopBootstrap({ loading: false, result, error: null });
-        } catch (error) {
-          setDesktopBootstrap({ loading: false, result: null, error: String(error) });
-        }
-      } else {
-        try {
-          const { invoke } = await import("@tauri-apps/api/core");
-          const settings = await invoke<AppSettings>("load_settings");
-          if (settings?.backend_url) api.setBaseUrl(settings.backend_url);
-        } catch {
-          // Browser dev mode uses the default localhost backend.
-        }
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const settings = await invoke<{ backend_url?: string }>("load_settings");
+        if (settings?.backend_url) api.setBaseUrl(settings.backend_url);
+      } catch {
+        // Browser dev mode uses the default localhost backend.
       }
 
       await restoreRouteFromHash();
@@ -169,25 +174,10 @@ export default function App() {
       </header>
 
       <main className="min-h-0 flex-1 overflow-hidden">
-        {(desktopBootstrap.loading || desktopBootstrap.error) && (
-          <SystemReadinessPanel
-            bootstrap={desktopBootstrap}
-            onRetry={async () => {
-              setDesktopBootstrap({ loading: true, result: null, error: null });
-              try {
-                const result = await api.bootstrapDesktopBackend();
-                api.setBaseUrl(result.backendUrl);
-                setDesktopBootstrap({ loading: false, result, error: null });
-              } catch (error) {
-                setDesktopBootstrap({ loading: false, result: null, error: String(error) });
-              }
-            }}
-          />
-        )}
-        {!desktopBootstrap.loading && !desktopBootstrap.error && view === "dashboard" && (
+        {view === "dashboard" && (
           <ProjectDashboard onContinue={handleDashboardContinue} />
         )}
-        {!desktopBootstrap.loading && !desktopBootstrap.error && view === "upload" && (
+        {view === "upload" && (
           <UploadPanel
             project={selectedProject}
             existingVideo={selectedVideo}
@@ -195,13 +185,13 @@ export default function App() {
             onProjectResolved={handleProjectResolved}
           />
         )}
-        {!desktopBootstrap.loading && !desktopBootstrap.error && view === "processing" && videoId && (
+        {view === "processing" && videoId && (
           <ProcessingView
             videoId={videoId}
             onComplete={handleProcessingComplete}
           />
         )}
-        {!desktopBootstrap.loading && !desktopBootstrap.error && view === "review" && videoId && (
+        {view === "review" && videoId && (
           <ReviewEditor
             videoId={videoId}
             videoFilename={videoFilename}
@@ -253,80 +243,4 @@ function replaceRouteHash(view: View, projectId: string | null, videoId: string 
   if (videoId) params.set("videoId", videoId);
   const query = params.toString();
   window.history.replaceState(null, "", `#/${view}${query ? `?${query}` : ""}`);
-}
-
-function SystemReadinessPanel({
-  bootstrap,
-  onRetry,
-}: {
-  bootstrap: {
-    loading: boolean;
-    result: DesktopBootstrapResult | null;
-    error: string | null;
-  };
-  onRetry: () => Promise<void>;
-}) {
-  const items = bootstrap.result?.items ?? [];
-  const showPanel = bootstrap.loading || bootstrap.error || items.length > 0;
-  if (!showPanel) return null;
-
-  return (
-    <div className="h-full overflow-auto bg-surface px-6 py-8 text-gray-100">
-      <div className="mx-auto max-w-4xl rounded-2xl border border-surface-border bg-surface-raised p-6">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <h2 className="text-2xl font-semibold text-white">System Readiness</h2>
-            <p className="mt-2 text-sm text-gray-400">
-              The desktop app is preparing its local Docker backend and storage before opening the editor.
-            </p>
-          </div>
-          {bootstrap.loading ? (
-            <span className="rounded-full border border-accent/40 bg-accent/10 px-3 py-1 text-xs text-accent">
-              Starting services...
-            </span>
-          ) : bootstrap.result?.ready ? (
-            <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-300">
-              Ready
-            </span>
-          ) : null}
-        </div>
-
-        {bootstrap.error ? (
-          <div className="mt-6 rounded-xl border border-red-400/40 bg-red-500/10 p-4 text-sm text-red-100">
-            <p className="font-semibold">Bootstrap failed</p>
-            <p className="mt-2 whitespace-pre-wrap text-red-100/80">{bootstrap.error}</p>
-            <button
-              type="button"
-              onClick={() => void onRetry()}
-              className="mt-4 rounded-md border border-surface-border px-3 py-1.5 text-xs font-medium text-gray-100 transition-colors hover:border-accent"
-            >
-              Retry services
-            </button>
-          </div>
-        ) : null}
-
-        {items.length > 0 ? (
-          <div className="mt-6 grid gap-3 md:grid-cols-2">
-            {items.map(item => (
-              <div key={item.key} className="rounded-xl border border-surface-border bg-surface-overlay p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm font-semibold text-white">{item.label}</p>
-                  <span className="rounded-full bg-surface px-2 py-0.5 text-[11px] uppercase tracking-wide text-gray-300">
-                    {item.status}
-                  </span>
-                </div>
-                <p className="mt-2 text-xs leading-5 text-gray-400">{item.detail}</p>
-              </div>
-            ))}
-          </div>
-        ) : null}
-
-        {bootstrap.result?.ready ? (
-          <p className="mt-6 text-xs text-gray-500">
-            Backend URL: {bootstrap.result.backendUrl}
-          </p>
-        ) : null}
-      </div>
-    </div>
-  );
 }

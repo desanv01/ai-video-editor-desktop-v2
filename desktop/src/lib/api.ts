@@ -43,6 +43,14 @@ import type {
   SlideCue,
   EditorialBlock,
 } from "../types/api";
+import type {
+  ActivationMetadataInspection,
+  DesktopV2BootstrapResult,
+  DiagnosticSnapshotResult,
+  ResolvedDesktopPaths,
+  SafeLogDirectoryResult,
+  ShellInfo,
+} from "../desktopV2";
 
 let BASE_URL = "http://localhost:8000/api/v1";
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -244,13 +252,47 @@ async function cancelBrowserPrimaryImport(projectId: string, token: string): Pro
 }
 
 export async function isNativeDesktop(): Promise<boolean> {
+  return isTauriDesktopRuntime();
+}
+
+export async function isTauriDesktopRuntime(): Promise<boolean> {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke<AppStorageLayout>("get_app_storage_layout");
+    await invoke<ShellInfo>("get_shell_info");
     return true;
   } catch {
     return false;
   }
+}
+
+export async function getShellInfo(): Promise<ShellInfo> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ShellInfo>("get_shell_info");
+}
+
+export async function getCanonicalDesktopPaths(): Promise<ResolvedDesktopPaths> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ResolvedDesktopPaths>("get_canonical_paths");
+}
+
+export async function inspectDesktopActivationMetadata(): Promise<ActivationMetadataInspection> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ActivationMetadataInspection>("inspect_activation_metadata");
+}
+
+export async function getSafeLogDirectory(): Promise<SafeLogDirectoryResult> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<SafeLogDirectoryResult>("get_safe_log_directory");
+}
+
+export async function bootstrapDesktopV2Shell(): Promise<DesktopV2BootstrapResult> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<DesktopV2BootstrapResult>("desktop_v2_bootstrap");
+}
+
+export async function generateDesktopDiagnosticSnapshot(): Promise<DiagnosticSnapshotResult> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<DiagnosticSnapshotResult>("generate_diagnostic_snapshot");
 }
 
 export async function getAppStorageLayout(): Promise<AppStorageLayout> {

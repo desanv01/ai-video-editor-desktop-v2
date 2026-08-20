@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State, Window};
 
 pub mod contracts;
+pub mod desktop_v2;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ProjectFile {
@@ -876,6 +877,12 @@ pub fn run() {
             bootstrap_desktop_backend,
             start_native_primary_import,
             cancel_native_import,
+            desktop_v2::get_shell_info,
+            desktop_v2::get_canonical_paths,
+            desktop_v2::inspect_activation_metadata,
+            desktop_v2::get_safe_log_directory,
+            desktop_v2::desktop_v2_bootstrap,
+            desktop_v2::generate_diagnostic_snapshot,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

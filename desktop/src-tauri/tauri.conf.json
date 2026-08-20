@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
-  "productName": "AI Video Editor",
-  "version": "1.0.0",
-  "identifier": "com.fyp.ai-video-editor",
+  "productName": "AI Video Editor Desktop V2",
+  "version": "2.0.0",
+  "identifier": "com.fyp.ai-video-editor.desktop-v2",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "AI Video Editor",
+        "title": "AI Video Editor Desktop V2",
         "width": 1400,
         "height": 900,
         "minWidth": 1024,
@@ -34,13 +34,11 @@
     "icon": [
       "icons/icon.ico"
     ],
-    "resources": [
-      "../../docker-compose.desktop.yml",
-      "../../backend/**/*"
-    ],
     "windows": {
       "nsis": {
-        "installMode": "currentUser",
+        "installMode": "perMachine",
+        "startMenuFolder": "AI Video Editor Desktop V2",
+        "displayLanguageSelector": false,
         "installerHooks": "nsis/installer-hooks.nsh"
       }
     }
