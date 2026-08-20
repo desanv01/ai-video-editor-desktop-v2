@@ -14,6 +14,7 @@ use tauri::{AppHandle, Emitter, Manager, State, Window};
 pub mod contracts;
 pub mod component_manager;
 pub mod desktop_v2;
+pub mod migration;
 pub mod setup_center;
 pub mod supervisor;
 
@@ -889,6 +890,15 @@ pub fn run() {
             setup_center::setup_catalog_configuration,
             setup_center::setup_refresh_catalog,
             setup_center::setup_run_system_checks,
+            migration::migration_scan_legacy,
+            migration::migration_preview,
+            migration::migration_execute,
+            migration::migration_rollback,
+            migration::migration_recover,
+            migration::migration_cleanup,
+            migration::migration_repair,
+            migration::migration_uninstall_plan,
+            migration::migration_uninstall_execute,
             desktop_v2::get_shell_info,
             desktop_v2::get_canonical_paths,
             desktop_v2::inspect_activation_metadata,

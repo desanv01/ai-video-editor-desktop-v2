@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "npm run contracts:check && tsc && vite build",
     "test": "npm run contracts:check && npm run test:desktop-v2",
-    "test:desktop-v2": "node --experimental-strip-types ../scripts/desktop-v2/phase2-tests.mjs && node --experimental-strip-types ../scripts/desktop-v2/phase5-tests.mjs && node --experimental-strip-types ../scripts/desktop-v2/phase6-tests.mjs",
+    "test:desktop-v2": "node --experimental-strip-types ../scripts/desktop-v2/phase2-tests.mjs && node --experimental-strip-types ../scripts/desktop-v2/phase5-tests.mjs && node --experimental-strip-types ../scripts/desktop-v2/phase6-tests.mjs && node --experimental-strip-types ../scripts/desktop-v2/phase7-tests.mjs",
     "contracts:check": "node --experimental-strip-types ../scripts/desktop-v2/contract-tests.mjs",
     "preview": "vite preview",
     "render:revideo": "node revideo/render.mjs",

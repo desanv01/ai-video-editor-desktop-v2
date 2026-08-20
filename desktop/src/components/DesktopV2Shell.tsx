@@ -29,8 +29,10 @@ import {
 } from "../setupCenter.ts";
 import * as api from "../lib/api";
 import { SetupCenterPanel } from "./SetupCenterPanel";
+import { MigrationCleanupWizard } from "./MigrationCleanupWizard";
+import { migrationClient, type LegacyInventory } from "../migration";
 
-type ShellPanel = "setup" | "diagnostics";
+type ShellPanel = "setup" | "diagnostics" | "migration";
 
 type ErrorBoundaryProps = { children: ReactNode };
 type ErrorBoundaryState = { hasError: boolean };
@@ -74,6 +76,7 @@ export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void })
   const [failure, setFailure] = useState<ReturnType<typeof normalizeShellFailure> | null>(null);
   const [panel, setPanel] = useState<ShellPanel>("setup");
   const [diagnosticMessage, setDiagnosticMessage] = useState<string | null>(null);
+  const [migrationInventory, setMigrationInventory] = useState<LegacyInventory | null>(null);
 
   const loadShell = useCallback(async () => {
     setLoading(true);
@@ -96,6 +99,16 @@ export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void })
       if (nextBootstrap.bootState === "recoverable-error") setPanel("diagnostics");
     } catch (error) {
       setFailure(normalizeShellFailure(error));
+    }
+
+    try {
+      const legacy = await migrationClient.scan();
+      setMigrationInventory(legacy.hasLegacyState ? legacy : null);
+      if (legacy.hasLegacyState && !nextBootstrap?.bootState?.toString().includes("recoverable")) setPanel("migration");
+    } catch {
+      // Legacy discovery is bounded and read-only; a discovery failure never
+      // blocks browser/Docker mode or the existing Setup Center.
+      setMigrationInventory(null);
     }
 
     try {
@@ -232,6 +245,7 @@ export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void })
           <p className="px-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500">Desktop control</p>
           <nav className="mt-3 space-y-1" aria-label="Desktop control">
             <ShellNavButton active={panel === "setup"} icon={<Wrench className="h-4 w-4" />} label="Setup Center" onClick={() => setPanel("setup")} />
+            {migrationInventory ? <ShellNavButton active={panel === "migration"} icon={<ArchiveIcon />} label="Migration & Cleanup" onClick={() => setPanel("migration")} /> : null}
             <ShellNavButton active={panel === "diagnostics"} icon={<FileSearch className="h-4 w-4" />} label="Diagnostics" onClick={() => void handleDiagnostics()} />
           </nav>
           <div className="mt-8 rounded-xl border border-surface-border bg-surface-overlay p-3 text-xs leading-5 text-gray-400"><LockKeyhole className="mb-2 h-4 w-4 text-accent" aria-hidden="true" />The shell is local-only. Backend, Docker, downloads, and engine processes remain gated until the authenticated supervisor is ready.</div>
@@ -242,7 +256,7 @@ export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void })
           <div className="mx-auto max-w-6xl px-5 py-6 lg:px-8 lg:py-8">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">Desktop V2 base shell</p><h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">{setupRequired ? "Finish local setup with confidence." : "Your local workspace is ready."}</h1><p className="mt-3 max-w-2xl text-sm leading-6 text-gray-400">{setupRequired ? "Install and verify the native components from inside the app, then launch only after the supervisor proves authenticated readiness." : "The shell has bypassed onboarding because the required components are active. Use Setup Center any time to manage the installation."}</p></div><button type="button" onClick={() => void loadShell()} className="inline-flex items-center justify-center gap-2 rounded-lg border border-surface-border bg-surface-raised px-3 py-2 text-xs font-medium text-gray-200 hover:border-accent hover:text-white focus:outline-none focus:ring-2 focus:ring-accent/70"><RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} aria-hidden="true" /> Refresh shell status</button></div>
             {failure ? <ShellFailure failure={failure} onDiagnostics={() => void handleDiagnostics()} /> : null}
-            {panel === "setup" ? <SetupCenterPanel bootstrap={bootstrap} supervisor={supervisor} initialStatuses={statuses} initialState={setupState} initialCatalog={catalogInfo} setupRequired={setupRequired} onSupervisorStatus={setSupervisor} onSetupComplete={handleSetupComplete} onLaunchEditor={handleLaunchEditor} onOpenDiagnostics={() => void handleDiagnostics()} /> : <DiagnosticsPanel bootstrap={bootstrap} supervisor={supervisor} message={diagnosticMessage} onGenerate={() => void handleDiagnostics()} />}
+            {panel === "setup" ? <SetupCenterPanel bootstrap={bootstrap} supervisor={supervisor} initialStatuses={statuses} initialState={setupState} initialCatalog={catalogInfo} setupRequired={setupRequired} onSupervisorStatus={setSupervisor} onSetupComplete={handleSetupComplete} onLaunchEditor={handleLaunchEditor} onOpenDiagnostics={() => void handleDiagnostics()} /> : panel === "migration" && migrationInventory ? <MigrationCleanupWizard inventory={migrationInventory} onContinue={() => setPanel("setup")} /> : <DiagnosticsPanel bootstrap={bootstrap} supervisor={supervisor} message={diagnosticMessage} onGenerate={() => void handleDiagnostics()} />}
           </div>
         </main>
       </div>
@@ -264,4 +278,8 @@ function DiagnosticTile({ label, value }: { label: string; value: string }) {
 
 function ShellNavButton({ active, icon, label, onClick }: { active: boolean; icon: ReactNode; label: string; onClick: () => void }) {
   return <button type="button" onClick={onClick} aria-current={active ? "page" : undefined} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-accent/70 ${active ? "bg-accent/15 text-white ring-1 ring-accent/30" : "text-gray-400 hover:bg-surface-overlay hover:text-gray-200"}`}>{icon}<span>{label}</span></button>;
+}
+
+function ArchiveIcon() {
+  return <span aria-hidden="true" className="flex h-4 w-4 items-center justify-center rounded border border-amber-300/70 text-[9px] text-amber-200">M</span>;
 }

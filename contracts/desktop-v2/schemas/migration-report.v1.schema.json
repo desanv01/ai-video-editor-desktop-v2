@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aive.dev/desktop-v2/migration-report.v1.schema.json",
+  "title": "AI Video Editor Desktop V2 migration report and journal handoff",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "migrationId", "generatedAtEpochMs", "inventory", "targets", "plan", "preflight", "status", "completedItemIds", "warnings", "redactedSecretNames", "recommendedNextAction"],
+  "properties": {
+    "schemaVersion": { "const": "desktop.migration-report.v1" },
+    "migrationId": { "type": "string", "minLength": 1 },
+    "generatedAtEpochMs": { "type": "integer", "minimum": 0 },
+    "inventory": { "$ref": "migration-inventory.v1.schema.json" },
+    "targets": { "$ref": "#/$defs/targets" },
+    "plan": { "type": "array", "items": { "$ref": "#/$defs/planItem" } },
+    "preflight": { "$ref": "#/$defs/preflight" },
+    "status": { "type": "string" },
+    "journalPath": { "type": ["string", "null"] },
+    "completedItemIds": { "type": "array", "items": { "type": "string" } },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "redactedSecretNames": { "type": "array", "items": { "type": "string" } },
+    "recommendedNextAction": { "type": "string" }
+  },
+  "$defs": {
+    "targets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["userRoot", "config", "cache", "temp", "logs", "state", "uploads", "projects", "exports", "backupRoot", "programDataProductRoot"],
+      "properties": {
+        "userRoot": { "type": "string" }, "config": { "type": "string" }, "cache": { "type": "string" }, "temp": { "type": "string" }, "logs": { "type": "string" }, "state": { "type": "string" }, "uploads": { "type": "string" }, "projects": { "type": "string" }, "exports": { "type": "string" }, "backupRoot": { "type": "string" }, "programDataProductRoot": { "type": "string" }
+      }
+    },
+    "planItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["itemId", "action", "sourcePath", "bytes", "conflictStrategy", "supported"],
+      "properties": {
+        "itemId": { "type": "string" }, "action": { "type": "string" }, "sourcePath": { "type": "string" }, "destinationPath": { "type": ["string", "null"] }, "stagingPath": { "type": ["string", "null"] }, "bytes": { "type": "integer", "minimum": 0 }, "conflictStrategy": { "type": "string" }, "supported": { "type": "boolean" }, "warning": { "type": ["string", "null"] }
+      }
+    },
+    "preflight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "requiredBytes", "availableBytes", "diskSpaceOk", "safeBoundariesOk", "lockedItems", "reparseItems", "conflicts", "warnings"],
+      "properties": {
+        "passed": { "type": "boolean" }, "requiredBytes": { "type": "integer", "minimum": 0 }, "availableBytes": { "type": ["integer", "null"] }, "diskSpaceOk": { "type": "boolean" }, "safeBoundariesOk": { "type": "boolean" }, "lockedItems": { "type": "array", "items": { "type": "string" } }, "reparseItems": { "type": "array", "items": { "type": "string" } }, "conflicts": { "type": "array", "items": { "type": "string" } }, "warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

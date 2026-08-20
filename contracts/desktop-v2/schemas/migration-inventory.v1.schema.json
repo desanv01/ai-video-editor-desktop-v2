@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aive.dev/desktop-v2/migration-inventory.v1.schema.json",
+  "title": "AI Video Editor Desktop V2 legacy migration inventory",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "generatedAtEpochMs", "roots", "oldInstallIdentities", "items", "processes", "shortcuts", "registryUninstallRecords", "conflicts", "warnings", "totals", "hasLegacyState", "scanComplete", "recommendedAction", "redactionPolicy"],
+  "properties": {
+    "schemaVersion": { "const": "desktop.migration-inventory.v1" },
+    "generatedAtEpochMs": { "type": "integer", "minimum": 0 },
+    "roots": { "$ref": "#/$defs/roots" },
+    "oldInstallIdentities": { "type": "array", "items": { "$ref": "#/$defs/identity" } },
+    "items": { "type": "array", "items": { "$ref": "#/$defs/item" } },
+    "processes": { "type": "array", "items": { "$ref": "#/$defs/process" } },
+    "shortcuts": { "type": "array", "items": { "$ref": "#/$defs/shortcut" } },
+    "registryUninstallRecords": { "type": "array", "items": { "$ref": "#/$defs/registry" } },
+    "conflicts": { "type": "array", "items": { "type": "string" } },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "totals": { "$ref": "#/$defs/totals" },
+    "hasLegacyState": { "type": "boolean" },
+    "scanComplete": { "type": "boolean" },
+    "recommendedAction": { "type": "string" },
+    "redactionPolicy": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "roots": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["localAppData", "programFiles", "programData", "userProfile"],
+      "properties": {
+        "localAppData": { "type": "string", "minLength": 1 },
+        "programFiles": { "type": "string", "minLength": 1 },
+        "programFilesX86": { "type": ["string", "null"] },
+        "programData": { "type": "string", "minLength": 1 },
+        "userProfile": { "type": "string", "minLength": 1 },
+        "desktop": { "type": ["string", "null"] },
+        "startMenu": { "type": ["string", "null"] },
+        "registry": { "type": ["string", "null"] }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identityId", "productName", "installScope", "installPath", "evidencePaths", "isCurrentV2"],
+      "properties": {
+        "identityId": { "type": "string" },
+        "productName": { "type": "string" },
+        "identifier": { "type": ["string", "null"] },
+        "version": { "type": ["string", "null"] },
+        "installScope": { "type": "string" },
+        "installPath": { "type": "string" },
+        "evidencePaths": { "type": "array", "items": { "type": "string" } },
+        "isCurrentV2": { "type": "boolean" }
+      }
+    },
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["itemId", "category", "classification", "sourcePath", "rootScope", "exists", "isDirectory", "fileCount", "sizeBytes", "reparsePoint", "locked", "safeBoundary", "compatibleForMigration", "exportImportRequired", "secretDetected", "secretNames", "conflict", "recommendedAction", "rationale", "notes"],
+      "properties": {
+        "itemId": { "type": "string" },
+        "category": { "type": "string" },
+        "classification": { "type": "string" },
+        "sourcePath": { "type": "string" },
+        "rootScope": { "type": "string" },
+        "exists": { "type": "boolean" },
+        "isDirectory": { "type": "boolean" },
+        "fileCount": { "type": "integer", "minimum": 0 },
+        "sizeBytes": { "type": "integer", "minimum": 0 },
+        "reparsePoint": { "type": "boolean" },
+        "locked": { "type": "boolean" },
+        "safeBoundary": { "type": "boolean" },
+        "oldIdentityId": { "type": ["string", "null"] },
+        "detectedVersion": { "type": ["string", "null"] },
+        "databaseKind": { "type": ["string", "null"] },
+        "compatibleForMigration": { "type": "boolean" },
+        "exportImportRequired": { "type": "boolean" },
+        "secretDetected": { "type": "boolean" },
+        "secretNames": { "type": "array", "items": { "type": "string" } },
+        "conflict": { "type": "boolean" },
+        "recommendedAction": { "type": "string" },
+        "rationale": { "type": "string" },
+        "notes": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourcePath", "ownedByProduct", "stale", "detail"],
+      "properties": {
+        "sourcePath": { "type": "string" },
+        "pid": { "type": ["integer", "null"] },
+        "port": { "type": ["integer", "null"] },
+        "ownedByProduct": { "type": "boolean" },
+        "stale": { "type": "boolean" },
+        "detail": { "type": "string" }
+      }
+    },
+    "shortcut": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourcePath", "location", "stale", "safeToRemove", "detail"],
+      "properties": {
+        "sourcePath": { "type": "string" },
+        "location": { "type": "string" },
+        "targetHint": { "type": ["string", "null"] },
+        "oldIdentityId": { "type": ["string", "null"] },
+        "stale": { "type": "boolean" },
+        "safeToRemove": { "type": "boolean" },
+        "detail": { "type": "string" }
+      }
+    },
+    "registry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourcePath", "uninstallCommandPresent", "stale", "safeToRemove"],
+      "properties": {
+        "sourcePath": { "type": "string" },
+        "displayName": { "type": ["string", "null"] },
+        "displayVersion": { "type": ["string", "null"] },
+        "identifier": { "type": ["string", "null"] },
+        "uninstallCommandPresent": { "type": "boolean" },
+        "oldIdentityId": { "type": ["string", "null"] },
+        "stale": { "type": "boolean" },
+        "safeToRemove": { "type": "boolean" }
+      }
+    },
+    "totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["itemCount", "totalBytes", "valuableBytes", "migratableBytes", "cleanupBytes", "unsupportedDatabaseBytes"],
+      "properties": {
+        "itemCount": { "type": "integer", "minimum": 0 },
+        "totalBytes": { "type": "integer", "minimum": 0 },
+        "valuableBytes": { "type": "integer", "minimum": 0 },
+        "migratableBytes": { "type": "integer", "minimum": 0 },
+        "cleanupBytes": { "type": "integer", "minimum": 0 },
+        "unsupportedDatabaseBytes": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

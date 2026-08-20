@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aive.dev/desktop-v2/uninstall-plan.v1.schema.json",
+  "title": "AI Video Editor Desktop V2 professional uninstall choices",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "generatedAtEpochMs", "roots", "removeByDefault", "preserveByDefault", "fullWipePaths", "ownedProcesses", "warnings", "defaultChoice", "fullWipeConfirmation"],
+  "properties": {
+    "schemaVersion": { "const": "desktop.uninstall-plan.v1" },
+    "generatedAtEpochMs": { "type": "integer", "minimum": 0 },
+    "roots": { "type": "object" },
+    "removeByDefault": { "type": "array", "items": { "$ref": "#/$defs/path" } },
+    "preserveByDefault": { "type": "array", "items": { "$ref": "#/$defs/path" } },
+    "fullWipePaths": { "type": "array", "items": { "$ref": "#/$defs/path" } },
+    "ownedProcesses": { "type": "array", "items": { "$ref": "#/$defs/process" } },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "defaultChoice": { "type": "string" },
+    "fullWipeConfirmation": { "const": "REMOVE ALL AI VIDEO EDITOR USER DATA" }
+  },
+  "$defs": {
+    "path": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "classification", "removeByDefault", "preserveByDefault", "safeBoundary", "exists", "reason"],
+      "properties": {
+        "path": { "type": "string" }, "classification": { "type": "string" }, "removeByDefault": { "type": "boolean" }, "preserveByDefault": { "type": "boolean" }, "safeBoundary": { "type": "boolean" }, "exists": { "type": "boolean" }, "reason": { "type": "string" }
+      }
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["markerPath", "stopAllowed", "reason"],
+      "properties": {
+        "pid": { "type": ["integer", "null"] }, "port": { "type": ["integer", "null"] }, "markerPath": { "type": "string" }, "owner": { "type": ["string", "null"] }, "stopAllowed": { "type": "boolean" }, "reason": { "type": "string" }
+      }
+    }
+  }
+}
