@@ -1,0 +1,55 @@
+{
+  "schemaVersion": "desktop.engine-control.v1",
+  "messageType": "start",
+  "session": {
+    "sessionId": "session-20260820",
+    "bearerToken": "0123456789abcdef0123456789abcdef0123456789abcdef"
+  },
+  "engine": {
+    "id": "aive-engine",
+    "version": "1.4.0"
+  },
+  "process": {
+    "componentId": "aive-engine",
+    "componentVersion": "1.4.0",
+    "executablePath": "C:\\ProgramData\\AI Video Editor\\Components\\aive-engine\\1.4.0\\bin\\aive-engine.exe",
+    "entrypoint": "bin/aive-engine.exe",
+    "arguments": ["--config", "C:\\Users\\Example\\AppData\\Local\\AI Video Editor\\Config\\engine.json"]
+  },
+  "loopback": {
+    "host": "127.0.0.1",
+    "allocation": "dynamic",
+    "requestedPort": 0
+  },
+  "storagePaths": {
+    "layoutVersion": "desktop.storage-layout.v1",
+    "shellInstallRoot": "C:\\Program Files\\AI Video Editor\\Shell",
+    "sharedComponentsRoot": "C:\\ProgramData\\AI Video Editor\\Components",
+    "activationMetadataRoot": "C:\\ProgramData\\AI Video Editor\\Activation",
+    "downloadStagingRoot": "C:\\ProgramData\\AI Video Editor\\Downloads\\Staging",
+    "userConfigRoot": "C:\\Users\\Example\\AppData\\Local\\AI Video Editor\\Config",
+    "userCacheRoot": "C:\\Users\\Example\\AppData\\Local\\AI Video Editor\\Cache",
+    "userLogsRoot": "C:\\Users\\Example\\AppData\\Local\\AI Video Editor\\Logs",
+    "userStateRoot": "C:\\Users\\Example\\AppData\\Local\\AI Video Editor\\State",
+    "projectsRoot": "C:\\Users\\Example\\Documents\\AI Video Editor\\Projects",
+    "exportsRoot": "C:\\Users\\Example\\Documents\\AI Video Editor\\Exports",
+    "programFilesRuntimeWritable": false
+  },
+  "installedComponents": [
+    {
+      "id": "aive-engine",
+      "version": "1.4.0",
+      "path": "C:\\ProgramData\\AI Video Editor\\Components\\aive-engine\\1.4.0",
+      "active": true,
+      "capabilities": ["api", "database", "vector-store", "ffmpeg", "native-import"]
+    }
+  ],
+  "requestedCapabilities": ["api", "database", "vector-store", "ffmpeg", "native-import"],
+  "logPath": "C:\\Users\\Example\\AppData\\Local\\AI Video Editor\\Logs\\engine.log",
+  "startupDeadlineMs": 120000,
+  "shutdownPolicy": {
+    "mode": "graceful",
+    "gracePeriodMs": 10000,
+    "escalation": "terminate"
+  }
+}

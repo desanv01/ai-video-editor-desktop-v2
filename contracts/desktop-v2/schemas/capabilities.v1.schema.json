@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aive.dev/desktop-v2/capabilities.v1.schema.json",
+  "title": "AI Video Editor Desktop V2 capabilities payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "componentId", "componentVersion", "generatedAt", "requested", "items"],
+  "properties": {
+    "schemaVersion": { "const": "desktop.capabilities.v1" },
+    "componentId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$"
+    },
+    "componentVersion": { "$ref": "#/$defs/semver" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "requested": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/capabilityId" },
+      "uniqueItems": true
+    },
+    "items": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/capability" },
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "capabilityId": {
+      "enum": ["api", "database", "vector-store", "ffmpeg", "ai-model", "transcription", "rendering", "gpu", "native-import"]
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "state", "source"],
+      "properties": {
+        "id": { "$ref": "#/$defs/capabilityId" },
+        "state": { "enum": ["available", "degraded", "unavailable"] },
+        "source": { "enum": ["component", "backend", "model", "host"] },
+        "version": { "$ref": "#/$defs/semver" },
+        "detail": { "type": "string" },
+        "remediationCodes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/remediationCode" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "remediationCode": {
+      "enum": [
+        "ENGINE_NOT_RUNNING",
+        "API_UNHEALTHY",
+        "DATABASE_UNAVAILABLE",
+        "VECTOR_STORE_UNAVAILABLE",
+        "FFMPEG_MISSING",
+        "MODEL_NOT_INSTALLED",
+        "MODEL_LOAD_FAILED",
+        "COMPONENT_VERSION_INCOMPATIBLE",
+        "PORT_ALLOCATION_FAILED",
+        "SESSION_AUTH_FAILED",
+        "STORAGE_NOT_WRITABLE",
+        "MIGRATION_REQUIRED",
+        "UPDATE_ROLLBACK_AVAILABLE",
+        "RESTART_REQUIRED",
+        "DISK_SPACE_LOW"
+      ]
+    }
+  }
+}

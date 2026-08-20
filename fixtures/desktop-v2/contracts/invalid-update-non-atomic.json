@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "desktop.update-state.v1",
+  "operationId": "update-20260820",
+  "componentId": "aive-engine",
+  "targetVersion": "1.4.0",
+  "channel": "stable",
+  "state": "active",
+  "download": {
+    "url": "https://downloads.example.test/aive-engine-1.4.0.zip",
+    "expectedBytes": 1024,
+    "bytesDownloaded": 1024,
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tempPath": "C:\\ProgramData\\AI Video Editor\\Downloads\\Staging\\update-20260820.part",
+    "resumable": true,
+    "recovery": {
+      "status": "none",
+      "resumeFromByte": 0,
+      "lastVerifiedByte": 0
+    }
+  },
+  "activation": {
+    "strategy": "stage-then-atomic-rename",
+    "stagePath": "C:\\ProgramData\\AI Video Editor\\Components\\aive-engine\\.staging\\1.4.0",
+    "activePath": "C:\\ProgramData\\AI Video Editor\\Components\\aive-engine\\active",
+    "metadataPath": "C:\\ProgramData\\AI Video Editor\\Activation\\aive-engine.json",
+    "currentVersion": "1.3.2",
+    "targetVersion": "1.4.0",
+    "checkpoint": "active",
+    "atomicCommit": false
+  },
+  "rollback": {
+    "available": true,
+    "previousVersion": "1.3.2",
+    "previousPath": "C:\\ProgramData\\AI Video Editor\\Components\\aive-engine\\1.3.2",
+    "automatic": true,
+    "attemptCount": 0,
+    "maxAttempts": 2
+  },
+  "updatedAt": "2026-08-20T01:00:00Z"
+}

@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aive.dev/desktop-v2/update-state.v1.schema.json",
+  "title": "AI Video Editor Desktop V2 component update state",
+  "description": "Crash-safe download, verification, atomic activation and rollback journal.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operationId", "componentId", "targetVersion", "channel", "state", "download", "activation", "rollback", "updatedAt"],
+  "properties": {
+    "schemaVersion": { "const": "desktop.update-state.v1" },
+    "operationId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{8,64}$" },
+    "componentId": { "type": "string", "minLength": 1 },
+    "targetVersion": { "$ref": "#/$defs/semver" },
+    "channel": { "enum": ["stable", "beta", "nightly"] },
+    "state": {
+      "enum": ["idle", "checking", "downloading", "paused", "downloaded", "verifying", "staged", "activating", "active", "interrupted", "rolling-back", "rolled-back", "failed"]
+    },
+    "download": { "$ref": "#/$defs/download" },
+    "activation": { "$ref": "#/$defs/activation" },
+    "rollback": { "$ref": "#/$defs/rollback" },
+    "error": { "$ref": "#/$defs/error" },
+    "updatedAt": { "type": "string", "format": "date-time" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "state": { "const": "interrupted" } } },
+      "then": {
+        "properties": {
+          "download": {
+            "properties": {
+              "recovery": {
+                "properties": {
+                  "status": { "enum": ["resume-available", "restart-required"] }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "state": { "const": "active" } } },
+      "then": {
+        "properties": {
+          "activation": {
+            "properties": {
+              "checkpoint": { "const": "active" },
+              "atomicCommit": { "const": true }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "download": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "expectedBytes", "bytesDownloaded", "sha256", "tempPath", "resumable", "recovery"],
+      "properties": {
+        "url": { "type": "string", "format": "uri", "pattern": "^https://" },
+        "expectedBytes": { "type": "integer", "minimum": 1 },
+        "bytesDownloaded": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "tempPath": { "type": "string", "minLength": 1 },
+        "resumable": { "type": "boolean" },
+        "recovery": { "$ref": "#/$defs/recovery" }
+      }
+    },
+    "recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "resumeFromByte", "lastVerifiedByte"],
+      "properties": {
+        "status": { "enum": ["none", "resume-available", "restart-required", "discarded"] },
+        "resumeFromByte": { "type": "integer", "minimum": 0 },
+        "lastVerifiedByte": { "type": "integer", "minimum": 0 },
+        "etag": { "type": "string", "minLength": 1 }
+      }
+    },
+    "activation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "stagePath", "activePath", "metadataPath", "currentVersion", "targetVersion", "checkpoint", "atomicCommit"],
+      "properties": {
+        "strategy": { "const": "stage-then-atomic-rename" },
+        "stagePath": { "type": "string", "minLength": 1 },
+        "activePath": { "type": "string", "minLength": 1 },
+        "metadataPath": { "type": "string", "minLength": 1 },
+        "currentVersion": { "$ref": "#/$defs/semver" },
+        "targetVersion": { "$ref": "#/$defs/semver" },
+        "checkpoint": { "enum": ["none", "downloaded", "verified", "staged", "active", "rolled-back"] },
+        "atomicCommit": { "type": "boolean" }
+      }
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["available", "automatic", "attemptCount", "maxAttempts"],
+      "properties": {
+        "available": { "type": "boolean" },
+        "previousVersion": { "$ref": "#/$defs/semver" },
+        "previousPath": { "type": "string", "minLength": 1 },
+        "automatic": { "type": "boolean" },
+        "attemptCount": { "type": "integer", "minimum": 0 },
+        "maxAttempts": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "reason": { "type": "string" }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^[A-Z0-9_]{3,64}$" },
+        "message": { "type": "string", "minLength": 1 },
+        "retryable": { "type": "boolean" }
+      }
+    }
+  }
+}

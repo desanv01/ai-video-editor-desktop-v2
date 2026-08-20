@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "desktop.capabilities.v1",
+  "componentId": "aive-engine",
+  "componentVersion": "1.4.0",
+  "generatedAt": "2026-08-20T01:00:00Z",
+  "requested": ["api", "database", "ffmpeg", "native-import"],
+  "items": [
+    {
+      "id": "api",
+      "state": "available",
+      "source": "backend",
+      "version": "1.4.0",
+      "detail": "Authenticated loopback API available."
+    },
+    {
+      "id": "database",
+      "state": "available",
+      "source": "component",
+      "version": "16.0.0",
+      "detail": "Database connection ready."
+    },
+    {
+      "id": "ffmpeg",
+      "state": "available",
+      "source": "host",
+      "detail": "FFmpeg is available on the component PATH."
+    },
+    {
+      "id": "native-import",
+      "state": "degraded",
+      "source": "component",
+      "detail": "Native import is available with a per-session staging directory.",
+      "remediationCodes": ["STORAGE_NOT_WRITABLE"]
+    }
+  ]
+}

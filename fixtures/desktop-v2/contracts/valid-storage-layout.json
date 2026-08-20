@@ -1,0 +1,87 @@
+{
+  "schemaVersion": "desktop.storage-layout.v1",
+  "platform": "windows",
+  "programFilesRuntimeWritable": false,
+  "paths": {
+    "shellInstall": {
+      "pathTemplate": "%ProgramFiles%\\AI Video Editor\\Shell",
+      "scope": "machine",
+      "owner": "machine-installer",
+      "writer": "installer",
+      "runtimeWritable": false,
+      "purpose": "Versioned thin shell binaries and static resources."
+    },
+    "sharedComponents": {
+      "pathTemplate": "%ProgramData%\\AI Video Editor\\Components",
+      "scope": "machine",
+      "owner": "machine-update-service",
+      "writer": "update-service",
+      "runtimeWritable": false,
+      "purpose": "Verified immutable component versions selected by activation metadata."
+    },
+    "activationMetadata": {
+      "pathTemplate": "%ProgramData%\\AI Video Editor\\Activation",
+      "scope": "machine",
+      "owner": "machine-update-service",
+      "writer": "update-service",
+      "runtimeWritable": false,
+      "purpose": "Atomic active-version pointers, update journals and rollback records."
+    },
+    "downloadStaging": {
+      "pathTemplate": "%ProgramData%\\AI Video Editor\\Downloads\\Staging",
+      "scope": "machine",
+      "owner": "machine-update-service",
+      "writer": "update-service",
+      "runtimeWritable": false,
+      "purpose": "Resumable temporary downloads before digest, signature and inventory verification."
+    },
+    "userConfig": {
+      "pathTemplate": "%LocalAppData%\\AI Video Editor\\Config",
+      "scope": "user",
+      "owner": "user",
+      "writer": "user-runtime",
+      "runtimeWritable": true,
+      "purpose": "Per-user settings and non-secret preferences."
+    },
+    "userCache": {
+      "pathTemplate": "%LocalAppData%\\AI Video Editor\\Cache",
+      "scope": "user",
+      "owner": "user",
+      "writer": "user-runtime",
+      "runtimeWritable": true,
+      "purpose": "Rebuildable per-user caches and indexes."
+    },
+    "userLogs": {
+      "pathTemplate": "%LocalAppData%\\AI Video Editor\\Logs",
+      "scope": "user",
+      "owner": "user",
+      "writer": "user-runtime",
+      "runtimeWritable": true,
+      "purpose": "Redacted per-user shell and engine logs."
+    },
+    "userState": {
+      "pathTemplate": "%LocalAppData%\\AI Video Editor\\State",
+      "scope": "user",
+      "owner": "user",
+      "writer": "user-runtime",
+      "runtimeWritable": true,
+      "purpose": "Per-user resumable operation state and local metadata."
+    },
+    "projects": {
+      "pathTemplate": "%USERPROFILE%\\Documents\\AI Video Editor\\Projects",
+      "scope": "user-selected",
+      "owner": "user",
+      "writer": "user-runtime",
+      "runtimeWritable": true,
+      "purpose": "User projects under Documents by default or an explicitly selected folder."
+    },
+    "exports": {
+      "pathTemplate": "%USERPROFILE%\\Documents\\AI Video Editor\\Exports",
+      "scope": "user-selected",
+      "owner": "user",
+      "writer": "user-runtime",
+      "runtimeWritable": true,
+      "purpose": "User-selected export destination, Documents by default."
+    }
+  }
+}

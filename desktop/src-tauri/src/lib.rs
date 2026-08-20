@@ -11,6 +11,8 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State, Window};
 
+pub mod contracts;
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ProjectFile {
     pub version: String,

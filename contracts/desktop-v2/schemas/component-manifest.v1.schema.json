@@ -1,0 +1,289 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aive.dev/desktop-v2/component-manifest.v1.schema.json",
+  "title": "AI Video Editor Desktop V2 component manifest",
+  "description": "Signed, immutable component metadata consumed by the Desktop V2 updater and shell.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "component",
+    "target",
+    "requirements",
+    "artifact",
+    "signature",
+    "archive",
+    "install",
+    "entrypoint",
+    "dependencies",
+    "capabilities",
+    "metadata",
+    "files",
+    "selfTest",
+    "health",
+    "rollback"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "desktop.component-manifest.v1" },
+    "component": { "$ref": "#/$defs/componentIdentity" },
+    "target": { "$ref": "#/$defs/target" },
+    "requirements": { "$ref": "#/$defs/requirements" },
+    "artifact": { "$ref": "#/$defs/artifact" },
+    "signature": { "$ref": "#/$defs/signature" },
+    "archive": { "$ref": "#/$defs/archive" },
+    "install": { "$ref": "#/$defs/install" },
+    "entrypoint": { "$ref": "#/$defs/entrypoint" },
+    "dependencies": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/dependency" },
+      "uniqueItems": true
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/capability" },
+      "uniqueItems": true
+    },
+    "metadata": { "$ref": "#/$defs/metadata" },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/fileInventory" }
+    },
+    "selfTest": { "$ref": "#/$defs/selfTest" },
+    "health": { "$ref": "#/$defs/health" },
+    "rollback": { "$ref": "#/$defs/rollback" }
+  },
+  "$defs": {
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "versionConstraint": {
+      "type": "string",
+      "pattern": "^(?:\\*|(?:[<>=~^]*[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?)(?:\\s+(?:[<>=~^]*[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?))*)$"
+    },
+    "safeRelativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![A-Za-z]:)(?![\\\\/])(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$))(?!.*[\\\\/]{2})[^<>:\"|?*]+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "componentIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "version", "channel"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["backend", "database", "vector-store", "ffmpeg", "model", "renderer", "utility"]
+        },
+        "version": { "$ref": "#/$defs/semver" },
+        "channel": { "enum": ["stable", "beta", "nightly"] }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operatingSystems", "architectures"],
+      "properties": {
+        "operatingSystems": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "enum": ["windows", "macos", "linux"] },
+          "uniqueItems": true
+        },
+        "architectures": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "enum": ["x86", "x86_64", "aarch64"] },
+          "uniqueItems": true
+        }
+      }
+    },
+    "requirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minimumShellVersion"],
+      "properties": {
+        "minimumShellVersion": { "$ref": "#/$defs/semver" },
+        "requiresElevation": { "type": "boolean" }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "byteSize", "sha256"],
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "byteSize": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "value", "keyId"],
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "value": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9+/]+={0,2}$"
+        },
+        "keyId": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{2,63}$"
+        }
+      }
+    },
+    "archive": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "rootDirectory"],
+      "properties": {
+        "format": { "enum": ["zip", "tar.gz"] },
+        "rootDirectory": { "$ref": "#/$defs/safeRelativePath" }
+      }
+    },
+    "install": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rootKind", "relativePath", "immutable", "activation"],
+      "properties": {
+        "rootKind": { "const": "program-data-components" },
+        "relativePath": { "$ref": "#/$defs/safeRelativePath" },
+        "immutable": { "const": true },
+        "activation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["strategy", "activePath", "stagingPath", "metadataPath", "atomicCommit"],
+          "properties": {
+            "strategy": { "const": "stage-then-atomic-rename" },
+            "activePath": { "$ref": "#/$defs/safeRelativePath" },
+            "stagingPath": { "$ref": "#/$defs/safeRelativePath" },
+            "metadataPath": { "$ref": "#/$defs/safeRelativePath" },
+            "atomicCommit": { "const": true }
+          }
+        }
+      }
+    },
+    "entrypoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "relativePath", "arguments"],
+      "properties": {
+        "kind": { "enum": ["executable", "script"] },
+        "relativePath": { "$ref": "#/$defs/safeRelativePath" },
+        "arguments": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "workingDirectory": { "$ref": "#/$defs/safeRelativePath" }
+      }
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "versionConstraint", "optional"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$"
+        },
+        "versionConstraint": { "$ref": "#/$defs/versionConstraint" },
+        "optional": { "type": "boolean" }
+      }
+    },
+    "capability": {
+      "enum": ["api", "database", "vector-store", "ffmpeg", "ai-model", "transcription", "rendering", "gpu", "native-import"]
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["displayName", "publisher", "license", "source"],
+      "properties": {
+        "displayName": { "type": "string", "minLength": 1 },
+        "publisher": { "type": "string", "minLength": 1 },
+        "license": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["spdxId", "noticeFile"],
+          "properties": {
+            "spdxId": { "type": "string", "pattern": "^[A-Za-z0-9.+-]+$" },
+            "noticeFile": { "$ref": "#/$defs/safeRelativePath" }
+          }
+        },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repositoryUrl", "releaseUrl"],
+          "properties": {
+            "repositoryUrl": { "type": "string", "format": "uri", "pattern": "^https://" },
+            "releaseUrl": { "type": "string", "format": "uri", "pattern": "^https://" }
+          }
+        }
+      }
+    },
+    "fileInventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "kind", "byteSize", "sha256", "executable"],
+      "properties": {
+        "path": { "$ref": "#/$defs/safeRelativePath" },
+        "kind": { "enum": ["file", "directory"] },
+        "byteSize": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "executable": { "type": "boolean" }
+      }
+    },
+    "selfTest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "timeoutMs", "expectedExitCode"],
+      "properties": {
+        "command": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 600000 },
+        "expectedExitCode": { "type": "integer", "const": 0 }
+      }
+    },
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["probe", "path", "method", "timeoutMs", "readinessSchemaVersion", "requiresBearerToken"],
+      "properties": {
+        "probe": { "const": "http" },
+        "path": { "type": "string", "pattern": "^/" },
+        "method": { "const": "GET" },
+        "timeoutMs": { "type": "integer", "minimum": 100, "maximum": 60000 },
+        "readinessSchemaVersion": { "const": "desktop.health-readiness.v1" },
+        "requiresBearerToken": { "const": true }
+      }
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "retentionCount", "metadataPath", "onActivationFailure"],
+      "properties": {
+        "strategy": { "const": "retain-previous-active" },
+        "retentionCount": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "metadataPath": { "$ref": "#/$defs/safeRelativePath" },
+        "onActivationFailure": { "enum": ["rollback-automatically", "mark-failed"] }
+      }
+    }
+  }
+}

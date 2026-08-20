@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aive.dev/desktop-v2/engine-control.v1.schema.json",
+  "title": "AI Video Editor Desktop V2 shell-to-engine control message",
+  "description": "Authenticated loopback startup, readiness acknowledgement and graceful shutdown contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "messageType",
+    "session",
+    "engine",
+    "process",
+    "loopback",
+    "storagePaths",
+    "installedComponents",
+    "requestedCapabilities",
+    "logPath",
+    "startupDeadlineMs",
+    "shutdownPolicy"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "desktop.engine-control.v1" },
+    "messageType": { "enum": ["start", "ready", "shutdown", "shutdown-ack"] },
+    "session": { "$ref": "#/$defs/session" },
+    "engine": { "$ref": "#/$defs/engine" },
+    "process": { "$ref": "#/$defs/process" },
+    "loopback": { "$ref": "#/$defs/loopback" },
+    "storagePaths": { "$ref": "#/$defs/storagePaths" },
+    "installedComponents": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/installedComponent" }
+    },
+    "requestedCapabilities": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/capabilityId" },
+      "uniqueItems": true
+    },
+    "logPath": { "type": "string", "minLength": 1 },
+    "startupDeadlineMs": { "type": "integer", "minimum": 1000, "maximum": 600000 },
+    "shutdownPolicy": { "$ref": "#/$defs/shutdownPolicy" },
+    "shutdown": { "$ref": "#/$defs/shutdown" },
+    "readiness": { "$ref": "#/$defs/readiness" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "messageType": { "const": "start" } } },
+      "then": { "not": { "required": ["shutdown"] } }
+    },
+    {
+      "if": { "properties": { "messageType": { "const": "ready" } } },
+      "then": { "required": ["readiness"] }
+    },
+    {
+      "if": { "properties": { "messageType": { "const": "shutdown" } } },
+      "then": { "required": ["shutdown"] }
+    },
+    {
+      "if": { "properties": { "messageType": { "const": "shutdown-ack" } } },
+      "then": { "required": ["shutdown"] }
+    }
+  ],
+  "$defs": {
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sessionId", "bearerToken"],
+      "properties": {
+        "sessionId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{8,64}$" },
+        "bearerToken": { "type": "string", "pattern": "^[A-Za-z0-9._~-]{32,256}$" }
+      }
+    },
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": { "const": "aive-engine" },
+        "version": { "$ref": "#/$defs/semver" }
+      }
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["componentId", "componentVersion", "executablePath", "entrypoint", "arguments"],
+      "properties": {
+        "componentId": { "type": "string", "minLength": 1 },
+        "componentVersion": { "$ref": "#/$defs/semver" },
+        "pid": { "type": "integer", "minimum": 1 },
+        "executablePath": { "type": "string", "minLength": 1 },
+        "entrypoint": { "type": "string", "minLength": 1 },
+        "arguments": { "type": "array", "items": { "type": "string" } },
+        "startedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "loopback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "allocation", "requestedPort"],
+      "properties": {
+        "host": { "const": "127.0.0.1" },
+        "allocation": { "const": "dynamic" },
+        "requestedPort": { "const": 0 },
+        "assignedPort": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "storagePaths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "layoutVersion",
+        "shellInstallRoot",
+        "sharedComponentsRoot",
+        "activationMetadataRoot",
+        "downloadStagingRoot",
+        "userConfigRoot",
+        "userCacheRoot",
+        "userLogsRoot",
+        "userStateRoot",
+        "projectsRoot",
+        "exportsRoot",
+        "programFilesRuntimeWritable"
+      ],
+      "properties": {
+        "layoutVersion": { "const": "desktop.storage-layout.v1" },
+        "shellInstallRoot": { "type": "string", "minLength": 1 },
+        "sharedComponentsRoot": { "type": "string", "minLength": 1 },
+        "activationMetadataRoot": { "type": "string", "minLength": 1 },
+        "downloadStagingRoot": { "type": "string", "minLength": 1 },
+        "userConfigRoot": { "type": "string", "minLength": 1 },
+        "userCacheRoot": { "type": "string", "minLength": 1 },
+        "userLogsRoot": { "type": "string", "minLength": 1 },
+        "userStateRoot": { "type": "string", "minLength": 1 },
+        "projectsRoot": { "type": "string", "minLength": 1 },
+        "exportsRoot": { "type": "string", "minLength": 1 },
+        "programFilesRuntimeWritable": { "const": false }
+      }
+    },
+    "installedComponent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "path", "active", "capabilities"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "version": { "$ref": "#/$defs/semver" },
+        "path": { "type": "string", "minLength": 1 },
+        "active": { "type": "boolean" },
+        "capabilities": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/capabilityId" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "capabilityId": {
+      "enum": ["api", "database", "vector-store", "ffmpeg", "ai-model", "transcription", "rendering", "gpu", "native-import"]
+    },
+    "shutdownPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "gracePeriodMs", "escalation"],
+      "properties": {
+        "mode": { "const": "graceful" },
+        "gracePeriodMs": { "type": "integer", "minimum": 100, "maximum": 120000 },
+        "escalation": { "enum": ["terminate", "leave-running"] }
+      }
+    },
+    "shutdown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "requestedAt", "status"],
+      "properties": {
+        "reason": { "type": "string", "minLength": 1 },
+        "requestedAt": { "type": "string", "format": "date-time" },
+        "status": { "enum": ["requested", "completed", "timed-out", "rejected"] }
+      }
+    },
+    "readiness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "endpoint", "overallState"],
+      "properties": {
+        "schemaVersion": { "const": "desktop.health-readiness.v1" },
+        "endpoint": { "type": "string", "pattern": "^/" },
+        "overallState": { "enum": ["starting", "ready", "degraded", "fatal"] }
+      }
+    }
+  }
+}

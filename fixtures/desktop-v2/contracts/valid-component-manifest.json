@@ -1,0 +1,104 @@
+{
+  "schemaVersion": "desktop.component-manifest.v1",
+  "component": {
+    "id": "aive-engine",
+    "type": "backend",
+    "version": "1.4.0",
+    "channel": "stable"
+  },
+  "target": {
+    "operatingSystems": ["windows"],
+    "architectures": ["x86_64"]
+  },
+  "requirements": {
+    "minimumShellVersion": "1.2.0",
+    "requiresElevation": false
+  },
+  "artifact": {
+    "url": "https://downloads.example.test/aive-engine-1.4.0.zip",
+    "byteSize": 1048576,
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "signature": {
+    "algorithm": "ed25519",
+    "value": "c2lnbmF0dXJl",
+    "keyId": "release-2026"
+  },
+  "archive": {
+    "format": "zip",
+    "rootDirectory": "aive-engine-1.4.0"
+  },
+  "install": {
+    "rootKind": "program-data-components",
+    "relativePath": "aive-engine/1.4.0",
+    "immutable": true,
+    "activation": {
+      "strategy": "stage-then-atomic-rename",
+      "activePath": "aive-engine/active",
+      "stagingPath": "aive-engine/.staging/1.4.0",
+      "metadataPath": "aive-engine/activation.json",
+      "atomicCommit": true
+    }
+  },
+  "entrypoint": {
+    "kind": "executable",
+    "relativePath": "bin/aive-engine.exe",
+    "arguments": ["--config", "config/engine.json"],
+    "workingDirectory": "aive-engine-1.4.0"
+  },
+  "dependencies": [
+    {
+      "id": "ffmpeg",
+      "versionConstraint": ">=6.1.0 <7.0.0",
+      "optional": false
+    }
+  ],
+  "capabilities": ["api", "database", "vector-store", "ffmpeg", "native-import"],
+  "metadata": {
+    "displayName": "AIVE Engine",
+    "publisher": "AI Video Editor",
+    "license": {
+      "spdxId": "MIT",
+      "noticeFile": "LICENSES/NOTICE.txt"
+    },
+    "source": {
+      "repositoryUrl": "https://github.com/example/ai-video-editor",
+      "releaseUrl": "https://github.com/example/ai-video-editor/releases/tag/aive-engine-1.4.0"
+    }
+  },
+  "files": [
+    {
+      "path": "bin/aive-engine.exe",
+      "kind": "file",
+      "byteSize": 900000,
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "executable": true
+    },
+    {
+      "path": "LICENSES/NOTICE.txt",
+      "kind": "file",
+      "byteSize": 1200,
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "executable": false
+    }
+  ],
+  "selfTest": {
+    "command": ["bin/aive-engine.exe", "--self-test"],
+    "timeoutMs": 30000,
+    "expectedExitCode": 0
+  },
+  "health": {
+    "probe": "http",
+    "path": "/health/readiness",
+    "method": "GET",
+    "timeoutMs": 5000,
+    "readinessSchemaVersion": "desktop.health-readiness.v1",
+    "requiresBearerToken": true
+  },
+  "rollback": {
+    "strategy": "retain-previous-active",
+    "retentionCount": 2,
+    "metadataPath": "aive-engine/activation.json",
+    "onActivationFailure": "rollback-automatically"
+  }
+}

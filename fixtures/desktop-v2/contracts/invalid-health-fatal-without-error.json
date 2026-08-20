@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "desktop.health-readiness.v1",
+  "generatedAt": "2026-08-20T01:00:00Z",
+  "overallState": "fatal",
+  "process": {
+    "alive": false,
+    "pid": 4242,
+    "componentId": "aive-engine",
+    "componentVersion": "1.4.0"
+  },
+  "checks": {
+    "api": {
+      "state": "fatal",
+      "required": true,
+      "detail": "The API process is not serving.",
+      "remediationCodes": ["ENGINE_NOT_RUNNING"]
+    },
+    "database": {
+      "state": "not-ready",
+      "required": true,
+      "detail": "Database was not reached.",
+      "remediationCodes": ["DATABASE_UNAVAILABLE"]
+    },
+    "vectorStore": {
+      "state": "not-configured",
+      "required": false,
+      "detail": "Not configured.",
+      "remediationCodes": []
+    },
+    "ffmpeg": {
+      "state": "not-ready",
+      "required": true,
+      "detail": "Not probed.",
+      "remediationCodes": ["FFMPEG_MISSING"]
+    }
+  },
+  "capabilities": {
+    "available": [],
+    "degraded": [],
+    "unavailable": ["api", "database", "ffmpeg"]
+  },
+  "remediationCodes": ["ENGINE_NOT_RUNNING", "DATABASE_UNAVAILABLE", "FFMPEG_MISSING"]
+}

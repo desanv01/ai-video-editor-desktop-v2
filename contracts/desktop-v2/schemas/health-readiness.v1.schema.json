@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aive.dev/desktop-v2/health-readiness.v1.schema.json",
+  "title": "AI Video Editor Desktop V2 health and readiness payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "generatedAt", "overallState", "process", "checks", "capabilities", "remediationCodes"],
+  "properties": {
+    "schemaVersion": { "const": "desktop.health-readiness.v1" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "overallState": { "enum": ["starting", "ready", "degraded", "fatal"] },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alive", "pid", "componentId", "componentVersion"],
+      "properties": {
+        "alive": { "type": "boolean" },
+        "pid": { "type": "integer", "minimum": 1 },
+        "componentId": { "type": "string", "minLength": 1 },
+        "componentVersion": { "$ref": "#/$defs/semver" }
+      }
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["api", "database", "vectorStore", "ffmpeg"],
+      "properties": {
+        "api": { "$ref": "#/$defs/check" },
+        "database": { "$ref": "#/$defs/check" },
+        "vectorStore": { "$ref": "#/$defs/check" },
+        "ffmpeg": { "$ref": "#/$defs/check" },
+        "aiModel": { "$ref": "#/$defs/check" }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["available", "degraded", "unavailable"],
+      "properties": {
+        "available": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/capabilityId" },
+          "uniqueItems": true
+        },
+        "degraded": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/capabilityId" },
+          "uniqueItems": true
+        },
+        "unavailable": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/capabilityId" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "remediationCodes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/remediationCode" },
+      "uniqueItems": true
+    },
+    "fatalError": { "$ref": "#/$defs/fatalError" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "overallState": { "const": "fatal" } } },
+      "then": { "required": ["fatalError"] }
+    },
+    {
+      "if": { "properties": { "overallState": { "const": "ready" } } },
+      "then": {
+        "properties": {
+          "process": {
+            "properties": {
+              "alive": { "const": true }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "capabilityId": {
+      "enum": ["api", "database", "vector-store", "ffmpeg", "ai-model", "transcription", "rendering", "gpu", "native-import"]
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "required", "detail", "remediationCodes"],
+      "properties": {
+        "state": { "enum": ["healthy", "ready", "degraded", "not-ready", "not-configured", "fatal"] },
+        "required": { "type": "boolean" },
+        "detail": { "type": "string" },
+        "remediationCodes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/remediationCode" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "fatalError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^[A-Z0-9_]{3,64}$" },
+        "message": { "type": "string", "minLength": 1 },
+        "retryable": { "type": "boolean" }
+      }
+    },
+    "remediationCode": {
+      "enum": [
+        "ENGINE_NOT_RUNNING",
+        "API_UNHEALTHY",
+        "DATABASE_UNAVAILABLE",
+        "VECTOR_STORE_UNAVAILABLE",
+        "FFMPEG_MISSING",
+        "MODEL_NOT_INSTALLED",
+        "MODEL_LOAD_FAILED",
+        "COMPONENT_VERSION_INCOMPATIBLE",
+        "PORT_ALLOCATION_FAILED",
+        "SESSION_AUTH_FAILED",
+        "STORAGE_NOT_WRITABLE",
+        "MIGRATION_REQUIRED",
+        "UPDATE_ROLLBACK_AVAILABLE",
+        "RESTART_REQUIRED",
+        "DISK_SPACE_LOW"
+      ]
+    }
+  }
+}

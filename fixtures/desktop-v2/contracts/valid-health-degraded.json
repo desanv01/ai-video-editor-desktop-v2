@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "desktop.health-readiness.v1",
+  "generatedAt": "2026-08-20T01:00:00Z",
+  "overallState": "degraded",
+  "process": {
+    "alive": true,
+    "pid": 4242,
+    "componentId": "aive-engine",
+    "componentVersion": "1.4.0"
+  },
+  "checks": {
+    "api": {
+      "state": "healthy",
+      "required": true,
+      "detail": "Loopback API is serving authenticated requests.",
+      "remediationCodes": []
+    },
+    "database": {
+      "state": "ready",
+      "required": true,
+      "detail": "PostgreSQL connection and migrations are ready.",
+      "remediationCodes": []
+    },
+    "vectorStore": {
+      "state": "not-ready",
+      "required": false,
+      "detail": "Vector store is not configured; keyword retrieval remains available.",
+      "remediationCodes": ["VECTOR_STORE_UNAVAILABLE"]
+    },
+    "ffmpeg": {
+      "state": "ready",
+      "required": true,
+      "detail": "FFmpeg self-test completed.",
+      "remediationCodes": []
+    },
+    "aiModel": {
+      "state": "not-configured",
+      "required": false,
+      "detail": "No local model was requested for this session.",
+      "remediationCodes": ["MODEL_NOT_INSTALLED"]
+    }
+  },
+  "capabilities": {
+    "available": ["api", "database", "ffmpeg"],
+    "degraded": ["vector-store"],
+    "unavailable": ["ai-model"]
+  },
+  "remediationCodes": ["VECTOR_STORE_UNAVAILABLE", "MODEL_NOT_INSTALLED"]
+}

@@ -1,0 +1,86 @@
+{
+  "schemaVersion": "desktop.component-manifest.v1",
+  "component": {
+    "id": "aive-engine",
+    "type": "backend",
+    "version": "1.4.0",
+    "channel": "stable"
+  },
+  "target": {
+    "operatingSystems": ["windows"],
+    "architectures": ["x86_64"]
+  },
+  "requirements": {
+    "minimumShellVersion": "1.2.0",
+    "requiresElevation": false
+  },
+  "artifact": {
+    "url": "https://downloads.example.test/aive-engine-1.4.0.zip",
+    "byteSize": 1048576,
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "archive": {
+    "format": "zip",
+    "rootDirectory": "aive-engine-1.4.0"
+  },
+  "install": {
+    "rootKind": "program-data-components",
+    "relativePath": "aive-engine/1.4.0",
+    "immutable": true,
+    "activation": {
+      "strategy": "stage-then-atomic-rename",
+      "activePath": "aive-engine/active",
+      "stagingPath": "aive-engine/.staging/1.4.0",
+      "metadataPath": "aive-engine/activation.json",
+      "atomicCommit": true
+    }
+  },
+  "entrypoint": {
+    "kind": "executable",
+    "relativePath": "bin/aive-engine.exe",
+    "arguments": [],
+    "workingDirectory": "aive-engine-1.4.0"
+  },
+  "dependencies": [],
+  "capabilities": ["api"],
+  "metadata": {
+    "displayName": "AIVE Engine",
+    "publisher": "AI Video Editor",
+    "license": {
+      "spdxId": "MIT",
+      "noticeFile": "LICENSES/NOTICE.txt"
+    },
+    "source": {
+      "repositoryUrl": "https://github.com/example/ai-video-editor",
+      "releaseUrl": "https://github.com/example/ai-video-editor/releases/tag/aive-engine-1.4.0"
+    }
+  },
+  "files": [
+    {
+      "path": "bin/aive-engine.exe",
+      "kind": "file",
+      "byteSize": 1,
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "executable": true
+    }
+  ],
+  "selfTest": {
+    "command": ["bin/aive-engine.exe", "--self-test"],
+    "timeoutMs": 1000,
+    "expectedExitCode": 0
+  },
+  "health": {
+    "probe": "http",
+    "path": "/health/readiness",
+    "method": "GET",
+    "timeoutMs": 100,
+    "readinessSchemaVersion": "desktop.health-readiness.v1",
+    "requiresBearerToken": true
+  },
+  "rollback": {
+    "strategy": "retain-previous-active",
+    "retentionCount": 1,
+    "metadataPath": "aive-engine/activation.json",
+    "onActivationFailure": "rollback-automatically"
+  }
+}

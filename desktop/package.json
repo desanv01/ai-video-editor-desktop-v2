@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "npm run contracts:check && tsc && vite build",
+    "contracts:check": "node --experimental-strip-types ../scripts/desktop-v2/contract-tests.mjs",
     "preview": "vite preview",
     "render:revideo": "node revideo/render.mjs",
     "tauri": "tauri"

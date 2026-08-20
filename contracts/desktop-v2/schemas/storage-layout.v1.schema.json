@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aive.dev/desktop-v2/storage-layout.v1.schema.json",
+  "title": "AI Video Editor Desktop V2 Windows storage layout",
+  "description": "Canonical ownership and write-boundary contract for the thin shell and native components.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "platform", "programFilesRuntimeWritable", "paths"],
+  "properties": {
+    "schemaVersion": { "const": "desktop.storage-layout.v1" },
+    "platform": { "const": "windows" },
+    "programFilesRuntimeWritable": { "const": false },
+    "paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "shellInstall",
+        "sharedComponents",
+        "activationMetadata",
+        "downloadStaging",
+        "userConfig",
+        "userCache",
+        "userLogs",
+        "userState",
+        "projects",
+        "exports"
+      ],
+      "properties": {
+        "shellInstall": { "$ref": "#/$defs/pathDescriptor" },
+        "sharedComponents": { "$ref": "#/$defs/pathDescriptor" },
+        "activationMetadata": { "$ref": "#/$defs/pathDescriptor" },
+        "downloadStaging": { "$ref": "#/$defs/pathDescriptor" },
+        "userConfig": { "$ref": "#/$defs/pathDescriptor" },
+        "userCache": { "$ref": "#/$defs/pathDescriptor" },
+        "userLogs": { "$ref": "#/$defs/pathDescriptor" },
+        "userState": { "$ref": "#/$defs/pathDescriptor" },
+        "projects": { "$ref": "#/$defs/pathDescriptor" },
+        "exports": { "$ref": "#/$defs/pathDescriptor" }
+      }
+    }
+  },
+  "$defs": {
+    "pathDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pathTemplate", "scope", "owner", "writer", "runtimeWritable", "purpose"],
+      "properties": {
+        "pathTemplate": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?:(?:%ProgramFiles%|%ProgramData%|%LocalAppData%|%USER_SELECTED%)\\\\AI Video Editor|%USERPROFILE%\\\\Documents\\\\AI Video Editor)(?:\\\\[A-Za-z0-9._ -]+)+$"
+        },
+        "scope": { "enum": ["machine", "user", "user-selected"] },
+        "owner": { "enum": ["machine-installer", "machine-update-service", "user"] },
+        "writer": { "enum": ["installer", "update-service", "user-runtime"] },
+        "runtimeWritable": { "type": "boolean" },
+        "purpose": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}
