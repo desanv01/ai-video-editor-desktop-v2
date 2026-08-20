@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aive.dev/desktop-v2/setup-state.v1.schema.json",
+  "title": "AI Video Editor Desktop V2 non-secret setup state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "selectedOptionalPacks", "acceptedLicenseVersions", "catalogChannel", "lastSuccessfulSetup", "incompleteOperationIds", "onboardingCompleted", "updatedAtEpochMs"],
+  "properties": {
+    "schemaVersion": { "const": "desktop.setup-state.v1" },
+    "selectedOptionalPacks": { "type": "array", "maxItems": 64, "items": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" }, "uniqueItems": true },
+    "acceptedLicenseVersions": { "type": "object", "additionalProperties": { "type": "string" } },
+    "catalogChannel": { "enum": ["stable", "beta", "nightly"] },
+    "lastSuccessfulSetup": { "type": ["string", "null"], "format": "date-time" },
+    "incompleteOperationIds": { "type": "object", "maxProperties": 64, "additionalProperties": { "type": "string", "minLength": 1 } },
+    "onboardingCompleted": { "type": "boolean" },
+    "updatedAtEpochMs": { "type": "integer", "minimum": 0 }
+  }
+}

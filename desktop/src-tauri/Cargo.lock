@@ -33,7 +33,9 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "time",
  "url",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

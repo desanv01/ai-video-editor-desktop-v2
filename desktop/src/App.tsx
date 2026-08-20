@@ -5,6 +5,7 @@ import { ReviewEditor } from "./components/ReviewEditor";
 import { MainSettingsPanel } from "./components/MainSettingsPanel";
 import { ProjectDashboard } from "./components/ProjectDashboard";
 import { DesktopV2ErrorBoundary, DesktopV2Shell } from "./components/DesktopV2Shell";
+import { DesktopComponentManagementDialog } from "./components/DesktopComponentManagementDialog";
 import { resolveAppRoute } from "./desktopV2";
 import { Clapperboard, FolderOpen, Settings } from "lucide-react";
 import type { Project, Video } from "./types/api";
@@ -62,6 +63,7 @@ export function BrowserEditorApp({ nativeMode = false }: { nativeMode?: boolean 
   const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [desktopManagementOpen, setDesktopManagementOpen] = useState(false);
   useEffect(() => {
     (async () => {
       try {
@@ -171,6 +173,15 @@ export function BrowserEditorApp({ nativeMode = false }: { nativeMode?: boolean 
             <Settings className="w-3.5 h-3.5" />
             Settings
           </button>
+          {nativeMode && (
+            <button
+              type="button"
+              onClick={() => setDesktopManagementOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-gray-400 transition-colors hover:bg-surface-overlay hover:text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent"
+            >
+              Desktop components
+            </button>
+          )}
           {view !== "dashboard" && (
             <button
               onClick={handleBackToDashboard}
@@ -213,6 +224,9 @@ export function BrowserEditorApp({ nativeMode = false }: { nativeMode?: boolean 
         isOpen={settingsOpen}
         onClose={() => setSettingsOpen(false)}
       />
+      {nativeMode && desktopManagementOpen && (
+        <DesktopComponentManagementDialog onClose={() => setDesktopManagementOpen(false)} />
+      )}
     </div>
   );
 }

@@ -14,6 +14,7 @@ use tauri::{AppHandle, Emitter, Manager, State, Window};
 pub mod contracts;
 pub mod component_manager;
 pub mod desktop_v2;
+pub mod setup_center;
 pub mod supervisor;
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -881,6 +882,13 @@ pub fn run() {
             component_manager::component_repair,
             component_manager::component_uninstall,
             component_manager::component_recover,
+            setup_center::setup_get_state,
+            setup_center::setup_save_state,
+            setup_center::setup_get_catalog,
+            setup_center::setup_import_catalog,
+            setup_center::setup_catalog_configuration,
+            setup_center::setup_refresh_catalog,
+            setup_center::setup_run_system_checks,
             desktop_v2::get_shell_info,
             desktop_v2::get_canonical_paths,
             desktop_v2::inspect_activation_metadata,

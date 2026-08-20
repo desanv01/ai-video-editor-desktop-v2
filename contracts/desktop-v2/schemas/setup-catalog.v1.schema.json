@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aive.dev/desktop-v2/setup-catalog.v1.schema.json",
+  "title": "AI Video Editor Desktop V2 signed setup catalog",
+  "description": "A signed catalog of Phase 1 component manifests. The shell trust root, not this document, supplies public keys.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "catalogId", "channel", "generatedAt", "expiresAt", "entries", "signature"],
+  "properties": {
+    "schemaVersion": { "const": "desktop.setup-catalog.v1" },
+    "catalogId": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9_.-]+$" },
+    "channel": { "enum": ["stable", "beta", "nightly"] },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "expiresAt": { "type": "string", "format": "date-time" },
+    "entries": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/entry" },
+      "uniqueItems": true
+    },
+    "signature": { "$ref": "#/$defs/signature" }
+  },
+  "$defs": {
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "keyId", "value"],
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "keyId": { "type": "string", "minLength": 1 },
+        "value": { "type": "string", "minLength": 1 }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["componentId", "displayName", "required", "availability", "description", "artifactBytes", "licenseVersion", "licenseName", "sourceUrl", "unavailableReason", "manifest"],
+      "properties": {
+        "componentId": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9_.-]+$" },
+        "displayName": { "type": "string", "minLength": 1 },
+        "required": { "type": "boolean" },
+        "availability": { "enum": ["available", "catalog-only", "unavailable"] },
+        "description": { "type": "string", "minLength": 1 },
+        "artifactBytes": { "type": "integer", "minimum": 0 },
+        "licenseVersion": { "type": "string" },
+        "licenseName": { "type": "string" },
+        "sourceUrl": { "type": ["string", "null"], "format": "uri" },
+        "unavailableReason": { "type": ["string", "null"] },
+        "manifest": {
+          "description": "When present, this object must satisfy desktop.component-manifest.v1 and is revalidated by the Phase 3 manager.",
+          "type": ["object", "null"]
+        }
+      }
+    }
+  }
+}

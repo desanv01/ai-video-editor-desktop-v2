@@ -2823,6 +2823,56 @@ fn trusted_key(key_id: &str) -> Option<Vec<u8>> {
     BASE64.decode(TEST_FIXTURE_PUBLIC_KEY_B64).ok()
 }
 
+/// Verify a detached payload against the shell's compiled trust root.
+///
+/// Setup catalogs are authenticated with the same read-only trust root as
+/// component manifests. The catalog may identify a key, but it cannot provide
+/// or replace the public key used here.
+pub(crate) fn verify_trusted_detached_payload(
+    algorithm: &str,
+    key_id: &str,
+    value: &str,
+    payload: &[u8],
+) -> ManagerResult<()> {
+    if algorithm != "ed25519" {
+        return Err(ComponentError::new(
+            "SIGNATURE_ALGORITHM_UNSUPPORTED",
+            "Only detached Ed25519 signatures are accepted.",
+            false,
+        ));
+    }
+    let key = trusted_key(key_id).ok_or_else(|| {
+        ComponentError::new(
+            "UNKNOWN_TRUST_KEY",
+            "The signature key is not in the compiled read-only trust root.",
+            false,
+        )
+    })?;
+    let signature = BASE64.decode(value).map_err(|_| {
+        ComponentError::new(
+            "SIGNATURE_ENCODING_INVALID",
+            "The detached signature is not valid base64.",
+            false,
+        )
+    })?;
+    if signature.len() != 64 {
+        return Err(ComponentError::new(
+            "SIGNATURE_LENGTH_INVALID",
+            "An Ed25519 signature must contain exactly 64 bytes.",
+            false,
+        ));
+    }
+    UnparsedPublicKey::new(&ED25519, key)
+        .verify(payload, &signature)
+        .map_err(|_| {
+            ComponentError::new(
+                "SIGNATURE_INVALID",
+                "The detached Ed25519 signature does not authenticate the catalog payload.",
+                false,
+            )
+        })
+}
+
 fn manifest_signature_payload(manifest: &ComponentManifest) -> ManagerResult<Vec<u8>> {
     let mut value = serde_json::to_value(manifest).map_err(|error| {
         ComponentError::new(
@@ -2846,23 +2896,14 @@ fn manifest_signature_payload(manifest: &ComponentManifest) -> ManagerResult<Vec
 }
 
 fn verify_manifest_signature(manifest: &ComponentManifest, signature: &[u8]) -> ManagerResult<()> {
-    let key = trusted_key(&manifest.signature.key_id).ok_or_else(|| {
-        ComponentError::new(
-            "UNKNOWN_TRUST_KEY",
-            "The signature key is not in the compiled read-only trust root.",
-            false,
-        )
-    })?;
     let payload = manifest_signature_payload(manifest)?;
-    UnparsedPublicKey::new(&ED25519, key)
-        .verify(&payload, signature)
-        .map_err(|_| {
-            ComponentError::new(
-                "SIGNATURE_INVALID",
-                "The detached Ed25519 signature does not authenticate the manifest payload.",
-                false,
-            )
-        })
+    let encoded = BASE64.encode(signature);
+    verify_trusted_detached_payload(
+        &manifest.signature.algorithm,
+        &manifest.signature.key_id,
+        &encoded,
+        &payload,
+    )
 }
 
 fn write_file_hash(path: &Path) -> ManagerResult<(u64, String)> {
