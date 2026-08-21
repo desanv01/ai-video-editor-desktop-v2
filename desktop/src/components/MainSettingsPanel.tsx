@@ -48,6 +48,7 @@ interface Props {
 type SettingsTabId = "ai" | "providers" | "export" | "appearance" | "models" | "tours";
 type CapabilityDrafts = Record<AIProviderKind, AICapabilitySettings>;
 type LocalPathDrafts = Record<AIProviderKind, string>;
+type ProviderTestSummary = { configured: boolean; usable: boolean; message: string };
 
 const CAPABILITY_ORDER: AIProviderKind[] = [
   "transcription",
@@ -275,6 +276,8 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [busyModelId, setBusyModelId] = useState<string | null>(null);
+  const [testingProvider, setTestingProvider] = useState<string | null>(null);
+  const [providerTests, setProviderTests] = useState<Record<string, ProviderTestSummary>>({});
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -311,7 +314,7 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
       setSelectedModelId(selectedModelIdFrom(nextBackendSettings, nextCatalog));
       setApiKeyDrafts({});
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(api.friendlyErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -323,7 +326,7 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
       setCatalog(nextCatalog);
       return nextCatalog;
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(api.friendlyErrorMessage(err));
       return null;
     }
   };
@@ -368,7 +371,7 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
       setNotice(job.status === "completed" ? `${model.label} is ready.` : `Downloading ${model.label}.`);
       await refreshCatalog();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(api.friendlyErrorMessage(err));
     } finally {
       setBusyModelId(null);
     }
@@ -393,7 +396,7 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
         );
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(api.friendlyErrorMessage(err));
     } finally {
       setBusyModelId(null);
     }
@@ -428,7 +431,7 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
       setBackendSettings(next);
       setNotice(`${providerLabel(provider)} now uses environment configuration.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(api.friendlyErrorMessage(err));
     } finally {
       setSaving(false);
     }
@@ -448,9 +451,27 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
       setApiKeyDrafts(prev => ({ ...prev, [provider]: "" }));
       setNotice(`${providerLabel(provider)} key cleared.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(api.friendlyErrorMessage(err));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleTestProvider = async (provider: string) => {
+    setTestingProvider(provider);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await api.testProviderConnection(provider);
+      setProviderTests(prev => ({
+        ...prev,
+        [provider]: { configured: result.configured, usable: result.usable, message: result.message },
+      }));
+      setNotice(`${providerLabel(provider)}: ${result.message}`);
+    } catch (err) {
+      setError(api.friendlyErrorMessage(err));
+    } finally {
+      setTestingProvider(null);
     }
   };
 
@@ -504,7 +525,7 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
       setApiKeyDrafts({});
       setNotice("Settings saved.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(api.friendlyErrorMessage(err));
     } finally {
       setSaving(false);
     }
@@ -622,6 +643,9 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
                       onApiKeyDraftChange={(provider, value) => setApiKeyDrafts(prev => ({ ...prev, [provider]: value }))}
                       onUseEnvKey={handleUseEnvKey}
                       onClearKey={handleClearKey}
+                      testingProvider={testingProvider}
+                      providerTests={providerTests}
+                      onTestProvider={handleTestProvider}
                     />
                   )}
 
@@ -734,12 +758,18 @@ function ProvidersTab({
   onApiKeyDraftChange,
   onUseEnvKey,
   onClearKey,
+  testingProvider,
+  providerTests,
+  onTestProvider,
 }: {
   settings: BackendAISettings;
   apiKeyDrafts: Record<string, string>;
   onApiKeyDraftChange: (provider: string, value: string) => void;
   onUseEnvKey: (provider: string, status: APIKeyStatus) => void;
   onClearKey: (provider: string, status: APIKeyStatus) => void;
+  testingProvider: string | null;
+  providerTests: Record<string, ProviderTestSummary>;
+  onTestProvider: (provider: string) => void;
 }) {
   // Always show these API providers even if no key is configured yet
   const knownProviders = ["mistral", "openai", "deepseek", "alibaba"];
@@ -777,7 +807,7 @@ function ProvidersTab({
                 {status.has_key ? status.display_value ?? "Configured" : "Missing"}
               </span>
             </div>
-            <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+            <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_auto_auto_auto]">
               <input
                 type="password"
                 value={apiKeyDrafts[provider] ?? ""}
@@ -801,7 +831,21 @@ function ProvidersTab({
                 <Trash2 className="h-4 w-4" />
                 Clear
               </button>
+              <button
+                type="button"
+                onClick={() => onTestProvider(provider)}
+                disabled={testingProvider === provider}
+                className="inline-flex items-center justify-center gap-2 rounded-md bg-accent/15 px-3 py-2 text-sm text-accent transition-colors hover:bg-accent/25 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {testingProvider === provider ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                Test
+              </button>
             </div>
+            {providerTests[provider] && (
+              <p className={`mt-2 text-xs ${providerTests[provider].usable ? "text-emerald-300" : "text-yellow-200"}`} role="status">
+                {providerTests[provider].usable ? "Usable" : providerTests[provider].configured ? "Configured but unavailable" : "Not configured"}: {providerTests[provider].message}
+              </p>
+            )}
           </div>
         ))}
       </div>

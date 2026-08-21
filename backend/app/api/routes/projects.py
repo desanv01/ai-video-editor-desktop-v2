@@ -51,6 +51,7 @@ from models.schemas import (
     ProjectSourceSyncAsset,
     ProjectSourceSyncPlanResponse,
     ProjectUpdateRequest,
+    ProjectReadinessResponse,
     VideoUploadResponse,
 )
 from services.native_semantic_compositor import prewarm_render_proxy
@@ -75,6 +76,8 @@ from services.source_sync import (
     recommend_sync_offsets,
 )
 from services.upload_limits import max_upload_size_bytes, upload_limit_label
+from services.readiness import build_project_readiness
+from services.render_jobs import get_active_render_job
 
 
 router = APIRouter(prefix="/projects")
@@ -672,6 +675,30 @@ async def list_projects(db: AsyncSession = Depends(get_db)):
     return result.scalars().all()
 
 
+@router.get("/{project_id}/readiness", response_model=ProjectReadinessResponse, tags=["Workflow"])
+async def get_project_readiness(project_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Run a non-destructive preflight for a project in either runtime mode."""
+    result = await db.execute(
+        select(Project)
+        .options(selectinload(Project.assets), selectinload(Project.videos))
+        .where(Project.id == project_id)
+    )
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(404, "Project not found")
+    videos = list(project.videos or [])
+    video = next((item for item in videos if item.project_asset_id and any(
+        str(asset.id) == str(item.project_asset_id) for asset in project.assets or []
+    )), None)
+    video = video or (videos[0] if videos else None)
+    return build_project_readiness(
+        project,
+        video=video,
+        assets=list(project.assets or []),
+        settings=settings,
+    )
+
+
 @router.get("/{project_id}", response_model=ProjectDetailResponse, tags=["Projects"])
 async def get_project(project_id: UUID, db: AsyncSession = Depends(get_db)):
     """Get a project with its uploaded assets."""
@@ -730,6 +757,24 @@ async def delete_project(project_id: UUID, db: AsyncSession = Depends(get_db)):
     removed_files: set[str] = set()
     videos = list(project.videos or [])
     assets = list(project.assets or [])
+
+    active_videos = [
+        video for video in videos
+        if video.status in {
+            VideoStatus.PROCESSING,
+            VideoStatus.TRANSCRIBING,
+            VideoStatus.ANALYZING,
+            VideoStatus.PLANNING,
+            VideoStatus.RENDERING,
+        }
+        or get_active_render_job(str(video.id))
+    ]
+    if active_videos:
+        raise HTTPException(
+            409,
+            "This project cannot be deleted while analysis or export is active. Cancel or finish the job first.",
+            headers={"X-AIVE-Error-Code": "PROJECT_JOB_ACTIVE"},
+        )
 
     for video in videos:
         _remove_file_if_present(video.file_path, removed_files)

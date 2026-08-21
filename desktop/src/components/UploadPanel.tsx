@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import {
   BookOpen,
+  CheckCircle2,
   Camera,
   FileText,
   FileVideo,
@@ -14,13 +15,16 @@ import {
   Square,
   Upload,
   X,
+  AlertTriangle,
 } from "lucide-react";
 import * as api from "../lib/api";
+import { validateVideoFile, type IngestValidation } from "../lib/ingest";
 import type {
   NativeImportProgress,
   Project,
   ProjectAsset,
   ProjectAssetUploadType,
+  ProjectReadiness,
   Video,
 } from "../types/api";
 
@@ -116,6 +120,8 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
   const [materials, setMaterials] = useState<MaterialItem[]>([]);
   const [materialUploading, setMaterialUploading] = useState(false);
   const [projectAssets, setProjectAssets] = useState<ProjectAsset[]>([]);
+  const [readiness, setReadiness] = useState<ProjectReadiness | null>(null);
+  const [ingestValidation, setIngestValidation] = useState<IngestValidation | null>(null);
   const [starting, setStarting] = useState(false);
   const [recording, setRecording] = useState<RecordingState | null>(null);
   const [studioSettings, setStudioSettings] = useState<StudioSettings>(DEFAULT_STUDIO_SETTINGS);
@@ -174,9 +180,16 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
       return;
     }
     try {
-      setProjectAssets(await api.listProjectAssets(id));
+      const assets = await api.listProjectAssets(id);
+      setProjectAssets(assets);
+      try {
+        setReadiness(await api.getProjectReadiness(id));
+      } catch {
+        setReadiness(null);
+      }
     } catch {
       setProjectAssets([]);
+      setReadiness(null);
     }
   }, [activeProject?.id]);
 
@@ -243,8 +256,9 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
 
   const handlePrimaryVideo = useCallback(async (file: File) => {
     if (uploading || starting) return;
-    if (!file.type.startsWith("video/")) {
-      alert("Please upload a video file (MP4, MOV, AVI, WebM)");
+    const validation = validateVideoFile(file, projectAssets);
+    setIngestValidation(validation);
+    if (!validation.valid) {
       return;
     }
 
@@ -265,13 +279,13 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
     } catch (e) {
       const message = String(e);
       if (!message.toLowerCase().includes("cancel")) {
-        alert(`Upload failed: ${message}`);
+        alert(`Upload failed: ${api.friendlyErrorMessage(e)}`);
       }
     } finally {
       browserPrimaryUploadControllerRef.current = null;
       setUploadingLabel(null);
     }
-  }, [ensureProjectForUpload, refreshProjectAssets, starting, uploading]);
+  }, [ensureProjectForUpload, projectAssets, refreshProjectAssets, starting, uploading]);
 
   const handleNativePrimaryVideoImport = useCallback(async (sourcePath: string) => {
     if (uploading || starting) return;
@@ -291,7 +305,7 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
     } catch (error) {
       const message = String(error);
       if (!message.toLowerCase().includes("cancelled")) {
-        alert(`Native import failed: ${message}`);
+        alert(`Native import failed: ${api.friendlyErrorMessage(error)}`);
       }
     } finally {
       setUploadingLabel(null);
@@ -328,7 +342,7 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
     try {
       await api.cancelNativeImport(nativeImportProgress.token);
     } catch (error) {
-      alert(`Could not cancel native import: ${error}`);
+      alert(`Could not cancel native import: ${api.friendlyErrorMessage(error)}`);
     }
   }, [nativeImportProgress?.token]);
 
@@ -350,7 +364,7 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
       const asset = await api.uploadProjectAsset(uploadProjectId, assetType, file, false, metadata);
       setProjectAssets(prev => [asset, ...prev.filter(item => item.id !== asset.id)]);
     } catch (err) {
-      alert(`${label} failed: ${err}`);
+      alert(`${label} failed: ${api.friendlyErrorMessage(err)}`);
     } finally {
       setUploadingLabel(null);
     }
@@ -362,6 +376,9 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
     if (isNativeDesktopApp) {
       alert("Use Import video in the desktop app so the file is copied natively with progress and cancellation support.");
       return;
+    }
+    if (e.dataTransfer.files.length > 1) {
+      alert("Import one primary video at a time. Add additional screen, camera, or audio sources from the source cards.");
     }
     const file = e.dataTransfer.files[0];
     if (file) void handlePrimaryVideo(file);
@@ -422,7 +439,7 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
       setRecording({ type, label, recorder, stream, mimeType: recorder.mimeType, mode: "asset" });
       recorder.start();
     } catch (err) {
-      alert(`Recording could not start: ${err}`);
+      alert(`Recording could not start: ${api.friendlyErrorMessage(err)}`);
     }
   };
 
@@ -527,7 +544,7 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
       screenStream?.getTracks().forEach(track => track.stop());
       cameraStream?.getTracks().forEach(track => track.stop());
       void audioContext?.close();
-      alert(`Studio recording could not start: ${err}`);
+      alert(`Studio recording could not start: ${api.friendlyErrorMessage(err)}`);
     }
   };
 
@@ -547,7 +564,7 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
       const result = await api.uploadMaterial(file);
       setMaterials(prev => [...prev, { id: result.id, filename: file.name, chunk_count: result.chunk_count }]);
     } catch (err) {
-      alert(`Material upload failed: ${err}`);
+      alert(`Material upload failed: ${api.friendlyErrorMessage(err)}`);
     } finally {
       setMaterialUploading(false);
       e.target.value = "";
@@ -601,10 +618,24 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
 
     setStarting(true);
     try {
+      if (projectId) {
+        const latestReadiness = await api.getProjectReadiness(projectId);
+        setReadiness(latestReadiness);
+        if (latestReadiness.blockers.length > 0) {
+          setIngestValidation({
+            valid: false,
+            errors: latestReadiness.blockers.map(blocker => `${blocker.message} ${blocker.remediation}`),
+            warnings: latestReadiness.warnings.map(warning => warning.message),
+            duplicate: false,
+            extension: "",
+          });
+          return;
+        }
+      }
       await api.startVideoProcessing(uploadedVideo.id);
       onUpload(uploadedVideo.id, uploadedVideo.filename);
     } catch (e) {
-      alert(`Processing failed to start: ${e}`);
+      alert(`Processing failed to start: ${api.friendlyErrorMessage(e)}`);
     } finally {
       setStarting(false);
     }
@@ -671,6 +702,9 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
           onDelete={handleDeleteMaterial}
         />
 
+        {ingestValidation ? <IngestFeedback validation={ingestValidation} /> : null}
+        {readiness ? <ProjectPreflight readiness={readiness} /> : null}
+
         <div className="flex items-center justify-between gap-4">
           <p className="text-xs text-gray-500">
             {materials.length > 0
@@ -688,6 +722,52 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function IngestFeedback({ validation }: { validation: IngestValidation }) {
+  return (
+    <section className={`rounded-lg border p-4 ${validation.valid ? "border-amber-400/30 bg-amber-500/10" : "border-red-400/30 bg-red-500/10"}`} role="status" aria-live="polite">
+      <div className="flex items-start gap-3">
+        <AlertTriangle className={`mt-0.5 h-4 w-4 shrink-0 ${validation.valid ? "text-amber-200" : "text-red-200"}`} />
+        <div className="min-w-0 text-sm">
+          <p className="font-semibold text-white">Source check</p>
+          {validation.errors.map(error => <p key={error} className="mt-1 text-xs leading-5 text-red-100">{error}</p>)}
+          {validation.warnings.map(warning => <p key={warning} className="mt-1 text-xs leading-5 text-amber-100">{warning}</p>)}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ProjectPreflight({ readiness }: { readiness: ProjectReadiness }) {
+  const capabilityEntries = Object.values(readiness.capabilities).slice(0, 4);
+  return (
+    <section className="rounded-lg border border-surface-border bg-surface-raised p-4" aria-labelledby="project-preflight-title">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 id="project-preflight-title" className="text-sm font-semibold text-white">Ready for the next step?</h3>
+          <p className="mt-1 text-xs text-gray-500">{readiness.workflow_label}. Source checks run locally and never expose provider keys.</p>
+        </div>
+        {readiness.ready ? <CheckCircle2 className="h-5 w-5 text-emerald-300" /> : <AlertTriangle className="h-5 w-5 text-amber-300" />}
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <PreflightItem label="Primary source" ready={readiness.source.valid} detail={readiness.source.filename || "Not imported"} />
+        <PreflightItem label="Storage" ready={readiness.storage.writable && readiness.storage.enough_free_space} detail={`${Math.round(readiness.storage.free_bytes / 1024 / 1024 / 1024)} GB free`} />
+        {capabilityEntries.map(capability => <PreflightItem key={capability.id} label={capability.label} ready={capability.usable} detail={capability.usable ? "Usable" : capability.configured ? "Configured; needs validation" : "Manual mode available"} />)}
+      </div>
+      {readiness.blockers.length > 0 ? <p className="mt-3 text-xs leading-5 text-amber-100">Next: {readiness.blockers[0].remediation}</p> : readiness.warnings.length > 0 ? <p className="mt-3 text-xs leading-5 text-gray-400">AI providers are optional for source ingest and manual review.</p> : null}
+    </section>
+  );
+}
+
+function PreflightItem({ label, ready, detail }: { label: string; ready: boolean; detail: string }) {
+  return (
+    <div className="flex items-center gap-2 rounded-md border border-surface-border bg-surface px-2.5 py-2 text-xs">
+      <span className={`h-2 w-2 rounded-full ${ready ? "bg-emerald-400" : "bg-amber-400"}`} aria-hidden="true" />
+      <span className="min-w-0 flex-1 text-gray-300">{label}</span>
+      <span className="text-gray-500">{detail}</span>
     </div>
   );
 }
@@ -925,8 +1005,13 @@ function MultiSourceIntake({
         <div className="rounded-lg border border-surface-border bg-surface-raised p-4">
           <h3 className="text-sm font-semibold text-white">Project sources</h3>
           <div className="mt-3 grid gap-2">
-            {sourceAssets.map(asset => (
-              <AssetRow key={asset.id} asset={asset} onDelete={onDeleteAsset} />
+            {sourceAssets.map((asset, index) => (
+              <div key={asset.id} className="flex items-start gap-3">
+                <span className="mt-2 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/15 text-[10px] font-semibold text-accent" aria-label={`Source ${index + 1}`}>
+                  {index + 1}
+                </span>
+                <div className="min-w-0 flex-1"><AssetRow asset={asset} onDelete={onDeleteAsset} /></div>
+              </div>
             ))}
           </div>
         </div>

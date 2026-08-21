@@ -1,4 +1,4 @@
-import { forwardRef, useState, useEffect, useCallback, useMemo } from "react";
+import { forwardRef, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import type { CSSProperties, VideoHTMLAttributes } from "react";
 import { useSegments, usePlaybackSync, useProcessingStatus } from "../hooks/useApi";
 import { useCommandShortcuts } from "../hooks/useCommandShortcuts";
@@ -33,6 +33,7 @@ import type {
   TranscriptCutTrimUpdateRequest,
   TranscriptTimeline,
   ProjectAsset,
+  ProjectReadiness,
   SemanticRenderPlan,
   EditorialBlock,
   Video,
@@ -148,6 +149,8 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   const [semanticRenderPlan, setSemanticRenderPlan] = useState<SemanticRenderPlan | null>(null);
   const [videoDetail, setVideoDetail] = useState<Video | null>(null);
   const [projectAssets, setProjectAssets] = useState<ProjectAsset[]>([]);
+  const [readiness, setReadiness] = useState<ProjectReadiness | null>(null);
+  const [readinessLoading, setReadinessLoading] = useState(false);
   const [transcriptCutsLoading, setTranscriptCutsLoading] = useState(false);
   const [undoStack, setUndoStack] = useState<EditHistoryEntry[]>([]);
   const [redoStack, setRedoStack] = useState<EditHistoryEntry[]>([]);
@@ -157,11 +160,32 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   const [renderPollVersion, setRenderPollVersion] = useState(0);
   const [duration, setDuration] = useState(0);
   const [videoSrc, setVideoSrc] = useState("");
+  const readinessRequestId = useRef(0);
   const { status: processingStatus } = useProcessingStatus(videoId, 1500, renderPollVersion);
+
+  const refreshReadiness = useCallback(async () => {
+    const requestId = readinessRequestId.current + 1;
+    readinessRequestId.current = requestId;
+    setReadinessLoading(true);
+    try {
+      const result = await api.getVideoReadiness(videoId);
+      if (requestId === readinessRequestId.current) setReadiness(result);
+      return result;
+    } catch {
+      if (requestId === readinessRequestId.current) setReadiness(null);
+      return null;
+    } finally {
+      if (requestId === readinessRequestId.current) setReadinessLoading(false);
+    }
+  }, [videoId]);
 
   useEffect(() => {
     api.getEditPlan(videoId).then(setPlan).catch(() => {});
   }, [videoId]);
+
+  useEffect(() => {
+    void refreshReadiness();
+  }, [refreshReadiness]);
 
   const refreshSemanticRenderPlan = useCallback(async () => {
     try {
@@ -495,7 +519,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
       await refreshEditDecisionSync();
     } catch (err) {
       console.error("handleCreateTranscriptCut: API call failed", err);
-      alert(`Failed to create transcript cut: ${err}`);
+      alert(`Transcript cut could not be saved: ${api.friendlyErrorMessage(err)}`);
     }
   }, [pushHistory, refreshEditDecisionSync, refreshEditPlan, videoId]);
 
@@ -521,7 +545,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
       await refreshEditDecisionSync();
     } catch (err) {
       console.error("handleDeleteTranscriptCut: API call failed", err);
-      alert(`Failed to delete transcript cut: ${err}`);
+      alert(`Transcript cut could not be removed: ${api.friendlyErrorMessage(err)}`);
     }
   }, [pushHistory, refreshEditDecisionSync, refreshEditPlan, transcriptCuts, videoId]);
 
@@ -550,7 +574,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
       await refreshEditDecisionSync();
     } catch (err) {
       console.error("handleRestoreTranscriptCutWord: API call failed", err);
-      alert(`Failed to restore cut word: ${err}`);
+      alert(`Cut word could not be restored: ${api.friendlyErrorMessage(err)}`);
     }
   }, [pushHistory, refreshEditDecisionSync, refreshEditPlan, transcriptCuts, videoId]);
 
@@ -576,7 +600,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
       await refreshEditDecisionSync();
     } catch (err) {
       console.error("handleUpdateTranscriptCutTrim: API call failed", err);
-      alert(`Failed to update cut trim: ${err}`);
+      alert(`Cut trim could not be saved: ${api.friendlyErrorMessage(err)}`);
     }
   }, [pushHistory, refreshEditDecisionSync, refreshEditPlan, transcriptCuts, videoId]);
 
@@ -662,6 +686,21 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   const handleApprove = useCallback(async (exportPresetId?: string) => {
     setApproving(true);
     try {
+      const latestReadiness = await refreshReadiness();
+      if (!latestReadiness) {
+        throw new api.ApiClientError("Export prerequisites could not be checked.", {
+          code: "READINESS_UNAVAILABLE",
+          remediation: "Reconnect the local backend, then try export again. Manual review remains available.",
+        });
+      }
+      if (latestReadiness.blockers.length > 0) {
+        const blocker = latestReadiness.blockers[0];
+        throw new api.ApiClientError(blocker.message, {
+          code: blocker.code,
+          remediation: blocker.remediation,
+          retryable: false,
+        });
+      }
       await api.approvePlan(videoId, undefined, exportPresetId);
       setRenderPollVersion(value => value + 1);
       const updatedPlan = await api.getEditPlan(videoId);
@@ -685,11 +724,11 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
       } catch {
         // Preserve the original approval error when status reconciliation also fails.
       }
-      alert(`Approval failed: ${e}`);
+      alert(`Export could not start: ${api.friendlyErrorMessage(e)}`);
     } finally {
       setApproving(false);
     }
-  }, [videoId]);
+  }, [refreshReadiness, videoId]);
 
   const handleCancelRender = useCallback(async () => {
     setRenderCancelling(true);
@@ -697,7 +736,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
       await api.cancelRender(videoId);
       setRenderPollVersion(value => value + 1);
     } catch (e) {
-      alert(`Cancel failed: ${e}`);
+      alert(`Cancel failed: ${api.friendlyErrorMessage(e)}`);
     } finally {
       setRenderCancelling(false);
     }
@@ -788,7 +827,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
       setUndoStack(prev => prev.slice(0, -1));
       setRedoStack(prev => [...prev, updatedEntry].slice(-50));
     } catch (error) {
-      alert(`Undo failed: ${error}`);
+      alert(`Undo failed: ${api.friendlyErrorMessage(error)}`);
     } finally {
       setHistoryBusy(false);
     }
@@ -804,7 +843,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
       setRedoStack(prev => prev.slice(0, -1));
       setUndoStack(prev => [...prev, updatedEntry].slice(-50));
     } catch (error) {
-      alert(`Redo failed: ${error}`);
+      alert(`Redo failed: ${api.friendlyErrorMessage(error)}`);
     } finally {
       setHistoryBusy(false);
     }
@@ -1114,6 +1153,8 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
               selectedAnnotationId={selectedAnnotationId}
               selectedEducationalOverlayId={selectedEducationalOverlayId}
               plan={plan}
+              readiness={readiness}
+              readinessLoading={readinessLoading}
               currentTime={currentTime}
               layoutSettings={layoutPreviewSettings}
               warnings={warnings}

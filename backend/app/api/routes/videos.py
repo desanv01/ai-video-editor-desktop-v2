@@ -7,6 +7,7 @@ import uuid
 import shutil
 import logging
 import json
+import asyncio
 from datetime import datetime, timezone
 from typing import List
 
@@ -42,6 +43,7 @@ from models.schemas import (
     CourseMaterialUploadResponse, CourseMaterialResponse,
     ProcessingStatus, AppSettingsResponse, AppSettingsUpdateRequest,
     DomainTermsUpdateRequest,
+    ProviderConnectionTestRequest,
 )
 from agents.orchestrator import run_processing_pipeline, run_render_pipeline
 from agents.edit_planner import revalidate_edit_plan
@@ -104,6 +106,9 @@ from services.render_jobs import (
     get_latest_render_job,
     request_render_cancel,
 )
+from services.job_adapter import pipeline_job, render_job as normalize_render_job
+from services.readiness import build_project_readiness
+from services.product_workflow import map_legacy_status, workflow_label
 from services.upload_limits import max_upload_size_bytes, upload_limit_label
 from services.app_settings import (
     get_or_create_ai_settings,
@@ -112,6 +117,7 @@ from services.app_settings import (
     update_ai_settings,
 )
 from providers.whisper_cpp import resolve_whisper_cpp_runtime_status
+from providers.defaults import get_provider_registry
 from rag.vector_store import rag_service
 from config import settings
 
@@ -119,6 +125,7 @@ from config import settings
 router = APIRouter()
 logger = logging.getLogger(__name__)
 UPLOAD_COPY_BUFFER_BYTES = 8 * 1024 * 1024
+_PROCESSING_START_LOCK = asyncio.Lock()
 
 
 # ═══════════════════════════════════════════
@@ -275,8 +282,20 @@ async def start_video_processing(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
+    async with _PROCESSING_START_LOCK:
+        return await _start_video_processing(video_id, background_tasks, db)
+
+
+async def _start_video_processing(
+    video_id: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession,
+):
     """Start the processing pipeline after video/material uploads are complete."""
-    video = await db.get(Video, video_id)
+    video_result = await db.execute(
+        select(Video).options(selectinload(Video.edit_plan)).where(Video.id == video_id)
+    )
+    video = video_result.scalar_one_or_none()
     if not video:
         raise HTTPException(404, "Video not found")
 
@@ -292,6 +311,8 @@ async def start_video_processing(
             "status": video.status.value,
             "video_id": video_id,
             "message": "Processing is already running.",
+            "workflow_state": map_legacy_status(video_status=video.status.value).value,
+            "job": pipeline_job(video_id, legacy_status=video.status.value),
         }
 
     if video.status in {VideoStatus.AWAITING_REVIEW, VideoStatus.COMPLETED}:
@@ -299,6 +320,8 @@ async def start_video_processing(
             "status": video.status.value,
             "video_id": video_id,
             "message": "This video has already been processed.",
+            "workflow_state": map_legacy_status(video_status=video.status.value).value,
+            "job": pipeline_job(video_id, legacy_status=video.status.value),
         }
 
     await load_and_apply_persisted_ai_settings(db)
@@ -316,7 +339,19 @@ async def start_video_processing(
         "status": VideoStatus.PROCESSING.value,
         "video_id": video_id,
         "message": "Processing started.",
+        "workflow_state": map_legacy_status(video_status=VideoStatus.PROCESSING.value).value,
+        "job": pipeline_job(video_id, legacy_status=VideoStatus.PROCESSING.value),
     }
+
+
+@router.post("/videos/{video_id}/process/retry", tags=["Videos"])
+async def retry_video_processing(
+    video_id: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """Retry a failed analysis using the existing idempotent process route."""
+    return await start_video_processing(video_id, background_tasks, db)
 
 
 @router.get("/videos", response_model=List[VideoResponse], tags=["Videos"])
@@ -359,7 +394,10 @@ async def get_processing_status(video_id: str, db: AsyncSession = Depends(get_db
 
     The desktop app should poll this every 2-3 seconds during processing.
     """
-    video = await db.get(Video, video_id)
+    video_result = await db.execute(
+        select(Video).options(selectinload(Video.edit_plan)).where(Video.id == video_id)
+    )
+    video = video_result.scalar_one_or_none()
     if not video:
         raise HTTPException(404, "Video not found")
 
@@ -390,9 +428,24 @@ async def get_processing_status(video_id: str, db: AsyncSession = Depends(get_db
         progress_percent = (render_job or {}).get("progress_percent", progress_percent)
         total_elapsed_seconds = (render_job or {}).get("elapsed_seconds", total_elapsed_seconds)
 
+    unified_render_job = normalize_render_job(render_job, video_id=video_id)
+    unified_job = unified_render_job or pipeline_job(
+        video_id,
+        legacy_status=video.status.value,
+        progress=progress,
+        error=video.error_message,
+    )
+    workflow_state = map_legacy_status(
+        video_status=video.status.value,
+        has_source=True,
+        has_edit_plan=video.edit_plan is not None,
+        has_render_output=bool(video.processed_video_path),
+    )
     return {
         "video_id": str(video.id),
         "status": video.status.value,
+        "workflow_state": workflow_state.value,
+        "workflow_label": workflow_label(workflow_state),
         "error_message": video.error_message,
         # Live pipeline progress
         "current_step": current_step,
@@ -403,7 +456,35 @@ async def get_processing_status(video_id: str, db: AsyncSession = Depends(get_db
         "steps_timing": progress.get("steps_timing", {}),
         "total_elapsed_seconds": total_elapsed_seconds,
         "render_job": render_job,
+        "job": unified_job,
     }
+
+
+@router.get("/videos/{video_id}/readiness", tags=["Workflow"])
+async def get_video_readiness(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Return the same preflight contract for legacy videos without a project UI."""
+    result = await db.execute(
+        select(Video)
+        .options(selectinload(Video.project).selectinload(Project.assets), selectinload(Video.edit_plan))
+        .where(Video.id == video_id)
+    )
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(404, "Video not found")
+    project = video.project
+    if project is None:
+        project = Project(
+            id=video.project_id,
+            title=video.original_filename,
+            status=ProjectStatus.READY,
+            source_mode=ProjectSourceMode.SINGLE_VIDEO,
+        )
+    return build_project_readiness(
+        project,
+        video=video,
+        assets=list(project.assets or []),
+        settings=settings,
+    )
 
 
 # ═══════════════════════════════════════════
@@ -1642,6 +1723,41 @@ async def update_settings(
 ):
     """Persist AI provider settings, local paths, fallback behavior, and API keys."""
     return await update_ai_settings(db, request)
+
+
+@router.post("/settings/ai/test-provider", tags=["Settings"])
+async def test_provider_connection(
+    request: ProviderConnectionTestRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Check the selected provider through the authenticated API boundary.
+
+    Provider ``health`` checks are deliberately non-destructive and do not
+    send user content.  The response says whether a provider is configured and
+    usable; no key material is returned.
+    """
+    await load_and_apply_persisted_ai_settings(db)
+    registry = get_provider_registry()
+    provider = None
+    for candidate in registry.list():
+        if candidate.metadata.provider_id == request.provider_id:
+            provider = candidate
+            break
+    if provider is None:
+        raise HTTPException(404, f"Provider '{request.provider_id}' is not registered")
+    health = await provider.health()
+    return {
+        "schema_version": "phase8.provider-test.v1",
+        "provider_id": provider.metadata.provider_id,
+        "kind": provider.metadata.kind.value,
+        "model": request.model or provider.metadata.default_model,
+        "status": health.status.value,
+        "configured": health.status.value != "not_configured",
+        "usable": health.status.value == "available",
+        "network_tested": False,
+        "message": health.message or "Provider health check completed.",
+        "details": health.details,
+    }
 
 
 @router.put("/settings/domain-terms", tags=["Settings"])

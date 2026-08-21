@@ -35,7 +35,7 @@ export function useProcessingStatus(videoId: string | null, intervalMs = 2500, p
         // Continue polling
         if (active) setTimeout(poll, intervalMs);
       } catch (e) {
-        if (active) setError(String(e));
+        if (active) setError(api.friendlyErrorMessage(e));
         if (active) setTimeout(poll, intervalMs * 2); // slower retry on error
       }
     };

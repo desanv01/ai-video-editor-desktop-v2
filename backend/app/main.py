@@ -14,6 +14,7 @@ from rag.vector_store import rag_service
 from api.routes.models import router as model_router
 from api.routes.projects import router as project_router
 from api.routes.videos import router as video_router
+from api.routes.workflow import router as workflow_router
 from services.app_settings import load_and_apply_persisted_ai_settings
 
 
@@ -70,6 +71,7 @@ app.add_middleware(
 app.include_router(video_router, prefix="/api/v1")
 app.include_router(project_router, prefix="/api/v1")
 app.include_router(model_router, prefix="/api/v1")
+app.include_router(workflow_router, prefix="/api/v1")
 
 # ── Debug routes (only when APP_DEBUG=true) ──
 if settings.APP_DEBUG:

@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .runtime import NativeDesktopRuntime
+from services.job_adapter import native_job
 
 
 def _bearer_token(request: Request) -> str | None:
@@ -108,12 +109,12 @@ def create_native_app(runtime: NativeDesktopRuntime) -> FastAPI:
         if not isinstance(body, dict) or not body.get("kind"):
             raise HTTPException(status_code=422, detail="Job body requires a non-empty kind.")
         assert runtime.jobs is not None
-        return runtime.jobs.create_job(str(body["kind"]), body.get("payload") or {})
+        return native_job(runtime.jobs.create_job(str(body["kind"]), body.get("payload") or {})) or {}
 
     @app.get("/api/v1/jobs", tags=["Jobs"])
     async def list_jobs(status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
         assert runtime.jobs is not None
-        return runtime.jobs.list_jobs(status=status, limit=limit)
+        return [native_job(job) or job for job in runtime.jobs.list_jobs(status=status, limit=limit)]
 
     @app.get("/api/v1/jobs/{job_id}", tags=["Jobs"])
     async def get_job(job_id: str) -> dict[str, Any]:
@@ -121,7 +122,7 @@ def create_native_app(runtime: NativeDesktopRuntime) -> FastAPI:
         job = runtime.jobs.get_job(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Native job not found.")
-        return job
+        return native_job(job) or job
 
     @app.post("/api/v1/jobs/{job_id}/events", tags=["Jobs"])
     async def append_job_event(job_id: str, request: Request) -> dict[str, Any]:
@@ -141,13 +142,14 @@ def create_native_app(runtime: NativeDesktopRuntime) -> FastAPI:
             raise HTTPException(status_code=422, detail="Status body requires status.")
         assert runtime.jobs is not None
         try:
-            return runtime.jobs.update_job(
+            updated = runtime.jobs.update_job(
                 job_id,
                 str(body["status"]),
                 result=body.get("result"),
                 error=body.get("error"),
                 event_payload=body.get("payload") or {},
             )
+            return native_job(updated) or updated
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -157,10 +159,12 @@ def create_native_app(runtime: NativeDesktopRuntime) -> FastAPI:
     from api.routes.models import router as model_router
     from api.routes.projects import router as project_router
     from api.routes.videos import router as video_router
+    from api.routes.workflow import router as workflow_router
 
     app.include_router(video_router, prefix="/api/v1")
     app.include_router(project_router, prefix="/api/v1")
     app.include_router(model_router, prefix="/api/v1")
+    app.include_router(workflow_router, prefix="/api/v1")
 
     app.mount("/media", StaticFiles(directory=str(runtime.paths.exports)), name="media")
     app.mount("/uploads", StaticFiles(directory=str(runtime.paths.uploads)), name="uploads")

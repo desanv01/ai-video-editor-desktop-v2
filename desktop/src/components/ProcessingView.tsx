@@ -1,4 +1,6 @@
 import { ArrowRight, CheckCircle2, Clock, Loader2, RefreshCw, XCircle } from "lucide-react";
+import { useState } from "react";
+import * as api from "../lib/api";
 import { useProcessingStatus } from "../hooks/useApi";
 
 interface Props {
@@ -18,6 +20,7 @@ const STEP_ORDER = [
 
 export function ProcessingView({ videoId, onComplete }: Props) {
   const { status, error } = useProcessingStatus(videoId, 2000);
+  const [retrying, setRetrying] = useState(false);
 
   const completedSteps = status?.steps_completed ?? [];
   const failedSteps = status?.steps_failed ?? {};
@@ -37,9 +40,11 @@ export function ProcessingView({ videoId, onComplete }: Props) {
     timing.analyzing_visual?.summary,
     timing.planning_edits?.summary,
   ].filter(Boolean) as Record<string, unknown>[];
+  const unifiedJob = status?.job ?? null;
+  const displayError = api.friendlyErrorMessage(unifiedJob?.error || status?.error_message || error || "");
 
   return (
-    <div className="h-full overflow-y-auto p-8">
+    <div className="h-full overflow-y-auto p-8" aria-live="polite">
       <div className="mx-auto min-h-full w-full max-w-lg space-y-8 py-8">
         <div className="space-y-2 text-center">
           {isFailed ? (
@@ -52,10 +57,21 @@ export function ProcessingView({ videoId, onComplete }: Props) {
           <h2 className="text-xl font-semibold">
             {isFailed ? "Processing Failed" : isReady ? "Processing Complete" : "Processing Video..."}
           </h2>
-          {status?.current_step_label && (
-            <p className="text-sm text-gray-400">{status.current_step_label}</p>
+          {(unifiedJob?.message || status?.current_step_label) && (
+            <p className="text-sm text-gray-400">{unifiedJob?.message || status?.current_step_label}</p>
           )}
         </div>
+
+        {unifiedJob ? (
+          <div className="rounded-lg border border-surface-border bg-surface-raised p-3 text-xs text-gray-300">
+            <div className="flex items-center justify-between gap-3">
+              <span className="font-semibold text-gray-100">{unifiedJob.type === "analysis" ? "Analysis job" : "Workflow job"}</span>
+              <span className="rounded-full border border-surface-border px-2 py-0.5 text-[11px] uppercase tracking-wide text-gray-400">{unifiedJob.state.replace(/_/g, " ")}</span>
+            </div>
+            <p className="mt-1 text-gray-500">Stage: {unifiedJob.stage.replace(/_/g, " ")}</p>
+            {unifiedJob.retryable ? <p className="mt-1 text-amber-200">This job can be retried without removing the source.</p> : null}
+          </div>
+        ) : null}
 
         <div className="space-y-2">
           <div className="flex justify-between text-xs text-gray-400">
@@ -165,17 +181,24 @@ export function ProcessingView({ videoId, onComplete }: Props) {
 
         {(isFailed || error) && (
           <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
-            {status?.error_message || error || "An unknown error occurred."}
+            <p>{displayError || "An unknown error occurred."}</p>
+            {unifiedJob?.remediation ? <p className="mt-2 text-xs leading-5 text-red-100">Next: {unifiedJob.remediation}</p> : null}
           </div>
         )}
         {(isFailed || error) && (
           <button
             type="button"
-            onClick={() => window.location.reload()}
-            className="flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-4 py-3 text-sm font-semibold text-white transition hover:bg-accent/90"
+            onClick={() => {
+              setRetrying(true);
+              void api.retryVideoProcessing(videoId)
+                .catch(retryError => window.alert(`Retry could not start: ${api.friendlyErrorMessage(retryError)}`))
+                .finally(() => setRetrying(false));
+            }}
+            disabled={retrying}
+            className="flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-4 py-3 text-sm font-semibold text-white transition hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            <RefreshCw className="h-4 w-4" />
-            Retry Processing
+            {retrying ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+            {retrying ? "Retrying…" : "Retry Processing"}
           </button>
         )}
       </div>

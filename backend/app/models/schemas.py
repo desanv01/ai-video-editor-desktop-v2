@@ -1045,6 +1045,43 @@ class ProcessingStatus(BaseModel):
     message: Optional[str] = None
 
 
+class ReadinessIssue(BaseModel):
+    code: str
+    message: str
+    remediation: str
+    severity: str = "warning"
+
+
+class ProjectReadinessResponse(BaseModel):
+    schema_version: str
+    checked_at: datetime
+    project_id: UUID
+    video_id: Optional[UUID] = None
+    workflow_state: str
+    workflow_label: str
+    ready: bool
+    source: Dict[str, Any] = Field(default_factory=dict)
+    media: Dict[str, Any] = Field(default_factory=dict)
+    capabilities: Dict[str, Any] = Field(default_factory=dict)
+    storage: Dict[str, Any] = Field(default_factory=dict)
+    required_actions: List[str] = Field(default_factory=list)
+    blockers: List[ReadinessIssue] = Field(default_factory=list)
+    warnings: List[ReadinessIssue] = Field(default_factory=list)
+    manual_operations_available: bool = True
+
+
+class ProductReadinessResponse(BaseModel):
+    schema_version: str
+    checked_at: datetime
+    mode: str
+    ready: bool
+    storage: Dict[str, Any] = Field(default_factory=dict)
+    capabilities: Dict[str, Any] = Field(default_factory=dict)
+    required_actions: List[str] = Field(default_factory=list)
+    blockers: List[ReadinessIssue] = Field(default_factory=list)
+    warnings: List[ReadinessIssue] = Field(default_factory=list)
+
+
 # ═══════════════════════════════════════════
 #  SETTINGS (for desktop app to read/write)
 # ═══════════════════════════════════════════
@@ -1170,6 +1207,12 @@ class AppSettingsUpdateRequest(BaseModel):
     local_model_ids: Optional[Dict[str, Optional[str]]] = None
     domain_terms: Optional[List[str]] = Field(default=None, max_length=100)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ProviderConnectionTestRequest(BaseModel):
+    provider_id: str = Field(min_length=1, max_length=100)
+    kind: Optional[str] = None
+    model: Optional[str] = Field(default=None, max_length=200)
 
 
 class DomainTermsUpdateRequest(BaseModel):

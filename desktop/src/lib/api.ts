@@ -42,6 +42,10 @@ import type {
   SectionClipExportManifest,
   SlideCue,
   EditorialBlock,
+  ProductReadiness,
+  ProjectReadiness,
+  UnifiedJob,
+  ProviderConnectionTestResult,
 } from "../types/api";
 import type {
   ActivationMetadataInspection,
@@ -61,6 +65,38 @@ const APPROVAL_TIMEOUT_MS = 10 * 60_000;
 const VIDEO_UPLOAD_TIMEOUT_MS = 60 * 60_000;
 const MATERIAL_UPLOAD_TIMEOUT_MS = 90_000;
 const PRIMARY_BROWSER_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
+
+export class ApiClientError extends Error {
+  readonly status: number | null;
+  readonly code: string;
+  readonly remediation: string | null;
+  readonly retryable: boolean;
+
+  constructor(
+    message: string,
+    options: { status?: number | null; code?: string; remediation?: string | null; retryable?: boolean } = {},
+  ) {
+    super(message);
+    this.name = "ApiClientError";
+    this.status = options.status ?? null;
+    this.code = options.code ?? "API_ERROR";
+    this.remediation = options.remediation ?? null;
+    this.retryable = options.retryable ?? true;
+  }
+}
+
+export function friendlyErrorMessage(error: unknown): string {
+  if (error instanceof ApiClientError) {
+    return error.remediation ? `${error.message} ${error.remediation}` : error.message;
+  }
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const lower = message.toLowerCase();
+  if (lower.includes("failed to fetch") || lower.includes("networkerror") || lower.includes("load failed")) {
+    return "The local backend is offline or not ready. Start the backend/desktop engine, then try again. Your project data is kept.";
+  }
+  if (lower.includes("abort") || lower.includes("cancel")) return "The operation was cancelled. You can resume it when ready.";
+  return message.replace(/^Error:\s*/i, "") || "The operation could not be completed. Try again or open diagnostics.";
+}
 
 export function setBaseUrl(url: string) {
   BASE_URL = url.replace(/\/+$/, "") + "/api/v1";
@@ -88,17 +124,44 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   if (options?.body && !(options.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-  const res = await fetchWithTimeout(url, {
-    ...options,
-    headers,
-  }, DEFAULT_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(url, {
+      ...options,
+      headers,
+    }, DEFAULT_TIMEOUT_MS);
+  } catch (error) {
+    throw new ApiClientError(friendlyErrorMessage(error), { code: "BACKEND_UNAVAILABLE" });
+  }
 
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`API ${res.status}: ${body.slice(0, 300)}`);
+    throw parseApiError(res.status, body, res.headers);
   }
 
   return res.json();
+}
+
+function parseApiError(status: number, body: string, headers?: Headers): ApiClientError {
+  let parsed: Record<string, unknown> | null = null;
+  try {
+    const candidate = JSON.parse(body);
+    if (candidate && typeof candidate === "object") parsed = candidate as Record<string, unknown>;
+  } catch {
+    // FastAPI/proxy errors may be plain text.
+  }
+  const detail = parsed?.detail;
+  const detailObject = detail && typeof detail === "object" ? detail as Record<string, unknown> : null;
+  const rawMessage = detailObject?.message ?? (typeof detail === "string" ? detail : parsed?.message ?? body);
+  const message = String(rawMessage || "Request failed");
+  const code = String(detailObject?.code ?? parsed?.code ?? headers?.get("X-AIVE-Error-Code") ?? `HTTP_${status}`);
+  const remediation = detailObject?.remediation ?? parsed?.remediation ?? null;
+  return new ApiClientError(message.slice(0, 500), {
+    status,
+    code,
+    remediation: typeof remediation === "string" ? remediation : null,
+    retryable: detailObject?.retryable !== false && parsed?.retryable !== false,
+  });
 }
 
 async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
@@ -194,7 +257,13 @@ async function nativeBridgeFetch(url: string, options: RequestInit, timeoutMs: n
 
 async function errorFromResponse(prefix: string, res: Response): Promise<Error> {
   const body = await res.text();
-  return new Error(`${prefix}: ${res.status}${body ? ` - ${body.slice(0, 300)}` : ""}`);
+  const error = parseApiError(res.status, body, res.headers);
+  return new ApiClientError(`${prefix}: ${error.message}`, {
+    status: error.status,
+    code: error.code,
+    remediation: error.remediation,
+    retryable: error.retryable,
+  });
 }
 
 type BrowserPrimaryUploadCallbacks = {
@@ -499,6 +568,18 @@ export async function deleteProject(projectId: string): Promise<void> {
   await request(`/projects/${projectId}`, { method: "DELETE" });
 }
 
+export async function getProductReadiness(): Promise<ProductReadiness> {
+  return request("/product-readiness");
+}
+
+export async function getProjectReadiness(projectId: string): Promise<ProjectReadiness> {
+  return request(`/projects/${projectId}/readiness`);
+}
+
+export async function getVideoReadiness(videoId: string): Promise<ProjectReadiness> {
+  return request(`/videos/${videoId}/readiness`);
+}
+
 export async function listProjectAssets(projectId: string): Promise<ProjectAsset[]> {
   return request(`/projects/${projectId}/assets`);
 }
@@ -734,6 +815,10 @@ export async function startVideoProcessing(id: string): Promise<{ status: string
   return request(`/videos/${id}/process`, { method: "POST" });
 }
 
+export async function retryVideoProcessing(id: string): Promise<{ status: string; message: string; job?: UnifiedJob | null }> {
+  return request(`/videos/${id}/process/retry`, { method: "POST" });
+}
+
 export async function listVideos(): Promise<Video[]> {
   return request("/videos");
 }
@@ -944,8 +1029,7 @@ export async function approvePlan(videoId: string, notes?: string, exportPresetI
     body: JSON.stringify({ teacher_notes: notes || null, export_preset_id: exportPresetId || null }),
   }, APPROVAL_TIMEOUT_MS);
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`API ${res.status}: ${body.slice(0, 300)}`);
+    throw await errorFromResponse("Export could not start", res);
   }
   return res.json();
 }
@@ -1015,6 +1099,16 @@ export async function updateAISettings(settings: BackendAISettingsUpdate): Promi
   return request("/settings/ai", {
     method: "PUT",
     body: JSON.stringify(settings),
+  });
+}
+
+export async function testProviderConnection(
+  providerId: string,
+  model?: string | null,
+): Promise<ProviderConnectionTestResult> {
+  return request("/settings/ai/test-provider", {
+    method: "POST",
+    body: JSON.stringify({ provider_id: providerId, model: model ?? null }),
   });
 }
 

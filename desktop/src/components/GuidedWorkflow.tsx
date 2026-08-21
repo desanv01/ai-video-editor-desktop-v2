@@ -68,6 +68,7 @@ import type {
   LayoutCueUpdate,
   LayoutMode,
   ProcessingStatus,
+  ProjectReadiness,
   RevalidationResult,
   Segment,
 } from "../types/api";
@@ -268,6 +269,8 @@ type PanelProps = StepperProps & {
   selectedAnnotationId: string | null;
   selectedEducationalOverlayId: string | null;
   plan: EditPlan | null;
+  readiness: ProjectReadiness | null;
+  readinessLoading: boolean;
   currentTime: number;
   layoutSettings: LayoutPreviewSettings;
   warnings: RevalidationResult | null;
@@ -361,6 +364,8 @@ export function GuidedWorkflowPanel({
   selectedAnnotationId,
   selectedEducationalOverlayId,
   plan,
+  readiness,
+  readinessLoading,
   currentTime,
   layoutSettings,
   warnings,
@@ -485,6 +490,7 @@ export function GuidedWorkflowPanel({
   const renderFailed = renderJob?.status === "failed";
   const renderCancelled = renderJob?.status === "cancelled";
   const renderComplete = renderJob?.status === "completed" || renderStatus?.status === "completed";
+  const exportBlocked = Boolean(readiness?.blockers.length);
   const cameraEnabled = layoutUsesCamera(layoutSettings.layout);
   const updateLayoutSettings = (patch: Partial<LayoutPreviewSettings>) => {
     onLayoutSettingsChange({ ...layoutSettings, ...patch });
@@ -2037,6 +2043,30 @@ export function GuidedWorkflowPanel({
                   </div>
                 )}
                 {exportPresetMessage && <p className="text-xs leading-5 text-yellow-200">{exportPresetMessage}</p>}
+                {readinessLoading ? (
+                  <div className="flex items-center gap-2 rounded-md border border-surface-border bg-surface-overlay px-3 py-2 text-xs text-gray-400" role="status">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
+                    Checking export prerequisites…
+                  </div>
+                ) : readiness && (readiness.blockers.length > 0 || readiness.warnings.length > 0) ? (
+                  <div className={`rounded-md border px-3 py-2 text-xs leading-5 ${
+                    readiness.blockers.length > 0
+                      ? "border-red-500/30 bg-red-500/10 text-red-100"
+                      : "border-yellow-500/30 bg-yellow-500/10 text-yellow-100"
+                  }`} role="status" aria-live="polite">
+                    <div className="flex items-center gap-2 font-semibold">
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                      {readiness.blockers.length > 0 ? "Export is blocked until prerequisites are fixed" : "Export has review warnings"}
+                    </div>
+                    <ul className="mt-1 space-y-0.5 pl-5">
+                      {[...readiness.blockers, ...readiness.warnings].slice(0, 3).map(issue => (
+                        <li key={`${issue.code}-${issue.message}`}>
+                          {issue.message}{issue.remediation ? ` ${issue.remediation}` : ""}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
               </div>
             </WorkflowCard>
             {(renderActive || renderFailed || renderCancelled) && (
@@ -2050,7 +2080,7 @@ export function GuidedWorkflowPanel({
               <button
                 type="button"
                 onClick={() => onApprove(selectedExportPreset?.id ?? selectedExportPresetId)}
-                disabled={approving || !plan}
+                disabled={approving || !plan || exportBlocked}
                 className="flex w-full items-center justify-center gap-2 rounded-md bg-accent px-3 py-3 text-sm font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {approving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
@@ -2061,7 +2091,7 @@ export function GuidedWorkflowPanel({
                 <button
                   type="button"
                   onClick={() => onApprove(selectedExportPreset?.id ?? selectedExportPresetId)}
-                  disabled={approving || !plan}
+                  disabled={approving || !plan || exportBlocked}
                   className="flex w-full items-center justify-center gap-2 rounded-md bg-accent px-3 py-3 text-sm font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {approving ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
@@ -2103,7 +2133,7 @@ export function GuidedWorkflowPanel({
               <button
                 type="button"
                 onClick={() => onApprove(selectedExportPreset?.id ?? selectedExportPresetId)}
-                disabled={approving || !plan}
+                disabled={approving || !plan || exportBlocked}
                 className="flex w-full items-center justify-center gap-2 rounded-md bg-accent px-3 py-3 text-sm font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {approving ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}

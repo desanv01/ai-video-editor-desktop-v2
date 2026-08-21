@@ -4,6 +4,19 @@ export type VideoStatus =
   | "uploaded" | "processing" | "transcribing" | "analyzing"
   | "planning" | "awaiting_review" | "rendering" | "completed" | "failed";
 
+export type WorkflowState =
+  | "source_required"
+  | "validating"
+  | "ready_for_analysis"
+  | "analyzing"
+  | "review_suggestions"
+  | "editing"
+  | "export_ready"
+  | "exporting"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
 export type SegmentAction = "keep" | "cut" | "shorten" | "highlight";
 
 export type SegmentType =
@@ -166,6 +179,7 @@ export interface Video {
   error_message: string | null;
   created_at: string;
   updated_at: string;
+  workflow_state?: WorkflowState;
 }
 
 export interface VideoUploadResponse {
@@ -936,6 +950,92 @@ export interface ProcessingStatus {
   current_step_elapsed_seconds?: number;
   error_message: string | null;
   render_job?: RenderJob | null;
+  workflow_state?: WorkflowState;
+  workflow_label?: string;
+  job?: UnifiedJob | null;
+}
+
+export interface UnifiedJob {
+  job_id: string;
+  type: string;
+  state: "queued" | "running" | "cancel_requested" | "completed" | "failed" | "cancelled" | "interrupted" | string;
+  status?: string;
+  video_id?: string | null;
+  progress_percent: number;
+  stage: string;
+  message: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  cancellable: boolean;
+  retryable: boolean;
+  error_code?: string | null;
+  error?: string | null;
+  remediation?: string | null;
+  result?: Record<string, unknown> | null;
+}
+
+export interface ReadinessIssue {
+  code: string;
+  message: string;
+  remediation: string;
+  severity: "blocker" | "warning" | string;
+}
+
+export interface ReadinessCapability {
+  id: string;
+  label: string;
+  configured: boolean;
+  usable: boolean;
+  status: "usable" | "configured" | "unavailable" | string;
+  detail: string;
+  model?: string | null;
+}
+
+export interface ReadinessStorage {
+  root: string;
+  exists: boolean;
+  writable: boolean;
+  free_bytes: number;
+  total_bytes: number;
+  required_free_bytes: number;
+  enough_free_space: boolean;
+}
+
+export interface ProductReadiness {
+  schema_version: string;
+  checked_at: string;
+  mode: "docker" | "native" | string;
+  ready: boolean;
+  storage: ReadinessStorage;
+  capabilities: Record<string, ReadinessCapability>;
+  required_actions: string[];
+  blockers: ReadinessIssue[];
+  warnings: ReadinessIssue[];
+}
+
+export interface ProjectReadiness extends ProductReadiness {
+  project_id: string;
+  video_id: string | null;
+  workflow_state: WorkflowState;
+  workflow_label: string;
+  source: {
+    required: boolean;
+    valid: boolean;
+    filename: string | null;
+    path_available: boolean;
+    extension: string | null;
+    file_size_bytes: number | null;
+    supported_extensions: string[];
+  };
+  media: {
+    duration_seconds: number | null;
+    resolution: string | null;
+    fps: number | null;
+    metadata: Record<string, unknown>;
+  };
+  manual_operations_available: boolean;
 }
 
 // ── Quality Report ──
@@ -1221,6 +1321,19 @@ export interface BackendAISettingsUpdate {
   local_model_paths?: Partial<Record<AIProviderKind, string | null>>;
   local_model_ids?: Partial<Record<AIProviderKind, string | null>>;
   domain_terms?: string[];
+}
+
+export interface ProviderConnectionTestResult {
+  schema_version: string;
+  provider_id: string;
+  kind: string;
+  model: string | null;
+  status: string;
+  configured: boolean;
+  usable: boolean;
+  network_tested: boolean;
+  message: string;
+  details: Record<string, unknown>;
 }
 
 export type LocalTranscriptionModelStatus =

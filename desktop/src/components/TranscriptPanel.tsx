@@ -1,6 +1,6 @@
 import { useRef, useEffect, useMemo, useState } from "react";
 import type { Segment, TranscriptCutDecision, TranscriptTimeline, TranscriptTimelineWord } from "../types/api";
-import { Check, Loader2, MessageCircle, RotateCcw, Scissors, SlidersHorizontal, Trash2, User, X } from "lucide-react";
+import { Check, Loader2, MessageCircle, RotateCcw, Scissors, Search, SlidersHorizontal, Trash2, User, X } from "lucide-react";
 
 interface Props {
   segments: Segment[];
@@ -67,6 +67,7 @@ export function TranscriptPanel({
   const [restoringCutWordKey, setRestoringCutWordKey] = useState<string | null>(null);
   const [savingTrimId, setSavingTrimId] = useState<string | null>(null);
   const [trimDrafts, setTrimDrafts] = useState<Record<string, TrimDraft>>({});
+  const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
     if (followPlayback && !manualScrollLocked && activeRef.current && scrollRef.current) {
@@ -129,6 +130,16 @@ export function TranscriptPanel({
     }
     return grouped;
   }, [timeline?.words]);
+  const visibleSegments = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return segments;
+    return segments.filter(segment => [
+      segment.text,
+      segment.topic_label,
+      segment.segment_type,
+      segment.speaker,
+    ].filter(Boolean).join(" ").toLowerCase().includes(query));
+  }, [searchQuery, segments]);
 
   const cutWordIndexes = useMemo(() => {
     const indexes = new Map<number, TranscriptCutDecision>();
@@ -298,6 +309,35 @@ export function TranscriptPanel({
             {cutsLoading && <Loader2 className="h-3.5 w-3.5 animate-spin text-gray-500" />}
           </div>
         </div>
+        <div className="mt-2 flex items-center gap-2">
+          <label className="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-surface-border bg-surface-overlay/60 px-2 py-1.5 text-xs text-gray-400 focus-within:border-accent/60">
+            <Search className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span className="sr-only">Search transcript</span>
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={event => setSearchQuery(event.target.value)}
+              placeholder="Search transcript"
+              aria-label="Search transcript"
+              className="min-w-0 flex-1 bg-transparent text-gray-200 outline-none placeholder:text-gray-500"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery("")}
+                className="rounded p-0.5 text-gray-500 hover:bg-surface-border hover:text-gray-200"
+                aria-label="Clear transcript search"
+              >
+                <X className="h-3 w-3" aria-hidden="true" />
+              </button>
+            )}
+          </label>
+          {searchQuery.trim() && (
+            <span className="shrink-0 text-[11px] text-gray-500" aria-live="polite">
+              {visibleSegments.length}/{segments.length}
+            </span>
+          )}
+        </div>
 
         {selectedRange && (
           <div className="mt-2 rounded-md border border-red-500/30 bg-red-500/10 p-2">
@@ -362,7 +402,11 @@ export function TranscriptPanel({
         onWheel={pauseAutoFollow}
         onPointerDown={pauseAutoFollow}
       >
-        {segments.map(seg => {
+        {visibleSegments.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-surface-border px-3 py-6 text-center text-xs text-gray-500">
+            No transcript segments match “{searchQuery}”.
+          </div>
+        ) : visibleSegments.map(seg => {
           const action = seg.is_teacher_modified && seg.teacher_action ? seg.teacher_action : seg.action;
           const isActive = currentTime >= seg.start_time && currentTime < seg.end_time;
           const isSelected = selectedSegmentId === seg.id;
@@ -372,12 +416,23 @@ export function TranscriptPanel({
             <div
               key={seg.id}
               ref={isActive ? activeRef : undefined}
+              role="button"
+              tabIndex={0}
+              aria-current={isActive ? "true" : undefined}
+              aria-label={`Transcript segment at ${formatTime(seg.start_time)}`}
               className={`px-3 py-2 rounded-lg text-sm transition-all ${
                 isActive ? "transcript-active" :
                 isSelected ? "bg-surface-overlay border border-accent/30" :
                 "hover:bg-surface-overlay/50"
               } ${action === "cut" ? "opacity-40" : ""}`}
               onClick={() => { onSeek(seg.start_time); onSelectSegment(seg); }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onSeek(seg.start_time);
+                  onSelectSegment(seg);
+                }
+              }}
             >
               <div className="flex items-center justify-between mb-1">
                 <div className="flex items-center gap-2 text-xs text-gray-400">

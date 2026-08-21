@@ -1,24 +1,29 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
+  AlertTriangle,
   ArrowRight,
   CheckCircle2,
   CircleDashed,
   Edit3,
   FileVideo,
   FolderOpen,
+  HardDrive,
   LayoutDashboard,
   Loader2,
   MonitorPlay,
   Plus,
   RefreshCcw,
   Search,
+  SlidersHorizontal,
   Settings2,
   Sparkles,
   Trash2,
 } from "lucide-react";
 import * as api from "../lib/api";
-import type { Project, ProjectCreateRequest, ProjectSourceMode, ProjectStatus, Video } from "../types/api";
+import type { Project, ProjectCreateRequest, ProjectSourceMode, ProjectStatus, ProductReadiness, Video } from "../types/api";
+import { filterAndSortProjects, type DashboardSort } from "../lib/dashboardModel";
+import { legacyToWorkflowState, workflowLabel, workflowNextAction, workflowProgress } from "../lib/workflow";
 
 type ContinueTarget = {
   project: Project;
@@ -63,8 +68,13 @@ export function ProjectDashboard({ onContinue }: Props) {
   const [creating, setCreating] = useState(false);
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
   const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null);
+  const [retryingProjectId, setRetryingProjectId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | ProjectStatus>("all");
+  const [sort, setSort] = useState<DashboardSort>("updated");
+  const [systemReadiness, setSystemReadiness] = useState<ProductReadiness | null>(null);
+  const [videoProgress, setVideoProgress] = useState<Record<string, number>>({});
   const [newProject, setNewProject] = useState<ProjectCreateRequest>({
     title: "",
     description: "",
@@ -77,14 +87,29 @@ export function ProjectDashboard({ onContinue }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const [projectList, videoList] = await Promise.all([
+      const [projectList, videoList, readiness] = await Promise.all([
         api.listProjects(),
         api.listVideos(),
+        api.getProductReadiness(),
       ]);
       setProjects(projectList);
       setVideos(videoList);
+      setSystemReadiness(readiness);
+      const statuses = await Promise.all(
+        videoList
+          .filter(video => BUSY_VIDEO_STATUSES.has(video.status))
+          .map(async video => {
+            try {
+              const status = await api.getProcessingStatus(video.id);
+              return [video.id, status.progress_percent] as const;
+            } catch {
+              return null;
+            }
+          }),
+      );
+      setVideoProgress(Object.fromEntries(statuses.filter((item): item is readonly [string, number] => Boolean(item))));
     } catch (err) {
-      setError(String(err));
+      setError(api.friendlyErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -105,14 +130,10 @@ export function ProjectDashboard({ onContinue }: Props) {
     return grouped;
   }, [videos]);
 
-  const filteredProjects = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return projects;
-    return projects.filter((project) => {
-      const projectType = project.project_type ?? "";
-      return `${project.title} ${project.description ?? ""} ${projectType}`.toLowerCase().includes(needle);
-    });
-  }, [projects, query]);
+  const filteredProjects = useMemo(
+    () => filterAndSortProjects(projects, videosByProject, query, statusFilter, sort),
+    [projects, videosByProject, query, sort, statusFilter],
+  );
 
   const activeProjectCount = projects.filter((project) => {
     const status = effectiveProjectStatus(project, videosByProject.get(project.id)?.[0] ?? null);
@@ -141,7 +162,7 @@ export function ProjectDashboard({ onContinue }: Props) {
       setNewProject(prev => ({ ...prev, title: "", description: "" }));
       onContinue({ project: created, video: null, nextView: "upload" });
     } catch (err) {
-      setError(String(err));
+      setError(api.friendlyErrorMessage(err));
     } finally {
       setCreating(false);
     }
@@ -185,7 +206,7 @@ export function ProjectDashboard({ onContinue }: Props) {
       const updated = await api.updateProject(project.id, { title });
       setProjects(prev => prev.map(item => item.id === project.id ? updated : item));
     } catch (err) {
-      setError(String(err));
+      setError(api.friendlyErrorMessage(err));
     } finally {
       setRenamingProjectId(null);
     }
@@ -202,9 +223,25 @@ export function ProjectDashboard({ onContinue }: Props) {
       setProjects(prev => prev.filter(item => item.id !== project.id));
       setVideos(prev => prev.filter(video => video.project_id !== project.id));
     } catch (err) {
-      setError(String(err));
+      setError(api.friendlyErrorMessage(err));
     } finally {
       setDeletingProjectId(null);
+    }
+  };
+
+  const retryProject = async (project: Project) => {
+    const linkedVideo = videosByProject.get(project.id)?.[0] ?? null;
+    if (!linkedVideo) return;
+    setRetryingProjectId(project.id);
+    setError(null);
+    try {
+      await api.retryVideoProcessing(linkedVideo.id);
+      await loadDashboard();
+      onContinue({ project, video: linkedVideo, nextView: "processing" });
+    } catch (err) {
+      setError(api.friendlyErrorMessage(err));
+    } finally {
+      setRetryingProjectId(null);
     }
   };
 
@@ -237,9 +274,11 @@ export function ProjectDashboard({ onContinue }: Props) {
               <MetricTile label="Ready to review" value={reviewProjectCount} accent="text-amber-200" />
               <MetricTile label="Multi-source" value={multiSourceCount} accent="text-emerald-200" />
             </div>
+
+            <ReadinessSummary readiness={systemReadiness} />
           </div>
 
-          <div className="flex items-center gap-3 border-b border-surface-border px-6 py-3">
+          <div className="flex flex-wrap items-center gap-3 border-b border-surface-border px-6 py-3">
             <div className="relative min-w-0 flex-1">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
               <input
@@ -249,6 +288,26 @@ export function ProjectDashboard({ onContinue }: Props) {
                 className="h-10 w-full rounded-md border border-surface-border bg-surface-raised pl-9 pr-3 text-sm text-gray-100 outline-none transition-colors placeholder:text-gray-600 focus:border-accent"
               />
             </div>
+            <label className="inline-flex h-10 items-center gap-2 rounded-md border border-surface-border bg-surface-raised px-2 text-xs text-gray-400">
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+              <span className="sr-only">Filter projects</span>
+              <select value={statusFilter} onChange={event => setStatusFilter(event.target.value as "all" | ProjectStatus)} className="bg-transparent text-gray-300 outline-none">
+                <option value="all">All statuses</option>
+                <option value="draft">Needs source</option>
+                <option value="processing">Processing</option>
+                <option value="awaiting_review">Review</option>
+                <option value="failed">Needs attention</option>
+                <option value="completed">Completed</option>
+              </select>
+            </label>
+            <label className="inline-flex h-10 items-center gap-2 rounded-md border border-surface-border bg-surface-raised px-2 text-xs text-gray-400">
+              <span className="sr-only">Sort projects</span>
+              <select value={sort} onChange={event => setSort(event.target.value as DashboardSort)} className="bg-transparent text-gray-300 outline-none">
+                <option value="updated">Recently updated</option>
+                <option value="created">Recently created</option>
+                <option value="title">Title A-Z</option>
+              </select>
+            </label>
           </div>
 
           {error ? (
@@ -278,7 +337,9 @@ export function ProjectDashboard({ onContinue }: Props) {
                       onContinue={() => continueProject(project)}
                       onRename={() => void renameProject(project)}
                       onDelete={() => void deleteProject(project)}
-                      busy={deletingProjectId === project.id || renamingProjectId === project.id}
+                      onRetry={() => void retryProject(project)}
+                      progress={linkedVideo ? videoProgress[linkedVideo.id] : undefined}
+                      busy={deletingProjectId === project.id || renamingProjectId === project.id || retryingProjectId === project.id}
                     />
                   );
                 })}
@@ -384,12 +445,39 @@ function MetricTile({ label, value, accent }: { label: string; value: number; ac
   );
 }
 
+function ReadinessSummary({ readiness }: { readiness: ProductReadiness | null }) {
+  if (!readiness) {
+    return <div className="mt-4 rounded-md border border-surface-border bg-surface-raised px-3 py-2 text-xs text-gray-500">Checking local readiness…</div>;
+  }
+  const usableCapabilities = Object.values(readiness.capabilities).filter(capability => capability.usable).length;
+  const totalCapabilities = Object.values(readiness.capabilities).length;
+  const hasBlockers = readiness.blockers.length > 0;
+  return (
+    <div className={`mt-4 rounded-md border px-3 py-2.5 ${hasBlockers ? "border-amber-400/30 bg-amber-500/10" : "border-emerald-400/30 bg-emerald-500/10"}`} role="status" aria-live="polite">
+      <div className="flex items-start gap-2">
+        {hasBlockers ? <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-200" /> : <HardDrive className="mt-0.5 h-4 w-4 shrink-0 text-emerald-200" />}
+        <div className="min-w-0">
+          <p className={`text-xs font-semibold ${hasBlockers ? "text-amber-100" : "text-emerald-100"}`}>
+            {hasBlockers ? "Action needed before import" : "Workspace ready for local work"}
+          </p>
+          <p className="mt-1 text-[11px] leading-4 text-gray-300">
+            {readiness.mode === "native" ? "Native engine" : "Browser/Docker"} · {usableCapabilities}/{totalCapabilities} tools usable · {Math.round(readiness.storage.free_bytes / 1024 / 1024 / 1024)} GB free
+          </p>
+          {hasBlockers ? <p className="mt-1 text-[11px] leading-4 text-amber-100">{readiness.blockers[0].remediation}</p> : readiness.warnings.length > 0 ? <p className="mt-1 text-[11px] leading-4 text-gray-300">AI warnings do not block manual transcript editing.</p> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ProjectRow({
   project,
   video,
   onContinue,
   onRename,
   onDelete,
+  onRetry,
+  progress,
   busy,
 }: {
   project: Project;
@@ -397,18 +485,24 @@ function ProjectRow({
   onContinue: () => void;
   onRename: () => void;
   onDelete: () => void;
+  onRetry: () => void;
+  progress?: number;
   busy: boolean;
 }) {
   const actionLabel = getContinueLabel(project, video);
   const detail = video ? `${video.original_filename} / ${formatVideoStatus(video.status)}` : "Workspace setup";
   const displayStatus = effectiveProjectStatus(project, video);
+  const workflowState = legacyToWorkflowState(project, video);
+  const progressValue = workflowProgress(video, progress);
 
   return (
-    <div
-      onClick={onContinue}
-      className="grid cursor-pointer grid-cols-[minmax(220px,1fr)_130px_140px_190px] items-center gap-4 px-6 py-4 transition-colors hover:bg-surface-raised/70"
-    >
-      <div className="min-w-0">
+    <div className="grid grid-cols-[minmax(220px,1fr)_130px_140px_190px] items-center gap-4 px-6 py-4 transition-colors hover:bg-surface-raised/70">
+      <button
+        type="button"
+        onClick={onContinue}
+        className="min-w-0 text-left focus:outline-none focus:ring-2 focus:ring-accent/70"
+        aria-label={`Open project ${project.title}`}
+      >
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-surface-raised text-gray-400">
             <FolderOpen className="h-4 w-4" />
@@ -416,9 +510,25 @@ function ProjectRow({
           <div className="min-w-0">
             <h3 className="truncate text-sm font-semibold text-white">{project.title}</h3>
             <p className="mt-1 truncate text-xs text-gray-500">{project.description || detail}</p>
+            <p className="mt-1 text-[11px] text-accent/80">Next: {workflowNextAction(workflowState)}</p>
+            {progressValue !== null && (workflowState === "analyzing" || workflowState === "exporting") ? (
+              <div className="mt-2 flex items-center gap-2">
+                <div
+                  className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-surface-overlay"
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(progressValue)}
+                  aria-label={`${workflowLabel(workflowState)} progress`}
+                >
+                  <div className="h-full rounded-full bg-accent" style={{ width: `${progressValue}%` }} />
+                </div>
+                <span className="text-[11px] text-gray-500">{Math.round(progressValue)}%</span>
+              </div>
+            ) : null}
           </div>
         </div>
-      </div>
+      </button>
 
       <div>
         <ProjectStatusPill status={displayStatus} />
@@ -460,6 +570,20 @@ function ProjectRow({
         >
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
         </button>
+        {workflowState === "failed" && video ? (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onRetry();
+            }}
+            disabled={busy}
+            className="inline-flex h-9 items-center gap-1.5 rounded-md border border-amber-400/30 px-2.5 text-xs text-amber-200 transition-colors hover:border-amber-300 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCcw className="h-3.5 w-3.5" />}
+            Retry
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={(event) => {
