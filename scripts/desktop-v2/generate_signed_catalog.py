@@ -36,7 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--detached-signature", type=Path, required=True)
     parser.add_argument("--private-key-file", type=Path, required=True)
     parser.add_argument("--key-id", required=True)
-    parser.add_argument("--catalog-id", default="aive-desktop-v2-lecturer-rc-2.0.0-rc.1")
+    parser.add_argument("--catalog-id", default="aive-desktop-v2-lecturer-rc-2.0.0-rc.2")
     parser.add_argument("--channel", choices=("stable", "beta", "nightly"), default="beta")
     parser.add_argument("--generated-at")
     parser.add_argument("--expires-at")

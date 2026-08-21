@@ -18,16 +18,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-VERSION = "2.0.0-rc.1"
+VERSION = "2.0.0-rc.2"
 CHANNEL = "beta"
-BASE_PHASE8_COMMIT = "21298c927b745707b1bc02040a51f403743d4fa4"
-BRANCH = "codex/desktop-v2-phase-9"
+BASE_RELEASE_COMMIT = "2ccea79bae4bf527022c9b332348b91c675e1922"
+HOTFIX_BRANCH = "codex/desktop-v2-installer-acl-hotfix"
+PRODUCT_IDENTIFIER = "com.fyp.ai-video-editor.desktop-v2"
 KEY_ID = "aive-desktop-v2-lecturer-2026"
 PUBLIC_KEY_SHA256 = "471e7b08109f8723400afea495f63d1d93753e4757386e31560a7cbee6bd2a2d"
 EXPECTED_TARGET = Path(r"C:\Users\Dv\Desktop\AI-Video-Editor-Desktop-V2-Handoff")
 HANDOFF_FILES = {
     "AI Video Editor Desktop V2 Setup.exe",
-    "Components/aive-engine-2.0.0-rc.1.tar.gz",
+    "Components/aive-engine-2.0.0-rc.2.tar.gz",
     "Components/aive-engine-manifest.json",
     "Components/aive-engine-manifest.sig",
     "Components/ffmpeg-8.1.1.tar.gz",
@@ -245,7 +246,8 @@ def create_docs(root: Path, engine: dict[str, object], ffmpeg: dict[str, object]
         f"""# Release notes — Desktop V2 {VERSION}
 
         - Release channel: **{CHANNEL}**.
-        - Small per-machine Tauri/NSIS shell with stable Desktop V2 identity, Program Files target, shortcuts, migration hooks, and data-preserving uninstall defaults.
+        - Small per-machine Tauri/NSIS shell with stable Desktop V2 identity (`com.fyp.ai-video-editor.desktop-v2`), Program Files target, shortcuts, migration hooks, and data-preserving uninstall defaults.
+        - Installer ACL hotfix: the machine perimeter resolves to `%ProgramData%`, applies a checked scoped ACL, and aborts on every path or ACL failure; no literal shell placeholder is accepted.
         - Real PyInstaller onedir Windows x64 native engine, self-test enabled, loopback authenticated API, local SQLite/vector degraded contract, and graceful shutdown.
         - Real Gyan.dev FFmpeg/FFprobe Windows x64 build pinned at **8.1.1**, packaged separately under GPL-3.0-only notices and tested for encode/decode/probe.
         - Signed offline catalog with required engine and FFmpeg entries, dependency/disk metadata, and portable `offline:Components/...` artifact references.
@@ -366,8 +368,13 @@ def main() -> int:
     ffmpeg_files = {entry["path"]: entry for entry in ffmpeg["files"]}
     release_manifest = {
         "schemaVersion": "desktop.release-manifest.v1",
-        "product": {"name": "AI Video Editor Desktop V2", "identifier": "com.aivideoeditor.desktop.v2", "version": VERSION, "channel": CHANNEL},
-        "source": {"branch": BRANCH, "basePhase8Commit": BASE_PHASE8_COMMIT, "phase9SourceCommit": "recorded by the final Phase 9 commit", "repository": "https://github.com/desanv01/ai-video-editor"},
+        "product": {"name": "AI Video Editor Desktop V2", "identifier": PRODUCT_IDENTIFIER, "version": VERSION, "channel": CHANNEL},
+        "source": {
+            "branch": git_value(source_root, ["branch", "--show-current"], HOTFIX_BRANCH),
+            "baseReleaseCommit": BASE_RELEASE_COMMIT,
+            "sourceCommit": git_value(source_root, ["rev-parse", "HEAD"], "unknown"),
+            "repository": "https://github.com/desanv01/ai-video-editor",
+        },
         "contracts": {"shell": "desktop.shell-identity.v1", "engine": "desktop.health-readiness.v1", "componentManifest": "desktop.component-manifest.v1", "catalog": "desktop.setup-catalog.v1"},
         "requirements": {"minimumWindows": "Windows 10 64-bit", "architectures": ["x86_64"], "webView2": True, "minimumFreeBytes": 2147483648, "systemRuntimesRequired": []},
         "trustRoot": {"algorithm": "ed25519", "keyId": KEY_ID, "publicKeySha256": PUBLIC_KEY_SHA256, "publicKeyPath": "Catalog/lecturer-release-public-key.json", "privateKeyInHandoff": False},

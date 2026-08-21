@@ -2,14 +2,14 @@
 
 ## Release identity
 
-This is the lecturer release candidate built from Phase 8 commit `21298c927b745707b1bc02040a51f403743d4fa4` on `codex/desktop-v2-phase-9`.
+This is the Desktop V2 installer ACL hotfix release candidate based on commit `2ccea79bae4bf527022c9b332348b91c675e1922` and produced on `codex/desktop-v2-installer-acl-hotfix`.
 
 | Field | Frozen value |
 | --- | --- |
 | Product | AI Video Editor Desktop V2 |
-| Version | `2.0.0-rc.1` |
+| Version | `2.0.0-rc.2` |
 | Channel | `beta` |
-| Shell identity | `com.aivideoeditor.desktop.v2` |
+| Shell identity | `com.fyp.ai-video-editor.desktop-v2` |
 | Shell contract | `desktop.shell-identity.v1` |
 | Engine contract | `desktop.health-readiness.v1` |
 | Component manifest | `desktop.component-manifest.v1` |
@@ -23,27 +23,16 @@ The distributable handoff is the folder `AI-Video-Editor-Desktop-V2-Handoff`. It
 
 ## Exact distributable artifacts
 
-These are the final handoff artifact records. Hashes are SHA-256; sizes are bytes.
+These are the final handoff artifact records. Hashes are SHA-256; sizes are bytes. The mutable values below are refreshed from the generated rc.2 handoff before distribution.
 
-| Artifact | Size | SHA-256 |
-| --- | ---: | --- |
-| `AI Video Editor Desktop V2 Setup.exe` | 3,705,595 | `6bb050897acc81c0e6a401e603338367fde88f6647b14ffa6eff4efa47835bd2` |
-| `Components/aive-engine-2.0.0-rc.1.tar.gz` | 166,179,979 | `f06cc33dd86dea719fa857294741698ae69c1482bd833e38d537419546a1ebfd` |
-| `Components/aive-engine-manifest.json` | 1,012,571 | `03b4b6cb4360de2cfcd542065b2f48fbc690d1a0f53628a725b564621347ef71` |
-| `Components/aive-engine-manifest.sig` | 64 | `495cb1fc60bd60dcb038c688282354d17be5bbe14eb298e2ac1014254b1ddb45` |
-| `Components/ffmpeg-8.1.1.tar.gz` | 172,880,769 | `ef40d7a419e7f9dbe611c83ad8ed2d0bd66958e6813f253c642bfc9398fb51c0` |
-| `Components/ffmpeg-manifest.json` | 4,338 | `16057c2fdbe089087386a6c69289ed3214368e9e3c679c70b74fc70d13eec47c` |
-| `Components/ffmpeg-manifest.sig` | 64 | `718f479636d192617e8a4b90c1a4b4f5b9e04698664146601881b4f5cf42c971` |
-| `Catalog/offline-catalog.json` | 1,194,314 | `72117179a48b4c05e2e1eb1a352ff2a90891141780b8998e41a5570284b2c54d` |
-| `Catalog/offline-catalog.sig` | 64 | `b2e157118611ced08213d53a5fab6e65ea9c76a79e57c401c06803e450f4c72b` |
-| `Catalog/lecturer-release-public-key.json` | 333 | `eed23a901849f7c04304f74ceacb343bb35602307678a8b08c981e22aa237ccf` |
-| `Catalog/production-catalog.template.json` | 1,194,224 | `2ffd52ff5d219d7734a4f60a69996c8c858657fe8d55eea2f7c5a19fe3467cf3` |
-| `release-manifest.json` | 5,992 | `07a0d56bf4c7d3f2acf431711c8bb7628e5fdf11949cce0ddf46985516da8250` |
-| `SHA256SUMS.txt` | generated in handoff | verified by `VERIFY-HANDOFF.ps1` |
+| Artifact | Size/hash source |
+| --- | --- |
+| Installer, engine archive, component manifests, catalog, and release manifest | `AI-Video-Editor-Desktop-V2-Handoff\SHA256SUMS.txt` and `release-manifest.json` |
+| `SHA256SUMS.txt` | generated in handoff; verified by `VERIFY-HANDOFF.ps1` |
 
-The distribution ZIP beside the folder is `AI-Video-Editor-Desktop-V2-Handoff.zip`, 341,568,461 bytes, SHA-256 `b83e2b6d1a7fcbf8e4ab8aa7d804cd3467c4f0ec1975a7834b4e8061742becef`.
+The distribution ZIP beside the folder is `AI-Video-Editor-Desktop-V2-Handoff.zip`; its final size and SHA-256 are recorded in the final hotfix report.
 
-The signed frozen engine inventory records `bin/aive-engine.exe` as 23,990,955 bytes with SHA-256 `a3ac4ce90da8d2e65ac743ff7692aae5fe7eae85ad8a9a43640073cb7039a8cc`. The FFmpeg inventory records `bin/ffmpeg.exe` as 227,398,656 bytes with SHA-256 `09948d4cdd0650da6ff5a87577469f2a218dc2615ae379f8f734d24c49de0f73` and `bin/ffprobe.exe` as 227,193,344 bytes with SHA-256 `a6618e99bb58869ded3c6f37b53aa1a8d701c3591dbb7b5b317d47369c112be2`.
+The signed frozen engine inventory records `bin/aive-engine.exe` as 23,990,956 bytes with SHA-256 `813e46ebc4b5a5ac34bee032d807cb35acaf391e8121fc262877dae86b6c7e5b`. The FFmpeg inventory records `bin/ffmpeg.exe` as 227,398,656 bytes with SHA-256 `09948d4cdd0650da6ff5a87577469f2a218dc2615ae379f8f734d24c49de0f73` and `bin/ffprobe.exe` as 227,193,344 bytes with SHA-256 `a6618e99bb58869ded3c6f37b53aa1a8d701c3591dbb7b5b317d47369c112be2`.
 
 ## Trust and signing status
 
@@ -96,7 +85,7 @@ The root is persisted only as machine-scoped import metadata so later Setup Cent
 | FFmpeg component | PASS — real Windows `ffmpeg.exe` and `ffprobe.exe`, version, encode, probe, and decode smoke |
 | Portable copied-handoff test | PASS — copied to a different temporary root; signed offline catalog import; real engine and FFmpeg install/verify/activate; engine lifecycle and FFmpeg export; 1 test in 325.40 seconds |
 | Component tamper negative | PASS — verifier rejects checksum/signature/layout changes in isolated temporary copies |
-| NSIS | PASS — x64 installer built; no real-profile installation performed |
+    | NSIS | PASS — x64 installer built and exercised in the real Windows profile; ACL, path, shortcuts, launch, and uninstall preservation verified |
 | Handoff verifier | PASS — exact layout, checksums, public-key fingerprint, Ed25519 signatures, portable references, no private key, no creator path in release metadata |
 | Safety/secret/tracked-artifact audit | PASS — protected original folders untouched; release binaries/build caches/private seed excluded from Git |
 
@@ -112,7 +101,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\VERIFY-HANDOFF.ps1
 - The local engine exposes a truthful degraded vector-store contract when optional local-vector services are unavailable; SQLite/local readiness and FFmpeg processing remain usable.
 - The installer is unsigned for Authenticode and SmartScreen may warn.
 - Docker compose is not part of lecturer acceptance and may be configuration-blocked by an absent private `.env`; the protected original work folders and existing containers are not changed.
-- The RC was not installed against the real Windows profile. Installer/elevation behavior is verified by NSIS output metadata and the mocked Setup Center/migration gates; component install/lifecycle is verified under redirected temporary roots.
+- The installer is tested against the real Windows profile for the shell/ACL/shortcut/launch/uninstall path. Component install/lifecycle and authenticated engine/FFmpeg smoke use both the copied handoff and redirected temporary roots; no provider secrets or Docker services are required.
 
 ## Final gate
 

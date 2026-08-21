@@ -14,13 +14,13 @@ Windows lecturer machine
   └─ user data and projects remain outside the installer/component perimeter
 ```
 
-The shell is a stable per-machine identity (`com.aivideoeditor.desktop.v2`) and does not carry heavy runtime resources. The component manager owns signed archive intake, bounded download/extraction, exact inventory/hash verification, self-test, staging, atomic activation, repair, rollback metadata, and data-preserving uninstall behavior. The supervisor resolves only an activated verified engine, uses a dynamic loopback port and generated bearer token, requires the engine handshake/readiness contract, and supports graceful shutdown/restart.
+The shell is a stable per-machine identity (`com.fyp.ai-video-editor.desktop-v2`) and does not carry heavy runtime resources. The component manager owns signed archive intake, bounded download/extraction, exact inventory/hash verification, self-test, staging, atomic activation, repair, rollback metadata, and data-preserving uninstall behavior. The supervisor resolves only an activated verified engine, uses a dynamic loopback port and generated bearer token, requires the engine handshake/readiness contract, and supports graceful shutdown/restart.
 
 ## Release identity and compatibility
 
-The frozen RC is version `2.0.0-rc.1` on the `beta` channel, built from Phase 8 commit `21298c927b745707b1bc02040a51f403743d4fa4`. It targets Windows 10/11 x86_64 with WebView2 and at least 2 GiB free space. No system Python, Node.js, Docker, or FFmpeg is required by the lecturer release. The required signed components are:
+The installer ACL hotfix RC is version `2.0.0-rc.2` on the `beta` channel, based on release commit `2ccea79bae4bf527022c9b332348b91c675e1922` and built from the dedicated hotfix branch. It targets Windows 10/11 x86_64 with WebView2 and at least 2 GiB free space. No system Python, Node.js, Docker, or FFmpeg is required by the lecturer release. The required signed components are:
 
-- `aive-engine` version `2.0.0-rc.1`, PyInstaller Windows x64 onedir;
+- `aive-engine` version `2.0.0-rc.2`, PyInstaller Windows x64 onedir;
 - `ffmpeg` version `8.1.1`, containing the real Gyan.dev Windows x64 `ffmpeg.exe` and `ffprobe.exe`.
 
 ## Trust model
@@ -48,7 +48,7 @@ This is why a lecturer may copy the entire handoff folder to a different drive o
 
 ### First install
 
-Run the small NSIS installer with UAC approval. It installs the shell in Program Files, creates Start-menu and desktop shortcuts, and leaves heavy resources out of the base state. The initial shell is intentionally a zero-component state. Setup Center then imports the offline catalog, shows both required components, computes disk requirements, and installs them through the real component manager.
+Run the small NSIS installer with UAC approval. It installs the shell in `C:\Program Files\AI Video Editor Desktop V2`, creates Start-menu and desktop shortcuts, prepares the scoped `C:\ProgramData\AI Video Editor` perimeter with the documented ACL, and leaves heavy resources out of the base state. The initial shell is intentionally a zero-component state. Setup Center then imports the offline catalog, shows both required components, computes disk requirements, and installs them through the real component manager.
 
 ### Start and readiness
 
@@ -68,20 +68,17 @@ The default uninstall plan removes the shell while preserving user projects, exp
 
 ## Real release evidence
 
-The final handoff contains exact checksums in `SHA256SUMS.txt`. The most material files are:
+The final handoff contains exact checksums in `SHA256SUMS.txt`. The most material files and final sizes/hashes are recorded in the generated handoff `release-manifest.json`; this source document intentionally does not duplicate mutable artifact hashes.
 
-| File | Size | SHA-256 |
-| --- | ---: | --- |
-| `AI Video Editor Desktop V2 Setup.exe` | 3,705,595 | `6bb050897acc81c0e6a401e603338367fde88f6647b14ffa6eff4efa47835bd2` |
-| `Components/aive-engine-2.0.0-rc.1.tar.gz` | 166,179,979 | `f06cc33dd86dea719fa857294741698ae69c1482bd833e38d537419546a1ebfd` |
-| `Components/ffmpeg-8.1.1.tar.gz` | 172,880,769 | `ef40d7a419e7f9dbe611c83ad8ed2d0bd66958e6813f253c642bfc9398fb51c0` |
-| `Catalog/offline-catalog.json` | 1,194,314 | `72117179a48b4c05e2e1eb1a352ff2a90891141780b8998e41a5570284b2c54d` |
+| File | Size/hash source |
+| --- | --- |
+| Installer, engine archive, FFmpeg archive, catalog | `AI-Video-Editor-Desktop-V2-Handoff\release-manifest.json` and `SHA256SUMS.txt` |
 
-The distribution ZIP is `AI-Video-Editor-Desktop-V2-Handoff.zip`, 341,568,461 bytes, SHA-256 `b83e2b6d1a7fcbf8e4ab8aa7d804cd3467c4f0ec1975a7834b4e8061742becef`.
+The distribution ZIP is `AI-Video-Editor-Desktop-V2-Handoff.zip`; its final byte size and SHA-256 are recorded in the hotfix handoff report after the ZIP is generated.
 
 The FFmpeg archive is pinned to Gyan.dev FFmpeg 8.1.1 full build, source commit `FFmpeg/FFmpeg@239f2c733d`, GPL-3.0-only, with source page and notices recorded in `LICENSES-AND-SOURCES.md`. The local installed Windows build was provenance-checked; system PATH FFmpeg was not used.
 
-The copied-handoff test uses only temporary redirected roots and proves catalog signature verification, portable artifact resolution, real archive download/extraction, exact verification, activation of both components, frozen engine self-test, FFmpeg version/encode/probe/decode, authenticated readiness, and graceful shutdown. It does not install the RC into the real Windows profile or alter existing Docker containers.
+The copied-handoff test uses only temporary redirected roots and proves catalog signature verification, portable artifact resolution, real archive download/extraction, exact verification, activation of both components, frozen engine self-test, FFmpeg version/encode/probe/decode, authenticated readiness, and graceful shutdown. The hotfix validation also installs the shell into the real Windows profile, inspects the ProgramData ACL and shortcuts, launches the installed app, and then performs controlled uninstall/preservation checks.
 
 ## Verification and distribution procedure
 

@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 $rootPath = (Resolve-Path -LiteralPath $Root).Path
 $expected = @(
   'AI Video Editor Desktop V2 Setup.exe',
-  'Components/aive-engine-2.0.0-rc.1.tar.gz',
+  'Components/aive-engine-2.0.0-rc.2.tar.gz',
   'Components/aive-engine-manifest.json',
   'Components/aive-engine-manifest.sig',
   'Components/ffmpeg-8.1.1.tar.gz',

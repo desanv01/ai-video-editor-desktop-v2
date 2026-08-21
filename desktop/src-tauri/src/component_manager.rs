@@ -5681,8 +5681,8 @@ mod tests {
     #[test]
     fn offline_artifact_references_are_portable_and_bounded() {
         assert_eq!(
-            offline_artifact_relative_path("offline:Components/aive-engine-2.0.0-rc.1.tar.gz").unwrap(),
-            "Components/aive-engine-2.0.0-rc.1.tar.gz"
+            offline_artifact_relative_path("offline:Components/aive-engine-2.0.0-rc.2.tar.gz").unwrap(),
+            "Components/aive-engine-2.0.0-rc.2.tar.gz"
         );
         for invalid in [
             "file:///C:/Users/Dv/Desktop/aive-engine.tar.gz",
@@ -5764,7 +5764,7 @@ mod tests {
         let components = [
             (
                 "aive-engine",
-                "2.0.0-rc.1",
+                "2.0.0-rc.2",
                 "Components/aive-engine-manifest.json",
                 ComponentType::Backend,
             ),
@@ -5908,7 +5908,7 @@ mod tests {
         assert!(readiness.status().is_success());
         let readiness_text = readiness.text().unwrap();
         assert!(readiness_text.contains("desktop.health-readiness.v1"));
-        assert!(readiness_text.contains("2.0.0-rc.1"));
+        assert!(readiness_text.contains("2.0.0-rc.2"));
         let shutdown = client
             .post(format!("{base}/engine-control/shutdown"))
             .bearer_auth(token)

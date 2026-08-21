@@ -100,7 +100,8 @@ function testBrowserIsolationAndAclDecision() {
   assert.match(appSource, /resolveAppRoute\(isTauriRuntime\)/);
   assert.doesNotMatch(appSource, /setup_get_state.*browser/i);
   assert.match(installerSource, /icacls\.exe/);
-  assert.match(installerSource, /ProgramData|COMMONAPPDATA/);
+  assert.match(installerSource, /\$APPDATA\\AI Video Editor/);
+  assert.doesNotMatch(installerSource, /COMMONAPPDATA/);
   assert.match(installerSource, /Program Files remains immutable/);
 }
 

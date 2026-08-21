@@ -78,7 +78,8 @@ function testRustSafetyAndUiWiring() {
   assert.match(installerSource, /Abort/);
   assert.match(installerSource, /CreateShortCut/);
   assert.match(installerSource, /AI Video Editor Desktop V2/);
-  assert.match(installerSource, /ProgramData|COMMONAPPDATA/);
+  assert.match(installerSource, /\$APPDATA\\AI Video Editor/);
+  assert.doesNotMatch(installerSource, /COMMONAPPDATA/);
   assert.match(installerSource, /projects|uploads|models|database/i);
   assert.doesNotMatch(installerSource, /taskkill/i);
 }
