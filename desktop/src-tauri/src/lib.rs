@@ -15,6 +15,7 @@ pub mod contracts;
 pub mod component_manager;
 pub mod desktop_v2;
 pub mod migration;
+pub mod release_trust;
 pub mod setup_center;
 pub mod supervisor;
 
@@ -887,6 +888,7 @@ pub fn run() {
             setup_center::setup_save_state,
             setup_center::setup_get_catalog,
             setup_center::setup_import_catalog,
+            setup_center::setup_import_catalog_file,
             setup_center::setup_catalog_configuration,
             setup_center::setup_refresh_catalog,
             setup_center::setup_run_system_checks,

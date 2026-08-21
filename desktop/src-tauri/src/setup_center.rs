@@ -9,6 +9,7 @@ use crate::component_manager::{
     self, ComponentError, ComponentManager, ComponentManifest, ManagerResult, SourcePolicy,
 };
 use crate::desktop_v2::get_canonical_paths;
+use crate::release_trust::OFFLINE_IMPORT_SUPPORTED;
 use crate::supervisor::{SupervisorPhase, SupervisorState};
 use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
@@ -223,7 +224,7 @@ pub struct SetupCatalogConfiguration {
     pub trust_policy: String,
 }
 
-fn setup_error(code: &str, message: &str, retryable: bool) -> ComponentError {
+fn setup_error(code: &str, message: impl Into<String>, retryable: bool) -> ComponentError {
     ComponentError::new(code, message, retryable)
 }
 
@@ -356,7 +357,7 @@ fn load_state() -> ManagerResult<SetupState> {
     Ok(state)
 }
 
-fn catalog_signature_payload(catalog: &SetupCatalog) -> ManagerResult<Vec<u8>> {
+pub(crate) fn catalog_signature_payload(catalog: &SetupCatalog) -> ManagerResult<Vec<u8>> {
     let mut value = serde_json::to_value(catalog).map_err(|_| {
         setup_error(
             "CATALOG_PAYLOAD_INVALID",
@@ -515,14 +516,10 @@ fn validate_catalog_shape(catalog: &SetupCatalog) -> ManagerResult<()> {
 fn catalog_source_policy(source: &str) -> ManagerResult<SourcePolicy> {
     match source {
         "production" => Ok(SourcePolicy::PRODUCTION),
-        "offline-import" if cfg!(debug_assertions)
-            && env::var("AIVE_COMPONENT_MANAGER_TEST_MODE").ok().as_deref() == Some("1") =>
-        {
-            Ok(SourcePolicy::development_test())
-        }
+        "offline-import" if OFFLINE_IMPORT_SUPPORTED => Ok(SourcePolicy::OFFLINE_IMPORT),
         "offline-import" => Err(setup_error(
-            "OFFLINE_IMPORT_REQUIRES_TEST_POLICY",
-            "Offline catalogs are limited to an explicit lecturer/test build policy; no production trust bypass is enabled.",
+            "OFFLINE_IMPORT_UNSUPPORTED",
+            "This shell build does not support signed offline catalog import.",
             false,
         )),
         _ => Err(setup_error(
@@ -533,7 +530,48 @@ fn catalog_source_policy(source: &str) -> ManagerResult<SourcePolicy> {
     }
 }
 
-fn verify_and_intake_catalog(catalog_json: &str, source: &str) -> ManagerResult<SetupImportResult> {
+fn offline_catalog_handoff_root(selected_catalog: &Path) -> ManagerResult<PathBuf> {
+    let catalog_directory = selected_catalog.parent().ok_or_else(|| {
+        setup_error(
+            "OFFLINE_ROOT_INVALID",
+            "The selected catalog has no containing directory.",
+            false,
+        )
+    })?;
+    if catalog_directory
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| !name.eq_ignore_ascii_case("Catalog"))
+        .unwrap_or(true)
+    {
+        return Err(setup_error(
+            "OFFLINE_ROOT_INVALID",
+            "The offline catalog must be selected from a Catalog directory.",
+            false,
+        ));
+    }
+    let root = catalog_directory.parent().ok_or_else(|| {
+        setup_error(
+            "OFFLINE_ROOT_INVALID",
+            "The selected Catalog directory has no handoff root.",
+            false,
+        )
+    })?;
+    if !root.join("Components").is_dir() {
+        return Err(setup_error(
+            "OFFLINE_ROOT_INVALID",
+            "The handoff root must contain a sibling Components directory.",
+            false,
+        ));
+    }
+    Ok(root.to_path_buf())
+}
+
+fn verify_and_intake_catalog(
+    catalog_json: &str,
+    source: &str,
+    offline_root: Option<&Path>,
+) -> ManagerResult<SetupImportResult> {
     if catalog_json.len() > MAX_CATALOG_BYTES {
         return Err(setup_error(
             "CATALOG_TOO_LARGE",
@@ -557,9 +595,19 @@ fn verify_and_intake_catalog(catalog_json: &str, source: &str) -> ManagerResult<
         &payload,
     )?;
     let policy = catalog_source_policy(source)?;
-    let manager = ComponentManager::new(
-        PathBuf::from(get_canonical_paths().program_data_root).join("AI Video Editor"),
-    );
+    let machine_root = PathBuf::from(get_canonical_paths().program_data_root).join("AI Video Editor");
+    let manager = if source == "offline-import" {
+        let root = offline_root.ok_or_else(|| {
+            setup_error(
+                "OFFLINE_ROOT_REQUIRED",
+                "Select the catalog from the handoff so its portable artifact root is known.",
+                false,
+            )
+        })?;
+        ComponentManager::with_offline_root(machine_root, root.to_path_buf())
+    } else {
+        ComponentManager::new(machine_root)
+    };
     let mut imported_manifest_ids = Vec::new();
     let mut catalog_only_ids = Vec::new();
     for entry in &catalog.entries {
@@ -685,8 +733,71 @@ pub fn setup_get_catalog() -> ManagerResult<Option<SetupCatalogInfo>> {
 pub fn setup_import_catalog(
     catalog_json: String,
     source: String,
+    offline_root: Option<String>,
 ) -> ManagerResult<SetupImportResult> {
-    verify_and_intake_catalog(&catalog_json, &source)
+    let offline_root = offline_root
+        .as_deref()
+        .map(Path::new)
+        .map(fs::canonicalize)
+        .transpose()
+        .map_err(|error| {
+            setup_error(
+                "OFFLINE_ROOT_INVALID",
+                format!("The selected offline catalog root could not be resolved: {error}"),
+                false,
+            )
+        })?;
+    if let Some(root) = &offline_root {
+        if !root.is_dir() {
+            return Err(setup_error(
+                "OFFLINE_ROOT_INVALID",
+                "The selected offline catalog root is not a directory.",
+                false,
+            ));
+        }
+    }
+    verify_and_intake_catalog(&catalog_json, &source, offline_root.as_deref())
+}
+
+#[tauri::command]
+pub fn setup_import_catalog_file(catalog_path: String) -> ManagerResult<SetupImportResult> {
+    let selected = fs::canonicalize(Path::new(&catalog_path)).map_err(|error| {
+        setup_error(
+            "CATALOG_FILE_INVALID",
+            format!("The selected catalog file could not be resolved: {error}"),
+            false,
+        )
+    })?;
+    if !selected.is_file() {
+        return Err(setup_error(
+            "CATALOG_FILE_INVALID",
+            "The selected catalog path is not a regular file.",
+            false,
+        ));
+    }
+    let bytes = fs::read(&selected).map_err(|error| {
+        setup_error(
+            "CATALOG_FILE_UNREADABLE",
+            format!("The selected catalog file could not be read: {error}"),
+            false,
+        )
+    })?;
+    if bytes.len() > MAX_CATALOG_BYTES {
+        return Err(setup_error(
+            "CATALOG_TOO_LARGE",
+            "The selected setup catalog exceeds the bounded intake size.",
+            false,
+        ));
+    }
+    let catalog_json = String::from_utf8(bytes).map_err(|_| {
+        setup_error(
+            "CATALOG_SCHEMA_INVALID",
+            "The selected catalog file is not valid UTF-8 JSON.",
+            false,
+        )
+    })?;
+    let root = offline_catalog_handoff_root(&selected)?;
+    verify_and_intake_catalog(&catalog_json, "offline-import", Some(&root))
 }
 
 #[tauri::command]
@@ -706,8 +817,8 @@ pub fn setup_catalog_configuration(
         channel,
         production_url_configured: configured.is_some(),
         production_url: configured,
-        offline_import_supported: cfg!(debug_assertions),
-        trust_policy: "Only the shell's compiled Ed25519 trust root is accepted; catalog-supplied keys are ignored, and every embedded component manifest is verified by the Phase 3 manager before intake.".to_string(),
+        offline_import_supported: OFFLINE_IMPORT_SUPPORTED,
+        trust_policy: "Only the shell's compiled Ed25519 trust root is accepted; catalog-supplied keys are ignored, and every embedded component manifest is verified by the Phase 3 manager before intake. Local artifact URLs are accepted only for a signed offline import.".to_string(),
     })
 }
 
@@ -767,7 +878,7 @@ pub fn setup_refresh_catalog() -> ManagerResult<SetupImportResult> {
             false,
         )
     })?;
-    verify_and_intake_catalog(&json, "production")
+    verify_and_intake_catalog(&json, "production", None)
 }
 
 fn push_check(
@@ -1239,5 +1350,19 @@ mod tests {
                 .code,
             "HTTPS_REQUIRED"
         );
+    }
+
+    #[test]
+    fn offline_catalog_file_resolves_the_handoff_root_not_catalog_directory() {
+        let root = env::temp_dir().join(format!("aive-setup-offline-root-{}", now_epoch_ms()));
+        let catalog = root.join("Catalog").join("offline-catalog.json");
+        fs::create_dir_all(catalog.parent().expect("catalog parent")).expect("catalog directory");
+        fs::create_dir_all(root.join("Components")).expect("components directory");
+        fs::write(&catalog, b"{}").expect("catalog fixture");
+        let selected = fs::canonicalize(&catalog).expect("canonical catalog");
+        let resolved = offline_catalog_handoff_root(&selected).expect("handoff root");
+        assert_eq!(resolved, fs::canonicalize(&root).expect("canonical root"));
+        assert!(offline_catalog_handoff_root(&root.join("offline-catalog.json")).is_err());
+        let _ = fs::remove_dir_all(&root);
     }
 }

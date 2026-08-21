@@ -6,6 +6,10 @@ param(
 # Read-only Phase 0 guard. It reports state and scans source names/content; it
 # never writes, deletes, installs, stages, or modifies repository files.
 $ErrorActionPreference = "Stop"
+# PowerShell 7 can promote native stderr (including Git's autocrlf warning) to
+# a terminating ErrorRecord. The audit relies on exit codes and remains
+# read-only, so keep native stderr from changing the verdict.
+$PSNativeCommandUseErrorActionPreference = $false
 
 function Normalize-Path([string]$PathValue) {
     return [System.IO.Path]::GetFullPath($PathValue).TrimEnd('\', '/')
@@ -25,8 +29,16 @@ function Add-Failure([string]$Message) {
 }
 
 function Invoke-Git([string[]]$Arguments) {
-    $output = @(& git -C $script:RepoRoot @Arguments 2>&1)
-    $code = $LASTEXITCODE
+    # Git may emit harmless autocrlf guidance on stderr for a dirty worktree.
+    # Preserve the exit-code checks while keeping the read-only audit stable.
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = @(& git -C $script:RepoRoot @Arguments 2>$null)
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     return [pscustomobject]@{
         Output = $output
         ExitCode = $code

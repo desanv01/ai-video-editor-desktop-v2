@@ -23,9 +23,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--test-signature", action="store_true", help="Use the Phase 3 non-production signing key with a real staged engine tree.")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--version", required=True)
+    parser.add_argument("--channel", choices=("stable", "beta", "nightly"), default="stable")
+    parser.add_argument("--minimum-shell-version", default="1.0.0")
     parser.add_argument("--notice-file", type=Path)
     parser.add_argument("--source-metadata", type=Path)
     parser.add_argument("--artifact-url")
+    parser.add_argument("--offline-local-source", action="store_true")
+    parser.add_argument("--private-key-file", type=Path)
+    parser.add_argument("--key-id")
     parser.add_argument("--repository-url", default="https://example.test/aive-engine")
     parser.add_argument("--release-url", default="https://example.test/aive-engine/releases")
     return parser.parse_args()
@@ -117,6 +122,10 @@ def main() -> int:
             "backend",
             "--version",
             args.version,
+            "--channel",
+            args.channel,
+            "--minimum-shell-version",
+            args.minimum_shell_version,
             "--display-name",
             "AI Video Editor Native Core Engine",
             "--entrypoint",
@@ -140,6 +149,12 @@ def main() -> int:
             "--capability",
             "rendering",
         ]
+        if args.private_key_file:
+            command.extend(["--private-key-file", str(args.private_key_file.resolve())])
+        if args.key_id:
+            command.extend(["--key-id", args.key_id])
+        if args.offline_local_source:
+            command.append("--offline-local-source")
         if not args.test_fixture:
             command.extend(["--self-test-argument=--self-test"])
         if args.test_fixture:

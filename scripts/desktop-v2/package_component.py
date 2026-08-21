@@ -33,6 +33,21 @@ TEST_KEY_ID = "test-fixture-2026"
 TEST_KEY_LABEL = b"Desktop V2 Phase 3 NON-PRODUCTION FIXTURE KEY"
 
 
+class StrictTarFile(tarfile.TarFile):
+    """Write exactly the two POSIX terminator blocks accepted by the manager."""
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            if self.mode in ("a", "w", "x"):
+                self.fileobj.write(b"\0" * (tarfile.BLOCKSIZE * 2))
+        finally:
+            if not self._extfileobj:
+                self.fileobj.close()
+
+
 def xrecover(y: int) -> int:
     xx = ((y * y - 1) * pow(D * y * y + 1, Q - 2, Q)) % Q
     x = pow(xx, (Q + 3) // 8, Q)
@@ -96,9 +111,10 @@ def sign(seed: bytes, message: bytes) -> bytes:
 
 
 def canonical_json(value: object) -> bytes:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("utf-8")
+    # serde_json serializes the normalized Value with lexicographically sorted
+    # object keys in the shell build. Keep the optional field explicit below
+    # so Rust and Python sign the same payload.
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
 
 
 def sha256_file(path: Path) -> str:
@@ -121,6 +137,13 @@ def safe_relative(path: str) -> str:
     ):
         raise ValueError(f"unsafe relative path: {path}")
     return normalized
+
+
+def validate_offline_artifact_url(value: str) -> None:
+    relative = value.removeprefix("offline:")
+    if relative == value or not relative.startswith("Components/"):
+        raise ValueError("portable offline artifact URLs must use offline:Components/<filename>")
+    safe_relative(relative)
 
 
 def iter_source_entries(source: Path) -> Iterable[tuple[Path, str]]:
@@ -164,7 +187,7 @@ def create_archive(source: Path, output: Path, root_directory: str) -> list[dict
         import gzip
 
         with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as compressed:
-            with tarfile.open(
+            with StrictTarFile(
                 fileobj=compressed, mode="w", format=tarfile.USTAR_FORMAT
             ) as archive:
                 root_info = tarfile.TarInfo(root_directory + "/")
@@ -209,6 +232,8 @@ def parse_args() -> argparse.Namespace:
         default="utility",
     )
     parser.add_argument("--version", required=True)
+    parser.add_argument("--channel", choices=("stable", "beta", "nightly"), default="stable")
+    parser.add_argument("--minimum-shell-version", default="1.0.0")
     parser.add_argument("--display-name", default="Synthetic Desktop V2 Component")
     parser.add_argument("--publisher", default="AI Video Editor")
     parser.add_argument(
@@ -228,6 +253,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--entrypoint", default="bin/synthetic-engine.exe")
     parser.add_argument("--notice-file", default="LICENSES/NOTICE.txt")
+    parser.add_argument("--license-spdx-id", default="MIT")
+    parser.add_argument(
+        "--offline-local-source",
+        action="store_true",
+        help="Permit a portable offline:Components/... artifact URL for a signed offline catalog.",
+    )
     parser.add_argument("--self-test-command", nargs="+")
     parser.add_argument(
         "--self-test-argument",
@@ -320,17 +351,15 @@ def main() -> int:
             artifact_url = archive_path.as_uri()
         else:
             raise ValueError("production packaging requires --artifact-url=https://...")
-    if not (
-        artifact_url.startswith("https://")
-        or (
-            args.test_fixture
-            and artifact_url.startswith(
-                ("file://", "http://localhost", "http://127.0.0.1")
-            )
-        )
-    ):
+    local_source_allowed = args.offline_local_source and artifact_url.startswith("offline:")
+    if local_source_allowed:
+        validate_offline_artifact_url(artifact_url)
+    fixture_source_allowed = args.test_fixture and artifact_url.startswith(
+        ("file://", "http://localhost", "http://127.0.0.1")
+    )
+    if not (artifact_url.startswith("https://") or local_source_allowed or fixture_source_allowed):
         raise ValueError(
-            "artifact URL must be HTTPS, except explicit test fixture file/localhost sources"
+            "artifact URL must be HTTPS, except an explicit portable offline:Components/... URL or test fixture source"
         )
     manifest = {
         "schemaVersion": "desktop.component-manifest.v1",
@@ -338,13 +367,13 @@ def main() -> int:
             "id": args.component_id,
             "type": args.component_type,
             "version": args.version,
-            "channel": "stable",
+            "channel": args.channel,
         },
         "target": {
             "operatingSystems": [args.target_os],
             "architectures": [args.target_arch],
         },
-        "requirements": {"minimumShellVersion": "1.0.0", "requiresElevation": False},
+        "requirements": {"minimumShellVersion": args.minimum_shell_version, "requiresElevation": False},
         "artifact": {
             "url": artifact_url,
             "byteSize": archive_path.stat().st_size,
@@ -368,13 +397,14 @@ def main() -> int:
             "kind": "executable",
             "relativePath": entrypoint,
             "arguments": ["--self-test"],
+            "workingDirectory": None,
         },
         "dependencies": dependencies,
         "capabilities": args.capability or ["api"],
         "metadata": {
             "displayName": args.display_name,
             "publisher": args.publisher,
-            "license": {"spdxId": "MIT", "noticeFile": notice_file},
+            "license": {"spdxId": args.license_spdx_id, "noticeFile": notice_file},
             "source": {
                 "repositoryUrl": args.repository_url,
                 "releaseUrl": args.release_url,

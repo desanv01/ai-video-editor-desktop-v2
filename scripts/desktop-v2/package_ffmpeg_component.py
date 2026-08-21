@@ -36,9 +36,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--print-source-hash", action="store_true", help="Print the hash that production packaging will require.")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--version", required=True)
+    parser.add_argument("--channel", choices=("stable", "beta", "nightly"), default="stable")
+    parser.add_argument("--minimum-shell-version", default="1.0.0")
     parser.add_argument("--repository-url", default="https://example.test/ffmpeg")
     parser.add_argument("--release-url", default="https://example.test/ffmpeg/releases")
     parser.add_argument("--artifact-url")
+    parser.add_argument("--offline-local-source", action="store_true")
+    parser.add_argument("--private-key-file", type=Path)
+    parser.add_argument("--key-id")
     parser.add_argument("--test-signature", action="store_true", help="Use the Phase 3 non-production signing key for a real local source.")
     return parser.parse_args()
 
@@ -226,7 +231,7 @@ def _stage_component(source_root: Path, stage: Path, version: str, fixture: bool
     (stage / "metadata" / "probe.json").write_text(
         json.dumps(probes, sort_keys=True, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
-    self_test = ["cmd.exe", "/D", "/C", "exit 0"] if fixture else ["bin/ffmpeg.exe", "-version"]
+    self_test = ["cmd.exe", "/D", "/C", "exit 0"] if fixture else ["bin/ffmpeg.exe"]
     return "bin/ffmpeg.exe", self_test, probes
 
 
@@ -283,12 +288,18 @@ def main() -> int:
             "ffmpeg",
             "--version",
             args.version,
+            "--channel",
+            args.channel,
+            "--minimum-shell-version",
+            args.minimum_shell_version,
             "--display-name",
             "FFmpeg Native Desktop Tool Component",
             "--entrypoint",
             entrypoint,
             "--notice-file",
             "LICENSES/NOTICE.txt",
+            "--license-spdx-id",
+            "GPL-3.0-only",
             "--repository-url",
             args.repository_url,
             "--release-url",
@@ -300,6 +311,14 @@ def main() -> int:
             "--capability",
             "rendering",
         ]
+        if not args.test_fixture:
+            command.append("--self-test-argument=-version")
+        if args.private_key_file:
+            command.extend(["--private-key-file", str(args.private_key_file.resolve())])
+        if args.key_id:
+            command.extend(["--key-id", args.key_id])
+        if args.offline_local_source:
+            command.append("--offline-local-source")
         if args.test_fixture:
             command.append("--test-fixture")
         elif args.test_signature:

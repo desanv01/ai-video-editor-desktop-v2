@@ -11,7 +11,7 @@ from .vector_store import VectorCapability
 
 
 ENGINE_ID = "aive-engine"
-ENGINE_VERSION = "1.0.0"
+ENGINE_VERSION = "2.0.0-rc.1"
 
 
 def _now() -> str:

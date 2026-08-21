@@ -313,6 +313,7 @@ export interface SetupClient {
   saveState: (state: SetupState) => Promise<SetupState>;
   getCatalog: () => Promise<SetupCatalogInfo | null>;
   importCatalog: (catalogJson: string, source: "production" | "offline-import") => Promise<SetupImportResult>;
+  importCatalogFile: (catalogPath: string) => Promise<SetupImportResult>;
   catalogConfiguration: (channel?: SetupState["catalogChannel"]) => Promise<SetupCatalogConfiguration>;
   refreshCatalog: () => Promise<SetupImportResult>;
   runSystemChecks: (probeNetwork?: boolean) => Promise<SetupSystemChecksResult>;
@@ -325,6 +326,8 @@ export function createSetupClient(transport: SetupBridgeTransport): SetupClient 
     getCatalog: () => transport.invoke<SetupCatalogInfo | null>("setup_get_catalog"),
     importCatalog: (catalogJson: string, source: "production" | "offline-import") =>
       transport.invoke<SetupImportResult>("setup_import_catalog", { catalogJson, source }),
+    importCatalogFile: (catalogPath: string) =>
+      transport.invoke<SetupImportResult>("setup_import_catalog_file", { catalogPath }),
     catalogConfiguration: (channel?: SetupState["catalogChannel"]) =>
       transport.invoke<SetupCatalogConfiguration>("setup_catalog_configuration", { channel }),
     refreshCatalog: () => transport.invoke<SetupImportResult>("setup_refresh_catalog"),

@@ -3,10 +3,11 @@
 //! The manager is intentionally independent of the Phase 2 shell bootstrap.
 //! It owns only the machine-scoped ProgramData component perimeter. It never
 //! writes to Program Files, AppData, projects, exports, or the browser/Docker
-//! development paths. The production trust root is compiled into the
-//! application; the one key below is explicitly a non-production fixture key.
+//! development paths. The lecturer release trust root is compiled into the
+//! application; the fixture key below is retained only for debug/unit tests.
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use crate::release_trust::{RELEASE_KEY_ID, RELEASE_PUBLIC_KEY_B64};
 use flate2::read::GzDecoder;
 use reqwest::blocking::{Client, Response};
 use reqwest::redirect::Policy;
@@ -43,7 +44,9 @@ pub const COMPONENT_PROGRESS_EVENT: &str = "component-operation-progress";
 pub const TEST_FIXTURE_KEY_ID: &str = "test-fixture-2026";
 pub const TEST_FIXTURE_PUBLIC_KEY_B64: &str = "hfqZ1Gk2qemcp+23vgMKpdMauxUlEXuBWF3NilhYA44=";
 
-const MAX_MANIFEST_BYTES: usize = 512 * 1024;
+// The frozen onedir engine carries a complete exact file inventory. Keep
+// intake bounded, but allow the signed inventory for the real release.
+const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_UNCOMPRESSED_BYTES: u64 = 1024 * 1024 * 1024;
@@ -59,6 +62,7 @@ const RETRY_BACKOFF: [Duration; MAX_DOWNLOAD_RETRIES] = [
 const LOCK_STALE_AFTER: Duration = Duration::from_secs(6 * 60 * 60);
 const DOWNLOAD_BUFFER_BYTES: usize = 64 * 1024;
 const FREE_SPACE_MARGIN_BYTES: u64 = 16 * 1024 * 1024;
+const OFFLINE_ROOT_SCHEMA: &str = "desktop.offline-root.v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -106,6 +110,10 @@ pub struct SourcePolicy {
 impl SourcePolicy {
     pub const PRODUCTION: Self = Self {
         allow_local_test_sources: false,
+    };
+
+    pub const OFFLINE_IMPORT: Self = Self {
+        allow_local_test_sources: true,
     };
 
     pub const fn development_test() -> Self {
@@ -537,6 +545,7 @@ struct ManagerPaths {
     activation_root: PathBuf,
     downloads_root: PathBuf,
     catalog_root: PathBuf,
+    offline_root_metadata: PathBuf,
     journal_root: PathBuf,
     lock_path: PathBuf,
 }
@@ -547,6 +556,7 @@ impl ManagerPaths {
         let activation_root = machine_root.join("Activation");
         let downloads_root = machine_root.join("Downloads").join("Staging");
         let catalog_root = machine_root.join("Catalog");
+        let offline_root_metadata = catalog_root.join("offline-root.json");
         let journal_root = activation_root.join("Journal");
         let lock_path = machine_root.join("component-manager.lock");
         Self {
@@ -555,6 +565,7 @@ impl ManagerPaths {
             activation_root,
             downloads_root,
             catalog_root,
+            offline_root_metadata,
             journal_root,
             lock_path,
         }
@@ -624,12 +635,21 @@ impl ComponentManagerState {
 #[derive(Clone)]
 pub struct ComponentManager {
     paths: ManagerPaths,
+    offline_root: Option<PathBuf>,
 }
 
 impl ComponentManager {
     pub fn new(machine_root: PathBuf) -> Self {
         Self {
             paths: ManagerPaths::new(machine_root),
+            offline_root: None,
+        }
+    }
+
+    pub fn with_offline_root(machine_root: PathBuf, offline_root: PathBuf) -> Self {
+        Self {
+            paths: ManagerPaths::new(machine_root),
+            offline_root: Some(offline_root),
         }
     }
 
@@ -649,6 +669,102 @@ impl ComponentManager {
             fs::create_dir_all(path).map_err(|error| storage_error(path, error))?;
         }
         Ok(())
+    }
+
+    fn persist_offline_root(&self) -> ManagerResult<()> {
+        let configured = self.offline_root.as_ref().ok_or_else(|| {
+            ComponentError::new(
+                "OFFLINE_ROOT_REQUIRED",
+                "A portable offline artifact reference requires the imported catalog directory.",
+                false,
+            )
+        })?;
+        let canonical = fs::canonicalize(configured).map_err(|error| {
+            ComponentError::new(
+                "OFFLINE_ROOT_INVALID",
+                format!("The imported offline catalog directory could not be resolved: {error}"),
+                false,
+            )
+        })?;
+        if !canonical.is_dir() {
+            return Err(ComponentError::new(
+                "OFFLINE_ROOT_INVALID",
+                "The imported offline catalog root is not a directory.",
+                false,
+            ));
+        }
+        atomic_write_json(
+            &self.paths.offline_root_metadata,
+            &OfflineRootRecord {
+                schema_version: OFFLINE_ROOT_SCHEMA.to_string(),
+                root: canonical.to_string_lossy().to_string(),
+            },
+        )
+    }
+
+    fn configured_offline_root(&self) -> ManagerResult<PathBuf> {
+        let configured = if let Some(root) = &self.offline_root {
+            root.clone()
+        } else {
+            let bytes = fs::read(&self.paths.offline_root_metadata).map_err(|error| {
+                ComponentError::new(
+                    "OFFLINE_ROOT_REQUIRED",
+                    format!("No imported offline catalog root is available: {error}"),
+                    false,
+                )
+            })?;
+            if bytes.len() > 16 * 1024 {
+                return Err(ComponentError::new(
+                    "OFFLINE_ROOT_INVALID",
+                    "The persisted offline catalog root record is too large.",
+                    false,
+                ));
+            }
+            let record: OfflineRootRecord = serde_json::from_slice(&bytes).map_err(|error| {
+                ComponentError::new(
+                    "OFFLINE_ROOT_INVALID",
+                    format!("The persisted offline catalog root record is invalid: {error}"),
+                    false,
+                )
+            })?;
+            if record.schema_version != OFFLINE_ROOT_SCHEMA {
+                return Err(ComponentError::new(
+                    "OFFLINE_ROOT_INVALID",
+                    "The persisted offline catalog root record is unsupported.",
+                    false,
+                ));
+            }
+            PathBuf::from(record.root)
+        };
+        fs::canonicalize(&configured).map_err(|error| {
+            ComponentError::new(
+                "OFFLINE_ROOT_INVALID",
+                format!("The imported offline catalog root is no longer available: {error}"),
+                true,
+            )
+        })
+    }
+
+    fn resolve_offline_artifact_path(&self, value: &str) -> ManagerResult<PathBuf> {
+        let relative = offline_artifact_relative_path(value)?;
+        let root = self.configured_offline_root()?;
+        let candidate = root.join(relative);
+        let resolved = fs::canonicalize(&candidate).map_err(|error| {
+            ComponentError::new(
+                "OFFLINE_ARTIFACT_UNAVAILABLE",
+                format!("The signed offline artifact is not available under the imported catalog root: {error}"),
+                false,
+            )
+        })?;
+        ensure_child_path(&root, &resolved)?;
+        if !resolved.is_file() || is_reparse_or_symlink(&resolved) {
+            return Err(ComponentError::new(
+                "OFFLINE_ARTIFACT_INVALID",
+                "The signed offline artifact is not a regular file under the imported catalog root.",
+                false,
+            ));
+        }
+        Ok(resolved)
     }
 
     pub fn intake_manifest(
@@ -672,6 +788,9 @@ impl ComponentManager {
         })?;
         self.validate_manifest(&manifest, policy)?;
         self.ensure_machine_storage()?;
+        if policy.allow_local_test_sources && manifest.artifact.url.starts_with("offline:") {
+            self.persist_offline_root()?;
+        }
         let path = self.catalog_path(&manifest.component.id, &manifest.component.version)?;
         atomic_write_json(&path, &manifest)?;
         Ok(ManifestIntakeResult {
@@ -1470,7 +1589,12 @@ impl ComponentManager {
                 false,
             )
         })?;
-        let mut response = if parsed_url.scheme() == "file" {
+        let offline_source_path = if parsed_url.scheme() == "offline" {
+            Some(self.resolve_offline_artifact_path(&manifest.artifact.url)?)
+        } else {
+            None
+        };
+        let mut response = if offline_source_path.is_some() || parsed_url.scheme() == "file" {
             None
         } else {
             Some(open_http_response(&manifest.artifact.url, offset, policy)?)
@@ -1528,13 +1652,17 @@ impl ComponentManager {
                     ComponentError::new("DOWNLOAD_NETWORK_FAILED", error.to_string(), true)
                 })?
             } else {
-                let source_path = parsed_url.to_file_path().map_err(|_| {
-                    ComponentError::new(
-                        "TEST_SOURCE_INVALID",
-                        "The file URL did not resolve to a local path.",
-                        false,
-                    )
-                })?;
+                let source_path = if let Some(path) = &offline_source_path {
+                    path.clone()
+                } else {
+                    parsed_url.to_file_path().map_err(|_| {
+                        ComponentError::new(
+                            "TEST_SOURCE_INVALID",
+                            "The file URL did not resolve to a local path.",
+                            false,
+                        )
+                    })?
+                };
                 let mut source =
                     File::open(&source_path).map_err(|error| storage_error(&source_path, error))?;
                 source
@@ -2720,11 +2848,15 @@ fn validate_artifact_url(value: &str, policy: SourcePolicy) -> ManagerResult<()>
     if !policy.allow_local_test_sources {
         return Err(ComponentError::new(
             "HTTPS_REQUIRED",
-            "Production artifact URLs must use HTTPS. Local sources require an explicit development/test policy.",
+            "Production artifact URLs must use HTTPS. Local sources are accepted only for a signed offline catalog import.",
             false,
         ));
     }
     match parsed.scheme() {
+        "offline" => {
+            offline_artifact_relative_path(value)?;
+            Ok(())
+        }
         "file" => {
             if parsed.to_file_path().is_err() {
                 return Err(ComponentError::new(
@@ -2749,10 +2881,29 @@ fn validate_artifact_url(value: &str, policy: SourcePolicy) -> ManagerResult<()>
         }
         _ => Err(ComponentError::new(
             "ARTIFACT_URL_POLICY_REJECTED",
-            "Only HTTPS production URLs or explicit localhost/file test sources are accepted.",
+            "Only HTTPS production URLs or explicit portable offline-import sources are accepted.",
             false,
         )),
     }
+}
+
+fn offline_artifact_relative_path(value: &str) -> ManagerResult<&str> {
+    let relative = value.strip_prefix("offline:").ok_or_else(|| {
+        ComponentError::new(
+            "OFFLINE_ARTIFACT_INVALID",
+            "Portable offline artifacts must use the offline: URI scheme.",
+            false,
+        )
+    })?;
+    validate_safe_relative_path(relative, "artifact.url")?;
+    if !relative.starts_with("Components/") || relative.len() <= "Components/".len() {
+        return Err(ComponentError::new(
+            "OFFLINE_ARTIFACT_INVALID",
+            "Portable offline artifacts must resolve below the handoff Components directory.",
+            false,
+        ));
+    }
+    Ok(relative)
 }
 
 fn validate_inventory_shape(files: &[FileInventoryEntry]) -> ManagerResult<()> {
@@ -2817,10 +2968,21 @@ fn current_architecture() -> Architecture {
 }
 
 fn trusted_key(key_id: &str) -> Option<Vec<u8>> {
-    if key_id != TEST_FIXTURE_KEY_ID {
-        return None;
+    if key_id == RELEASE_KEY_ID {
+        return BASE64.decode(RELEASE_PUBLIC_KEY_B64).ok();
     }
-    BASE64.decode(TEST_FIXTURE_PUBLIC_KEY_B64).ok()
+    #[cfg(debug_assertions)]
+    if key_id == TEST_FIXTURE_KEY_ID {
+        return BASE64.decode(TEST_FIXTURE_PUBLIC_KEY_B64).ok();
+    }
+    None
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct OfflineRootRecord {
+    schema_version: String,
+    root: String,
 }
 
 /// Verify a detached payload against the shell's compiled trust root.
@@ -3589,10 +3751,24 @@ fn run_manifest_self_test(manifest: &ComponentManifest, stage_root: &Path) -> Ma
             false,
         ));
     }
-    let mut child = Command::new(&program)
+    let mut command = Command::new(&program);
+    command
         .args(&arguments)
         .current_dir(&working_directory)
-        .env_clear()
+        // Do not inherit arbitrary caller variables, but retain the minimal
+        // Windows loader/runtime perimeter required by real frozen binaries.
+        .env_clear();
+    #[cfg(windows)]
+    for key in ["SystemRoot", "WINDIR", "PATH", "TEMP", "TMP", "COMSPEC", "PATHEXT"] {
+        if let Some(value) = env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+    #[cfg(not(windows))]
+    if let Some(value) = env::var_os("PATH") {
+        command.env("PATH", value);
+    }
+    let mut child = command
         .env("AIVE_COMPONENT_SELF_TEST", "1")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -3640,13 +3816,14 @@ fn run_manifest_self_test(manifest: &ComponentManifest, stage_root: &Path) -> Ma
 }
 
 fn is_safe_command_path(value: &str) -> bool {
-    !value.is_empty()
-        && !value.contains('/')
-        && !value.contains('\\')
-        && !value.contains(':')
-        && !value.contains('\0')
-        && value != "."
-        && value != ".."
+    let normalized = value.replace('\\', "/");
+    !normalized.is_empty()
+        && !normalized.starts_with('/')
+        && !normalized.contains(':')
+        && !normalized.contains('\0')
+        && !normalized
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
 }
 
 fn is_allowed_test_interpreter(value: &str) -> bool {
@@ -4433,11 +4610,9 @@ fn tauri_manager() -> ComponentManager {
     ComponentManager::new(PathBuf::from(paths.program_data_root).join("AI Video Editor"))
 }
 
-fn command_policy(requested_test_sources: bool) -> SourcePolicy {
+fn command_policy(requested_offline_sources: bool) -> SourcePolicy {
     SourcePolicy {
-        allow_local_test_sources: requested_test_sources
-            && cfg!(debug_assertions)
-            && env::var("AIVE_COMPONENT_MANAGER_TEST_MODE").ok().as_deref() == Some("1"),
+        allow_local_test_sources: requested_offline_sources,
     }
 }
 
@@ -5501,5 +5676,256 @@ mod tests {
             .unwrap();
         assert_eq!(recovered.recovery.status, "resume-available");
         assert!(!orphan.exists());
+    }
+
+    #[test]
+    fn offline_artifact_references_are_portable_and_bounded() {
+        assert_eq!(
+            offline_artifact_relative_path("offline:Components/aive-engine-2.0.0-rc.1.tar.gz").unwrap(),
+            "Components/aive-engine-2.0.0-rc.1.tar.gz"
+        );
+        for invalid in [
+            "file:///C:/Users/Dv/Desktop/aive-engine.tar.gz",
+            "offline:C:/Users/Dv/Desktop/aive-engine.tar.gz",
+            "offline:/Components/aive-engine.tar.gz",
+            "offline:../Components/aive-engine.tar.gz",
+            "offline:Components/../aive-engine.tar.gz",
+            "offline:Components/a/../../aive-engine.tar.gz",
+            "offline:Components/",
+        ] {
+            assert!(
+                offline_artifact_relative_path(invalid).is_err(),
+                "unsafe offline reference was accepted: {invalid}"
+            );
+        }
+    }
+
+    fn copy_tree_for_release_test(source: &Path, destination: &Path) -> io::Result<()> {
+        fs::create_dir_all(destination)?;
+        for entry in fs::read_dir(source)? {
+            let entry = entry?;
+            let source_path = entry.path();
+            let destination_path = destination.join(entry.file_name());
+            if is_reparse_or_symlink(&source_path) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("release test source contains a reparse point: {}", source_path.display()),
+                ));
+            }
+            if source_path.is_dir() {
+                copy_tree_for_release_test(&source_path, &destination_path)?;
+            } else {
+                fs::copy(&source_path, &destination_path)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn phase9_real_release_artifacts_install_verify_and_activate_from_portable_copy() {
+        let Some(handoff_value) = env::var_os("AIVE_PHASE9_HANDOFF_ROOT") else {
+            return;
+        };
+        let source_handoff = fs::canonicalize(PathBuf::from(handoff_value)).unwrap();
+        assert!(source_handoff.is_dir(), "Phase 9 handoff root is missing: {}", source_handoff.display());
+        let portable_handoff = env::temp_dir().join(format!(
+            "aive-phase9-portable-handoff-{}-{}",
+            std::process::id(),
+            now_epoch_ms()
+        ));
+        let _ = fs::remove_dir_all(&portable_handoff);
+        copy_tree_for_release_test(&source_handoff, &portable_handoff).unwrap();
+        let portable_handoff = fs::canonicalize(&portable_handoff).unwrap();
+        assert_ne!(source_handoff, portable_handoff);
+
+        let catalog_json = fs::read_to_string(portable_handoff.join("Catalog/offline-catalog.json")).unwrap();
+        let catalog: crate::setup_center::SetupCatalog = serde_json::from_str(&catalog_json).unwrap();
+        let catalog_signature = BASE64.decode(&catalog.signature.value).unwrap();
+        assert_eq!(
+            fs::read(portable_handoff.join("Catalog/offline-catalog.sig")).unwrap(),
+            catalog_signature
+        );
+        let catalog_payload = crate::setup_center::catalog_signature_payload(&catalog).unwrap();
+        verify_trusted_detached_payload(
+            &catalog.signature.algorithm,
+            &catalog.signature.key_id,
+            &catalog.signature.value,
+            &catalog_payload,
+        )
+        .unwrap();
+        let root = env::temp_dir().join(format!(
+            "aive-phase9-real-components-{}-{}",
+            std::process::id(),
+            now_epoch_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let manager = ComponentManager::with_offline_root(root.join("machine"), portable_handoff.clone());
+        let policy = SourcePolicy::OFFLINE_IMPORT;
+        let components = [
+            (
+                "aive-engine",
+                "2.0.0-rc.1",
+                "Components/aive-engine-manifest.json",
+                ComponentType::Backend,
+            ),
+            (
+                "ffmpeg",
+                "8.1.1",
+                "Components/ffmpeg-manifest.json",
+                ComponentType::Ffmpeg,
+            ),
+        ];
+        for (component_id, version, manifest_path, expected_type) in components {
+            let entry = catalog
+                .entries
+                .iter()
+                .find(|entry| entry.component_id == component_id)
+                .unwrap();
+            let manifest = entry.manifest.as_ref().unwrap();
+            assert_eq!(manifest.component.version, version);
+            assert!(manifest.artifact.url.starts_with("offline:Components/"));
+            assert!(!manifest.artifact.url.contains("C:\\Users\\"));
+            let manifest_json = serde_json::to_string(manifest).unwrap();
+            assert!(portable_handoff.join(manifest_path).is_file());
+            manager
+                .intake_manifest(&manifest_json, policy)
+                .unwrap_or_else(|error| panic!("real Phase 9 {component_id} intake failed: {error}"));
+            manager.resolve_plan(component_id, Some(version), policy).unwrap();
+            let downloaded = manager
+                .download(
+                    component_id,
+                    version,
+                    policy,
+                    Some(format!("phase9-download-{component_id}")),
+                    OperationControl::default(),
+                    None,
+                )
+                .unwrap();
+            assert_eq!(downloaded.state, "downloaded");
+            let verified = manager.verify(component_id, version, policy).unwrap();
+            assert_eq!(verified.state, "verified");
+            let staged = manager
+                .stage(
+                    component_id,
+                    version,
+                    policy,
+                    Some(format!("phase9-stage-{component_id}")),
+                    None,
+                )
+                .unwrap();
+            assert_eq!(staged.state, "staged");
+            let activated = manager
+                .activate(
+                    component_id,
+                    version,
+                    policy,
+                    Some(staged.operation_id),
+                    None,
+                )
+                .unwrap();
+            assert_eq!(activated.state, "active");
+            let active = manager
+                .verified_active_component(component_id, expected_type, policy)
+                .unwrap();
+            assert_eq!(active.component_version, version);
+            assert!(Path::new(&active.executable_path).is_file());
+            assert_eq!(manager.status(Some(component_id)).unwrap()[0].state, "active");
+        }
+
+        let engine = manager
+            .verified_active_component("aive-engine", ComponentType::Backend, policy)
+            .unwrap();
+        let ffmpeg = manager
+            .verified_active_component("ffmpeg", ComponentType::Ffmpeg, policy)
+            .unwrap();
+        let engine_self_test = Command::new(&engine.executable_path)
+            .arg("--self-test")
+            .current_dir(&engine.active_path)
+            .output()
+            .unwrap();
+        assert!(engine_self_test.status.success(), "portable frozen engine self-test failed: {:?}", engine_self_test);
+        let ffmpeg_version = Command::new(&ffmpeg.executable_path).arg("-version").output().unwrap();
+        assert!(ffmpeg_version.status.success(), "portable FFmpeg version probe failed");
+
+        let source = portable_handoff.join("SMOKE/synthetic-source.mp4");
+        let export = root.join("portable-ffmpeg-export.mp4");
+        let encode = Command::new(&ffmpeg.executable_path)
+            .args(["-y", "-i"])
+            .arg(&source)
+            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p"])
+            .arg(&export)
+            .output()
+            .unwrap();
+        assert!(encode.status.success(), "portable FFmpeg encode failed: {:?}", encode);
+        assert!(export.is_file());
+
+        let engine_data = root.join("engine-data");
+        fs::create_dir_all(&engine_data).unwrap();
+        let token = "phase9-portable-lifecycle-token-20260821-abcdefghijklmnopqrstuvwxyz";
+        let port = 38_000 + (now_epoch_ms() % 1_000) as u16;
+        let mut engine_command = Command::new(&engine.executable_path);
+        engine_command
+            .args([
+                "--data-root",
+                engine_data.to_string_lossy().as_ref(),
+                "--port",
+                &port.to_string(),
+                "--bearer-token",
+                token,
+                "--component-root",
+                &engine.active_path,
+                "--ffmpeg-component-root",
+                &ffmpeg.active_path,
+            ])
+            .current_dir(&engine.active_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        for key in ["SystemRoot", "WINDIR", "PATH", "TEMP", "TMP", "COMSPEC", "PATHEXT"] {
+            if let Some(value) = env::var_os(key) {
+                engine_command.env(key, value);
+            }
+        }
+        let mut child = engine_command.spawn().unwrap();
+        let client = Client::builder().timeout(Duration::from_secs(2)).build().unwrap();
+        let base = format!("http://127.0.0.1:{port}");
+        let mut live = false;
+        for _ in 0..60 {
+            if client.get(format!("{base}/live")).send().is_ok() {
+                live = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+        assert!(live, "portable engine did not become live");
+        let unauthorized = client.get(format!("{base}/readiness")).send().unwrap();
+        assert_eq!(unauthorized.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let readiness = client
+            .get(format!("{base}/readiness"))
+            .bearer_auth(token)
+            .send()
+            .unwrap();
+        assert!(readiness.status().is_success());
+        let readiness_text = readiness.text().unwrap();
+        assert!(readiness_text.contains("desktop.health-readiness.v1"));
+        assert!(readiness_text.contains("2.0.0-rc.1"));
+        let shutdown = client
+            .post(format!("{base}/engine-control/shutdown"))
+            .bearer_auth(token)
+            .send()
+            .unwrap();
+        assert!(shutdown.status().is_success());
+        for _ in 0..30 {
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+        if child.try_wait().unwrap().is_none() {
+            let _ = child.kill();
+        }
+        assert!(child.wait().unwrap().success());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&portable_handoff);
     }
 }

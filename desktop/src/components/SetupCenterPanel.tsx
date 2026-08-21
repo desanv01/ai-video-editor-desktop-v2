@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   AlertCircle,
   ArrowLeft,
@@ -54,7 +54,6 @@ import {
   type SetupState,
   type SetupSystemCheck,
   type SetupSystemChecksResult,
-  validateCatalogEnvelope,
 } from "../setupCenter.ts";
 
 type ComponentTarget = { version: string; operationId: string };
@@ -181,18 +180,18 @@ export function SetupCenterPanel({
     }
   };
 
-  const importCatalog = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
+  const importCatalog = async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const selected = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: "Setup catalog", extensions: ["json"] }],
+    });
+    if (typeof selected !== "string") return;
     setBusy(true);
     setError(null);
     try {
-      const text = await file.text();
-      const parsed: unknown = JSON.parse(text);
-      const envelope = validateCatalogEnvelope(parsed);
-      if (!envelope.valid) throw { code: "CATALOG_SCHEMA_INVALID", message: envelope.reason ?? "Invalid catalog" };
-      const result = await setupClient.importCatalog(text, "offline-import");
+      const result = await setupClient.importCatalogFile(selected);
       setCatalogInfo(result.catalog);
       await saveNextState({ ...stateRef.current, catalogChannel: result.catalog.catalog.channel });
       await refreshStatuses();
@@ -586,7 +585,7 @@ function ChooseComponentsStep({ catalog, state, busy, hasRequiredCatalog, onTogg
   busy: boolean;
   hasRequiredCatalog: boolean;
   onToggle: (entry: SetupCatalogEntry) => void;
-  onImport: (event: ChangeEvent<HTMLInputElement>) => void;
+  onImport: () => void;
   onRefresh: () => void;
   onContinue: () => void;
 }) {
@@ -608,7 +607,7 @@ function ChooseComponentsStep({ catalog, state, busy, hasRequiredCatalog, onTogg
       </div>
       {!hasRequiredCatalog ? <div className="mt-5 rounded-xl border border-amber-400/30 bg-amber-500/10 p-4 text-sm text-amber-100"><div className="flex items-start gap-2"><CircleHelp className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" /><div><p className="font-semibold">A signed catalog is needed before install</p><p className="mt-1 text-xs leading-5 text-amber-100/75">Use the production refresh when configured, or import the lecturer/test catalog file. The local import is still signature-checked before any manifest reaches the component manager.</p></div></div></div> : null}
       <div className="mt-6 flex flex-wrap gap-3">
-        <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-surface-border px-4 py-2.5 text-sm font-medium text-gray-200 hover:border-accent focus-within:ring-2 focus-within:ring-accent/70"><Upload className="h-4 w-4" aria-hidden="true" /> Import signed catalog<input type="file" accept="application/json,.json" className="sr-only" onChange={onImport} disabled={busy} /></label>
+        <button type="button" onClick={() => void onImport()} disabled={busy} className="inline-flex items-center gap-2 rounded-lg border border-surface-border px-4 py-2.5 text-sm font-medium text-gray-200 hover:border-accent focus:outline-none focus:ring-2 focus:ring-accent/70"><Upload className="h-4 w-4" aria-hidden="true" /> Import signed catalog</button>
         <button type="button" onClick={onRefresh} disabled={busy} className="inline-flex items-center gap-2 rounded-lg border border-surface-border px-4 py-2.5 text-sm font-medium text-gray-200 hover:border-accent disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-accent/70"><CloudDownload className="h-4 w-4" aria-hidden="true" /> Refresh production catalog</button>
         <button type="button" onClick={onContinue} disabled={!hasRequiredCatalog || busy} className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-accent/70">Review setup <ArrowRight className="h-4 w-4" aria-hidden="true" /></button>
       </div>
@@ -703,8 +702,8 @@ function ManagementView({ catalog: _catalog, statuses, supervisor, error, onBack
   return <div className="mt-6 overflow-hidden rounded-2xl border border-surface-border bg-surface-raised p-5 sm:p-7" aria-labelledby="management-title"><div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-accent">Component management</p><h2 id="management-title" className="mt-2 text-2xl font-semibold text-white">Versions, health, and repair</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-gray-400">Required components cannot be removed while the engine is running. Repair and rollback re-use the signed manager and never delete user projects or exports.</p></div><button type="button" onClick={onBack} className="inline-flex items-center gap-2 self-start rounded-lg border border-surface-border px-3 py-2 text-xs font-medium text-gray-200 hover:border-accent focus:outline-none focus:ring-2 focus:ring-accent/70"><ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" /> Back to Setup Center</button></div>{error ? <div role="alert" className="mt-4 rounded-lg border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">{error.message}</div> : null}<div className="mt-6 flex flex-wrap items-center gap-3 rounded-xl border border-surface-border bg-surface-overlay p-4"><label className="text-xs font-medium text-gray-300" htmlFor="setup-channel">Update channel</label><select id="setup-channel" value={channel} onChange={event => { const next = event.target.value as typeof channel; setChannel(next); onChannelChange(next); }} className="rounded-lg border border-surface-border bg-surface-raised px-3 py-2 text-xs text-white focus:outline-none focus:ring-2 focus:ring-accent/70"><option value="stable">Stable</option><option value="beta">Beta</option><option value="nightly">Nightly</option></select><span className="text-xs text-gray-500">Channel changes apply to the next signed catalog refresh.</span></div><div className="mt-5 space-y-3">{statuses.length === 0 ? <p className="rounded-lg border border-surface-border bg-surface-overlay p-4 text-sm text-gray-400">No catalog status is available yet. Import a signed catalog to discover installable versions.</p> : statuses.map(status => { const required = REQUIRED_COMPONENT_IDS.includes(status.id as typeof REQUIRED_COMPONENT_IDS[number]); const hasRollback = status.remediationCodes.includes("UPDATE_ROLLBACK_AVAILABLE"); return <div key={status.id} className="rounded-xl border border-surface-border bg-surface-overlay p-4"><div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><button type="button" onClick={() => onSelectedStatus(status)} className="min-w-0 text-left focus:outline-none focus:ring-2 focus:ring-accent/70"><div className="flex items-center gap-2">{status.state === "active" ? <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" aria-hidden="true" /> : status.state === "repair-required" ? <AlertCircle className="h-4 w-4 shrink-0 text-amber-300" aria-hidden="true" /> : <Info className="h-4 w-4 shrink-0 text-blue-300" aria-hidden="true" />}<span className="truncate text-sm font-semibold text-white">{status.displayName ?? displayComponentName(status.id)}</span><span className="rounded-full bg-surface-raised px-2 py-0.5 text-[10px] uppercase tracking-wide text-gray-400">{required ? "Required" : "Optional"}</span></div><p className="mt-2 text-xs leading-5 text-gray-400">{status.detail}</p><p className="mt-1 text-xs text-gray-500">{status.version ? `Installed version ${status.version}` : "No active version"}{status.downloadedBytes ? ` · ${formatBytes(status.downloadedBytes)} staged` : ""}</p></button><div className="flex flex-wrap gap-2"><button type="button" disabled={busyId === status.id} onClick={() => void perform(status.id, "repair")} className="inline-flex items-center gap-1.5 rounded-lg border border-surface-border px-3 py-2 text-xs text-gray-200 hover:border-accent disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-accent/70"><Wrench className="h-3.5 w-3.5" aria-hidden="true" /> Repair</button>{hasRollback ? <button type="button" disabled={busyId === status.id} onClick={() => void perform(status.id, "rollback")} className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400/30 px-3 py-2 text-xs text-amber-100 hover:bg-amber-500/10 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-accent/70"><RotateCcw className="h-3.5 w-3.5" aria-hidden="true" /> Roll back</button> : null}{!required ? <button type="button" disabled={busyId === status.id || engineRunning} title={engineRunning ? "Stop the engine before removing an optional component" : "Remove optional component"} onClick={() => void perform(status.id, "remove")} className="inline-flex items-center gap-1.5 rounded-lg border border-rose-400/30 px-3 py-2 text-xs text-rose-100 hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-accent/70"><Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> Remove</button> : null}</div></div></div>; })}</div><button type="button" onClick={onRefresh} className="mt-5 inline-flex items-center gap-2 rounded-lg border border-surface-border px-3 py-2 text-xs font-medium text-gray-200 hover:border-accent focus:outline-none focus:ring-2 focus:ring-accent/70"><RefreshCw className="h-3.5 w-3.5" aria-hidden="true" /> Refresh installed state</button></div>;
 }
 
-function CatalogCard({ catalogInfo, onImport, onRefresh, busy }: { catalogInfo: SetupCatalogInfo | null; onImport: (event: ChangeEvent<HTMLInputElement>) => void; onRefresh: () => void; busy: boolean }) {
-  return <div className="rounded-xl border border-surface-border bg-surface-overlay p-4"><div className="flex items-center gap-2"><FileKey2 className="h-4 w-4 text-accent" aria-hidden="true" /><p className="text-sm font-semibold text-white">Catalog source</p></div>{catalogInfo ? <><p className="mt-2 text-xs text-gray-300">{catalogInfo.source === "production" ? "Production HTTPS catalog" : "Signed offline import"} · {catalogInfo.catalog.channel}</p><p className="mt-1 text-[11px] text-gray-500">Verified {new Date(catalogInfo.verifiedAtEpochMs).toLocaleString()} · {catalogInfo.catalog.entries.length} entries</p></> : <p className="mt-2 text-xs leading-5 text-gray-400">No catalog is loaded. The shell will not trust a manifest or artifact until the catalog signature and each manifest are verified.</p>}<div className="mt-3 flex flex-wrap gap-2"><label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-surface-border px-2.5 py-1.5 text-[11px] font-medium text-gray-200 hover:border-accent focus-within:ring-2 focus-within:ring-accent/70"><Upload className="h-3 w-3" aria-hidden="true" /> Offline import<input type="file" accept="application/json,.json" className="sr-only" onChange={onImport} disabled={busy} /></label><button type="button" onClick={onRefresh} disabled={busy} className="inline-flex items-center gap-1.5 rounded-md border border-surface-border px-2.5 py-1.5 text-[11px] font-medium text-gray-200 hover:border-accent disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-accent/70"><RefreshCw className="h-3 w-3" aria-hidden="true" /> Refresh HTTPS</button></div></div>;
+function CatalogCard({ catalogInfo, onImport, onRefresh, busy }: { catalogInfo: SetupCatalogInfo | null; onImport: () => void; onRefresh: () => void; busy: boolean }) {
+  return <div className="rounded-xl border border-surface-border bg-surface-overlay p-4"><div className="flex items-center gap-2"><FileKey2 className="h-4 w-4 text-accent" aria-hidden="true" /><p className="text-sm font-semibold text-white">Catalog source</p></div>{catalogInfo ? <><p className="mt-2 text-xs text-gray-300">{catalogInfo.source === "production" ? "Production HTTPS catalog" : "Signed offline import"} · {catalogInfo.catalog.channel}</p><p className="mt-1 text-[11px] text-gray-500">Verified {new Date(catalogInfo.verifiedAtEpochMs).toLocaleString()} · {catalogInfo.catalog.entries.length} entries</p></> : <p className="mt-2 text-xs leading-5 text-gray-400">No catalog is loaded. The shell will not trust a manifest or artifact until the catalog signature and each manifest are verified.</p>}<div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => void onImport()} disabled={busy} className="inline-flex items-center gap-1.5 rounded-md border border-surface-border px-2.5 py-1.5 text-[11px] font-medium text-gray-200 hover:border-accent disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-accent/70"><Upload className="h-3 w-3" aria-hidden="true" /> Offline import</button><button type="button" onClick={onRefresh} disabled={busy} className="inline-flex items-center gap-1.5 rounded-md border border-surface-border px-2.5 py-1.5 text-[11px] font-medium text-gray-200 hover:border-accent disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-accent/70"><RefreshCw className="h-3 w-3" aria-hidden="true" /> Refresh HTTPS</button></div></div>;
 }
 
 function ProgressSummary({ stage, progress, selectedCount }: { stage: SetupStage; progress: ReturnType<typeof aggregateProgress>; selectedCount: number }) {

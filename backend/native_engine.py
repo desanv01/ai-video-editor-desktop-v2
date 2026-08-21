@@ -19,6 +19,7 @@ from pathlib import Path
 BACKEND_ROOT = Path(__file__).resolve().parent
 APP_ROOT = BACKEND_ROOT / "app"
 STARTUP_HANDSHAKE_PROTOCOL = "desktop.engine-handshake.v1"
+ENGINE_VERSION = "2.0.0-rc.1"
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
@@ -61,7 +62,7 @@ def _self_test() -> int:
         json.dumps(
             {
                 "component": "aive-engine",
-                "version": "1.0.0",
+                "version": ENGINE_VERSION,
                 "profile": "desktop-native",
                 "packaging": "onedir",
                 "status": "ok",
