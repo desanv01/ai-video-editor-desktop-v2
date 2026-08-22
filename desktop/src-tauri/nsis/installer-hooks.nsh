@@ -10,7 +10,12 @@
 
 !macro NSIS_HOOK_PREINSTALL
   SetShellVarContext all
-  StrCpy $INSTDIR "$PROGRAMFILES\AI Video Editor Desktop V2"
+  SetRegView 64
+  StrCpy $INSTDIR "$PROGRAMFILES64\AI Video Editor Desktop V2"
+  ; Tauri's generated section sets an output directory before this hook.  Set
+  ; it again after enforcing the x64 path so every payload file and uninstaller
+  ; resource lands under the same Program Files perimeter.
+  SetOutPath $INSTDIR
 
   ; With the all-users shell context, NSIS resolves $APPDATA to the common
   ; application-data directory (%ProgramData%).  Verify that resolution before
@@ -73,7 +78,7 @@
     Abort
   acl_reset_ready:
 
-  nsExec::ExecToStack /OEM '"$SYSDIR\icacls.exe" "$2" /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)(F)" "*S-1-5-32-544:(OI)(CI)(F)" "*S-1-5-32-545:(OI)(CI)(M)" /setowner "*S-1-5-32-544" /T'
+  nsExec::ExecToStack /OEM '"$SYSDIR\icacls.exe" "$2" /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)(F)" "*S-1-5-32-544:(OI)(CI)(F)" "*S-1-5-32-545:(OI)(CI)(M)" /T'
   Pop $0
   Pop $1
   DetailPrint "icacls perimeter policy exit code: $0"
@@ -83,10 +88,25 @@
     MessageBox MB_ICONSTOP|MB_OK "AI Video Editor Desktop V2 could not secure its machine component perimeter. icacls exit code: $0. Ask an administrator to repair the ACL, then retry."
     Abort
   acl_ready:
+
+  ; icacls does not accept /setowner in the same invocation as /grant.  Keep
+  ; ownership as a separately checked operation so a successful grant cannot
+  ; hide an owner-assignment failure.
+  nsExec::ExecToStack /OEM '"$SYSDIR\icacls.exe" "$2" /setowner "*S-1-5-32-544" /T'
+  Pop $0
+  Pop $1
+  DetailPrint "icacls owner policy exit code: $0"
+  DetailPrint "icacls owner policy output: $1"
+  StrCmp $0 "0" owner_ready
+    DetailPrint "icacls owner policy failed; no bypass path is available."
+    MessageBox MB_ICONSTOP|MB_OK "AI Video Editor Desktop V2 could not set the machine component perimeter owner. icacls exit code: $0. Ask an administrator to repair the ACL, then retry."
+    Abort
+  owner_ready:
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
   SetShellVarContext all
+  SetRegView 64
   ClearErrors
 
   ; Tauri may use the display name or the Cargo binary name.  A missing shell
@@ -153,6 +173,9 @@
   SetShellVarContext current
   StrCpy $5 "$LOCALAPPDATA\AI Video Editor"
   SetShellVarContext all
+  SetRegView 64
+  Delete "$INSTDIR\desktop-v2.identity.json"
+  RMDir "$INSTDIR"
   ; Default uninstall removes only machine-scoped application/runtime state.
   StrCpy $2 "$APPDATA\AI Video Editor"
   ReadEnvStr $3 "ProgramData"

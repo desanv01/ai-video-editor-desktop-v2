@@ -67,25 +67,26 @@ The root is persisted only as machine-scoped import metadata so later Setup Cent
 ## Install, update, repair, rollback, and uninstall flow
 
 1. Run `AI Video Editor Desktop V2 Setup.exe` and approve elevation. The installer targets `C:\Program Files\AI Video Editor Desktop V2`, creates Start-menu and desktop shortcuts, and bundles no heavy engine, FFmpeg, models, databases, uploads, projects, API keys, or environment files.
-2. Launch the shell, open Setup Center, and choose **Offline catalog / Import catalog**. Select `Catalog/offline-catalog.json` while `Catalog` and `Components` remain siblings.
-3. Setup Center verifies the catalog trust root, imports both signed component manifests, resolves the dependency plan, calculates required disk space, downloads from the portable references, verifies hashes/signatures, stages, and activates under the machine-scoped component root.
-4. The Phase 5 supervisor starts the activated frozen engine on a dynamic loopback port, authenticates readiness with a generated bearer token, and routes only authenticated loopback traffic.
-5. A later signed catalog can add a newer component version. The manager retains the previous active version during atomic activation and exposes repair/rollback metadata. This RC includes one version per required component, so a lecturer can exercise repair/recovery but cannot demonstrate a version downgrade without a second signed release.
-6. The default uninstall plan removes the shell and preserves user data. Explicit destructive cleanup remains a separate, confirmed action.
+2. On first launch, the shell resolves and write-checks the actual launching user’s `%LOCALAPPDATA%\com.fyp.ai-video-editor.desktop-v2` before Tauri creates the WebView2 window. The per-machine installer does not create this user-scoped directory for the administrator.
+3. Launch the shell, open Setup Center, and choose **Offline catalog / Import catalog**. Select `Catalog/offline-catalog.json` while `Catalog` and `Components` remain siblings.
+4. Setup Center verifies the catalog trust root, imports both signed component manifests, resolves the dependency plan, calculates required disk space, downloads from the portable references, verifies hashes/signatures, stages, and activates under the machine-scoped component root.
+5. The Phase 5 supervisor starts the activated frozen engine on a dynamic loopback port, authenticates readiness with a generated bearer token, and routes only authenticated loopback traffic.
+6. A later signed catalog can add a newer component version. The manager retains the previous active version during atomic activation and exposes repair/rollback metadata. This RC includes one version per required component, so a lecturer can exercise repair/recovery but cannot demonstrate a version downgrade without a second signed release.
+7. The default uninstall plan removes the shell and identity marker while preserving user data. Explicit destructive cleanup remains a separate, confirmed action.
 
 ## Evidence and regression gates
 
 | Gate | Result |
 | --- | --- |
 | Contract fixtures | PASS — 6 schemas and 11 fixtures |
-| Frontend tests | PASS — contract, Phase 2, 5, 6, 7, and 8 suites |
+| Frontend tests | PASS — contract, ACL, launch-user WebView2, Phase 2, 5, 6, 7, and 8 suites |
 | Frontend production build | PASS — TypeScript and Vite production build |
-| Rust check/tests | PASS — `cargo check`; 42 Rust tests and doc-test target pass |
+| Rust check/tests | PASS — `cargo check`; 46 Rust library tests pass |
 | Frozen engine | PASS — PyInstaller Windows x64 onedir build and self-test; dynamic port/authenticated readiness/shutdown smoke |
 | FFmpeg component | PASS — real Windows `ffmpeg.exe` and `ffprobe.exe`, version, encode, probe, and decode smoke |
 | Portable copied-handoff test | PASS — copied to a different temporary root; signed offline catalog import; real engine and FFmpeg install/verify/activate; engine lifecycle and FFmpeg export; 1 test in 325.40 seconds |
 | Component tamper negative | PASS — verifier rejects checksum/signature/layout changes in isolated temporary copies |
-    | NSIS | PASS — x64 installer built and exercised in the real Windows profile; ACL, path, shortcuts, launch, and uninstall preservation verified |
+| NSIS | PASS — x64 installer built and exercised in the real Windows profile; ACL, path, shortcuts, fresh launch, restart, repair, zero-residue uninstall, and preservation verified |
 | Handoff verifier | PASS — exact layout, checksums, public-key fingerprint, Ed25519 signatures, portable references, no private key, no creator path in release metadata |
 | Safety/secret/tracked-artifact audit | PASS — protected original folders untouched; release binaries/build caches/private seed excluded from Git |
 

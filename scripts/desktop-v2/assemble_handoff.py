@@ -159,12 +159,13 @@ def create_docs(root: Path, engine: dict[str, object], ffmpeg: dict[str, object]
         2. Double-click **AI Video Editor Desktop V2 Setup.exe**. Approve UAC. This is the small per-machine shell installer; it does not contain the heavy engine or FFmpeg payloads.
         3. If Windows SmartScreen warns that the installer is from an unknown publisher, choose **More info → Run anyway** only if this handoff was obtained from the lecturer. The installer is intentionally unsigned because no Authenticode certificate was available; the release does not claim commercial code signing.
         4. Launch **AI Video Editor Desktop V2** from the Start menu or desktop shortcut.
-        5. Open **Setup Center**, choose **Offline catalog / Import catalog**, and select `Catalog\\offline-catalog.json` from this folder.
-        6. Confirm the catalog trust indicator names `{KEY_ID}` and that both required components are available. Select/install **AI Video Editor Native Core Engine** and **FFmpeg Native Desktop Tool Component**. The Setup Center verifies the Ed25519 signatures and SHA-256 hashes before activation.
-        7. Wait for authenticated readiness. The engine is loopback-only and uses a generated bearer token; no Docker, system Python, system Node.js, or system FFmpeg is required.
-        8. Use `SMOKE\\synthetic-source.mp4` as the small source asset and follow [LECTURER-TEST-GUIDE.md](LECTURER-TEST-GUIDE.md).
-        9. Close and reopen the desktop app once. Then open Setup Center and exercise **Repair** for a component. A previous active version is retained for rollback by the component manager; this handoff contains one version, so rollback is a recovery-path check rather than a downgrade.
-        10. If uninstalling, use the default uninstall plan. It removes the shell while preserving user data unless an explicit destructive data option is selected.
+        5. On first launch, the shell creates and write-checks the actual launching user’s `%LOCALAPPDATA%\\com.fyp.ai-video-editor.desktop-v2` WebView2 directory. The per-machine installer never creates this user-scoped directory, so another Windows account can launch the same install with its own profile.
+        6. Open **Setup Center**, choose **Offline catalog / Import catalog**, and select `Catalog\\offline-catalog.json` from this folder.
+        7. Confirm the catalog trust indicator names `{KEY_ID}` and that both required components are available. Select/install **AI Video Editor Native Core Engine** and **FFmpeg Native Desktop Tool Component**. The Setup Center verifies the Ed25519 signatures and SHA-256 hashes before activation.
+        8. Wait for authenticated readiness. The engine is loopback-only and uses a generated bearer token; no Docker, system Python, system Node.js, or system FFmpeg is required.
+        9. Use `SMOKE\\synthetic-source.mp4` as the small source asset and follow [LECTURER-TEST-GUIDE.md](LECTURER-TEST-GUIDE.md).
+        10. Close and reopen the desktop app once. Then open Setup Center and exercise **Repair** for a component. A previous active version is retained for rollback by the component manager; this handoff contains one version, so rollback is a recovery-path check rather than a downgrade.
+        11. If uninstalling, use the default uninstall plan. It removes the shell and its identity marker while preserving user data unless an explicit destructive data option is selected.
 
         ## Honest limitations
 
@@ -180,6 +181,7 @@ def create_docs(root: Path, engine: dict[str, object], ffmpeg: dict[str, object]
         Release: **{VERSION}**, channel **{CHANNEL}**. Expected result for each checked item is **PASS**.
 
         - [ ] Installer starts, requests elevation, installs under `C:\\Program Files\\AI Video Editor Desktop V2`, and creates Start-menu/desktop shortcuts.
+        - [ ] First launch creates the current user’s writable WebView2 directory automatically; no manual folder creation is needed.
         - [ ] Setup Center opens with zero components initially installed.
         - [ ] Import `Catalog\\offline-catalog.json`; trust is `{KEY_ID}` and both required entries are available.
         - [ ] Install/activate the engine and FFmpeg. SHA-256 and Ed25519 verification completes before activation.
@@ -218,7 +220,7 @@ def create_docs(root: Path, engine: dict[str, object], ffmpeg: dict[str, object]
 
         ## UAC, Program Files, or permission errors
 
-        Run the installer from a local folder and approve elevation. The base shell targets `C:\\Program Files\\AI Video Editor Desktop V2`; Setup Center stores machine component state below ProgramData and user data separately. Do not grant write access to the whole Windows directory.
+        Run the installer from a local folder and approve elevation. The base shell targets `C:\\Program Files\\AI Video Editor Desktop V2`; Setup Center stores machine component state below ProgramData and user data separately. The shell creates its WebView2 data directory under the actual launching user’s LocalAppData before creating the first window. Do not grant write access to the whole Windows directory.
 
         ## Catalog import says the artifact is missing
 
@@ -248,6 +250,7 @@ def create_docs(root: Path, engine: dict[str, object], ffmpeg: dict[str, object]
         - Release channel: **{CHANNEL}**.
         - Small per-machine Tauri/NSIS shell with stable Desktop V2 identity (`com.fyp.ai-video-editor.desktop-v2`), Program Files target, shortcuts, migration hooks, and data-preserving uninstall defaults.
         - Installer ACL hotfix: the machine perimeter resolves to `%ProgramData%`, applies a checked scoped ACL, and aborts on every path or ACL failure; no literal shell placeholder is accepted.
+        - Launch-user WebView2 preflight: the shell creates and write-checks the actual user’s local data directory before Tauri constructs its first window; per-machine installation never seeds another account’s profile.
         - Real PyInstaller onedir Windows x64 native engine, self-test enabled, loopback authenticated API, local SQLite/vector degraded contract, and graceful shutdown.
         - Real Gyan.dev FFmpeg/FFprobe Windows x64 build pinned at **8.1.1**, packaged separately under GPL-3.0-only notices and tested for encode/decode/probe.
         - Signed offline catalog with required engine and FFmpeg entries, dependency/disk metadata, and portable `offline:Components/...` artifact references.

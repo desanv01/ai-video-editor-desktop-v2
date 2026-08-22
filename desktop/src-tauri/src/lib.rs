@@ -8,7 +8,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State, Window};
 
 pub mod contracts;
@@ -181,6 +181,58 @@ struct DesktopBootstrapResult {
     compose_project_name: String,
     env_file: String,
     items: Vec<ReadinessItem>,
+}
+
+fn webview_user_data_directory(local_app_data: &Path) -> PathBuf {
+    local_app_data.join(desktop_v2::PRODUCT_IDENTIFIER)
+}
+
+fn ensure_webview_user_data_directory_at(local_app_data: &Path) -> Result<PathBuf, String> {
+    let directory = webview_user_data_directory(local_app_data);
+    fs::create_dir_all(&directory).map_err(|error| {
+        format!(
+            "could not create per-user WebView2 data directory '{}': {error}",
+            directory.display()
+        )
+    })?;
+
+    // WebView2 must be able to write as the actual launching user.  Probe the
+    // exact directory before Tauri creates its first window so an elevated
+    // installer cannot accidentally create a machine-owned profile that a
+    // different user cannot open later.
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let probe = directory.join(format!(
+        ".aive-webview-write-probe-{}-{nonce}",
+        std::process::id()
+    ));
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .map_err(|error| {
+            format!(
+                "per-user WebView2 data directory '{}' is not writable by the launching user: {error}",
+                directory.display()
+            )
+        })?;
+    fs::remove_file(&probe).map_err(|error| {
+        format!(
+            "could not remove the per-user WebView2 write probe '{}': {error}",
+            probe.display()
+        )
+    })?;
+
+    Ok(directory)
+}
+
+fn ensure_webview_user_data_directory() -> Result<PathBuf, String> {
+    let local_app_data = dirs::data_local_dir().ok_or_else(|| {
+        "could not resolve the launching user's LocalAppData directory for WebView2".to_string()
+    })?;
+    ensure_webview_user_data_directory_at(&local_app_data)
 }
 
 #[tauri::command]
@@ -855,6 +907,20 @@ fn wait_for_http_health(url: &str, timeout: Duration) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let webview_data_directory = match ensure_webview_user_data_directory() {
+        Ok(directory) => directory,
+        Err(error) => {
+            eprintln!(
+                "AI Video Editor Desktop V2 could not prepare its per-user WebView2 data directory: {error}"
+            );
+            std::process::exit(1);
+        }
+    };
+    eprintln!(
+        "AI Video Editor Desktop V2 prepared per-user WebView2 data directory: {}",
+        webview_data_directory.display()
+    );
+
     tauri::Builder::default()
         .manage(NativeImportRegistry::default())
         .manage(component_manager::ComponentManagerState::default())
@@ -924,4 +990,48 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn webview_data_directory_is_scoped_to_launching_user_local_app_data() {
+        let local_app_data = Path::new(r"C:\Users\Lecturer\AppData\Local");
+        assert_eq!(
+            webview_user_data_directory(local_app_data),
+            PathBuf::from(r"C:\Users\Lecturer\AppData\Local\com.fyp.ai-video-editor.desktop-v2")
+        );
+    }
+
+    #[test]
+    fn webview_preflight_creates_a_writable_directory_and_cleans_its_probe() {
+        let root = std::env::temp_dir().join(format!(
+            "aive-webview-preflight-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be after the Unix epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be creatable");
+
+        let directory = ensure_webview_user_data_directory_at(&root)
+            .expect("the WebView2 preflight should create and write the directory");
+        assert!(directory.is_dir());
+        let leftovers = fs::read_dir(&directory)
+            .expect("the preflight directory should be readable")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".aive-webview-write-probe-")
+            })
+            .count();
+        assert_eq!(leftovers, 0);
+
+        fs::remove_dir_all(&root).expect("test root should be removable");
+    }
 }
