@@ -14,6 +14,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+import sys
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,6 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--catalog-root", type=Path, required=True)
     parser.add_argument("--smoke-source", type=Path)
     parser.add_argument("--public-key-file", type=Path)
+    parser.add_argument("--evidence-root", type=Path)
     return parser.parse_args()
 
 
@@ -130,7 +132,7 @@ def copy_baseline(catalog_root: Path, target: Path, public_key: Path, smoke_sour
     copy_file(smoke_source, target / "SMOKE" / "synthetic-source.mp4")
 
 
-def copy_release_helpers(source_root: Path, target: Path) -> None:
+def copy_release_helpers(source_root: Path, target: Path, evidence_root: Path | None) -> None:
     copy_file(source_root / "scripts" / "desktop-v2" / "VERIFY-HANDOFF.ps1", target / "VERIFY-HANDOFF.ps1")
     copy_file(source_root / "scripts" / "desktop-v2" / "verify_handoff_signatures.py", target / "verify-handoff-signatures.py")
     helper_names = (
@@ -152,6 +154,14 @@ def copy_release_helpers(source_root: Path, target: Path) -> None:
     )
     for name in doc_names:
         copy_file(source_root / "docs" / "desktop-v2" / name, target / "Evidence" / "docs" / name)
+    if evidence_root:
+        for source in sorted(evidence_root.rglob("*")):
+            if not source.is_file():
+                continue
+            relative_path = source.relative_to(evidence_root)
+            if any(part in ("", ".", "..") for part in relative_path.parts):
+                raise ValueError(f"unsafe evidence path: {relative_path}")
+            copy_file(source, target / "Evidence" / "results" / relative_path)
 
 
 def component_records(target: Path) -> tuple[list[dict[str, object]], dict[str, object]]:
@@ -483,6 +493,7 @@ def main() -> int:
     catalog_root = args.catalog_root.resolve()
     public_key = (args.public_key_file or catalog_root / "Catalog" / "lecturer-release-public-key.json").resolve()
     smoke_source = (args.smoke_source or catalog_root / "SMOKE" / "synthetic-source.mp4").resolve()
+    evidence_root = args.evidence_root.resolve() if args.evidence_root else None
 
     refuse_overwrite(target, zip_path, catalog_root)
     if not installer.is_file():
@@ -492,10 +503,12 @@ def main() -> int:
     for path in (public_key, smoke_source):
         if not path.is_file():
             raise FileNotFoundError(path)
+    if evidence_root and not evidence_root.is_dir():
+        raise FileNotFoundError(evidence_root)
 
     copy_file(installer, target / "AI Video Editor Desktop V2 Setup.exe")
     copy_baseline(catalog_root, target, public_key, smoke_source)
-    copy_release_helpers(source_root, target)
+    copy_release_helpers(source_root, target, evidence_root)
     component_info, catalog_info = component_records(target)
     create_docs(target, target / "AI Video Editor Desktop V2 Setup.exe", component_info, catalog_info)
     write_json(target / "release-manifest.json", release_manifest(target, target / "AI Video Editor Desktop V2 Setup.exe", component_info, catalog_info, source_root))
@@ -504,7 +517,7 @@ def main() -> int:
     # Exercise the copied handoff verifier before producing the ZIP. This is
     # read-only and checks the actual copied archives, not the source folder.
     subprocess.run(
-        ["python", str(target / "verify-handoff-signatures.py"), str(target)],
+        [sys.executable, str(target / "verify-handoff-signatures.py"), str(target)],
         check=True,
         cwd=source_root,
     )
