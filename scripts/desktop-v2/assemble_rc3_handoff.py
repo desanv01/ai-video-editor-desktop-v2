@@ -373,6 +373,8 @@ Generated for the new rc.3 handoff. Statuses deliberately separate local/CI proo
 - Catalog: `{catalog_info['catalogId']}` (`{catalog_info['compatibility']['sourceRelease']}` signed baseline, verified for `{VERSION}`)
 - Public trust key: `{key_id}` / `{key_hash}`
 - Canonical install target: `{CANONICAL_INSTALL_TARGET}`
+- SBOM: `Evidence/results/sbom.cdx.json`
+- Local Defender evidence: `Evidence/results/defender-scan.json` (a local result only; no zero-detection claim)
 - Exact file hashes: `SHA256SUMS.txt`
 
 The presence of a script or local test is not evidence of a clean-PC, Authenticode, or third-party AV result. Add those external results only with the real machine/service/portal output.
@@ -458,6 +460,8 @@ def release_manifest(target: Path, installer: Path, component_info: list[dict[st
         },
         "evidence": {
             "statusDocument": "EVIDENCE.md",
+            "sbomPath": "Evidence/results/sbom.cdx.json",
+            "defenderEvidencePath": "Evidence/results/defender-scan.json",
             "passedLocalOrCi": True,
             "pendingExternalCertificate": True,
             "pendingGenuineCleanPc": True,
