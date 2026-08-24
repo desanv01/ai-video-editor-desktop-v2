@@ -36,7 +36,13 @@ def main() -> int:
     root = args.root.resolve()
     if not root.is_dir():
         raise SystemExit(f"SBOM root does not exist: {root}")
-    files = [path for path in root.rglob("*") if path.is_file() and path.resolve() != args.output.resolve()]
+    files = [
+        path
+        for path in root.rglob("*")
+        if path.is_file()
+        and path.name != "sbom.cdx.json"
+        and path.resolve() != args.output.resolve()
+    ]
     payload = {
         "bomFormat": "CycloneDX",
         "specVersion": "1.5",

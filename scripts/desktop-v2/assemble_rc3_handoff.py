@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -92,6 +93,15 @@ def git_value(root: Path, args: list[str], fallback: str) -> str:
     except (OSError, subprocess.CalledProcessError):
         return fallback
     return result.stdout.strip() or fallback
+
+
+def release_timestamp(installer: Path) -> str:
+    epoch_text = os.environ.get("SOURCE_DATE_EPOCH")
+    try:
+        timestamp = float(epoch_text) if epoch_text else installer.stat().st_mtime
+    except (TypeError, ValueError, OSError):
+        timestamp = installer.stat().st_mtime
+    return datetime.fromtimestamp(timestamp, timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def refuse_overwrite(target: Path, zip_path: Path, catalog_root: Path) -> None:
@@ -467,7 +477,7 @@ def release_manifest(target: Path, installer: Path, component_info: list[dict[st
             "pendingGenuineCleanPc": True,
             "pendingThirdPartyAvPortal": True,
         },
-        "generatedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "generatedAt": release_timestamp(installer),
     }
 
 
