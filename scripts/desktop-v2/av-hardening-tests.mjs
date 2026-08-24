@@ -14,6 +14,7 @@ assert.match(builder, /upx=False/);
 assert.match(sbom, /CycloneDX/);
 assert.match(sbom, /sha256/);
 assert.match(sbom, /sorted/);
+assert.match(sbom, /SHA256SUMS\.txt/);
 assert.match(defender, /Start-MpScan/);
 assert.match(defender, /zeroDetectionsClaimed = \$false/);
 assert.match(template, /not a promise|not.*guarantee/i);

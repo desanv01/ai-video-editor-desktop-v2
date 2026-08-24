@@ -40,7 +40,7 @@ def main() -> int:
         path
         for path in root.rglob("*")
         if path.is_file()
-        and path.name != "sbom.cdx.json"
+        and path.name not in {"sbom.cdx.json", "SHA256SUMS.txt"}
         and path.resolve() != args.output.resolve()
     ]
     payload = {

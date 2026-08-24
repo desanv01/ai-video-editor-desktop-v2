@@ -30,6 +30,9 @@ const MAX_ACTIVATION_METADATA_BYTES: usize = 128 * 1024;
 const MAX_DIAGNOSTIC_TEXT_BYTES: usize = 2 * 1024;
 const MAX_SINGLE_INSTANCE_ARGUMENTS: usize = 32;
 const MAX_SINGLE_INSTANCE_ARGUMENT_BYTES: usize = 1024;
+const MAX_WEBVIEW2_VERSION_DIRECTORIES: usize = 64;
+const MIN_WEBVIEW2_EXECUTABLE_BYTES: u64 = 1024 * 1024;
+const MAX_WEBVIEW2_EXECUTABLE_BYTES: u64 = 1024 * 1024 * 1024;
 pub const WEBVIEW2_RUNTIME_SCHEMA: &str = "desktop.webview2-runtime.v1";
 pub const WEBVIEW2_INSTALL_POLICY: &str =
     "detect-before-launch; Evergreen bootstrapper online or Standalone Installer offline; no-silent-download";
@@ -425,6 +428,160 @@ fn query_webview2_registry_version(
     (!version.is_empty()).then_some(version)
 }
 
+fn parse_four_part_version(value: &str) -> Option<[u16; 4]> {
+    let mut parts = value.split('.');
+    let parsed = [
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+    ];
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(parsed)
+}
+
+fn format_four_part_version(version: [u16; 4]) -> String {
+    format!(
+        "{}.{}.{}.{}",
+        version[0], version[1], version[2], version[3]
+    )
+}
+
+#[cfg(windows)]
+fn webview2_filesystem_roots() -> Vec<PathBuf> {
+    ["ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA"]
+        .into_iter()
+        .filter_map(env::var_os)
+        .map(|root| {
+            PathBuf::from(root)
+                .join("Microsoft")
+                .join("EdgeWebView")
+                .join("Application")
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn windows_pe_product_version(path: &Path) -> Option<String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW, VS_FIXEDFILEINFO,
+    };
+
+    let metadata = fs::metadata(path).ok()?;
+    let length = metadata.len();
+    if !(MIN_WEBVIEW2_EXECUTABLE_BYTES..=MAX_WEBVIEW2_EXECUTABLE_BYTES).contains(&length) {
+        return None;
+    }
+    let file_name: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let info_size = unsafe { GetFileVersionInfoSizeW(file_name.as_ptr(), std::ptr::null_mut()) };
+    if info_size == 0 || info_size > 1024 * 1024 {
+        return None;
+    }
+    let mut info = vec![0u8; info_size as usize];
+    let loaded =
+        unsafe { GetFileVersionInfoW(file_name.as_ptr(), 0, info_size, info.as_mut_ptr().cast()) };
+    if loaded == 0 {
+        return None;
+    }
+
+    let sub_block: Vec<u16> = std::ffi::OsStr::new("\\")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut value_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+    let mut value_length = 0u32;
+    let queried = unsafe {
+        VerQueryValueW(
+            info.as_ptr().cast(),
+            sub_block.as_ptr(),
+            &mut value_ptr,
+            &mut value_length,
+        )
+    };
+    if queried == 0
+        || value_ptr.is_null()
+        || value_length < std::mem::size_of::<VS_FIXEDFILEINFO>() as u32
+    {
+        return None;
+    }
+    let fixed = unsafe { &*(value_ptr.cast::<VS_FIXEDFILEINFO>()) };
+    if fixed.dwSignature != 0xFEEF04BD {
+        return None;
+    }
+    let version = [
+        (fixed.dwProductVersionMS >> 16) as u16,
+        (fixed.dwProductVersionMS & 0xFFFF) as u16,
+        (fixed.dwProductVersionLS >> 16) as u16,
+        (fixed.dwProductVersionLS & 0xFFFF) as u16,
+    ];
+    (version != [0, 0, 0, 0]).then(|| format_four_part_version(version))
+}
+
+#[cfg(windows)]
+fn detect_webview2_filesystem() -> Option<(String, String)> {
+    let mut version_directories = Vec::new();
+    for root in webview2_filesystem_roots() {
+        let Ok(entries) = fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.take(MAX_WEBVIEW2_VERSION_DIRECTORIES) {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let Some(version) = parse_four_part_version(&name) else {
+                continue;
+            };
+            version_directories.push((version, entry.path(), root.clone()));
+        }
+    }
+    version_directories.sort_by(|left, right| right.0.cmp(&left.0));
+
+    for (directory_version, directory, root) in version_directories {
+        let executable = directory.join("msedgewebview2.exe");
+        let Ok(canonical_root) = fs::canonicalize(root) else {
+            continue;
+        };
+        let Ok(canonical_executable) = fs::canonicalize(&executable) else {
+            continue;
+        };
+        if !is_same_or_child(&canonical_root, &canonical_executable)
+            || canonical_executable
+                .file_name()
+                .and_then(|name| name.to_str())
+                != Some("msedgewebview2.exe")
+        {
+            continue;
+        }
+        let Some(file_version) = windows_pe_product_version(&canonical_executable) else {
+            continue;
+        };
+        let Some(file_version_parts) = parse_four_part_version(&file_version) else {
+            continue;
+        };
+        if file_version_parts != directory_version {
+            continue;
+        }
+        return Some(("evergreen-filesystem".to_string(), file_version));
+    }
+    None
+}
+
 #[cfg(windows)]
 fn detect_webview2_runtime() -> Option<(String, String)> {
     use windows_sys::Win32::System::Registry::{
@@ -433,11 +590,8 @@ fn detect_webview2_runtime() -> Option<(String, String)> {
 
     if let Some(folder) = env::var_os("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER") {
         let folder = PathBuf::from(folder);
-        if folder.join("msedgewebview2.exe").is_file() {
-            return Some((
-                "fixed-runtime".to_string(),
-                folder.to_string_lossy().to_string(),
-            ));
+        if let Some(version) = windows_pe_product_version(&folder.join("msedgewebview2.exe")) {
+            return Some(("fixed-runtime".to_string(), version));
         }
     }
     for (source, root) in [
@@ -450,7 +604,7 @@ fn detect_webview2_runtime() -> Option<(String, String)> {
             }
         }
     }
-    None
+    detect_webview2_filesystem()
 }
 
 #[cfg(not(windows))]
@@ -1317,5 +1471,21 @@ mod tests {
         assert!(!redacted.contains("very-secret"));
         assert!(!redacted.contains("sk-short"));
         assert!(redacted.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn webview2_file_version_fallback_requires_exact_four_numeric_parts() {
+        assert_eq!(
+            parse_four_part_version("151.0.4129.101"),
+            Some([151, 0, 4129, 101])
+        );
+        assert_eq!(
+            format_four_part_version([151, 0, 4129, 101]),
+            "151.0.4129.101"
+        );
+        assert!(parse_four_part_version("151.0.4129").is_none());
+        assert!(parse_four_part_version("151.0.4129.101.extra").is_none());
+        assert!(parse_four_part_version("151.0.4129.beta").is_none());
+        assert!(parse_four_part_version("..\\msedgewebview2.exe").is_none());
     }
 }

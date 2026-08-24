@@ -24,7 +24,7 @@ function Write-Status([bool]$available, [string]$source, [string]$version, [stri
     remediationCodes = if ($available) { @() } else { @('WEBVIEW2_RUNTIME_REQUIRED') }
   }
   $payload | ConvertTo-Json -Compress
-  if ($exitCode -ne 0) { exit $exitCode }
+  exit $exitCode
 }
 
 function Get-RegistryVersion([Microsoft.Win32.RegistryHive]$hive, [Microsoft.Win32.RegistryView]$view) {
@@ -36,11 +36,55 @@ function Get-RegistryVersion([Microsoft.Win32.RegistryHive]$hive, [Microsoft.Win
   return ''
 }
 
+function Get-VerifiedExecutableVersion([string]$path) {
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return '' }
+  try {
+    $item = Get-Item -LiteralPath $path -Force
+    if ($item.Length -lt 1MB -or $item.Length -gt 1GB) { return '' }
+    $version = ([string]$item.VersionInfo.ProductVersion).Trim()
+    if ($version -notmatch '^\d+\.\d+\.\d+\.\d+$') {
+      $version = ([string]$item.VersionInfo.FileVersion).Trim()
+    }
+    if ($version -match '^\d+\.\d+\.\d+\.\d+$') { return $version }
+  } catch {
+    return ''
+  }
+  return ''
+}
+
+function Get-FilesystemRuntime {
+  $roots = @(
+    [Environment]::GetEnvironmentVariable('ProgramFiles(x86)'),
+    [Environment]::GetEnvironmentVariable('ProgramFiles'),
+    [Environment]::GetEnvironmentVariable('LOCALAPPDATA')
+  ) | Where-Object { $_ }
+  foreach ($root in $roots) {
+    $applicationRoot = Join-Path (Join-Path (Join-Path $root 'Microsoft') 'EdgeWebView') 'Application'
+    if (-not (Test-Path -LiteralPath $applicationRoot -PathType Container)) { continue }
+    $directories = @()
+    $seen = 0
+    foreach ($directory in (Get-ChildItem -LiteralPath $applicationRoot -Directory -Force -ErrorAction SilentlyContinue)) {
+      if ($seen -ge 64) { break }
+      $seen++
+      if ($directory.Name -match '^\d+\.\d+\.\d+\.\d+$') { $directories += $directory }
+    }
+    foreach ($directory in ($directories | Sort-Object { [version]$_.Name } -Descending)) {
+      $exe = Join-Path $directory.FullName 'msedgewebview2.exe'
+      $version = Get-VerifiedExecutableVersion $exe
+      if ($version -and $version -eq $directory.Name) {
+        return @{ available = $true; source = 'evergreen-filesystem'; version = $version }
+      }
+    }
+  }
+  return @{ available = $false; source = 'not-detected'; version = '' }
+}
+
 function Get-DetectedRuntime {
   if ($env:WEBVIEW2_BROWSER_EXECUTABLE_FOLDER) {
     $fixedExe = Join-Path $env:WEBVIEW2_BROWSER_EXECUTABLE_FOLDER 'msedgewebview2.exe'
-    if (Test-Path -LiteralPath $fixedExe -PathType Leaf) {
-      return @{ available = $true; source = 'fixed-runtime'; version = $env:WEBVIEW2_BROWSER_EXECUTABLE_FOLDER }
+    $fixedVersion = Get-VerifiedExecutableVersion $fixedExe
+    if ($fixedVersion) {
+      return @{ available = $true; source = 'fixed-runtime'; version = $fixedVersion }
     }
   }
   foreach ($candidate in @(
@@ -52,7 +96,7 @@ function Get-DetectedRuntime {
     $version = Get-RegistryVersion $candidate.hive $candidate.view
     if ($version) { return @{ available = $true; source = $candidate.source; version = $version } }
   }
-  return @{ available = $false; source = 'not-detected'; version = '' }
+  return Get-FilesystemRuntime
 }
 
 if (-not $Install) {
