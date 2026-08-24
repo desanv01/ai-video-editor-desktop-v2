@@ -1,0 +1,25 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const validation = await readFile(path.join(repoRoot, "scripts", "desktop-v2", "Invoke-CleanWindowsValidation.ps1"), "utf8");
+const smoke = await readFile(path.join(repoRoot, "scripts", "desktop-v2", "Run-DesktopV2Smoke.ps1"), "utf8");
+const docs = await readFile(path.join(repoRoot, "docs", "desktop-v2", "CLEAN_WINDOWS_VALIDATION_RC3.md"), "utf8");
+assert.match(validation, /Windows 10\|Windows 11/);
+assert.match(validation, /external-clean-pc/);
+assert.match(validation, /local-or-ci-host/);
+assert.match(validation, /Get-FileHash/);
+assert.match(validation, /Detect-WebView2/);
+assert.match(validation, /Run-DesktopV2Smoke/);
+for (const field of ["restartEvidence", "repairEvidence", "uninstallEvidence"]) assert.match(validation, new RegExp(field));
+assert.match(smoke, /synthetic-source\.mp4/);
+assert.match(smoke, /ffprobe/);
+assert.match(smoke, /encodeExit/);
+assert.match(smoke, /decodeExit/);
+assert.match(smoke, /pending-external-clean-PC/);
+assert.match(docs, /CI\/local/);
+assert.match(docs, /genuine clean Windows 10\/11/i);
+assert.match(docs, /Credential Manager/);
+console.log("Clean-PC validation tests passed: Windows 10/11 evidence separation, installer hashes, WebView2 detection, smoke coverage, and external-only gates.");

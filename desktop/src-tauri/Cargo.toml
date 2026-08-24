@@ -1,6 +1,6 @@
 [package]
 name = "ai-video-editor"
-version = "2.0.0-rc.2"
+version = "2.0.0-rc.3"
 description = "AI Video Editor Desktop V2 thin shell"
 authors = ["FYP Student"]
 edition = "2021"
@@ -27,4 +27,4 @@ ring = "0.17"
 semver = "1"
 sha2 = "0.10"
 url = "2"
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Credentials", "Win32_Security_Cryptography", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Credentials", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Registry"] }

@@ -4637,12 +4637,26 @@ fn join_error(error: tauri::Error) -> ComponentError {
     )
 }
 
+fn record_component_result<T>(operation: &str, result: &ManagerResult<T>) {
+    match result {
+        Ok(_) => crate::operation_log::append_operation("component", "success", operation),
+        Err(error) => crate::operation_log::append_operation(
+            "component",
+            "error",
+            &format!("{operation}: {}", error.code),
+        ),
+    }
+}
+
 #[tauri::command]
 pub fn component_intake_manifest(
     manifest_json: String,
     allow_test_sources: bool,
 ) -> ManagerResult<ManifestIntakeResult> {
-    tauri_manager().intake_manifest(&manifest_json, command_policy(allow_test_sources))
+    let result =
+        tauri_manager().intake_manifest(&manifest_json, command_policy(allow_test_sources));
+    record_component_result("manifest-intake", &result);
+    result
 }
 
 #[tauri::command]
@@ -4651,11 +4665,13 @@ pub fn component_resolve_plan(
     target_version: Option<String>,
     allow_test_sources: bool,
 ) -> ManagerResult<InstallationPlan> {
-    tauri_manager().resolve_plan(
+    let result = tauri_manager().resolve_plan(
         &component_id,
         target_version.as_deref(),
         command_policy(allow_test_sources),
-    )
+    );
+    record_component_result("resolve-plan", &result);
+    result
 }
 
 #[tauri::command]
@@ -4692,6 +4708,7 @@ pub async fn component_download(
     .await
     .map_err(join_error)?;
     state.remove(&operation_id);
+    record_component_result("download", &result);
     result
 }
 
@@ -4765,11 +4782,13 @@ pub fn component_verify(
     component_version: String,
     allow_test_sources: bool,
 ) -> ManagerResult<VerificationResult> {
-    tauri_manager().verify(
+    let result = tauri_manager().verify(
         &component_id,
         &component_version,
         command_policy(allow_test_sources),
-    )
+    );
+    record_component_result("verify", &result);
+    result
 }
 
 #[tauri::command]
@@ -4781,13 +4800,15 @@ pub fn component_stage(
     allow_test_sources: bool,
 ) -> ManagerResult<StageResult> {
     let progress = |event: ComponentProgress| emit_tauri_progress(&app, event);
-    tauri_manager().stage(
+    let result = tauri_manager().stage(
         &component_id,
         &component_version,
         command_policy(allow_test_sources),
         operation_id,
         Some(&progress),
-    )
+    );
+    record_component_result("stage", &result);
+    result
 }
 
 #[tauri::command]
@@ -4799,13 +4820,15 @@ pub fn component_activate(
     allow_test_sources: bool,
 ) -> ManagerResult<ActivationResult> {
     let progress = |event: ComponentProgress| emit_tauri_progress(&app, event);
-    tauri_manager().activate(
+    let result = tauri_manager().activate(
         &component_id,
         &component_version,
         command_policy(allow_test_sources),
         operation_id,
         Some(&progress),
-    )
+    );
+    record_component_result("activate", &result);
+    result
 }
 
 #[tauri::command]
@@ -4815,11 +4838,13 @@ pub fn component_rollback(
     allow_test_sources: bool,
 ) -> ManagerResult<ActivationResult> {
     let progress = |event: ComponentProgress| emit_tauri_progress(&app, event);
-    tauri_manager().rollback(
+    let result = tauri_manager().rollback(
         &component_id,
         command_policy(allow_test_sources),
         Some(&progress),
-    )
+    );
+    record_component_result("rollback", &result);
+    result
 }
 
 #[tauri::command]
@@ -4829,21 +4854,27 @@ pub fn component_repair(
     allow_test_sources: bool,
 ) -> ManagerResult<RepairResult> {
     let progress = |event: ComponentProgress| emit_tauri_progress(&app, event);
-    tauri_manager().repair(
+    let result = tauri_manager().repair(
         &component_id,
         command_policy(allow_test_sources),
         Some(&progress),
-    )
+    );
+    record_component_result("repair", &result);
+    result
 }
 
 #[tauri::command]
 pub fn component_uninstall(component_id: String) -> ManagerResult<UninstallResult> {
-    tauri_manager().uninstall(&component_id)
+    let result = tauri_manager().uninstall(&component_id);
+    record_component_result("uninstall", &result);
+    result
 }
 
 #[tauri::command]
 pub fn component_recover() -> ManagerResult<RecoveryResult> {
-    tauri_manager().recover()
+    let result = tauri_manager().recover();
+    record_component_result("recover", &result);
+    result
 }
 
 #[cfg(test)]

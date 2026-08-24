@@ -15,6 +15,8 @@ pub mod component_manager;
 pub mod contracts;
 pub mod desktop_v2;
 pub mod migration;
+pub mod operation_log;
+pub mod provider_credentials;
 pub mod release_trust;
 pub mod setup_center;
 pub mod supervisor;
@@ -947,6 +949,14 @@ fn wait_for_http_health(url: &str, timeout: Duration) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let webview2 = desktop_v2::webview2_runtime_status();
+    if !webview2.available {
+        eprintln!(
+            "AI Video Editor Desktop V2 cannot launch without Microsoft WebView2 Runtime: {}",
+            webview2.detail
+        );
+        std::process::exit(1);
+    }
     let webview_data_directory = match ensure_webview_user_data_directory() {
         Ok(directory) => directory,
         Err(error) => {
@@ -1016,6 +1026,10 @@ pub fn run() {
             setup_center::setup_catalog_configuration,
             setup_center::setup_refresh_catalog,
             setup_center::setup_run_system_checks,
+            provider_credentials::provider_credential_status,
+            provider_credentials::provider_credential_test,
+            provider_credentials::provider_credential_clear,
+            operation_log::operation_log_tail,
             migration::migration_scan_legacy,
             migration::migration_preview,
             migration::migration_execute,
@@ -1031,6 +1045,7 @@ pub fn run() {
             desktop_v2::get_safe_log_directory,
             desktop_v2::desktop_v2_bootstrap,
             desktop_v2::generate_diagnostic_snapshot,
+            desktop_v2::get_webview2_runtime_status,
             supervisor::supervisor_status,
             supervisor::supervisor_start,
             supervisor::supervisor_stop,

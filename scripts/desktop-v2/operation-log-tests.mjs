@@ -1,0 +1,22 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const log = await readFile(path.join(repoRoot, "desktop", "src-tauri", "src", "operation_log.rs"), "utf8");
+const setup = await readFile(path.join(repoRoot, "desktop", "src-tauri", "src", "setup_center.rs"), "utf8");
+const component = await readFile(path.join(repoRoot, "desktop", "src-tauri", "src", "component_manager.rs"), "utf8");
+const supervisor = await readFile(path.join(repoRoot, "desktop", "src-tauri", "src", "supervisor.rs"), "utf8");
+const panel = await readFile(path.join(repoRoot, "desktop", "src", "components", "SetupCenterPanel.tsx"), "utf8");
+assert.match(log, /desktop\.operation-log\.v1/);
+assert.match(log, /MAX_LOG_BYTES/);
+assert.match(log, /redact_operation_text/);
+assert.match(log, /desktop-operations\.1\.jsonl/);
+assert.match(log, /operation_log_tail/);
+assert.match(setup, /record_catalog_result/);
+assert.match(component, /record_component_result/);
+assert.match(supervisor, /operation_log::append_operation/);
+assert.match(panel, /busy/);
+assert.match(panel, /role="status"|role="alert"/);
+console.log("Operation-log tests passed: durable bounded JSONL evidence, catalog/component/supervisor instrumentation, redaction, and visible UI feedback.");

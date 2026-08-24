@@ -30,6 +30,11 @@ const MAX_ACTIVATION_METADATA_BYTES: usize = 128 * 1024;
 const MAX_DIAGNOSTIC_TEXT_BYTES: usize = 2 * 1024;
 const MAX_SINGLE_INSTANCE_ARGUMENTS: usize = 32;
 const MAX_SINGLE_INSTANCE_ARGUMENT_BYTES: usize = 1024;
+pub const WEBVIEW2_RUNTIME_SCHEMA: &str = "desktop.webview2-runtime.v1";
+pub const WEBVIEW2_INSTALL_POLICY: &str =
+    "detect-before-launch; Evergreen bootstrapper online or Standalone Installer offline; no-silent-download";
+const WEBVIEW2_CLIENT_KEY: &str =
+    r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4A67-A3F6-CFC0C4E1D5A1}";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -91,6 +96,18 @@ pub struct ForwardedLaunchArgs {
     pub catalog_path: Option<String>,
     pub handoff_root: Option<String>,
     pub cwd: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebView2RuntimeStatus {
+    pub schema_version: String,
+    pub available: bool,
+    pub version: Option<String>,
+    pub source: String,
+    pub install_policy: String,
+    pub detail: String,
+    pub remediation_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -338,6 +355,138 @@ fn is_same_or_child(root: &Path, candidate: &Path) -> bool {
         .to_ascii_lowercase();
     normalized_candidate == normalized_root
         || normalized_candidate.starts_with(&(normalized_root + "/"))
+}
+
+#[cfg(windows)]
+fn query_webview2_registry_version(
+    root: windows_sys::Win32::System::Registry::HKEY,
+    view: u32,
+) -> Option<String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, KEY_READ,
+    };
+
+    let key_name: Vec<u16> = std::ffi::OsStr::new(WEBVIEW2_CLIENT_KEY)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let value_name: Vec<u16> = std::ffi::OsStr::new("pv")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut key: HKEY = std::ptr::null_mut();
+    let opened = unsafe { RegOpenKeyExW(root, key_name.as_ptr(), 0, KEY_READ | view, &mut key) };
+    if opened != 0 {
+        return None;
+    }
+
+    let mut value_type = 0u32;
+    let mut byte_count = 0u32;
+    let sized = unsafe {
+        RegQueryValueExW(
+            key,
+            value_name.as_ptr(),
+            std::ptr::null(),
+            &mut value_type,
+            std::ptr::null_mut(),
+            &mut byte_count,
+        )
+    };
+    if sized != 0 || byte_count == 0 || byte_count > 4096 {
+        unsafe {
+            RegCloseKey(key);
+        }
+        return None;
+    }
+
+    let mut value = vec![0u16; (byte_count as usize / 2).saturating_add(1)];
+    let mut actual_bytes = byte_count;
+    let queried = unsafe {
+        RegQueryValueExW(
+            key,
+            value_name.as_ptr(),
+            std::ptr::null(),
+            &mut value_type,
+            value.as_mut_ptr().cast::<u8>(),
+            &mut actual_bytes,
+        )
+    };
+    unsafe {
+        RegCloseKey(key);
+    }
+    if queried != 0 {
+        return None;
+    }
+    let version = String::from_utf16_lossy(&value)
+        .trim_matches('\0')
+        .trim()
+        .to_string();
+    (!version.is_empty()).then_some(version)
+}
+
+#[cfg(windows)]
+fn detect_webview2_runtime() -> Option<(String, String)> {
+    use windows_sys::Win32::System::Registry::{
+        HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
+    };
+
+    if let Some(folder) = env::var_os("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER") {
+        let folder = PathBuf::from(folder);
+        if folder.join("msedgewebview2.exe").is_file() {
+            return Some((
+                "fixed-runtime".to_string(),
+                folder.to_string_lossy().to_string(),
+            ));
+        }
+    }
+    for (source, root) in [
+        ("evergreen-user", HKEY_CURRENT_USER),
+        ("evergreen-machine", HKEY_LOCAL_MACHINE),
+    ] {
+        for view in [KEY_WOW64_64KEY, KEY_WOW64_32KEY] {
+            if let Some(version) = query_webview2_registry_version(root, view) {
+                return Some((source.to_string(), version));
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+fn detect_webview2_runtime() -> Option<(String, String)> {
+    Some((
+        "non-windows-development-host".to_string(),
+        "development-only".to_string(),
+    ))
+}
+
+pub fn webview2_runtime_status() -> WebView2RuntimeStatus {
+    match detect_webview2_runtime() {
+        Some((source, version)) => WebView2RuntimeStatus {
+            schema_version: WEBVIEW2_RUNTIME_SCHEMA.to_string(),
+            available: true,
+            version: Some(version),
+            source,
+            install_policy: WEBVIEW2_INSTALL_POLICY.to_string(),
+            detail: "A WebView2 runtime was detected before shell launch; the shell will not download one silently.".to_string(),
+            remediation_codes: Vec::new(),
+        },
+        None => WebView2RuntimeStatus {
+            schema_version: WEBVIEW2_RUNTIME_SCHEMA.to_string(),
+            available: false,
+            version: None,
+            source: "not-detected".to_string(),
+            install_policy: WEBVIEW2_INSTALL_POLICY.to_string(),
+            detail: "Microsoft WebView2 Runtime is required before Desktop V2 can launch. Install the approved Evergreen bootstrapper while online or the approved Standalone Installer while offline; no runtime download is attempted by this shell.".to_string(),
+            remediation_codes: vec!["WEBVIEW2_RUNTIME_REQUIRED".to_string()],
+        },
+    }
+}
+
+#[tauri::command]
+pub fn get_webview2_runtime_status() -> WebView2RuntimeStatus {
+    webview2_runtime_status()
 }
 
 fn resolve_forwarded_path(value: &str, cwd: &Path) -> Option<PathBuf> {

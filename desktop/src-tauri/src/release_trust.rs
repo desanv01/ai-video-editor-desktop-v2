@@ -3,7 +3,7 @@
 //! The matching private Ed25519 seed is stored outside the repository in the
 //! restricted release-secrets folder. Only this public trust root is shipped.
 
-pub const RELEASE_VERSION: &str = "2.0.0-rc.2";
+pub const RELEASE_VERSION: &str = "2.0.0-rc.3";
 pub const RELEASE_CHANNEL: &str = "beta";
 pub const RELEASE_KEY_ID: &str = "aive-desktop-v2-lecturer-2026";
 pub const RELEASE_PUBLIC_KEY_B64: &str = "MhUdd64qlUHYivcNkTsopbtIA1o2nEMUb8fXV5HHY8A=";

@@ -9,6 +9,7 @@ use crate::component_manager::{
     self, ComponentError, ComponentManager, ComponentManifest, ManagerResult, SourcePolicy,
 };
 use crate::desktop_v2::get_canonical_paths;
+use crate::operation_log;
 use crate::release_trust::OFFLINE_IMPORT_SUPPORTED;
 use crate::supervisor::{SupervisorPhase, SupervisorState};
 use reqwest::blocking::Client;
@@ -34,6 +35,17 @@ const MAX_CATALOG_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CATALOG_ENTRIES: usize = 64;
 const MIN_SYSTEM_FREE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_BUNDLED_CATALOG_CANDIDATES: usize = 3;
+
+fn record_catalog_result<T>(operation: &str, result: &ManagerResult<T>) {
+    match result {
+        Ok(_) => operation_log::append_operation("catalog", "success", operation),
+        Err(error) => operation_log::append_operation(
+            "catalog",
+            "error",
+            &format!("{operation}: {}", error.code),
+        ),
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -895,23 +907,27 @@ pub fn setup_discover_bundled_catalog(app: AppHandle) -> ManagerResult<BundledCa
 
 #[tauri::command]
 pub fn setup_import_bundled_catalog(app: AppHandle) -> ManagerResult<SetupImportResult> {
-    let discovery = setup_discover_bundled_catalog(app)?;
-    let selected = discovery.path.ok_or_else(|| {
-        setup_error(
-            "BUNDLED_CATALOG_UNAVAILABLE",
-            "No bundled lecturer catalog is available in this shell. Browse for a trusted handoff copy.",
-            false,
-        )
-    })?;
-    let root = discovery.handoff_root.ok_or_else(|| {
-        setup_error(
-            "BUNDLED_CATALOG_INVALID",
-            "The bundled lecturer handoff has no verified artifact root.",
-            false,
-        )
-    })?;
-    let catalog_json = read_bounded_catalog_file(Path::new(&selected))?;
-    verify_and_intake_catalog(&catalog_json, "offline-import", Some(Path::new(&root)))
+    let result = (|| {
+        let discovery = setup_discover_bundled_catalog(app)?;
+        let selected = discovery.path.ok_or_else(|| {
+            setup_error(
+                "BUNDLED_CATALOG_UNAVAILABLE",
+                "No bundled lecturer catalog is available in this shell. Browse for a trusted handoff copy.",
+                false,
+            )
+        })?;
+        let root = discovery.handoff_root.ok_or_else(|| {
+            setup_error(
+                "BUNDLED_CATALOG_INVALID",
+                "The bundled lecturer handoff has no verified artifact root.",
+                false,
+            )
+        })?;
+        let catalog_json = read_bounded_catalog_file(Path::new(&selected))?;
+        verify_and_intake_catalog(&catalog_json, "offline-import", Some(Path::new(&root)))
+    })();
+    record_catalog_result("bundled-offline-import", &result);
+    result
 }
 
 #[tauri::command]
@@ -920,42 +936,50 @@ pub fn setup_import_catalog(
     source: String,
     offline_root: Option<String>,
 ) -> ManagerResult<SetupImportResult> {
-    let offline_root = offline_root
-        .as_deref()
-        .map(Path::new)
-        .map(fs::canonicalize)
-        .transpose()
-        .map_err(|error| {
-            setup_error(
-                "OFFLINE_ROOT_INVALID",
-                format!("The selected offline catalog root could not be resolved: {error}"),
-                false,
-            )
-        })?;
-    if let Some(root) = &offline_root {
-        if !root.is_dir() {
-            return Err(setup_error(
-                "OFFLINE_ROOT_INVALID",
-                "The selected offline catalog root is not a directory.",
-                false,
-            ));
+    let result = (|| {
+        let offline_root = offline_root
+            .as_deref()
+            .map(Path::new)
+            .map(fs::canonicalize)
+            .transpose()
+            .map_err(|error| {
+                setup_error(
+                    "OFFLINE_ROOT_INVALID",
+                    format!("The selected offline catalog root could not be resolved: {error}"),
+                    false,
+                )
+            })?;
+        if let Some(root) = &offline_root {
+            if !root.is_dir() {
+                return Err(setup_error(
+                    "OFFLINE_ROOT_INVALID",
+                    "The selected offline catalog root is not a directory.",
+                    false,
+                ));
+            }
         }
-    }
-    verify_and_intake_catalog(&catalog_json, &source, offline_root.as_deref())
+        verify_and_intake_catalog(&catalog_json, &source, offline_root.as_deref())
+    })();
+    record_catalog_result("catalog-json-import", &result);
+    result
 }
 
 #[tauri::command]
 pub fn setup_import_catalog_file(catalog_path: String) -> ManagerResult<SetupImportResult> {
-    let selected = fs::canonicalize(Path::new(&catalog_path)).map_err(|error| {
-        setup_error(
-            "CATALOG_FILE_INVALID",
-            format!("The selected catalog file could not be resolved: {error}"),
-            false,
-        )
-    })?;
-    let catalog_json = read_bounded_catalog_file(&selected)?;
-    let root = offline_catalog_handoff_root(&selected)?;
-    verify_and_intake_catalog(&catalog_json, "offline-import", Some(&root))
+    let result = (|| {
+        let selected = fs::canonicalize(Path::new(&catalog_path)).map_err(|error| {
+            setup_error(
+                "CATALOG_FILE_INVALID",
+                format!("The selected catalog file could not be resolved: {error}"),
+                false,
+            )
+        })?;
+        let catalog_json = read_bounded_catalog_file(&selected)?;
+        let root = offline_catalog_handoff_root(&selected)?;
+        verify_and_intake_catalog(&catalog_json, "offline-import", Some(&root))
+    })();
+    record_catalog_result("offline-file-import", &result);
+    result
 }
 
 #[tauri::command]
@@ -982,61 +1006,65 @@ pub fn setup_catalog_configuration(
 
 #[tauri::command]
 pub fn setup_refresh_catalog() -> ManagerResult<SetupImportResult> {
-    let url = configured_catalog_url().ok_or_else(|| {
+    let result = (|| {
+        let url = configured_catalog_url().ok_or_else(|| {
         setup_error(
             "CATALOG_URL_NOT_CONFIGURED",
             "This build has no production catalog URL. Import a signed local catalog for lecturer/testing use.",
             false,
         )
     })?;
-    validate_production_catalog_url(&url)?;
-    let client = Client::builder()
-        .timeout(Duration::from_secs(20))
-        .redirect(Policy::limited(3))
-        .build()
-        .map_err(|_| {
-            setup_error(
-                "CATALOG_NETWORK_ERROR",
-                "The catalog connection could not be prepared.",
-                true,
-            )
-        })?;
-    let response = client.get(url).send().map_err(|_| {
+        validate_production_catalog_url(&url)?;
+        let client = Client::builder()
+            .timeout(Duration::from_secs(20))
+            .redirect(Policy::limited(3))
+            .build()
+            .map_err(|_| {
+                setup_error(
+                    "CATALOG_NETWORK_ERROR",
+                    "The catalog connection could not be prepared.",
+                    true,
+                )
+            })?;
+        let response = client.get(url).send().map_err(|_| {
         setup_error(
             "CATALOG_NETWORK_ERROR",
             "The production catalog could not be reached. Check network, proxy, or TLS settings, or use offline import.",
             true,
         )
     })?;
-    if !response.status().is_success() {
-        return Err(setup_error(
+        if !response.status().is_success() {
+            return Err(setup_error(
             "CATALOG_NETWORK_ERROR",
             "The production catalog returned an unavailable response. Retry later or use offline import.",
             true,
         ));
-    }
-    let bytes = response.bytes().map_err(|_| {
-        setup_error(
-            "CATALOG_NETWORK_ERROR",
-            "The production catalog response could not be read safely.",
-            true,
-        )
-    })?;
-    if bytes.len() > MAX_CATALOG_BYTES {
-        return Err(setup_error(
-            "CATALOG_TOO_LARGE",
-            "The production catalog exceeds the bounded intake size.",
-            false,
-        ));
-    }
-    let json = String::from_utf8(bytes.to_vec()).map_err(|_| {
-        setup_error(
-            "CATALOG_SCHEMA_INVALID",
-            "The production catalog is not valid UTF-8 JSON.",
-            false,
-        )
-    })?;
-    verify_and_intake_catalog(&json, "production", None)
+        }
+        let bytes = response.bytes().map_err(|_| {
+            setup_error(
+                "CATALOG_NETWORK_ERROR",
+                "The production catalog response could not be read safely.",
+                true,
+            )
+        })?;
+        if bytes.len() > MAX_CATALOG_BYTES {
+            return Err(setup_error(
+                "CATALOG_TOO_LARGE",
+                "The production catalog exceeds the bounded intake size.",
+                false,
+            ));
+        }
+        let json = String::from_utf8(bytes.to_vec()).map_err(|_| {
+            setup_error(
+                "CATALOG_SCHEMA_INVALID",
+                "The production catalog is not valid UTF-8 JSON.",
+                false,
+            )
+        })?;
+        verify_and_intake_catalog(&json, "production", None)
+    })();
+    record_catalog_result("production-refresh", &result);
+    result
 }
 
 fn push_check(

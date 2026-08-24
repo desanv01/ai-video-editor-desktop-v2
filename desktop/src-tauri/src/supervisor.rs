@@ -14,6 +14,7 @@ use crate::contracts::{
     HealthReadinessPayload,
 };
 use crate::desktop_v2::get_canonical_paths;
+use crate::operation_log;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use reqwest::blocking::{Client, Response};
 use reqwest::Method;
@@ -2136,22 +2137,30 @@ pub fn supervisor_status(state: State<'_, SupervisorState>) -> SupervisorStatus 
 
 #[tauri::command]
 pub fn supervisor_start(app: AppHandle, state: State<'_, SupervisorState>) -> SupervisorStatus {
-    state.inner().start(app)
+    let status = state.inner().start(app);
+    operation_log::append_operation("supervisor", &format!("{:?}", status.state), "start");
+    status
 }
 
 #[tauri::command]
 pub fn supervisor_stop(app: AppHandle, state: State<'_, SupervisorState>) -> SupervisorStatus {
-    state.inner().stop(app)
+    let status = state.inner().stop(app);
+    operation_log::append_operation("supervisor", &format!("{:?}", status.state), "stop");
+    status
 }
 
 #[tauri::command]
 pub fn supervisor_restart(app: AppHandle, state: State<'_, SupervisorState>) -> SupervisorStatus {
-    state.inner().restart(app)
+    let status = state.inner().restart(app);
+    operation_log::append_operation("supervisor", &format!("{:?}", status.state), "restart");
+    status
 }
 
 #[tauri::command]
 pub fn supervisor_retry(app: AppHandle, state: State<'_, SupervisorState>) -> SupervisorStatus {
-    state.inner().retry(app)
+    let status = state.inner().retry(app);
+    operation_log::append_operation("supervisor", &format!("{:?}", status.state), "retry");
+    status
 }
 
 #[tauri::command]

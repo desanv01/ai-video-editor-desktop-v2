@@ -12,10 +12,12 @@ import {
 import {
   DESKTOP_V2_PRODUCT_LINE,
   DESKTOP_V2_PRODUCT_NAME,
+  getWebView2RuntimeStatus,
   normalizeShellFailure,
   type DesktopV2BootstrapResult,
   type ShellInfo,
   type SupervisorStatus,
+  type WebView2RuntimeStatus,
   supervisorStateLabel,
 } from "../desktopV2";
 import { componentManager, type ComponentStatusResult } from "../componentManager.ts";
@@ -78,6 +80,7 @@ export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void })
   const [panel, setPanel] = useState<ShellPanel>("setup");
   const [diagnosticMessage, setDiagnosticMessage] = useState<string | null>(null);
   const [migrationInventory, setMigrationInventory] = useState<LegacyInventory | null>(null);
+  const [webview2, setWebview2] = useState<WebView2RuntimeStatus | null>(null);
 
   const loadShell = useCallback(async () => {
     setLoading(true);
@@ -86,6 +89,20 @@ export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void })
     let nextBootstrap: DesktopV2BootstrapResult | null = null;
     let nextSetupState = setupState;
     let nextStatuses: ComponentStatusResult[] = [];
+
+    try {
+      const runtime = await getWebView2RuntimeStatus();
+      setWebview2(runtime);
+      if (!runtime.available) {
+        setFailure({
+          code: "WEBVIEW2_RUNTIME_REQUIRED",
+          message: runtime.detail,
+          remediationCodes: runtime.remediationCodes,
+        });
+      }
+    } catch (error) {
+      setFailure(normalizeShellFailure(error));
+    }
 
     try {
       const info = await api.getShellInfo();
@@ -194,8 +211,9 @@ export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void })
         else unlisten = stopListening;
 
         const stopHandoffListening = await listen<{ catalogPath: string | null; handoffRoot: string | null }>("desktop-v2-handoff-args", event => {
-          if (cancelled || !event.payload.catalogPath) return;
-          void setupClient.importCatalogFile(event.payload.catalogPath).then((result: SetupImportResult) => {
+          const selectedCatalog = event.payload.catalogPath ?? (event.payload.handoffRoot ? `${event.payload.handoffRoot}\\Catalog\\offline-catalog.json` : null);
+          if (cancelled || !selectedCatalog) return;
+          void setupClient.importCatalogFile(selectedCatalog).then((result: SetupImportResult) => {
             if (!cancelled) setCatalogInfo(result.catalog);
           }).catch(() => {
             // The Setup Center exposes the redacted import error and Browse
@@ -272,7 +290,7 @@ export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void })
           <div className="mx-auto max-w-6xl px-5 py-6 lg:px-8 lg:py-8">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">Desktop V2 base shell</p><h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">{setupRequired ? "Finish local setup with confidence." : "Your local workspace is ready."}</h1><p className="mt-3 max-w-2xl text-sm leading-6 text-gray-400">{setupRequired ? "Install and verify the native components from inside the app, then launch only after the supervisor proves authenticated readiness." : "The shell has bypassed onboarding because the required components are active. Use Setup Center any time to manage the installation."}</p></div><button type="button" onClick={() => void loadShell()} className="inline-flex items-center justify-center gap-2 rounded-lg border border-surface-border bg-surface-raised px-3 py-2 text-xs font-medium text-gray-200 hover:border-accent hover:text-white focus:outline-none focus:ring-2 focus:ring-accent/70"><RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} aria-hidden="true" /> Refresh shell status</button></div>
             {failure ? <ShellFailure failure={failure} onDiagnostics={() => void handleDiagnostics()} /> : null}
-            {panel === "setup" ? <SetupCenterPanel bootstrap={bootstrap} supervisor={supervisor} initialStatuses={statuses} initialState={setupState} initialCatalog={catalogInfo} setupRequired={setupRequired} onSupervisorStatus={setSupervisor} onSetupComplete={handleSetupComplete} onLaunchEditor={handleLaunchEditor} onOpenDiagnostics={() => void handleDiagnostics()} /> : panel === "migration" && migrationInventory ? <MigrationCleanupWizard inventory={migrationInventory} onContinue={() => setPanel("setup")} /> : <DiagnosticsPanel bootstrap={bootstrap} supervisor={supervisor} message={diagnosticMessage} onGenerate={() => void handleDiagnostics()} />}
+            {panel === "setup" ? <SetupCenterPanel bootstrap={bootstrap} supervisor={supervisor} initialStatuses={statuses} initialState={setupState} initialCatalog={catalogInfo} setupRequired={setupRequired} onSupervisorStatus={setSupervisor} onSetupComplete={handleSetupComplete} onLaunchEditor={handleLaunchEditor} onOpenDiagnostics={() => void handleDiagnostics()} /> : panel === "migration" && migrationInventory ? <MigrationCleanupWizard inventory={migrationInventory} onContinue={() => setPanel("setup")} /> : <DiagnosticsPanel bootstrap={bootstrap} supervisor={supervisor} webview2={webview2} message={diagnosticMessage} onGenerate={() => void handleDiagnostics()} />}
           </div>
         </main>
       </div>
@@ -284,8 +302,8 @@ function ShellFailure({ failure, onDiagnostics }: { failure: ReturnType<typeof n
   return <div className="mt-5 rounded-xl border border-amber-400/30 bg-amber-500/10 p-4"><div className="flex items-start gap-3"><FileWarning className="mt-0.5 h-5 w-5 shrink-0 text-amber-200" aria-hidden="true" /><div><p className="text-sm font-semibold text-amber-50">{failure.message}</p><p className="mt-1 text-xs text-amber-100/70">{failure.code} · technical details stay in Diagnostics.</p><button type="button" onClick={onDiagnostics} className="mt-3 inline-flex items-center gap-2 rounded-md border border-amber-300/30 px-3 py-1.5 text-xs font-medium text-amber-100 hover:bg-amber-500/10 focus:outline-none focus:ring-2 focus:ring-accent/70"><FileSearch className="h-3.5 w-3.5" aria-hidden="true" /> Open Diagnostics</button></div></div></div>;
 }
 
-function DiagnosticsPanel({ bootstrap, supervisor, message, onGenerate }: { bootstrap: DesktopV2BootstrapResult | null; supervisor: SupervisorStatus | null; message: string | null; onGenerate: () => void }) {
-  return <section className="mt-6 rounded-2xl border border-surface-border bg-surface-raised p-5 sm:p-7" aria-labelledby="diagnostics-title"><div className="flex items-start gap-3"><FileSearch className="mt-0.5 h-5 w-5 text-accent" aria-hidden="true" /><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-accent">Diagnostics</p><h2 id="diagnostics-title" className="mt-2 text-2xl font-semibold text-white">Redacted recovery details</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-gray-400">Generate a local snapshot with shell state, storage boundary checks, component status, supervisor readiness, and redacted technical details. Tokens and provider secrets are never persisted.</p></div></div><div className="mt-6 grid gap-3 sm:grid-cols-3"><DiagnosticTile label="Shell boot" value={bootstrap?.bootState ?? "Unavailable"} /><DiagnosticTile label="Supervisor" value={supervisorStateLabel(supervisor)} /><DiagnosticTile label="Engine gate" value={supervisor?.engineReady ? "Authenticated" : "Locked"} /></div>{message ? <p role="status" className="mt-5 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">{message}</p> : null}<button type="button" onClick={onGenerate} className="mt-6 inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white hover:bg-accent-hover focus:outline-none focus:ring-2 focus:ring-accent/70"><FileSearch className="h-4 w-4" aria-hidden="true" /> Generate redacted snapshot</button></section>;
+function DiagnosticsPanel({ bootstrap, supervisor, webview2, message, onGenerate }: { bootstrap: DesktopV2BootstrapResult | null; supervisor: SupervisorStatus | null; webview2: WebView2RuntimeStatus | null; message: string | null; onGenerate: () => void }) {
+  return <section className="mt-6 rounded-2xl border border-surface-border bg-surface-raised p-5 sm:p-7" aria-labelledby="diagnostics-title"><div className="flex items-start gap-3"><FileSearch className="mt-0.5 h-5 w-5 text-accent" aria-hidden="true" /><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-accent">Diagnostics</p><h2 id="diagnostics-title" className="mt-2 text-2xl font-semibold text-white">Redacted recovery details</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-gray-400">Generate a local snapshot with shell state, storage boundary checks, component status, supervisor readiness, and redacted technical details. Tokens and provider secrets are never persisted.</p></div></div><div className="mt-6 grid gap-3 sm:grid-cols-4"><DiagnosticTile label="Shell boot" value={bootstrap?.bootState ?? "Unavailable"} /><DiagnosticTile label="Supervisor" value={supervisorStateLabel(supervisor)} /><DiagnosticTile label="Engine gate" value={supervisor?.engineReady ? "Authenticated" : "Locked"} /><DiagnosticTile label="WebView2" value={webview2?.available ? webview2.version ?? "Detected" : webview2 ? "Required" : "Unknown"} /></div>{webview2 && !webview2.available ? <p role="alert" className="mt-5 rounded-lg border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm text-red-100">{webview2.detail}</p> : null}{message ? <p role="status" className="mt-5 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">{message}</p> : null}<button type="button" onClick={onGenerate} className="mt-6 inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white hover:bg-accent-hover focus:outline-none focus:ring-2 focus:ring-accent/70"><FileSearch className="h-4 w-4" aria-hidden="true" /> Generate redacted snapshot</button></section>;
 }
 
 function DiagnosticTile({ label, value }: { label: string; value: string }) {

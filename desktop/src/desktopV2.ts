@@ -1,4 +1,5 @@
 import { canonicalWindowsStorageLayout, type RemediationCode, type StorageLayout } from "./contracts/desktopV2.ts";
+import { invoke } from "@tauri-apps/api/core";
 
 export const DESKTOP_V2_PRODUCT_NAME = "AI Video Editor Desktop V2";
 export const DESKTOP_V2_PRODUCT_LINE = "Desktop V2";
@@ -103,6 +104,19 @@ export interface SafeLogDirectoryResult {
   detail: string;
   remediationCodes: string[];
 }
+
+export interface WebView2RuntimeStatus {
+  schemaVersion: "desktop.webview2-runtime.v1";
+  available: boolean;
+  version: string | null;
+  source: string;
+  installPolicy: string;
+  detail: string;
+  remediationCodes: string[];
+}
+
+export const getWebView2RuntimeStatus = (): Promise<WebView2RuntimeStatus> =>
+  invoke<WebView2RuntimeStatus>("get_webview2_runtime_status");
 
 export interface DiagnosticSnapshotResult {
   created: boolean;

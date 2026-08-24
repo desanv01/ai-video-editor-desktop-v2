@@ -127,7 +127,7 @@
 
   FileOpen $0 "$INSTDIR\desktop-v2.identity.json" w
   IfErrors identity_failed
-  FileWrite $0 '{"productName":"AI Video Editor Desktop V2","identifier":"com.fyp.ai-video-editor.desktop-v2","version":"2.0.0-rc.2","channel":"beta"}'
+  FileWrite $0 '{"productName":"AI Video Editor Desktop V2","identifier":"com.fyp.ai-video-editor.desktop-v2","version":"2.0.0-rc.3","channel":"beta"}'
   FileClose $0
   Goto identity_done
   identity_failed:
@@ -141,7 +141,7 @@
   CreateShortCut "$SMPROGRAMS\AI Video Editor Desktop V2\AI Video Editor Desktop V2.lnk" "$1"
   IfErrors shortcut_failed
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Video Editor Desktop V2" "DisplayName" "AI Video Editor Desktop V2"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Video Editor Desktop V2" "DisplayVersion" "2.0.0-rc.2"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Video Editor Desktop V2" "DisplayVersion" "2.0.0-rc.3"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Video Editor Desktop V2" "Publisher" "AI Video Editor"
   WriteRegStr HKLM "Software\AI Video Editor Desktop V2" "Identifier" "com.fyp.ai-video-editor.desktop-v2"
   WriteRegStr HKLM "Software\AI Video Editor Desktop V2" "InstallPath" "$INSTDIR"

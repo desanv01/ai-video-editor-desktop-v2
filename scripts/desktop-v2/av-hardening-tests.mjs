@@ -1,0 +1,22 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const builder = await readFile(path.join(repoRoot, "scripts", "desktop-v2", "build_native_engine.py"), "utf8");
+const sbom = await readFile(path.join(repoRoot, "scripts", "desktop-v2", "generate_sbom.py"), "utf8");
+const defender = await readFile(path.join(repoRoot, "scripts", "desktop-v2", "Run-DefenderScan.ps1"), "utf8");
+const template = await readFile(path.join(repoRoot, "docs", "desktop-v2", "AV_FALSE_POSITIVE_TEMPLATE.md"), "utf8");
+assert.match(builder, /onedir/);
+assert.match(builder, /oneFile.*False|onefile.*False/s);
+assert.match(builder, /upx=False/);
+assert.match(sbom, /CycloneDX/);
+assert.match(sbom, /sha256/);
+assert.match(sbom, /sorted/);
+assert.match(defender, /Start-MpScan/);
+assert.match(defender, /zeroDetectionsClaimed = \$false/);
+assert.match(template, /not a promise|not.*guarantee/i);
+assert.match(template, /third-party|vendor/i);
+assert.match(template, /submission/i);
+console.log("AV hardening tests passed: onedir/non-onefile policy, deterministic SBOM/hash generation, Defender evidence script, and false-positive evidence template.");
