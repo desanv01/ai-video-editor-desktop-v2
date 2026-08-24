@@ -388,6 +388,16 @@ Generated for the new rc.3 handoff. Statuses deliberately separate local/CI proo
 - Exact file hashes: `SHA256SUMS.txt`
 
 The presence of a script or local test is not evidence of a clean-PC, Authenticode, or third-party AV result. Add those external results only with the real machine/service/portal output.
+
+## Implementation references
+
+- Tauri dialog permissions: <https://v2.tauri.app/plugin/dialog/>.
+- Tauri capabilities and explicit capability selection: <https://v2.tauri.app/security/capabilities/>.
+- Tauri single-instance ordering, callback args/cwd, and focus behavior: <https://v2.tauri.app/plugin/single-instance/>.
+- Microsoft WebView2 distribution policy: <https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution>.
+- Microsoft Authenticode SHA-256/RFC3161 timestamping: <https://learn.microsoft.com/windows/win32/seccrypto/time-stamping-authenticode-signatures>.
+- Microsoft Defender developer/false-positive guidance: <https://learn.microsoft.com/defender-xdr/developer-faq>.
+- Windows Credential Manager and DPAPI: <https://learn.microsoft.com/windows/win32/api/wincred/nf-wincred-credwritew>, <https://learn.microsoft.com/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata>.
 """,
     )
 
