@@ -22,7 +22,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 pub const SETUP_STATE_SCHEMA: &str = "desktop.setup-state.v1";
@@ -33,6 +33,7 @@ pub const PRODUCTION_CATALOG_ENV: &str = "AIVE_SETUP_CATALOG_URL";
 const MAX_CATALOG_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CATALOG_ENTRIES: usize = 64;
 const MIN_SYSTEM_FREE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_BUNDLED_CATALOG_CANDIDATES: usize = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -87,6 +88,15 @@ pub struct SetupImportResult {
     pub catalog: SetupCatalogInfo,
     pub imported_manifest_ids: Vec<String>,
     pub catalog_only_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundledCatalogDiscovery {
+    pub available: bool,
+    pub path: Option<String>,
+    pub handoff_root: Option<String>,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -567,6 +577,147 @@ fn offline_catalog_handoff_root(selected_catalog: &Path) -> ManagerResult<PathBu
     Ok(root.to_path_buf())
 }
 
+fn path_is_same_or_child(root: &Path, candidate: &Path) -> bool {
+    let root = root
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_ascii_lowercase();
+    let candidate = candidate
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_ascii_lowercase();
+    candidate == root || candidate.starts_with(&(root + "/"))
+}
+
+fn bundled_catalog_candidates(resource_dir: &Path) -> Vec<PathBuf> {
+    [
+        resource_dir
+            .join("lecturer-handoff")
+            .join("Catalog")
+            .join("offline-catalog.json"),
+        resource_dir.join("Catalog").join("offline-catalog.json"),
+        resource_dir
+            .join("resources")
+            .join("lecturer-handoff")
+            .join("Catalog")
+            .join("offline-catalog.json"),
+    ]
+    .into_iter()
+    .take(MAX_BUNDLED_CATALOG_CANDIDATES)
+    .collect()
+}
+
+fn is_single_json_catalog_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.eq_ignore_ascii_case("json"))
+        .unwrap_or(false)
+}
+
+fn read_bounded_catalog_file(path: &Path) -> ManagerResult<String> {
+    if !is_single_json_catalog_path(path) {
+        return Err(setup_error(
+            "CATALOG_FILE_INVALID",
+            "Select one JSON setup catalog file. Other file types are not accepted.",
+            false,
+        ));
+    }
+    let metadata = fs::metadata(path).map_err(|error| {
+        setup_error(
+            "CATALOG_FILE_UNREADABLE",
+            format!("The selected catalog file could not be read: {error}"),
+            false,
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(setup_error(
+            "CATALOG_FILE_INVALID",
+            "The selected catalog path is not a regular file.",
+            false,
+        ));
+    }
+    if metadata.len() > MAX_CATALOG_BYTES as u64 {
+        return Err(setup_error(
+            "CATALOG_TOO_LARGE",
+            "The selected setup catalog exceeds the bounded intake size.",
+            false,
+        ));
+    }
+    let bytes = fs::read(path).map_err(|error| {
+        setup_error(
+            "CATALOG_FILE_UNREADABLE",
+            format!("The selected catalog file could not be read: {error}"),
+            false,
+        )
+    })?;
+    String::from_utf8(bytes).map_err(|_| {
+        setup_error(
+            "CATALOG_SCHEMA_INVALID",
+            "The selected catalog file is not valid UTF-8 JSON.",
+            false,
+        )
+    })
+}
+
+fn discover_bundled_catalog_at(resource_dir: &Path) -> ManagerResult<BundledCatalogDiscovery> {
+    let resource_dir = fs::canonicalize(resource_dir).map_err(|error| {
+        setup_error(
+            "BUNDLED_CATALOG_UNAVAILABLE",
+            format!("The bundled resource directory could not be resolved: {error}"),
+            true,
+        )
+    })?;
+    for candidate in bundled_catalog_candidates(&resource_dir) {
+        if !candidate.exists() {
+            continue;
+        }
+        if !is_single_json_catalog_path(&candidate) {
+            continue;
+        }
+        let selected = fs::canonicalize(&candidate).map_err(|error| {
+            setup_error(
+                "BUNDLED_CATALOG_INVALID",
+                format!("The bundled catalog path could not be resolved: {error}"),
+                false,
+            )
+        })?;
+        if !path_is_same_or_child(&resource_dir, &selected) {
+            return Err(setup_error(
+                "BUNDLED_CATALOG_INVALID",
+                "The bundled catalog escaped the application resource directory.",
+                false,
+            ));
+        }
+        let root = offline_catalog_handoff_root(&selected).map_err(|error| {
+            setup_error(
+                "BUNDLED_CATALOG_INVALID",
+                format!(
+                    "The bundled lecturer handoff is incomplete: {}",
+                    error.message
+                ),
+                false,
+            )
+        })?;
+        let _ = read_bounded_catalog_file(&selected)?;
+        return Ok(BundledCatalogDiscovery {
+            available: true,
+            path: Some(selected.to_string_lossy().to_string()),
+            handoff_root: Some(root.to_string_lossy().to_string()),
+            detail:
+                "A bundled lecturer catalog was found and its portable handoff boundary is present."
+                    .to_string(),
+        });
+    }
+    Ok(BundledCatalogDiscovery {
+        available: false,
+        path: None,
+        handoff_root: None,
+        detail: "No bundled lecturer catalog is present in the signed application resources; Browse remains available for a trusted handoff copy.".to_string(),
+    })
+}
+
 fn verify_and_intake_catalog(
     catalog_json: &str,
     source: &str,
@@ -595,7 +746,8 @@ fn verify_and_intake_catalog(
         &payload,
     )?;
     let policy = catalog_source_policy(source)?;
-    let machine_root = PathBuf::from(get_canonical_paths().program_data_root).join("AI Video Editor");
+    let machine_root =
+        PathBuf::from(get_canonical_paths().program_data_root).join("AI Video Editor");
     let manager = if source == "offline-import" {
         let root = offline_root.ok_or_else(|| {
             setup_error(
@@ -730,6 +882,39 @@ pub fn setup_get_catalog() -> ManagerResult<Option<SetupCatalogInfo>> {
 }
 
 #[tauri::command]
+pub fn setup_discover_bundled_catalog(app: AppHandle) -> ManagerResult<BundledCatalogDiscovery> {
+    let resource_dir = app.path().resource_dir().map_err(|error| {
+        setup_error(
+            "BUNDLED_CATALOG_UNAVAILABLE",
+            format!("The application resource directory could not be resolved: {error}"),
+            true,
+        )
+    })?;
+    discover_bundled_catalog_at(&resource_dir)
+}
+
+#[tauri::command]
+pub fn setup_import_bundled_catalog(app: AppHandle) -> ManagerResult<SetupImportResult> {
+    let discovery = setup_discover_bundled_catalog(app)?;
+    let selected = discovery.path.ok_or_else(|| {
+        setup_error(
+            "BUNDLED_CATALOG_UNAVAILABLE",
+            "No bundled lecturer catalog is available in this shell. Browse for a trusted handoff copy.",
+            false,
+        )
+    })?;
+    let root = discovery.handoff_root.ok_or_else(|| {
+        setup_error(
+            "BUNDLED_CATALOG_INVALID",
+            "The bundled lecturer handoff has no verified artifact root.",
+            false,
+        )
+    })?;
+    let catalog_json = read_bounded_catalog_file(Path::new(&selected))?;
+    verify_and_intake_catalog(&catalog_json, "offline-import", Some(Path::new(&root)))
+}
+
+#[tauri::command]
 pub fn setup_import_catalog(
     catalog_json: String,
     source: String,
@@ -768,34 +953,7 @@ pub fn setup_import_catalog_file(catalog_path: String) -> ManagerResult<SetupImp
             false,
         )
     })?;
-    if !selected.is_file() {
-        return Err(setup_error(
-            "CATALOG_FILE_INVALID",
-            "The selected catalog path is not a regular file.",
-            false,
-        ));
-    }
-    let bytes = fs::read(&selected).map_err(|error| {
-        setup_error(
-            "CATALOG_FILE_UNREADABLE",
-            format!("The selected catalog file could not be read: {error}"),
-            false,
-        )
-    })?;
-    if bytes.len() > MAX_CATALOG_BYTES {
-        return Err(setup_error(
-            "CATALOG_TOO_LARGE",
-            "The selected setup catalog exceeds the bounded intake size.",
-            false,
-        ));
-    }
-    let catalog_json = String::from_utf8(bytes).map_err(|_| {
-        setup_error(
-            "CATALOG_SCHEMA_INVALID",
-            "The selected catalog file is not valid UTF-8 JSON.",
-            false,
-        )
-    })?;
+    let catalog_json = read_bounded_catalog_file(&selected)?;
     let root = offline_catalog_handoff_root(&selected)?;
     verify_and_intake_catalog(&catalog_json, "offline-import", Some(&root))
 }
@@ -1363,6 +1521,73 @@ mod tests {
         let resolved = offline_catalog_handoff_root(&selected).expect("handoff root");
         assert_eq!(resolved, fs::canonicalize(&root).expect("canonical root"));
         assert!(offline_catalog_handoff_root(&root.join("offline-catalog.json")).is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bundled_catalog_discovery_accepts_only_the_bounded_resource_handoff() {
+        let root = env::temp_dir().join(format!(
+            "aive-setup-bundled-resource-{}-{}",
+            std::process::id(),
+            now_epoch_ms()
+        ));
+        let catalog = root
+            .join("lecturer-handoff")
+            .join("Catalog")
+            .join("offline-catalog.json");
+        fs::create_dir_all(catalog.parent().expect("catalog parent")).expect("catalog directory");
+        fs::create_dir_all(root.join("lecturer-handoff").join("Components"))
+            .expect("components directory");
+        fs::write(&catalog, b"{}").expect("catalog fixture");
+
+        let discovered = discover_bundled_catalog_at(&root).expect("bundled discovery");
+        assert!(discovered.available);
+        assert_eq!(
+            discovered.path,
+            Some(
+                fs::canonicalize(&catalog)
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            discovered.handoff_root,
+            Some(
+                fs::canonicalize(root.join("lecturer-handoff"))
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string()
+            )
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bounded_catalog_intake_rejects_non_json_and_oversized_files() {
+        let root = env::temp_dir().join(format!(
+            "aive-setup-bounded-catalog-{}-{}",
+            std::process::id(),
+            now_epoch_ms()
+        ));
+        fs::create_dir_all(&root).expect("temporary directory");
+        let text = root.join("catalog.txt");
+        fs::write(&text, b"{}").expect("text fixture");
+        assert_eq!(
+            read_bounded_catalog_file(&text)
+                .expect_err("non-JSON catalog must fail")
+                .code,
+            "CATALOG_FILE_INVALID"
+        );
+
+        let oversized = root.join("oversized.json");
+        fs::write(&oversized, vec![b'x'; MAX_CATALOG_BYTES + 1]).expect("oversized fixture");
+        assert_eq!(
+            read_bounded_catalog_file(&oversized)
+                .expect_err("oversized catalog must fail")
+                .code,
+            "CATALOG_TOO_LARGE"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }

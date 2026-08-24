@@ -11,8 +11,8 @@ use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State, Window};
 
-pub mod contracts;
 pub mod component_manager;
+pub mod contracts;
 pub mod desktop_v2;
 pub mod migration;
 pub mod release_trust;
@@ -144,13 +144,19 @@ struct NativeImportRegistry {
 impl NativeImportRegistry {
     fn register(&self, token: &str) -> Arc<AtomicBool> {
         let flag = Arc::new(AtomicBool::new(false));
-        let mut flags = self.flags.lock().expect("native import registry lock poisoned");
+        let mut flags = self
+            .flags
+            .lock()
+            .expect("native import registry lock poisoned");
         flags.insert(token.to_string(), flag.clone());
         flag
     }
 
     fn request_cancel(&self, token: &str) -> bool {
-        let flags = self.flags.lock().expect("native import registry lock poisoned");
+        let flags = self
+            .flags
+            .lock()
+            .expect("native import registry lock poisoned");
         if let Some(flag) = flags.get(token) {
             flag.store(true, Ordering::Relaxed);
             return true;
@@ -159,7 +165,10 @@ impl NativeImportRegistry {
     }
 
     fn unregister(&self, token: &str) {
-        let mut flags = self.flags.lock().expect("native import registry lock poisoned");
+        let mut flags = self
+            .flags
+            .lock()
+            .expect("native import registry lock poisoned");
         flags.remove(token);
     }
 }
@@ -382,7 +391,11 @@ fn bootstrap_desktop_backend(app: AppHandle) -> Result<DesktopBootstrapResult, S
                 "qdrant" => "Qdrant".to_string(),
                 _ => "Backend".to_string(),
             },
-            status: if running { "ready".to_string() } else { "warning".to_string() },
+            status: if running {
+                "ready".to_string()
+            } else {
+                "warning".to_string()
+            },
             detail: if running {
                 "Service is running inside Docker.".to_string()
             } else {
@@ -597,8 +610,10 @@ fn copy_file_with_progress(
     total_bytes: u64,
     cancel_flag: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    let mut reader = fs::File::open(source).map_err(|e| format!("Could not open source file: {e}"))?;
-    let mut writer = fs::File::create(target).map_err(|e| format!("Could not create staging file: {e}"))?;
+    let mut reader =
+        fs::File::open(source).map_err(|e| format!("Could not open source file: {e}"))?;
+    let mut writer =
+        fs::File::create(target).map_err(|e| format!("Could not create staging file: {e}"))?;
     let mut buffer = vec![0_u8; 8 * 1024 * 1024];
     let mut copied = 0_u64;
     let start = Instant::now();
@@ -611,7 +626,9 @@ fn copy_file_with_progress(
             return Err("Import cancelled.".to_string());
         }
 
-        let read = reader.read(&mut buffer).map_err(|e| format!("Could not read source file: {e}"))?;
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|e| format!("Could not read source file: {e}"))?;
         if read == 0 {
             break;
         }
@@ -652,9 +669,13 @@ fn copy_file_with_progress(
         }
     }
 
-    writer.flush().map_err(|e| format!("Could not flush staged file: {e}"))?;
+    writer
+        .flush()
+        .map_err(|e| format!("Could not flush staged file: {e}"))?;
     if copied != total_bytes {
-        return Err(format!("Copied {copied} bytes but expected {total_bytes} bytes"));
+        return Err(format!(
+            "Copied {copied} bytes but expected {total_bytes} bytes"
+        ));
     }
     Ok(())
 }
@@ -694,7 +715,12 @@ fn ensure_app_storage_layout() -> Result<StorageLayoutPaths, String> {
         &config_dir,
         &backups_dir,
     ] {
-        fs::create_dir_all(dir).map_err(|e| format!("Could not prepare app storage directory {}: {e}", dir.display()))?;
+        fs::create_dir_all(dir).map_err(|e| {
+            format!(
+                "Could not prepare app storage directory {}: {e}",
+                dir.display()
+            )
+        })?;
     }
 
     Ok(StorageLayoutPaths {
@@ -711,7 +737,9 @@ fn ensure_app_storage_layout() -> Result<StorageLayoutPaths, String> {
 }
 
 fn settings_path() -> Result<PathBuf, String> {
-    Ok(ensure_app_storage_layout()?.config_dir.join("settings.json"))
+    Ok(ensure_app_storage_layout()?
+        .config_dir
+        .join("settings.json"))
 }
 
 fn app_storage_root() -> Result<PathBuf, String> {
@@ -745,7 +773,11 @@ fn default_true() -> bool {
 }
 
 fn infer_mime_type(path: &Path) -> Option<String> {
-    match path.extension().and_then(|ext| ext.to_str()).map(|ext| ext.to_ascii_lowercase()) {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+    {
         Some(ext) if ext == "mp4" => Some("video/mp4".to_string()),
         Some(ext) if ext == "mov" => Some("video/quicktime".to_string()),
         Some(ext) if ext == "avi" => Some("video/x-msvideo".to_string()),
@@ -786,7 +818,10 @@ fn desktop_compose_path(app: &AppHandle) -> Result<PathBuf, String> {
     ))
 }
 
-fn write_desktop_backend_env(layout: &StorageLayoutPaths, backend_port: u16) -> Result<PathBuf, String> {
+fn write_desktop_backend_env(
+    layout: &StorageLayoutPaths,
+    backend_port: u16,
+) -> Result<PathBuf, String> {
     let env_path = layout.config_dir.join("desktop-backend.env");
     let contents = format!(
         concat!(
@@ -870,7 +905,10 @@ fn start_docker_desktop() -> Result<String, String> {
                 .args(["/C", "start", "", candidate.to_string_lossy().as_ref()])
                 .spawn()
                 .map_err(|e| format!("Could not start Docker Desktop: {e}"))?;
-            return Ok(format!("Starting Docker Desktop from {}", candidate.display()));
+            return Ok(format!(
+                "Starting Docker Desktop from {}",
+                candidate.display()
+            ));
         }
     }
 
@@ -902,7 +940,9 @@ fn wait_for_http_health(url: &str, timeout: Duration) -> Result<(), String> {
         }
         sleep(Duration::from_secs(5));
     }
-    Err(format!("Backend health check did not become ready at {url}"))
+    Err(format!(
+        "Backend health check did not become ready at {url}"
+    ))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -922,6 +962,22 @@ pub fn run() {
     );
 
     tauri::Builder::default()
+        // The single-instance plugin must be registered before the other
+        // plugins so a second launch is intercepted before it can construct
+        // another WebView/window. Only bounded --catalog/--handoff values are
+        // forwarded; the UI still performs full signed-catalog intake.
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+            if let Some(forwarded) =
+                desktop_v2::approved_single_instance_args(&args, Path::new(&cwd))
+            {
+                let _ = app.emit("desktop-v2-handoff-args", forwarded);
+            }
+        }))
         .manage(NativeImportRegistry::default())
         .manage(component_manager::ComponentManagerState::default())
         .manage(supervisor::SupervisorState::default())
@@ -953,6 +1009,8 @@ pub fn run() {
             setup_center::setup_get_state,
             setup_center::setup_save_state,
             setup_center::setup_get_catalog,
+            setup_center::setup_discover_bundled_catalog,
+            setup_center::setup_import_bundled_catalog,
             setup_center::setup_import_catalog,
             setup_center::setup_import_catalog_file,
             setup_center::setup_catalog_configuration,

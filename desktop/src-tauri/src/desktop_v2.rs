@@ -18,11 +18,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const PRODUCT_NAME: &str = "AI Video Editor Desktop V2";
 pub const PRODUCT_LINE: &str = "Desktop V2";
 pub const PRODUCT_IDENTIFIER: &str = "com.fyp.ai-video-editor.desktop-v2";
+/// The per-machine installer identity. This is deliberately distinct from
+/// the historical user-data directory so an upgrade cannot move projects or
+/// settings merely because the Program Files display name was corrected.
+pub const PROGRAM_FILES_DIRECTORY: &str = "AI Video Editor Desktop V2";
+pub const USER_DATA_DIRECTORY: &str = "AI Video Editor";
 pub const SHELL_STATE_VERSION: &str = "desktop.shell-state.v1";
 pub const DIAGNOSTIC_SNAPSHOT_VERSION: &str = "desktop.diagnostics.v1";
 const ACTIVE_METADATA_FILENAME: &str = "aive-engine.json";
 const MAX_ACTIVATION_METADATA_BYTES: usize = 128 * 1024;
 const MAX_DIAGNOSTIC_TEXT_BYTES: usize = 2 * 1024;
+const MAX_SINGLE_INSTANCE_ARGUMENTS: usize = 32;
+const MAX_SINGLE_INSTANCE_ARGUMENT_BYTES: usize = 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -76,6 +83,14 @@ pub struct ShellInfo {
     pub storage_layout_version: String,
     pub shell_install_path: String,
     pub user_state_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardedLaunchArgs {
+    pub catalog_path: Option<String>,
+    pub handoff_root: Option<String>,
+    pub cwd: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -219,14 +234,22 @@ struct PathRoots {
 
 impl ResolvedDesktopPaths {
     fn from_roots(roots: &PathRoots) -> Self {
-        let product_root = Path::new("AI Video Editor");
-        let user_root = roots.local_app_data.join(product_root);
-        let shell_install = roots.program_files.join(product_root).join("Shell");
-        let shared_components = roots.program_data.join(product_root).join("Components");
-        let activation_metadata = roots.program_data.join(product_root).join("Activation");
+        let user_root = roots.local_app_data.join(USER_DATA_DIRECTORY);
+        let shell_install = roots
+            .program_files
+            .join(PROGRAM_FILES_DIRECTORY)
+            .join("Shell");
+        let shared_components = roots
+            .program_data
+            .join(USER_DATA_DIRECTORY)
+            .join("Components");
+        let activation_metadata = roots
+            .program_data
+            .join(USER_DATA_DIRECTORY)
+            .join("Activation");
         let download_staging = roots
             .program_data
-            .join(product_root)
+            .join(USER_DATA_DIRECTORY)
             .join("Downloads")
             .join("Staging");
         let user_config = user_root.join("Config");
@@ -236,12 +259,12 @@ impl ResolvedDesktopPaths {
         let projects = roots
             .user_profile
             .join("Documents")
-            .join(product_root)
+            .join(USER_DATA_DIRECTORY)
             .join("Projects");
         let exports = roots
             .user_profile
             .join("Documents")
-            .join(product_root)
+            .join(USER_DATA_DIRECTORY)
             .join("Exports");
 
         Self {
@@ -315,6 +338,111 @@ fn is_same_or_child(root: &Path, candidate: &Path) -> bool {
         .to_ascii_lowercase();
     normalized_candidate == normalized_root
         || normalized_candidate.starts_with(&(normalized_root + "/"))
+}
+
+fn resolve_forwarded_path(value: &str, cwd: &Path) -> Option<PathBuf> {
+    if value.is_empty() || value.len() > MAX_SINGLE_INSTANCE_ARGUMENT_BYTES {
+        return None;
+    }
+    let candidate = PathBuf::from(value);
+    let candidate = if candidate.is_absolute() {
+        candidate
+    } else {
+        cwd.join(candidate)
+    };
+    fs::canonicalize(candidate).ok()
+}
+
+fn approved_catalog_path(value: &str, cwd: &Path) -> Option<PathBuf> {
+    let path = resolve_forwarded_path(value, cwd)?;
+    if !path.is_file()
+        || !path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.eq_ignore_ascii_case("json"))
+            .unwrap_or(false)
+        || path
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|name| name.to_str())
+            .map(|name| !name.eq_ignore_ascii_case("Catalog"))
+            .unwrap_or(true)
+    {
+        return None;
+    }
+    let root = path.parent()?.parent()?;
+    if root.join("Components").is_dir() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+fn approved_handoff_root(value: &str, cwd: &Path) -> Option<PathBuf> {
+    let path = resolve_forwarded_path(value, cwd)?;
+    if !path.is_dir() || !path.join("Catalog").is_dir() || !path.join("Components").is_dir() {
+        return None;
+    }
+    Some(path)
+}
+
+/// Return only the bounded, explicitly supported handoff arguments from a
+/// second process. The single-instance callback forwards these values to the
+/// UI, where the same catalog signature, manifest, hash, and containment
+/// checks still run before import. Arbitrary command-line values are ignored.
+pub fn approved_single_instance_args(args: &[String], cwd: &Path) -> Option<ForwardedLaunchArgs> {
+    if args.len() > MAX_SINGLE_INSTANCE_ARGUMENTS {
+        return None;
+    }
+    let mut catalog_path = None;
+    let mut handoff_root = None;
+    let mut index = 0;
+    while index < args.len() {
+        let argument = &args[index];
+        if argument.len() > MAX_SINGLE_INSTANCE_ARGUMENT_BYTES {
+            index += 1;
+            continue;
+        }
+        let (key, inline_value) = argument
+            .split_once('=')
+            .map_or((argument.as_str(), None), |(key, value)| (key, Some(value)));
+        let value = if let Some(value) = inline_value {
+            Some(value.to_string())
+        } else if matches!(key, "--catalog" | "--handoff") {
+            index += 1;
+            args.get(index).cloned()
+        } else {
+            None
+        };
+        match key {
+            "--catalog" => {
+                if let Some(value) = value
+                    .as_deref()
+                    .and_then(|value| approved_catalog_path(value, cwd))
+                {
+                    catalog_path = Some(value.to_string_lossy().to_string());
+                }
+            }
+            "--handoff" => {
+                if let Some(value) = value
+                    .as_deref()
+                    .and_then(|value| approved_handoff_root(value, cwd))
+                {
+                    handoff_root = Some(value.to_string_lossy().to_string());
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    if catalog_path.is_none() && handoff_root.is_none() {
+        return None;
+    }
+    Some(ForwardedLaunchArgs {
+        catalog_path,
+        handoff_root,
+        cwd: cwd.to_string_lossy().to_string(),
+    })
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -965,9 +1093,56 @@ mod tests {
     fn path_invariants_keep_runtime_writes_out_of_program_files() {
         let paths = test_paths();
         assert!(paths.path_invariants_hold());
-        assert!(paths.shell_install.starts_with(r"C:\Program Files"));
+        assert_eq!(
+            paths.shell_install,
+            r"C:\Program Files\AI Video Editor Desktop V2\Shell"
+        );
         assert!(paths.user_state.starts_with(r"C:\Users\Test\AppData\Local"));
         assert!(!paths.user_state.starts_with(&paths.program_files_root));
+    }
+
+    #[test]
+    fn single_instance_forwards_only_approved_catalog_and_handoff_arguments() {
+        let root = env::temp_dir().join(format!(
+            "aive-single-instance-{}-{}",
+            std::process::id(),
+            now_epoch_ms()
+        ));
+        let catalog = root.join("Catalog").join("offline-catalog.json");
+        fs::create_dir_all(catalog.parent().expect("catalog parent")).expect("catalog directory");
+        fs::create_dir_all(root.join("Components")).expect("components directory");
+        fs::write(&catalog, b"{}").expect("catalog file");
+
+        let forwarded = approved_single_instance_args(
+            &[
+                "AI Video Editor Desktop V2.exe".to_string(),
+                "--catalog".to_string(),
+                catalog.to_string_lossy().to_string(),
+                "--token=should-not-forward".to_string(),
+            ],
+            Path::new(r"C:\Users\Test"),
+        )
+        .expect("approved catalog argument");
+        assert_eq!(
+            forwarded.catalog_path,
+            Some(
+                fs::canonicalize(&catalog)
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string()
+            )
+        );
+        assert!(forwarded.handoff_root.is_none());
+
+        let rejected = approved_single_instance_args(
+            &[
+                "--catalog".to_string(),
+                root.join("notes.txt").to_string_lossy().to_string(),
+            ],
+            Path::new(r"C:\Users\Test"),
+        );
+        assert!(rejected.is_none());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

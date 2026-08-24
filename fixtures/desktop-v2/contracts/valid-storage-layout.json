@@ -4,7 +4,7 @@
   "programFilesRuntimeWritable": false,
   "paths": {
     "shellInstall": {
-      "pathTemplate": "%ProgramFiles%\\AI Video Editor\\Shell",
+      "pathTemplate": "%ProgramFiles%\\AI Video Editor Desktop V2\\Shell",
       "scope": "machine",
       "owner": "machine-installer",
       "writer": "installer",

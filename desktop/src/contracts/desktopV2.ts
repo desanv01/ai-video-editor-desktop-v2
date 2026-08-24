@@ -205,7 +205,7 @@ export interface StorageLayout {
 }
 
 export const CANONICAL_WINDOWS_PATHS: Record<StoragePathKey, string> = {
-  shellInstall: "%ProgramFiles%\\AI Video Editor\\Shell",
+  shellInstall: "%ProgramFiles%\\AI Video Editor Desktop V2\\Shell",
   sharedComponents: "%ProgramData%\\AI Video Editor\\Components",
   activationMetadata: "%ProgramData%\\AI Video Editor\\Activation",
   downloadStaging: "%ProgramData%\\AI Video Editor\\Downloads\\Staging",

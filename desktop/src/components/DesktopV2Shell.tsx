@@ -24,6 +24,7 @@ import {
   canLaunchEditor,
   requiredComponentsReady,
   setupClient,
+  type SetupImportResult,
   type SetupCatalogInfo,
   type SetupState,
 } from "../setupCenter.ts";
@@ -191,6 +192,21 @@ export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void })
         });
         if (cancelled) stopListening();
         else unlisten = stopListening;
+
+        const stopHandoffListening = await listen<{ catalogPath: string | null; handoffRoot: string | null }>("desktop-v2-handoff-args", event => {
+          if (cancelled || !event.payload.catalogPath) return;
+          void setupClient.importCatalogFile(event.payload.catalogPath).then((result: SetupImportResult) => {
+            if (!cancelled) setCatalogInfo(result.catalog);
+          }).catch(() => {
+            // The Setup Center exposes the redacted import error and Browse
+            // fallback; a forwarded argument never bypasses its trust gate.
+          });
+        });
+        if (cancelled) stopHandoffListening();
+        else {
+          const previous = unlisten;
+          unlisten = () => { previous?.(); stopHandoffListening(); };
+        }
       } catch {
         // Explicit refresh and the readiness poll remain available.
       }

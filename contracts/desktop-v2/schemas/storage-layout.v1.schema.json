@@ -48,7 +48,7 @@
         "pathTemplate": {
           "type": "string",
           "minLength": 1,
-          "pattern": "^(?:(?:%ProgramFiles%|%ProgramData%|%LocalAppData%|%USER_SELECTED%)\\\\AI Video Editor|%USERPROFILE%\\\\Documents\\\\AI Video Editor)(?:\\\\[A-Za-z0-9._ -]+)+$"
+          "pattern": "^(?:(?:%ProgramFiles%\\\\AI Video Editor Desktop V2|%ProgramData%\\\\AI Video Editor|%LocalAppData%\\\\AI Video Editor|%USER_SELECTED%\\\\AI Video Editor|%USERPROFILE%\\\\Documents\\\\AI Video Editor)(?:\\\\[A-Za-z0-9._ -]+)+)$"
         },
         "scope": { "enum": ["machine", "user", "user-selected"] },
         "owner": { "enum": ["machine-installer", "machine-update-service", "user"] },

@@ -25,6 +25,7 @@
       }
     ],
     "security": {
+      "capabilities": ["main-capability"],
       "csp": "default-src 'self'; connect-src 'self' http://localhost:* http://127.0.0.1:* https://*; media-src 'self' http://localhost:* http://127.0.0.1:* blob:; img-src 'self' http://localhost:* http://127.0.0.1:* data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
     }
   },
@@ -41,7 +42,8 @@
         "displayLanguageSelector": false,
         "installerHooks": "nsis/installer-hooks.nsh"
       }
-    }
+    },
+    "resources": ["resources/lecturer-handoff"]
   },
   "plugins": {
   }

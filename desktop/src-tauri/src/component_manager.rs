@@ -6,8 +6,8 @@
 //! development paths. The lecturer release trust root is compiled into the
 //! application; the fixture key below is retained only for debug/unit tests.
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use crate::release_trust::{RELEASE_KEY_ID, RELEASE_PUBLIC_KEY_B64};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use flate2::read::GzDecoder;
 use reqwest::blocking::{Client, Response};
 use reqwest::redirect::Policy;
@@ -1237,7 +1237,8 @@ impl ComponentManager {
         let active_path = PathBuf::from(&activation.active_path);
         ensure_safe_existing_path(&self.paths.components_root, &active_path)?;
         let expected_active_path = self.published_path(&manifest)?;
-        if path_key(&active_path.to_string_lossy()) != path_key(&expected_active_path.to_string_lossy())
+        if path_key(&active_path.to_string_lossy())
+            != path_key(&expected_active_path.to_string_lossy())
         {
             return Err(ComponentError::new(
                 "ACTIVATION_METADATA_INVALID",
@@ -3759,7 +3760,15 @@ fn run_manifest_self_test(manifest: &ComponentManifest, stage_root: &Path) -> Ma
         // Windows loader/runtime perimeter required by real frozen binaries.
         .env_clear();
     #[cfg(windows)]
-    for key in ["SystemRoot", "WINDIR", "PATH", "TEMP", "TMP", "COMSPEC", "PATHEXT"] {
+    for key in [
+        "SystemRoot",
+        "WINDIR",
+        "PATH",
+        "TEMP",
+        "TMP",
+        "COMSPEC",
+        "PATHEXT",
+    ] {
         if let Some(value) = env::var_os(key) {
             command.env(key, value);
         }
@@ -5681,7 +5690,8 @@ mod tests {
     #[test]
     fn offline_artifact_references_are_portable_and_bounded() {
         assert_eq!(
-            offline_artifact_relative_path("offline:Components/aive-engine-2.0.0-rc.2.tar.gz").unwrap(),
+            offline_artifact_relative_path("offline:Components/aive-engine-2.0.0-rc.2.tar.gz")
+                .unwrap(),
             "Components/aive-engine-2.0.0-rc.2.tar.gz"
         );
         for invalid in [
@@ -5709,7 +5719,10 @@ mod tests {
             if is_reparse_or_symlink(&source_path) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("release test source contains a reparse point: {}", source_path.display()),
+                    format!(
+                        "release test source contains a reparse point: {}",
+                        source_path.display()
+                    ),
                 ));
             }
             if source_path.is_dir() {
@@ -5727,7 +5740,11 @@ mod tests {
             return;
         };
         let source_handoff = fs::canonicalize(PathBuf::from(handoff_value)).unwrap();
-        assert!(source_handoff.is_dir(), "Phase 9 handoff root is missing: {}", source_handoff.display());
+        assert!(
+            source_handoff.is_dir(),
+            "Phase 9 handoff root is missing: {}",
+            source_handoff.display()
+        );
         let portable_handoff = env::temp_dir().join(format!(
             "aive-phase9-portable-handoff-{}-{}",
             std::process::id(),
@@ -5738,8 +5755,10 @@ mod tests {
         let portable_handoff = fs::canonicalize(&portable_handoff).unwrap();
         assert_ne!(source_handoff, portable_handoff);
 
-        let catalog_json = fs::read_to_string(portable_handoff.join("Catalog/offline-catalog.json")).unwrap();
-        let catalog: crate::setup_center::SetupCatalog = serde_json::from_str(&catalog_json).unwrap();
+        let catalog_json =
+            fs::read_to_string(portable_handoff.join("Catalog/offline-catalog.json")).unwrap();
+        let catalog: crate::setup_center::SetupCatalog =
+            serde_json::from_str(&catalog_json).unwrap();
         let catalog_signature = BASE64.decode(&catalog.signature.value).unwrap();
         assert_eq!(
             fs::read(portable_handoff.join("Catalog/offline-catalog.sig")).unwrap(),
@@ -5759,7 +5778,8 @@ mod tests {
             now_epoch_ms()
         ));
         let _ = fs::remove_dir_all(&root);
-        let manager = ComponentManager::with_offline_root(root.join("machine"), portable_handoff.clone());
+        let manager =
+            ComponentManager::with_offline_root(root.join("machine"), portable_handoff.clone());
         let policy = SourcePolicy::OFFLINE_IMPORT;
         let components = [
             (
@@ -5789,8 +5809,12 @@ mod tests {
             assert!(portable_handoff.join(manifest_path).is_file());
             manager
                 .intake_manifest(&manifest_json, policy)
-                .unwrap_or_else(|error| panic!("real Phase 9 {component_id} intake failed: {error}"));
-            manager.resolve_plan(component_id, Some(version), policy).unwrap();
+                .unwrap_or_else(|error| {
+                    panic!("real Phase 9 {component_id} intake failed: {error}")
+                });
+            manager
+                .resolve_plan(component_id, Some(version), policy)
+                .unwrap();
             let downloaded = manager
                 .download(
                     component_id,
@@ -5829,7 +5853,10 @@ mod tests {
                 .unwrap();
             assert_eq!(active.component_version, version);
             assert!(Path::new(&active.executable_path).is_file());
-            assert_eq!(manager.status(Some(component_id)).unwrap()[0].state, "active");
+            assert_eq!(
+                manager.status(Some(component_id)).unwrap()[0].state,
+                "active"
+            );
         }
 
         let engine = manager
@@ -5843,9 +5870,19 @@ mod tests {
             .current_dir(&engine.active_path)
             .output()
             .unwrap();
-        assert!(engine_self_test.status.success(), "portable frozen engine self-test failed: {:?}", engine_self_test);
-        let ffmpeg_version = Command::new(&ffmpeg.executable_path).arg("-version").output().unwrap();
-        assert!(ffmpeg_version.status.success(), "portable FFmpeg version probe failed");
+        assert!(
+            engine_self_test.status.success(),
+            "portable frozen engine self-test failed: {:?}",
+            engine_self_test
+        );
+        let ffmpeg_version = Command::new(&ffmpeg.executable_path)
+            .arg("-version")
+            .output()
+            .unwrap();
+        assert!(
+            ffmpeg_version.status.success(),
+            "portable FFmpeg version probe failed"
+        );
 
         let source = portable_handoff.join("SMOKE/synthetic-source.mp4");
         let export = root.join("portable-ffmpeg-export.mp4");
@@ -5856,7 +5893,11 @@ mod tests {
             .arg(&export)
             .output()
             .unwrap();
-        assert!(encode.status.success(), "portable FFmpeg encode failed: {:?}", encode);
+        assert!(
+            encode.status.success(),
+            "portable FFmpeg encode failed: {:?}",
+            encode
+        );
         assert!(export.is_file());
 
         let engine_data = root.join("engine-data");
@@ -5881,13 +5922,24 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         #[cfg(windows)]
-        for key in ["SystemRoot", "WINDIR", "PATH", "TEMP", "TMP", "COMSPEC", "PATHEXT"] {
+        for key in [
+            "SystemRoot",
+            "WINDIR",
+            "PATH",
+            "TEMP",
+            "TMP",
+            "COMSPEC",
+            "PATHEXT",
+        ] {
             if let Some(value) = env::var_os(key) {
                 engine_command.env(key, value);
             }
         }
         let mut child = engine_command.spawn().unwrap();
-        let client = Client::builder().timeout(Duration::from_secs(2)).build().unwrap();
+        let client = Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
         let base = format!("http://127.0.0.1:{port}");
         let mut live = false;
         for _ in 0..60 {

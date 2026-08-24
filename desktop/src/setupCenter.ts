@@ -71,6 +71,13 @@ export interface SetupImportResult {
   catalogOnlyIds: string[];
 }
 
+export interface BundledCatalogDiscovery {
+  available: boolean;
+  path: string | null;
+  handoffRoot: string | null;
+  detail: string;
+}
+
 export interface SetupSystemCheck {
   id: string;
   label: string;
@@ -251,6 +258,11 @@ export function normalizeSetupError(error: unknown): SetupError {
 
 export function friendlySetupMessage(code: string): string {
   switch (code) {
+    case "DIALOG_OPEN_FAILED": return "The catalog file picker could not be opened. Use the bundled lecturer catalog or check desktop dialog permissions.";
+    case "CATALOG_FILE_INVALID": return "Choose exactly one JSON catalog file from the lecturer handoff.";
+    case "CATALOG_FILE_UNREADABLE": return "The selected catalog JSON could not be read. Nothing was installed.";
+    case "BUNDLED_CATALOG_UNAVAILABLE": return "No bundled lecturer catalog is available in this shell. Browse for a trusted handoff copy.";
+    case "BUNDLED_CATALOG_INVALID": return "The bundled lecturer handoff is incomplete or outside the trusted resource boundary.";
     case "CATALOG_NETWORK_ERROR": return "The component catalog could not be reached. Check network, proxy, or TLS settings, or use Offline import.";
     case "HTTPS_REQUIRED": return "This source is not trusted for production. Production catalogs and artifacts must use HTTPS.";
     case "SIGNATURE_INVALID": return "The catalog or component signature could not be verified. Nothing was installed.";
@@ -312,6 +324,8 @@ export interface SetupClient {
   getState: () => Promise<SetupState>;
   saveState: (state: SetupState) => Promise<SetupState>;
   getCatalog: () => Promise<SetupCatalogInfo | null>;
+  discoverBundledCatalog: () => Promise<BundledCatalogDiscovery>;
+  importBundledCatalog: () => Promise<SetupImportResult>;
   importCatalog: (catalogJson: string, source: "production" | "offline-import") => Promise<SetupImportResult>;
   importCatalogFile: (catalogPath: string) => Promise<SetupImportResult>;
   catalogConfiguration: (channel?: SetupState["catalogChannel"]) => Promise<SetupCatalogConfiguration>;
@@ -324,6 +338,8 @@ export function createSetupClient(transport: SetupBridgeTransport): SetupClient 
     getState: () => transport.invoke<SetupState>("setup_get_state"),
     saveState: (state: SetupState) => transport.invoke<SetupState>("setup_save_state", { state }),
     getCatalog: () => transport.invoke<SetupCatalogInfo | null>("setup_get_catalog"),
+    discoverBundledCatalog: () => transport.invoke<BundledCatalogDiscovery>("setup_discover_bundled_catalog"),
+    importBundledCatalog: () => transport.invoke<SetupImportResult>("setup_import_bundled_catalog"),
     importCatalog: (catalogJson: string, source: "production" | "offline-import") =>
       transport.invoke<SetupImportResult>("setup_import_catalog", { catalogJson, source }),
     importCatalogFile: (catalogPath: string) =>

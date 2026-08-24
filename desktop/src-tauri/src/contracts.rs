@@ -669,7 +669,7 @@ pub fn canonical_windows_storage_layout() -> StorageLayout {
         platform: StoragePlatform::Windows,
         program_files_runtime_writable: false,
         paths: StoragePaths {
-            shell_install: storage_descriptor("%ProgramFiles%\\AI Video Editor\\Shell", StorageScope::Machine, StorageOwner::MachineInstaller, StorageWriter::Installer, false, "Versioned thin shell binaries and static resources."),
+            shell_install: storage_descriptor("%ProgramFiles%\\AI Video Editor Desktop V2\\Shell", StorageScope::Machine, StorageOwner::MachineInstaller, StorageWriter::Installer, false, "Versioned thin shell binaries and static resources."),
             shared_components: storage_descriptor("%ProgramData%\\AI Video Editor\\Components", StorageScope::Machine, StorageOwner::MachineUpdateService, StorageWriter::UpdateService, false, "Verified immutable component versions selected by activation metadata."),
             activation_metadata: storage_descriptor("%ProgramData%\\AI Video Editor\\Activation", StorageScope::Machine, StorageOwner::MachineUpdateService, StorageWriter::UpdateService, false, "Atomic active-version pointers, update journals and rollback records."),
             download_staging: storage_descriptor("%ProgramData%\\AI Video Editor\\Downloads\\Staging", StorageScope::Machine, StorageOwner::MachineUpdateService, StorageWriter::UpdateService, false, "Resumable temporary downloads before digest, signature and inventory verification."),

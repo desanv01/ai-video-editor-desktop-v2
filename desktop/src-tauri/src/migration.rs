@@ -24,6 +24,7 @@ pub const CLEANUP_REPORT_SCHEMA: &str = "desktop.cleanup-report.v1";
 pub const REPAIR_REPORT_SCHEMA: &str = "desktop.repair-report.v1";
 pub const UNINSTALL_PLAN_SCHEMA: &str = "desktop.uninstall-plan.v1";
 pub const UNINSTALL_REPORT_SCHEMA: &str = "desktop.uninstall-report.v1";
+pub const V2_PROGRAM_FILES_DIRECTORY: &str = "AI Video Editor Desktop V2";
 pub const V2_PRODUCT_DIRECTORY: &str = "AI Video Editor";
 pub const V2_PRODUCT_IDENTIFIER: &str = "com.fyp.ai-video-editor.desktop-v2";
 pub const FULL_WIPE_CONFIRMATION: &str = "REMOVE ALL AI VIDEO EDITOR USER DATA";
@@ -91,16 +92,27 @@ impl MigrationRoots {
             ),
             (
                 "program-files".to_string(),
-                self.program_files.join(V2_PRODUCT_DIRECTORY),
+                self.program_files.join(V2_PROGRAM_FILES_DIRECTORY),
             ),
             (
                 "program-data".to_string(),
                 self.program_data.join(V2_PRODUCT_DIRECTORY),
             ),
         ];
+        // Keep the former Program Files display-name perimeter in the
+        // bounded legacy scan so an upgrade can report it without ever
+        // confusing it with the canonical Desktop V2 shell.
+        roots.push((
+            "legacy-program-files".to_string(),
+            self.program_files.join(V2_PRODUCT_DIRECTORY),
+        ));
         if let Some(root) = &self.program_files_x86 {
             roots.push((
                 "program-files-x86".to_string(),
+                root.join(V2_PROGRAM_FILES_DIRECTORY),
+            ));
+            roots.push((
+                "legacy-program-files-x86".to_string(),
                 root.join(V2_PRODUCT_DIRECTORY),
             ));
         }
@@ -662,9 +674,20 @@ fn path_has_reparse_between(root: &Path, candidate: &Path) -> bool {
 }
 
 fn is_current_v2_user_root(root: &Path) -> bool {
-    CURRENT_V2_MARKER_FILES
+    let has_marker = CURRENT_V2_MARKER_FILES
         .iter()
-        .any(|relative| root.join(relative).is_file())
+        .any(|relative| root.join(relative).is_file());
+    let committed_journal = root.join("State/migration-journal.json").is_file()
+        && safe_read(
+            &root.join("State/migration-journal.json"),
+            MAX_INSPECT_BYTES,
+        )
+        .and_then(|bytes| serde_json::from_slice::<MigrationJournal>(&bytes).ok())
+        .map(|journal| {
+            journal.schema_version == MIGRATION_JOURNAL_SCHEMA && journal.status == "committed"
+        })
+        .unwrap_or(false);
+    has_marker || committed_journal
 }
 
 fn safe_read(path: &Path, max_bytes: usize) -> Option<Vec<u8>> {
@@ -1152,15 +1175,20 @@ fn inspect_legacy_product_root(
     if !root.exists() || path_has_reparse_between(root.parent().unwrap_or(root), root) {
         return;
     }
-    let current_v2 = scope == "program-files" && root.join("Shell").exists()
+    let current_v2 = matches!(scope, "program-files" | "program-files-x86")
+        && root.join("Shell").exists()
         || scope == "program-data"
             && root.join("Components").exists()
             && root.join("Activation").exists()
         || scope == "local-app-data" && is_current_v2_user_root(root);
     let identity = identity_for_scope(root, scope, current_v2);
-    if !current_v2 {
-        identities.push(identity.clone());
+    if current_v2 {
+        // Current Desktop V2 owns this entire bounded root. In particular,
+        // Projects, uploads, exports, models, settings, and databases are
+        // user data—not legacy migration candidates and never cleanup input.
+        return;
     }
+    identities.push(identity.clone());
     let candidate_names = known_legacy_child_names();
     for (name, classification, action, rationale) in candidate_names {
         let candidate = root.join(name);
@@ -2623,7 +2651,15 @@ fn redact_error(error: &str) -> String {
 }
 
 fn cleanup_eligible(item: &InventoryItem, full_wipe: bool) -> bool {
-    if item.reparse_point || !item.safe_boundary || item.locked {
+    if item.reparse_point
+        || !item.safe_boundary
+        || item.locked
+        || item
+            .old_identity_id
+            .as_deref()
+            .map(|identity| identity.starts_with("current-v2-"))
+            .unwrap_or(false)
+    {
         return false;
     }
     if item.recommended_action == "remove-after-approval" {
@@ -2766,7 +2802,10 @@ pub fn cleanup_legacy(
 }
 
 fn v2_shell_path(roots: &MigrationRoots) -> PathBuf {
-    roots.program_files.join(V2_PRODUCT_DIRECTORY).join("Shell")
+    roots
+        .program_files
+        .join(V2_PROGRAM_FILES_DIRECTORY)
+        .join("Shell")
 }
 
 fn verify_installer_identity(roots: &MigrationRoots) -> bool {
@@ -3466,6 +3505,65 @@ mod tests {
     }
 
     #[test]
+    fn current_v2_user_data_with_markers_or_committed_journal_is_never_legacy_input() {
+        let tree = SyntheticTree::new();
+        let current = "LocalAppData/AI Video Editor";
+        tree.write(
+            &format!("{current}/State/setup-state.json"),
+            br#"{"schemaVersion":"desktop.setup-state.v1"}"#,
+        );
+        tree.write(
+            &format!("{current}/Projects/lesson/project.json"),
+            b"current project",
+        );
+        tree.write(&format!("{current}/uploads/source.mp4"), b"current upload");
+        let first = scan_legacy_roots(&tree.roots).unwrap();
+        assert!(!first.has_legacy_state);
+        assert!(first.items.is_empty());
+        assert!(!first
+            .old_install_identities
+            .iter()
+            .any(|identity| identity.is_current_v2));
+
+        let journal = MigrationJournal {
+            schema_version: MIGRATION_JOURNAL_SCHEMA.to_string(),
+            migration_id: "migration-committed-test".to_string(),
+            status: "committed".to_string(),
+            phase: "committed".to_string(),
+            report_path: None,
+            backup_root: None,
+            entries: Vec::new(),
+            last_error_code: None,
+            last_error: None,
+            updated_at_epoch_ms: now_epoch_ms(),
+        };
+        tree.write(
+            &format!("{current}/State/migration-journal.json"),
+            &serde_json::to_vec(&journal).unwrap(),
+        );
+        let rerun = scan_legacy_roots(&tree.roots).unwrap();
+        assert!(!rerun.has_legacy_state);
+        assert!(rerun.items.is_empty());
+        assert_eq!(
+            build_uninstall_plan(&tree.roots)
+                .unwrap()
+                .remove_by_default
+                .iter()
+                .filter(|item| item.path.contains("ProgramFiles"))
+                .map(|item| item.path.clone())
+                .next(),
+            Some(
+                tree.roots
+                    .program_files
+                    .join(V2_PROGRAM_FILES_DIRECTORY)
+                    .join("Shell")
+                    .to_string_lossy()
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
     fn migration_is_transactional_preserves_content_redacts_secrets_and_handles_conflicts() {
         let tree = SyntheticTree::new();
         tree.write(
@@ -3617,9 +3715,9 @@ mod tests {
     #[test]
     fn uninstall_default_preserves_user_data_and_full_wipe_is_confirmed() {
         let tree = SyntheticTree::new();
-        tree.mkdir("ProgramFiles/AI Video Editor/Shell");
+        tree.mkdir("ProgramFiles/AI Video Editor Desktop V2/Shell");
         tree.write(
-            "ProgramFiles/AI Video Editor/Shell/AI Video Editor Desktop V2.exe",
+            "ProgramFiles/AI Video Editor Desktop V2/Shell/AI Video Editor Desktop V2.exe",
             b"shell",
         );
         tree.write("LocalAppData/AI Video Editor/uploads/clip.mp4", b"content");
@@ -3672,9 +3770,9 @@ mod tests {
     #[test]
     fn repair_plan_restores_shortcuts_without_touching_user_content() {
         let tree = SyntheticTree::new();
-        tree.mkdir("ProgramFiles/AI Video Editor/Shell");
+        tree.mkdir("ProgramFiles/AI Video Editor Desktop V2/Shell");
         tree.write(
-            "ProgramFiles/AI Video Editor/Shell/AI Video Editor Desktop V2.exe",
+            "ProgramFiles/AI Video Editor Desktop V2/Shell/AI Video Editor Desktop V2.exe",
             b"shell",
         );
         let project = tree.write("User/Documents/AI Video Editor/Projects/p.json", b"project");
