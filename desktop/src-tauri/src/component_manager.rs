@@ -4773,6 +4773,7 @@ pub async fn component_retry(
     .await
     .map_err(join_error)?;
     state.remove(&operation_id);
+    record_component_result("retry", &result);
     result
 }
 
