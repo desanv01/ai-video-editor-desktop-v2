@@ -242,7 +242,7 @@ This is a new rc.3 handoff directory. Keep `Catalog` and `Components` as sibling
 
 1. Run `VERIFY-HANDOFF.ps1` from this folder. It is read-only and never executes the installer or component binaries.
 2. Confirm Windows 10/11 x64 and that Microsoft WebView2 is installed. The shell detects WebView2 before creating its first window; it never silently downloads a runtime.
-3. Run **AI Video Editor Desktop V2 {VERSION} Setup.exe** and approve UAC. The canonical install directory is `{CANONICAL_INSTALL_TARGET}`.
+3. Run **AI Video Editor Desktop V2 Setup.exe** and approve UAC. The canonical install directory is `{CANONICAL_INSTALL_TARGET}`.
 4. Open **Setup Center**. Use **Use bundled lecturer catalog** to discover and select the bounded `Catalog/offline-catalog.json`, or use **Browse** as the JSON-only fallback. The shell verifies the catalog key, signature, expiry, shell compatibility, required manifests, archive hashes, and `offline:Components/...` containment before installation.
 5. Keep both required entries selected: **AI Video Editor Native Core Engine** and **FFmpeg Native Desktop Tool Component**. Activation stages each verified archive and commits atomically only after verification.
 6. Wait for authenticated engine readiness, then use `SMOKE/synthetic-source.mp4` for the lecturer checklist.
@@ -262,6 +262,8 @@ Exact hashes are in `SHA256SUMS.txt` and `release-manifest.json`. The installer 
         f"""# Lecturer test guide — {VERSION}
 
 Record PASS/FAIL and attach the generated evidence files. A local or CI proof is not a substitute for a genuine clean Windows 10/11 PC.
+
+The checklist below is an external lecturer/clean-PC execution checklist, not a claim about the local smoke script. The local smoke JSON proves archive safety, source-media probing, FFmpeg encode/decode, and engine self-test only; it does not execute project registration, export, restart, repair, or uninstall flows.
 
 - [ ] `VERIFY-HANDOFF.ps1` passes without executing binaries.
 - [ ] Installer starts, requests elevation, installs under `{CANONICAL_INSTALL_TARGET}`, and creates shortcuts.
@@ -356,8 +358,9 @@ Authenticode requires an externally supplied OV/EV certificate and RFC3161 times
         ("4. Migration self-detection", EVIDENCE_STATUSES["passed"], "Rust regressions cover V2 markers and committed journals; current projects are never legacy/cleanup."),
         ("5. Canonical install identity", EVIDENCE_STATUSES["passed"], f"Installer/runtime/repair/diagnostics/docs target `{CANONICAL_INSTALL_TARGET}`."),
         ("6. Busy/status/logging", EVIDENCE_STATUSES["passed"], "Frontend build plus bounded redacted operation-log tests for catalog/component/supervisor paths."),
-        ("7. Required lifecycle/readiness", EVIDENCE_STATUSES["passed"], f"53 Rust tests and lifecycle static gate cover import, verify, stage, atomic activation, corruption, interruption, locks, repair, rollback, and recovery. Baseline component archives: engine {engine['version']}, FFmpeg {ffmpeg['version']}."),
-        ("8. Practical source/FFmpeg smoke", EVIDENCE_STATUSES["passed"], "Local smoke script covers project/source, probe, encode, decode, export, restart, repair, and uninstall-plan evidence; attach its generated JSON."),
+        ("7. Required lifecycle/readiness", EVIDENCE_STATUSES["passed"], f"54 Rust tests and the lifecycle static gate cover import, verify, stage, atomic activation, corruption, interruption, locks, repair, rollback, and recovery. Baseline component archives: engine {engine['version']}, FFmpeg {ffmpeg['version']}."),
+        ("8. Practical media/component smoke", EVIDENCE_STATUSES["passed"], "Run-DesktopV2Smoke.ps1 and its JSON prove archive-member safety, source-media probe, FFmpeg encode/decode, and engine self-test using disposable extraction. They do not execute project registration or export."),
+        ("8b. Project/export/restart/repair/uninstall end-to-end", EVIDENCE_STATUSES["clean"], "These remain external lecturer/clean-PC checklist flows; genuine evidence for project registration, export, restart readiness, repair, and uninstall-plan preservation is pending clean Windows 10/11 execution."),
         ("9. WebView2 lifecycle", EVIDENCE_STATUSES["clean"], "Detection/policy and exit-code tests pass locally; genuine clean Windows 10/11 runtime/install proof remains external."),
         ("10. Authenticode", EVIDENCE_STATUSES["cert"], "No certificate or signing service is present. Release gate requires external OV/EV, SHA-256, RFC3161 timestamp, and post-package PE verification."),
         ("11. AV hardening", EVIDENCE_STATUSES["av"], "Onedir/non-onefile policy, SBOM/hash generation, Defender script, and evidence template pass locally; no zero-detection claim and no third-party portal result."),

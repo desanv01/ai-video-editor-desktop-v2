@@ -23,6 +23,7 @@ const storageSchema = JSON.parse(await text("contracts/desktop-v2/schemas/storag
 const storageFixture = JSON.parse(await text("fixtures/desktop-v2/contracts/valid-storage-layout.json"));
 const installerHook = await text("desktop/src-tauri/nsis/installer-hooks.nsh");
 const handoffReadme = await text("desktop/src-tauri/resources/lecturer-handoff/README.txt");
+const handoffAssembler = await text("scripts/desktop-v2/assemble_rc3_handoff.py");
 
 assert.equal(capability.identifier, "main-capability");
 assert.ok(capability.permissions.includes("core:default"));
@@ -104,5 +105,11 @@ assert.match(installerHook, /\$PROGRAMFILES64\\AI Video Editor Desktop V2/);
 assert.match(handoffReadme, /Catalog\/offline-catalog\.json/);
 assert.match(handoffReadme, /Components/);
 assert.match(handoffReadme, /bounded|containment|signature/i);
+assert.match(handoffAssembler, /AI Video Editor Desktop V2 Setup\.exe/);
+assert.doesNotMatch(handoffAssembler, /AI Video Editor Desktop V2 \{VERSION\} Setup\.exe/);
+assert.match(handoffAssembler, /54 Rust tests/);
+assert.match(handoffAssembler, /Practical media\/component smoke/);
+assert.match(handoffAssembler, /does not execute project registration, export/);
+assert.match(handoffAssembler, /8b\. Project\/export\/restart\/repair\/uninstall end-to-end/);
 
 console.log("Desktop V2 rc.3 hardening tests passed: dialog capability and guarded JSON intake, bundled handoff trust boundary, single-instance forwarding, current-data migration exclusion, and canonical shell identity.");
