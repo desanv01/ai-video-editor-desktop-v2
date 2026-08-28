@@ -12,7 +12,7 @@ assert.doesNotMatch(hook, /COMMONAPPDATA/, "the invalid NSIS shell token must ne
 assert.doesNotMatch(hook, /\$\{[^}]+\}\\AI Video Editor/, "machine paths must not contain an unresolved placeholder");
 assert.match(hook, /SetShellVarContext all/);
 assert.match(hook, /SetRegView 64/);
-assert.match(hook, /StrCpy \$INSTDIR "\$PROGRAMFILES64\\AI Video Editor Desktop V2"/);
+assert.match(hook, /StrCpy \$INSTDIR "\$PROGRAMFILES64\\AI Video Editor Desktop V2\\Shell"/);
 assert.match(hook, /SetOutPath \$INSTDIR/);
 assert.match(hook, /StrCpy \$2 "\$APPDATA\\AI Video Editor"/);
 assert.match(hook, /ReadEnvStr \$3 "ProgramData"/);
@@ -33,14 +33,16 @@ assert.match(hook, /SetShellVarContext current\s+StrCpy \$5 "\$LOCALAPPDATA\\AI 
 assert.match(hook, /Delete "\$INSTDIR\\desktop-v2\.identity\.json"/);
 assert.match(hook, /RMDir "\$INSTDIR"/);
 assert.match(hook, /RMDir \/r "\$2\\Components"/);
+assert.match(hook, /\$2\\Broker\\Requests/);
 assert.match(hook, /RMDir \/r "\$5\\Cache"/);
+assert.doesNotMatch(hook, /CreateShortCut/i, "the generated Tauri NSIS section is the sole shortcut creator");
 assert.doesNotMatch(hook, /Ignore|ignore|continue path/i);
-assert.match(hook, /2\.0\.0-rc\.3/);
+assert.match(hook, /2\.0\.0-rc\.4/);
 assert.match(hook, /com\.fyp\.ai-video-editor\.desktop-v2/);
 
 const generatedCandidates = [
   path.join(repoRoot, "desktop", "src-tauri", "target", "release", "bundle", "nsis", "installer.nsi"),
-  path.join(repoRoot, "desktop", "src-tauri", "target", "release", "bundle", "nsis", "AI Video Editor Desktop V2_2.0.0-rc.3_x64.nsi"),
+  path.join(repoRoot, "desktop", "src-tauri", "target", "release", "nsis", "x64", "installer.nsi"),
 ].filter(existsSync);
 for (const generatedPath of generatedCandidates) {
   const generated = readFileSync(generatedPath, "utf8");
@@ -55,7 +57,7 @@ if (artifact && existsSync(artifact)) {
   const utf16 = bytes.toString("utf16le");
   assert.doesNotMatch(ascii, /\$\{COMMONAPPDATA\}/);
   assert.doesNotMatch(utf16, /\$\{COMMONAPPDATA\}/);
-  assert.match(`${ascii}\n${utf16}`, /2\.0\.0-rc\.3/);
+  assert.match(`${ascii}\n${utf16}`, /2\.0\.0-rc\.4/);
   console.log(`Installer artifact ACL scan PASS: ${artifact}`);
 } else {
   console.log("Installer artifact ACL scan deferred: set AIVE_NSIS_ARTIFACT after the NSIS build.");

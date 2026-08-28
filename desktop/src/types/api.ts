@@ -1006,7 +1006,7 @@ export interface ReadinessStorage {
 export interface ProductReadiness {
   schema_version: string;
   checked_at: string;
-  mode: "docker" | "native" | string;
+  mode: "native" | string;
   ready: boolean;
   storage: ReadinessStorage;
   capabilities: Record<string, ReadinessCapability>;
@@ -1473,19 +1473,4 @@ export interface NativeImportResult {
   projectId: string;
   videoId: string;
   filename: string;
-}
-
-export interface DesktopReadinessItem {
-  key: string;
-  label: string;
-  status: "ready" | "starting" | "warning" | "failed" | string;
-  detail: string;
-}
-
-export interface DesktopBootstrapResult {
-  ready: boolean;
-  backendUrl: string;
-  composeProjectName: string;
-  envFile: string;
-  items: DesktopReadinessItem[];
 }

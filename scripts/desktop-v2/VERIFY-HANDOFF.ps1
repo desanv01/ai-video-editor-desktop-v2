@@ -1,9 +1,10 @@
 [CmdletBinding()]
 param(
-  [string]$Root = $PSScriptRoot
+  [string]$Root
 )
 
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($Root)) { $Root = $PSScriptRoot }
 $rootPath = (Resolve-Path -LiteralPath $Root).Path
 
 function Relative-Name([string]$Path) {
@@ -31,7 +32,7 @@ if ($missing) { throw "Missing critical handoff files: $($missing -join ', ')" }
 $manifest = Get-Content -LiteralPath (Join-Path $rootPath 'release-manifest.json') -Raw | ConvertFrom-Json
 if ($manifest.product.identifier -ne 'com.fyp.ai-video-editor.desktop-v2') { throw 'Unexpected Desktop V2 product identifier.' }
 if ($manifest.product.version -notmatch '^2\.0\.0-rc\.[3-9][0-9]*$') { throw "Expected rc.3 or higher handoff, found $($manifest.product.version)." }
-if ($manifest.installer.target -ne 'C:/Program Files/AI Video Editor Desktop V2') { throw 'Canonical installer target is incorrect.' }
+if ($manifest.installer.target -ne 'C:/Program Files/AI Video Editor Desktop V2/Shell') { throw 'Canonical installer target is incorrect.' }
 
 $sumPath = Join-Path $rootPath 'SHA256SUMS.txt'
 $sumEntries = @{}

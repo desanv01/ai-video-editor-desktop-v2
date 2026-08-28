@@ -5,6 +5,7 @@
 //! and self-tests remain in `component_manager`; native process lifecycle and
 //! authenticated readiness remain in `supervisor`.
 
+use crate::component_broker::{self, BrokerHealth};
 use crate::component_manager::{
     self, ComponentError, ComponentManager, ComponentManifest, ManagerResult, SourcePolicy,
 };
@@ -19,7 +20,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -29,6 +30,7 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 pub const SETUP_STATE_SCHEMA: &str = "desktop.setup-state.v1";
 pub const SETUP_CATALOG_SCHEMA: &str = "desktop.setup-catalog.v1";
 pub const SETUP_CATALOG_FILE: &str = "setup-catalog.json";
+pub const SETUP_CATALOG_REJECTION_FILE: &str = "setup-catalog-rejection.json";
 pub const SETUP_STATE_FILE: &str = "setup-state.json";
 pub const PRODUCTION_CATALOG_ENV: &str = "AIVE_SETUP_CATALOG_URL";
 const MAX_CATALOG_BYTES: usize = 8 * 1024 * 1024;
@@ -38,12 +40,18 @@ const MAX_BUNDLED_CATALOG_CANDIDATES: usize = 3;
 
 fn record_catalog_result<T>(operation: &str, result: &ManagerResult<T>) {
     match result {
-        Ok(_) => operation_log::append_operation("catalog", "success", operation),
-        Err(error) => operation_log::append_operation(
-            "catalog",
-            "error",
-            &format!("{operation}: {}", error.code),
-        ),
+        Ok(_) => {
+            operation_log::append_operation("catalog", "success", operation);
+            let _ = clear_catalog_rejection();
+        }
+        Err(error) => {
+            operation_log::append_operation(
+                "catalog",
+                "error",
+                &format!("{operation}: {}", error.code),
+            );
+            let _ = persist_catalog_rejection(operation, None, error);
+        }
     }
 }
 
@@ -92,6 +100,25 @@ pub struct SetupCatalogInfo {
     pub source: String,
     pub verified_at_epoch_ms: u128,
     pub path: String,
+    #[serde(default)]
+    pub source_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogRejection {
+    pub attempted_source: String,
+    pub attempted_path: Option<String>,
+    pub code: String,
+    pub reason: String,
+    pub rejected_at_epoch_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupCatalogStatus {
+    pub active_trusted_catalog: Option<SetupCatalogInfo>,
+    pub last_rejected_attempt: Option<CatalogRejection>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -107,6 +134,7 @@ pub struct SetupImportResult {
 pub struct BundledCatalogDiscovery {
     pub available: bool,
     pub path: Option<String>,
+    pub default_path: Option<String>,
     pub handoff_root: Option<String>,
     pub detail: String,
 }
@@ -233,7 +261,24 @@ pub struct SetupSystemChecksResult {
     pub free_space_bytes: Option<u64>,
     pub component_root: String,
     pub user_state_root: String,
+    pub writer: SetupActivationWriterProbe,
     pub checks: Vec<SetupSystemCheck>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupActivationWriterProbe {
+    pub transaction_ok: bool,
+    pub activation_ready: bool,
+    pub child_directories: bool,
+    pub create_write_flush: bool,
+    pub same_volume_rename: bool,
+    pub atomic_replace: bool,
+    pub cleanup_ok: bool,
+    pub acl_summary: String,
+    pub process_elevated: bool,
+    pub broker: BrokerHealth,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -281,6 +326,10 @@ fn state_path() -> PathBuf {
 
 fn catalog_path() -> PathBuf {
     PathBuf::from(get_canonical_paths().user_state).join(SETUP_CATALOG_FILE)
+}
+
+fn catalog_rejection_path() -> PathBuf {
+    PathBuf::from(get_canonical_paths().user_state).join(SETUP_CATALOG_REJECTION_FILE)
 }
 
 fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> ManagerResult<()> {
@@ -347,6 +396,81 @@ fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> ManagerResult<()> 
             true,
         )
     })
+}
+
+fn persist_catalog_rejection(
+    attempted_source: &str,
+    attempted_path: Option<&Path>,
+    error: &ComponentError,
+) -> ManagerResult<()> {
+    let rejection = CatalogRejection {
+        attempted_source: attempted_source.to_string(),
+        attempted_path: attempted_path.map(redact_catalog_path),
+        code: error.code.clone(),
+        reason: catalog_rejection_reason(&error.code),
+        rejected_at_epoch_ms: now_epoch_ms(),
+    };
+    atomic_write_json(&catalog_rejection_path(), &rejection)
+}
+
+fn clear_catalog_rejection() -> ManagerResult<()> {
+    let path = catalog_rejection_path();
+    if path.exists() {
+        fs::remove_file(path).map_err(|_| {
+            setup_error(
+                "STORAGE_NOT_WRITABLE",
+                "The previous catalog rejection record could not be cleared.",
+                true,
+            )
+        })?;
+    }
+    Ok(())
+}
+
+pub(crate) fn load_catalog_rejection() -> ManagerResult<Option<CatalogRejection>> {
+    let path = catalog_rejection_path();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = fs::read(&path).map_err(|_| {
+        setup_error(
+            "CATALOG_REJECTION_UNREADABLE",
+            "The previous catalog rejection record could not be read.",
+            true,
+        )
+    })?;
+    serde_json::from_slice(&bytes).map(Some).map_err(|_| {
+        setup_error(
+            "CATALOG_REJECTION_INVALID",
+            "The previous catalog rejection record is invalid.",
+            false,
+        )
+    })
+}
+
+fn redact_catalog_path(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    if value.contains(':') {
+        "selected catalog file".to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn catalog_rejection_reason(code: &str) -> String {
+    match code {
+        "CATALOG_TEMPLATE_REJECTED" => {
+            "This is a production-catalog template, not a signed catalog. Use the bundled lecturer catalog or an approved offline catalog.".to_string()
+        }
+        "CATALOG_SCHEMA_INVALID" | "CATALOG_SCHEMA_UNSUPPORTED" => {
+            "The selected catalog is not compatible with this shell.".to_string()
+        }
+        "SIGNATURE_INVALID" | "UNKNOWN_TRUST_KEY" => {
+            "The selected catalog was not signed by the approved release key.".to_string()
+        }
+        "CATALOG_EXPIRED" => "The selected catalog has expired.".to_string(),
+        _ => "The selected catalog was rejected before installation; the active trusted catalog was preserved.".to_string(),
+    }
 }
 
 fn load_state() -> ManagerResult<SetupState> {
@@ -622,17 +746,37 @@ fn bundled_catalog_candidates(resource_dir: &Path) -> Vec<PathBuf> {
 }
 
 fn is_single_json_catalog_path(path: &Path) -> bool {
-    path.extension()
+    let is_json = path
+        .extension()
         .and_then(|extension| extension.to_str())
         .map(|extension| extension.eq_ignore_ascii_case("json"))
-        .unwrap_or(false)
+        .unwrap_or(false);
+    let is_template = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.to_ascii_lowercase().contains("template"))
+        .unwrap_or(false);
+    is_json && !is_template
 }
 
 fn read_bounded_catalog_file(path: &Path) -> ManagerResult<String> {
     if !is_single_json_catalog_path(path) {
+        let is_template = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.to_ascii_lowercase().contains("template"))
+            .unwrap_or(false);
         return Err(setup_error(
-            "CATALOG_FILE_INVALID",
-            "Select one JSON setup catalog file. Other file types are not accepted.",
+            if is_template {
+                "CATALOG_TEMPLATE_REJECTED"
+            } else {
+                "CATALOG_FILE_INVALID"
+            },
+            if is_template {
+                "This is a production-catalog template, not a signed catalog. Use the bundled lecturer catalog or an approved offline catalog."
+            } else {
+                "Select one JSON setup catalog file. Other file types are not accepted."
+            },
             false,
         ));
     }
@@ -716,6 +860,7 @@ fn discover_bundled_catalog_at(resource_dir: &Path) -> ManagerResult<BundledCata
         return Ok(BundledCatalogDiscovery {
             available: true,
             path: Some(selected.to_string_lossy().to_string()),
+            default_path: Some(selected.to_string_lossy().to_string()),
             handoff_root: Some(root.to_string_lossy().to_string()),
             detail:
                 "A bundled lecturer catalog was found and its portable handoff boundary is present."
@@ -725,6 +870,7 @@ fn discover_bundled_catalog_at(resource_dir: &Path) -> ManagerResult<BundledCata
     Ok(BundledCatalogDiscovery {
         available: false,
         path: None,
+        default_path: None,
         handoff_root: None,
         detail: "No bundled lecturer catalog is present in the signed application resources; Browse remains available for a trusted handoff copy.".to_string(),
     })
@@ -734,6 +880,7 @@ fn verify_and_intake_catalog(
     catalog_json: &str,
     source: &str,
     offline_root: Option<&Path>,
+    source_path: Option<&Path>,
 ) -> ManagerResult<SetupImportResult> {
     if catalog_json.len() > MAX_CATALOG_BYTES {
         return Err(setup_error(
@@ -794,6 +941,7 @@ fn verify_and_intake_catalog(
         source: source.to_string(),
         verified_at_epoch_ms: now_epoch_ms(),
         path: catalog_path().to_string_lossy().to_string(),
+        source_path: source_path.map(|path| path.to_string_lossy().to_string()),
     };
     atomic_write_json(Path::new(&info.path), &info)?;
     Ok(SetupImportResult {
@@ -894,6 +1042,14 @@ pub fn setup_get_catalog() -> ManagerResult<Option<SetupCatalogInfo>> {
 }
 
 #[tauri::command]
+pub fn setup_get_catalog_status() -> ManagerResult<SetupCatalogStatus> {
+    Ok(SetupCatalogStatus {
+        active_trusted_catalog: load_catalog()?,
+        last_rejected_attempt: load_catalog_rejection()?,
+    })
+}
+
+#[tauri::command]
 pub fn setup_discover_bundled_catalog(app: AppHandle) -> ManagerResult<BundledCatalogDiscovery> {
     let resource_dir = app.path().resource_dir().map_err(|error| {
         setup_error(
@@ -924,7 +1080,12 @@ pub fn setup_import_bundled_catalog(app: AppHandle) -> ManagerResult<SetupImport
             )
         })?;
         let catalog_json = read_bounded_catalog_file(Path::new(&selected))?;
-        verify_and_intake_catalog(&catalog_json, "offline-import", Some(Path::new(&root)))
+        verify_and_intake_catalog(
+            &catalog_json,
+            "offline-import",
+            Some(Path::new(&root)),
+            Some(Path::new(&selected)),
+        )
     })();
     record_catalog_result("bundled-offline-import", &result);
     result
@@ -958,7 +1119,7 @@ pub fn setup_import_catalog(
                 ));
             }
         }
-        verify_and_intake_catalog(&catalog_json, &source, offline_root.as_deref())
+        verify_and_intake_catalog(&catalog_json, &source, offline_root.as_deref(), None)
     })();
     record_catalog_result("catalog-json-import", &result);
     result
@@ -976,7 +1137,12 @@ pub fn setup_import_catalog_file(catalog_path: String) -> ManagerResult<SetupImp
         })?;
         let catalog_json = read_bounded_catalog_file(&selected)?;
         let root = offline_catalog_handoff_root(&selected)?;
-        verify_and_intake_catalog(&catalog_json, "offline-import", Some(&root))
+        verify_and_intake_catalog(
+            &catalog_json,
+            "offline-import",
+            Some(&root),
+            Some(&selected),
+        )
     })();
     record_catalog_result("offline-file-import", &result);
     result
@@ -1061,7 +1227,7 @@ pub fn setup_refresh_catalog() -> ManagerResult<SetupImportResult> {
                 false,
             )
         })?;
-        verify_and_intake_catalog(&json, "production", None)
+        verify_and_intake_catalog(&json, "production", None, None)
     })();
     record_catalog_result("production-refresh", &result);
     result
@@ -1143,6 +1309,133 @@ fn probe_writable_root(path: &Path) -> Result<(), String> {
         .map_err(|error| error.kind().to_string())?;
     file.sync_all().map_err(|error| error.kind().to_string())?;
     fs::remove_file(probe).map_err(|error| error.kind().to_string())
+}
+
+fn atomic_replace_probe(source: &Path, destination: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        };
+        let source_wide: Vec<u16> = source
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let destination_wide: Vec<u16> = destination
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let result = unsafe {
+            MoveFileExW(
+                source_wide.as_ptr(),
+                destination_wide.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if result == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        return Ok(());
+    }
+    #[cfg(not(windows))]
+    {
+        fs::rename(source, destination)
+    }
+}
+
+fn run_exact_activation_probe(path: &Path) -> SetupActivationWriterProbe {
+    let broker = component_broker::broker_health();
+    let process_elevated = process_is_elevated();
+    let probe_root = path.join(format!(".aive-activation-probe-{}", now_epoch_ms()));
+    let child_directories = fs::create_dir_all(probe_root.join("Components").join("child"))
+        .and_then(|_| fs::create_dir_all(probe_root.join("Activation").join("child")))
+        .is_ok();
+    let mut create_write_flush = false;
+    let mut same_volume_rename = false;
+    let mut atomic_replace = false;
+    let cleanup_ok;
+    let mut failure = None;
+
+    if child_directories {
+        let child = probe_root.join("Activation").join("child");
+        let source = child.join("transaction.part");
+        let renamed = child.join("transaction.renamed");
+        let replacement = child.join("transaction.replace");
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&source)
+            .and_then(|mut file| {
+                file.write_all(b"activation-probe-v1")?;
+                file.sync_all()
+            }) {
+            Ok(()) => create_write_flush = true,
+            Err(error) => failure = Some(format!("create/write/flush={}", error.kind())),
+        }
+        if create_write_flush {
+            match fs::rename(&source, &renamed) {
+                Ok(()) => same_volume_rename = true,
+                Err(error) => failure = Some(format!("same-volume-rename={}", error.kind())),
+            }
+        }
+        if same_volume_rename {
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&replacement)
+                .and_then(|mut file| {
+                    file.write_all(b"activation-probe-v2")?;
+                    file.sync_all()
+                })
+                .and_then(|_| atomic_replace_probe(&replacement, &renamed))
+            {
+                Ok(()) => atomic_replace = true,
+                Err(error) => failure = Some(format!("atomic-replace={}", error.kind())),
+            }
+        }
+    } else {
+        failure = Some("child-directories=permission-denied-or-unavailable".to_string());
+    }
+    if let Err(error) = fs::remove_dir_all(&probe_root) {
+        cleanup_ok = false;
+        failure = Some(format!("cleanup={}", error.kind()));
+    } else {
+        cleanup_ok = true;
+    }
+
+    let transaction_ok = child_directories
+        && create_write_flush
+        && same_volume_rename
+        && atomic_replace
+        && cleanup_ok;
+    let activation_ready = transaction_ok && (!cfg!(windows) || process_elevated || broker.ready);
+    let acl_summary = if broker.ready {
+        "bounded broker marker verified; activation will use the UAC helper when needed".to_string()
+    } else if process_elevated {
+        "current process is elevated; activation can use the direct machine transaction".to_string()
+    } else {
+        "bounded broker is not ready; a shallow directory write is not sufficient for activation"
+            .to_string()
+    };
+    SetupActivationWriterProbe {
+        transaction_ok,
+        activation_ready,
+        child_directories,
+        create_write_flush,
+        same_volume_rename,
+        atomic_replace,
+        cleanup_ok,
+        acl_summary,
+        process_elevated,
+        broker,
+        detail: failure.unwrap_or_else(|| {
+            "Exact child-directory, flush, same-volume rename, atomic replace, and cleanup transaction passed."
+                .to_string()
+        }),
+    }
 }
 
 fn network_check() -> (String, String, Option<String>) {
@@ -1280,29 +1573,35 @@ pub fn setup_run_system_checks(
         None,
     );
 
-    let component_permission = probe_writable_root(&component_root);
+    let writer_probe = run_exact_activation_probe(&component_root);
     let user_permission = probe_writable_root(&user_state_root);
-    let permission_ok = component_permission.is_ok() && user_permission.is_ok();
+    let permission_ok = writer_probe.activation_ready && user_permission.is_ok();
     push_check(
         &mut checks,
         "permissions",
-        "Component store permission",
+        "Activation writer readiness",
         if permission_ok { "pass" } else { "error" },
         if permission_ok {
-            "The installer-created component-store ACL permits this non-elevated shell to write only the scoped ProgramData component perimeter."
+            "The exact activation transaction passed, including child-directory writes, flush, same-volume rename, atomic replace, cleanup, and the elevation boundary."
         } else {
-            "The shell could not write the scoped ProgramData component perimeter. It will not silently redirect runtime files into AppData."
+            "Activation is not ready. A shallow root permission check is insufficient; the exact machine transaction or its bounded elevated helper failed."
         },
         if permission_ok {
             "No action required."
         } else {
-            "Run the per-machine installer again or ask an administrator to repair the component-store ACL; retry after UAC if prompted."
+            "Run Repair from Setup Center to restore the per-machine perimeter, then retry the exact check."
         },
         Some(format!(
-            "component_store={:?}; user_state={:?}; process_elevated={}",
-            component_permission,
-            user_permission,
-            process_is_elevated()
+            "transaction_ok={}; activation_ready={}; child_directories={}; create_write_flush={}; same_volume_rename={}; atomic_replace={}; cleanup_ok={}; user_state_ok={}; broker_status={}",
+            writer_probe.transaction_ok,
+            writer_probe.activation_ready,
+            writer_probe.child_directories,
+            writer_probe.create_write_flush,
+            writer_probe.same_volume_rename,
+            writer_probe.atomic_replace,
+            writer_probe.cleanup_ok,
+            user_permission.is_ok(),
+            writer_probe.broker.status
         )),
     );
 
@@ -1403,6 +1702,7 @@ pub fn setup_run_system_checks(
         free_space_bytes: free_space,
         component_root: component_root.to_string_lossy().to_string(),
         user_state_root: user_state_root.to_string_lossy().to_string(),
+        writer: writer_probe,
         checks,
     })
 }

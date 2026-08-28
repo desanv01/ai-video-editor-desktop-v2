@@ -1,16 +1,14 @@
-use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager, State, Window};
+use tauri::{Emitter, Manager, State, Window};
 
+pub mod component_broker;
 pub mod component_manager;
 pub mod contracts;
 pub mod desktop_v2;
@@ -175,25 +173,6 @@ impl NativeImportRegistry {
     }
 }
 
-#[derive(Debug, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct ReadinessItem {
-    key: String,
-    label: String,
-    status: String,
-    detail: String,
-}
-
-#[derive(Debug, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct DesktopBootstrapResult {
-    ready: bool,
-    backend_url: String,
-    compose_project_name: String,
-    env_file: String,
-    items: Vec<ReadinessItem>,
-}
-
 fn webview_user_data_directory(local_app_data: &Path) -> PathBuf {
     local_app_data.join(desktop_v2::PRODUCT_IDENTIFIER)
 }
@@ -298,134 +277,6 @@ fn get_app_storage_layout() -> Result<AppStorageLayout, String> {
         logs_dir: layout.logs_dir.to_string_lossy().to_string(),
         config_dir: layout.config_dir.to_string_lossy().to_string(),
         backups_dir: layout.backups_dir.to_string_lossy().to_string(),
-    })
-}
-
-#[tauri::command]
-fn bootstrap_desktop_backend(app: AppHandle) -> Result<DesktopBootstrapResult, String> {
-    const BACKEND_PORT: u16 = 18000;
-    const COMPOSE_PROJECT_NAME: &str = "aive-desktop";
-
-    let layout = ensure_app_storage_layout()?;
-    let env_file = write_desktop_backend_env(&layout, BACKEND_PORT)?;
-    let compose_file = desktop_compose_path(&app)?;
-    let compose_dir = compose_file
-        .parent()
-        .ok_or_else(|| "Desktop compose file does not have a parent directory".to_string())?
-        .to_path_buf();
-    let backend_url = format!("http://127.0.0.1:{BACKEND_PORT}");
-    let mut items = Vec::new();
-
-    let docker_available = run_command("docker", &["--version"])?;
-    items.push(ReadinessItem {
-        key: "docker_cli".to_string(),
-        label: "Docker Desktop".to_string(),
-        status: "ready".to_string(),
-        detail: docker_available.trim().to_string(),
-    });
-
-    let compose_available = run_command("docker", &["compose", "version"])?;
-    items.push(ReadinessItem {
-        key: "docker_compose".to_string(),
-        label: "Docker Compose".to_string(),
-        status: "ready".to_string(),
-        detail: compose_available.trim().to_string(),
-    });
-
-    if run_command("docker", &["info"]).is_err() {
-        let started = start_docker_desktop()?;
-        items.push(ReadinessItem {
-            key: "docker_engine".to_string(),
-            label: "Docker engine".to_string(),
-            status: "starting".to_string(),
-            detail: started,
-        });
-        wait_for_docker_engine(Duration::from_secs(120))?;
-    }
-    items.push(ReadinessItem {
-        key: "docker_engine".to_string(),
-        label: "Docker engine".to_string(),
-        status: "ready".to_string(),
-        detail: "Docker engine is reachable.".to_string(),
-    });
-
-    run_command_in_dir(
-        "docker",
-        &[
-            "compose",
-            "--env-file",
-            env_file.to_string_lossy().as_ref(),
-            "-f",
-            compose_file.to_string_lossy().as_ref(),
-            "-p",
-            COMPOSE_PROJECT_NAME,
-            "up",
-            "-d",
-            "--build",
-        ],
-        compose_dir.as_path(),
-    )?;
-
-    let running_services = run_command_in_dir(
-        "docker",
-        &[
-            "compose",
-            "--env-file",
-            env_file.to_string_lossy().as_ref(),
-            "-f",
-            compose_file.to_string_lossy().as_ref(),
-            "-p",
-            COMPOSE_PROJECT_NAME,
-            "ps",
-            "--services",
-            "--status",
-            "running",
-        ],
-        compose_dir.as_path(),
-    )?;
-    for service in ["backend", "db", "redis", "qdrant"] {
-        let running = running_services.lines().any(|line| line.trim() == service);
-        items.push(ReadinessItem {
-            key: service.to_string(),
-            label: match service {
-                "db" => "PostgreSQL".to_string(),
-                "redis" => "Redis".to_string(),
-                "qdrant" => "Qdrant".to_string(),
-                _ => "Backend".to_string(),
-            },
-            status: if running {
-                "ready".to_string()
-            } else {
-                "warning".to_string()
-            },
-            detail: if running {
-                "Service is running inside Docker.".to_string()
-            } else {
-                "Service is not yet reported as running.".to_string()
-            },
-        });
-    }
-
-    wait_for_http_health(&format!("{backend_url}/health"), Duration::from_secs(120))?;
-    items.push(ReadinessItem {
-        key: "backend_health".to_string(),
-        label: "Backend health".to_string(),
-        status: "ready".to_string(),
-        detail: format!("Healthy at {backend_url}/health"),
-    });
-    items.push(ReadinessItem {
-        key: "storage".to_string(),
-        label: "Available storage".to_string(),
-        status: "ready".to_string(),
-        detail: layout.root_dir.to_string_lossy().to_string(),
-    });
-
-    Ok(DesktopBootstrapResult {
-        ready: true,
-        backend_url,
-        compose_project_name: COMPOSE_PROJECT_NAME.to_string(),
-        env_file: env_file.to_string_lossy().to_string(),
-        items,
     })
 }
 
@@ -790,163 +641,6 @@ fn infer_mime_type(path: &Path) -> Option<String> {
     }
 }
 
-fn desktop_workspace_root() -> Result<PathBuf, String> {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|path| path.parent())
-        .map(Path::to_path_buf)
-        .ok_or_else(|| "Could not determine the desktop workspace root".to_string())
-}
-
-fn desktop_compose_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let compose_path = desktop_workspace_root()?.join("docker-compose.desktop.yml");
-    if compose_path.exists() {
-        return Ok(compose_path);
-    }
-
-    let resource_dir = app
-        .path()
-        .resource_dir()
-        .map_err(|e| format!("Could not resolve the app resource directory: {e}"))?;
-    let bundled_path = resource_dir.join("docker-compose.desktop.yml");
-    if bundled_path.exists() {
-        return Ok(bundled_path);
-    }
-
-    Err(format!(
-        "Desktop compose file not found at {} or {}",
-        compose_path.display(),
-        bundled_path.display()
-    ))
-}
-
-fn write_desktop_backend_env(
-    layout: &StorageLayoutPaths,
-    backend_port: u16,
-) -> Result<PathBuf, String> {
-    let env_path = layout.config_dir.join("desktop-backend.env");
-    let contents = format!(
-        concat!(
-            "AIVE_DESKTOP_ENV_FILE={env_path}\n",
-            "AIVE_HOST_UPLOADS_DIR={uploads}\n",
-            "AIVE_HOST_VIDEOS_DIR={videos}\n",
-            "AIVE_HOST_TEMP_DIR={temp}\n",
-            "AIVE_HOST_LOGS_DIR={logs}\n",
-            "AIVE_HOST_CONFIG_DIR={config}\n",
-            "AIVE_HOST_BACKUPS_DIR={backups}\n",
-            "AIVE_HOST_PROXIES_DIR={proxies}\n",
-            "AIVE_HOST_MODELS_DIR={models}\n",
-            "AIVE_HOST_POSTGRES_DIR={postgres}\n",
-            "AIVE_HOST_REDIS_DIR={redis}\n",
-            "AIVE_HOST_QDRANT_DIR={qdrant}\n",
-            "AIVE_BACKEND_PORT={backend_port}\n",
-            "DATABASE_URL=postgresql+asyncpg://aive:aive_secret@db:5432/aive_db\n",
-            "REDIS_URL=redis://redis:6379/0\n",
-            "QDRANT_HOST=qdrant\n",
-            "QDRANT_PORT=6333\n",
-            "APP_ENV=production\n",
-            "APP_DEBUG=false\n"
-        ),
-        env_path = env_path.to_string_lossy(),
-        uploads = layout.uploads_dir.to_string_lossy(),
-        videos = layout.rendered_videos_dir.to_string_lossy(),
-        temp = layout.temp_dir.to_string_lossy(),
-        logs = layout.logs_dir.to_string_lossy(),
-        config = layout.config_dir.to_string_lossy(),
-        backups = layout.backups_dir.to_string_lossy(),
-        proxies = layout.proxies_dir.to_string_lossy(),
-        models = layout.root_dir.join("models").to_string_lossy(),
-        postgres = layout.root_dir.join("postgresql").to_string_lossy(),
-        redis = layout.root_dir.join("redis").to_string_lossy(),
-        qdrant = layout.root_dir.join("qdrant").to_string_lossy(),
-        backend_port = backend_port,
-    );
-    fs::write(&env_path, contents).map_err(|e| format!("Could not write backend env file: {e}"))?;
-    Ok(env_path)
-}
-
-fn run_command(program: &str, args: &[&str]) -> Result<String, String> {
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .map_err(|e| format!("Could not run {program}: {e}"))?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-    }
-}
-
-fn run_command_in_dir(program: &str, args: &[&str], dir: &Path) -> Result<String, String> {
-    let output = Command::new(program)
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .map_err(|e| format!("Could not run {program}: {e}"))?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-    }
-}
-
-fn start_docker_desktop() -> Result<String, String> {
-    let candidates = [
-        PathBuf::from(r"C:\Program Files\Docker\Docker\Docker Desktop.exe"),
-        dirs::data_local_dir()
-            .unwrap_or_else(|| PathBuf::from(r"C:\Users\Public\AppData\Local"))
-            .join("Programs")
-            .join("Docker")
-            .join("Docker")
-            .join("Docker Desktop.exe"),
-    ];
-
-    for candidate in candidates {
-        if candidate.exists() {
-            Command::new("cmd")
-                .args(["/C", "start", "", candidate.to_string_lossy().as_ref()])
-                .spawn()
-                .map_err(|e| format!("Could not start Docker Desktop: {e}"))?;
-            return Ok(format!(
-                "Starting Docker Desktop from {}",
-                candidate.display()
-            ));
-        }
-    }
-
-    Err("Docker Desktop is installed neither in the default Program Files path nor the Local Programs path".to_string())
-}
-
-fn wait_for_docker_engine(timeout: Duration) -> Result<(), String> {
-    let started = Instant::now();
-    while started.elapsed() < timeout {
-        if run_command("docker", &["info"]).is_ok() {
-            return Ok(());
-        }
-        sleep(Duration::from_secs(5));
-    }
-    Err("Docker engine did not become ready in time".to_string())
-}
-
-fn wait_for_http_health(url: &str, timeout: Duration) -> Result<(), String> {
-    let client = Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("Could not create HTTP client: {e}"))?;
-    let started = Instant::now();
-    while started.elapsed() < timeout {
-        if let Ok(response) = client.get(url).send() {
-            if response.status().is_success() {
-                return Ok(());
-            }
-        }
-        sleep(Duration::from_secs(5));
-    }
-    Err(format!(
-        "Backend health check did not become ready at {url}"
-    ))
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let webview2 = desktop_v2::webview2_runtime_status();
@@ -999,7 +693,6 @@ pub fn run() {
             load_settings,
             get_app_data_dir,
             get_app_storage_layout,
-            bootstrap_desktop_backend,
             start_native_primary_import,
             cancel_native_import,
             component_manager::component_intake_manifest,
@@ -1016,9 +709,11 @@ pub fn run() {
             component_manager::component_repair,
             component_manager::component_uninstall,
             component_manager::component_recover,
+            component_broker::component_broker_health,
             setup_center::setup_get_state,
             setup_center::setup_save_state,
             setup_center::setup_get_catalog,
+            setup_center::setup_get_catalog_status,
             setup_center::setup_discover_bundled_catalog,
             setup_center::setup_import_bundled_catalog,
             setup_center::setup_import_catalog,

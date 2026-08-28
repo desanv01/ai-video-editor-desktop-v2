@@ -6,7 +6,10 @@
 //! Docker, or inspect a backend service. Component installation and engine
 //! supervision belong to later phases.
 
+use crate::component_broker::BrokerHealth;
 use crate::contracts::{canonical_windows_storage_layout, StorageLayout, STORAGE_LAYOUT_VERSION};
+use crate::operation_log::OperationLogEntry;
+use crate::supervisor::SupervisorState;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::env;
@@ -241,7 +244,21 @@ struct DiagnosticSnapshot {
     activation_status: String,
     activation_detail_code: String,
     storage_layout_version: String,
+    broker_health: BrokerHealth,
+    operation_tail: Vec<OperationLogEntry>,
+    perimeter_summary: DiagnosticPerimeterSummary,
+    catalog_rejection: Option<crate::setup_center::CatalogRejection>,
+    supervisor_readiness: String,
     technical_details: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiagnosticPerimeterSummary {
+    active_components: usize,
+    repair_required_components: usize,
+    staged_directories: usize,
+    published_directories: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -1208,8 +1225,62 @@ pub fn desktop_v2_bootstrap() -> DesktopV2BootstrapResult {
     }
 }
 
+fn diagnostic_shell_info(paths: &ResolvedDesktopPaths) -> ShellInfo {
+    let mut info = shell_info(paths);
+    // Diagnostics are safe to attach to a ticket or a lecturer handoff.  Do
+    // not persist the launching user's profile name or a raw machine root.
+    info.shell_install_path = "%ProgramFiles%\\AI Video Editor Desktop V2\\Shell".to_string();
+    info.user_state_path = "%LocalAppData%\\AI Video Editor\\State".to_string();
+    info
+}
+
+fn diagnostic_perimeter_summary(paths: &ResolvedDesktopPaths) -> DiagnosticPerimeterSummary {
+    let machine_root = PathBuf::from(&paths.program_data_root).join(USER_DATA_DIRECTORY);
+    let components_root = machine_root.join("Components");
+    let mut published_directories = 0;
+    let mut staged_directories = 0;
+    if let Ok(components) = fs::read_dir(&components_root) {
+        for component in components.flatten() {
+            let component_path = component.path();
+            if !component_path.is_dir() {
+                continue;
+            }
+            if let Ok(entries) = fs::read_dir(&component_path) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                    if path.is_dir() && name == ".staging" {
+                        staged_directories += fs::read_dir(path)
+                            .map(|entries| entries.flatten().count())
+                            .unwrap_or(0);
+                    } else if path.is_dir() && name != ".quarantine" {
+                        published_directories += 1;
+                    }
+                }
+            }
+        }
+    }
+    let statuses = crate::component_manager::ComponentManager::new(machine_root)
+        .status(None)
+        .unwrap_or_default();
+    DiagnosticPerimeterSummary {
+        active_components: statuses
+            .iter()
+            .filter(|status| status.state == "active")
+            .count(),
+        repair_required_components: statuses
+            .iter()
+            .filter(|status| status.state == "repair-required")
+            .count(),
+        staged_directories,
+        published_directories,
+    }
+}
+
 #[tauri::command]
-pub fn generate_diagnostic_snapshot() -> DiagnosticSnapshotResult {
+pub fn generate_diagnostic_snapshot(
+    supervisor: tauri::State<'_, SupervisorState>,
+) -> DiagnosticSnapshotResult {
     let paths = resolved_paths();
     let log_access = get_safe_log_directory();
     if !log_access.available {
@@ -1224,12 +1295,13 @@ pub fn generate_diagnostic_snapshot() -> DiagnosticSnapshotResult {
 
     let activation = inspect_activation_metadata_internal(&paths);
     let boot_state = boot_state_for_activation(&activation.public);
+    let supervisor_status = supervisor.status();
     let snapshot = DiagnosticSnapshot {
         schema_version: DIAGNOSTIC_SNAPSHOT_VERSION.to_string(),
         generated_at_epoch_ms: now_epoch_ms(),
-        shell_info: shell_info(&paths),
+        shell_info: diagnostic_shell_info(&paths),
         boot_state: boot_state.clone(),
-        engine_ready: false,
+        engine_ready: supervisor_status.engine_ready,
         component_status: vec![
             shell_component_status(),
             core_component_status(&activation.public),
@@ -1237,6 +1309,14 @@ pub fn generate_diagnostic_snapshot() -> DiagnosticSnapshotResult {
         activation_status: activation.public.status.clone(),
         activation_detail_code: activation.public.detail_code.clone(),
         storage_layout_version: STORAGE_LAYOUT_VERSION.to_string(),
+        broker_health: crate::component_broker::broker_health(),
+        operation_tail: crate::operation_log::current_tail(50),
+        perimeter_summary: diagnostic_perimeter_summary(&paths),
+        catalog_rejection: crate::setup_center::load_catalog_rejection().ok().flatten(),
+        supervisor_readiness: format!(
+            "state={:?}; engineReady={}",
+            supervisor_status.state, supervisor_status.engine_ready
+        ),
         technical_details: technical_detail_list(&activation, None),
     };
     let diagnostic_id = format!("diag-{}", snapshot.generated_at_epoch_ms);

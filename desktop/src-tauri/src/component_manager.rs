@@ -426,7 +426,7 @@ pub struct StageResult {
     pub state: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivationResult {
     pub component_id: String,
@@ -456,7 +456,7 @@ pub struct VerifiedActiveComponent {
     pub manifest_path: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoveryResult {
     pub recovered_journals: usize,
@@ -464,7 +464,7 @@ pub struct RecoveryResult {
     pub resumable_downloads: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepairResult {
     pub component_id: String,
@@ -472,7 +472,7 @@ pub struct RepairResult {
     pub detail: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UninstallResult {
     pub component_id: String,
@@ -1226,14 +1226,6 @@ impl ComponentManager {
                 false,
             ));
         }
-        if manifest.requirements.requires_elevation {
-            return Err(ComponentError::new(
-                "ELEVATION_REQUIRED",
-                "The active component requires an elevated installation or repair operation.",
-                false,
-            ));
-        }
-
         let active_path = PathBuf::from(&activation.active_path);
         ensure_safe_existing_path(&self.paths.components_root, &active_path)?;
         let expected_active_path = self.published_path(&manifest)?;
@@ -1298,7 +1290,19 @@ impl ComponentManager {
             let manifest = self.latest_catalog_manifest_unvalidated(&id)?;
             let download = self.latest_download_state(&id)?;
             let status = if let Some((_, activation)) = &activation {
-                if activation.state == "active" && Path::new(&activation.active_path).is_dir() {
+                let exact_manifest = self
+                    .read_manifest(
+                        &id,
+                        &activation.component_version,
+                        SourcePolicy::OFFLINE_IMPORT,
+                    )
+                    .ok();
+                let active_verified = activation.state == "active"
+                    && exact_manifest.as_ref().is_some_and(|manifest| {
+                        verify_installed_inventory(Path::new(&activation.active_path), manifest)
+                            .is_ok()
+                    });
+                if active_verified {
                     ComponentStatusResult {
                         id: id.clone(),
                         display_name: manifest
@@ -2053,9 +2057,40 @@ impl ComponentManager {
         operation_id: Option<String>,
         progress: Option<&dyn Fn(ComponentProgress)>,
     ) -> ManagerResult<ActivationResult> {
+        if crate::component_broker::should_delegate_for(self.machine_root()) {
+            let request_id = operation_id
+                .clone()
+                .unwrap_or_else(|| format!("activate-{}", now_epoch_ms()));
+            return crate::component_broker::delegate(crate::component_broker::BrokerRequest {
+                schema_version: crate::component_broker::BROKER_SCHEMA.to_string(),
+                request_id,
+                operation: crate::component_broker::BrokerOperation::Activate,
+                component_id: Some(component_id.to_string()),
+                component_version: Some(component_version.to_string()),
+                operation_id,
+                allow_offline_sources: policy.allow_local_test_sources,
+            });
+        }
+        self.activate_direct(
+            component_id,
+            component_version,
+            policy,
+            operation_id,
+            progress,
+        )
+    }
+
+    pub(crate) fn activate_direct(
+        &self,
+        component_id: &str,
+        component_version: &str,
+        policy: SourcePolicy,
+        operation_id: Option<String>,
+        progress: Option<&dyn Fn(ComponentProgress)>,
+    ) -> ManagerResult<ActivationResult> {
         let _lock = self.acquire_lock()?;
         let manifest = self.read_manifest(component_id, component_version, policy)?;
-        let journal = if let Some(operation_id) = operation_id {
+        let mut journal = if let Some(operation_id) = operation_id {
             let path = self.journal_path(&operation_id)?;
             let bytes = fs::read(&path).map_err(|error| storage_error(&path, error))?;
             serde_json::from_slice::<ActivationJournal>(&bytes).map_err(|error| {
@@ -2086,31 +2121,133 @@ impl ComponentManager {
         let published_path = self.published_path(&manifest)?;
         let metadata_path = self.metadata_path(&manifest)?;
         ensure_safe_existing_path(&self.paths.components_root, &stage_path)?;
+        let journal_path = self.journal_path(&journal.operation_id)?;
+        let previous = self.read_activation(component_id)?;
+
+        // A retry after the metadata checkpoint is already successful.  The
+        // inventory check is intentionally repeated here instead of trusting
+        // the old metadata file, so a damaged active directory cannot be
+        // reported as healthy.
+        if let Some((_, active)) = &previous {
+            if active.component_version == component_version
+                && path_key(&active.active_path) == path_key(&published_path.to_string_lossy())
+                && verify_installed_inventory(Path::new(&active.active_path), &manifest).is_ok()
+            {
+                journal.checkpoint = "active".to_string();
+                journal.updated_at_epoch_ms = now_epoch_ms();
+                atomic_write_json(&journal_path, &journal)?;
+                return Ok(ActivationResult {
+                    component_id: component_id.to_string(),
+                    component_version: component_version.to_string(),
+                    active_path: active.active_path.clone(),
+                    previous_version: active.previous_version.clone(),
+                    state: "already-active".to_string(),
+                });
+            }
+        }
+
+        // A process can die after the same-volume publish but before the
+        // activation metadata commit.  A verified published directory is a
+        // recoverable checkpoint, not a retry dead end
+        // error.  An unverified directory is quarantined before a retry can
+        // publish over it.
+        if published_path.exists() {
+            ensure_safe_existing_path(&self.paths.components_root, &published_path)?;
+            if verify_installed_inventory(&published_path, &manifest).is_err() {
+                let component_root = self.paths.components_root.join(component_id);
+                let quarantine_root = component_root.join(".quarantine");
+                ensure_child_path(&self.paths.components_root, &component_root)?;
+                ensure_child_path(&self.paths.components_root, &quarantine_root)?;
+                fs::create_dir_all(&quarantine_root)
+                    .map_err(|error| storage_error(&quarantine_root, error))?;
+                let quarantine_path = quarantine_root.join(format!(
+                    "{}-{}",
+                    component_version.replace('.', "-"),
+                    journal.operation_id
+                ));
+                ensure_child_path(&self.paths.components_root, &quarantine_path)?;
+                checkpoint_failure("quarantine")?;
+                fs::rename(&published_path, &quarantine_path)
+                    .map_err(|error| storage_error(&quarantine_path, error))?;
+                journal.checkpoint = "quarantined".to_string();
+                journal.updated_at_epoch_ms = now_epoch_ms();
+                atomic_write_json(&journal_path, &journal)?;
+                crate::operation_log::append_operation_event(
+                    "activate",
+                    "checkpoint",
+                    "Conflicting published payload was quarantined inside the machine perimeter.",
+                    Some(component_id),
+                    Some(component_version),
+                    Some("quarantined"),
+                    Some("same-volume-rename"),
+                );
+            } else {
+                // The immutable payload survived.  Remove only the matching
+                // stale staging directory and reconcile its activation record.
+                if stage_path.exists() {
+                    fs::remove_dir_all(&stage_path)
+                        .map_err(|error| storage_error(&stage_path, error))?;
+                }
+                journal.published_path = published_path.to_string_lossy().to_string();
+                journal.checkpoint = "published".to_string();
+                journal.updated_at_epoch_ms = now_epoch_ms();
+                atomic_write_json(&journal_path, &journal)?;
+                return self.commit_published_activation(
+                    &manifest,
+                    &published_path,
+                    &metadata_path,
+                    &mut journal,
+                    &journal_path,
+                    previous.as_ref(),
+                    progress,
+                    "recovered-published",
+                );
+            }
+        }
+
         if !stage_path.is_dir() {
             return Err(ComponentError::new(
                 "STAGE_NOT_FOUND",
-                "The versioned immutable staging directory is missing.",
-                false,
+                "The versioned immutable staging directory is missing; resume staging and retry activation.",
+                true,
             ));
         }
-        if published_path.exists() {
-            return Err(ComponentError::new(
-                "VERSION_ALREADY_PUBLISHED",
-                "The target component version is already published; repair or uninstall it before reusing the version.",
-                false,
-            ));
-        }
+
+        // Persist intent before the first mutating publish operation.  This
+        // lets startup reconciliation distinguish an interrupted activation
+        // from an abandoned staging directory.
+        journal.checkpoint = "activation-intent".to_string();
+        journal.updated_at_epoch_ms = now_epoch_ms();
+        atomic_write_json(&journal_path, &journal)?;
+        crate::operation_log::append_operation_event(
+            "activate",
+            "checkpoint",
+            "Activation intent persisted before publish.",
+            Some(component_id),
+            Some(component_version),
+            Some("activation-intent"),
+            Some("journal-write"),
+        );
+        checkpoint_failure("activation-intent")?;
         if let Some(parent) = published_path.parent() {
             fs::create_dir_all(parent).map_err(|error| storage_error(parent, error))?;
         }
         fs::rename(&stage_path, &published_path)
             .map_err(|error| storage_error(&published_path, error))?;
-        let mut journal = journal;
         journal.published_path = published_path.to_string_lossy().to_string();
         journal.checkpoint = "published".to_string();
         journal.updated_at_epoch_ms = now_epoch_ms();
-        let journal_path = self.journal_path(&journal.operation_id)?;
         atomic_write_json(&journal_path, &journal)?;
+        crate::operation_log::append_operation_event(
+            "activate",
+            "checkpoint",
+            "Immutable component directory published.",
+            Some(component_id),
+            Some(component_version),
+            Some("published"),
+            Some("same-volume-rename"),
+        );
+        checkpoint_failure("published")?;
         emit_progress(
             progress,
             ComponentProgress {
@@ -2125,55 +2262,135 @@ impl ComponentManager {
                 message: "Published the immutable version inside ProgramData.".to_string(),
             },
         );
+        self.commit_published_activation(
+            &manifest,
+            &published_path,
+            &metadata_path,
+            &mut journal,
+            &journal_path,
+            previous.as_ref(),
+            progress,
+            "active",
+        )
+    }
 
-        let previous = self.read_activation(component_id)?;
+    fn commit_published_activation(
+        &self,
+        manifest: &ComponentManifest,
+        published_path: &Path,
+        metadata_path: &Path,
+        journal: &mut ActivationJournal,
+        journal_path: &Path,
+        previous: Option<&(PathBuf, ActivationMetadata)>,
+        progress: Option<&dyn Fn(ComponentProgress)>,
+        state: &str,
+    ) -> ManagerResult<ActivationResult> {
+        verify_installed_inventory(published_path, manifest)?;
+        checkpoint_failure("metadata")?;
         let metadata = ActivationMetadata {
             schema_version: ACTIVATION_SCHEMA.to_string(),
             state: "active".to_string(),
-            component_id: component_id.to_string(),
-            component_version: component_version.to_string(),
+            component_id: manifest.component.id.clone(),
+            component_version: manifest.component.version.clone(),
             active_path: published_path.to_string_lossy().to_string(),
-            previous_version: previous
-                .as_ref()
-                .map(|(_, value)| value.component_version.clone()),
-            previous_path: previous
-                .as_ref()
-                .map(|(_, value)| value.active_path.clone()),
+            previous_version: previous.map(|(_, value)| value.component_version.clone()),
+            previous_path: previous.map(|(_, value)| value.active_path.clone()),
             manifest_path: self
-                .manifest_path(component_id, component_version)?
+                .manifest_path(&manifest.component.id, &manifest.component.version)?
                 .to_string_lossy()
                 .to_string(),
             activated_at_epoch_ms: now_epoch_ms(),
         };
-        atomic_write_json(&metadata_path, &metadata)?;
+        atomic_write_json(metadata_path, &metadata)?;
+        crate::operation_log::append_operation_event(
+            "activate",
+            "checkpoint",
+            "Active metadata replaced atomically.",
+            Some(&manifest.component.id),
+            Some(&manifest.component.version),
+            Some("metadata-written"),
+            Some("atomic-replace"),
+        );
+        checkpoint_failure("metadata-written")?;
+        journal.published_path = published_path.to_string_lossy().to_string();
         journal.checkpoint = "active".to_string();
         journal.updated_at_epoch_ms = now_epoch_ms();
-        atomic_write_json(&journal_path, &journal)?;
-        self.cleanup_retained_versions(&manifest, &metadata)?;
+        atomic_write_json(journal_path, journal)?;
+        crate::operation_log::append_operation_event(
+            "activate",
+            "checkpoint",
+            "Activation journal reached the active checkpoint.",
+            Some(&manifest.component.id),
+            Some(&manifest.component.version),
+            Some("active"),
+            Some("journal-write"),
+        );
+        checkpoint_failure("active")?;
+
+        // Re-read both records after the commit.  A successful response must
+        // describe the state that a fresh supervisor process would observe.
+        let Some((_, committed)) = self.read_activation(&manifest.component.id)? else {
+            return Err(ComponentError::new(
+                "ACTIVATION_COMMIT_NOT_VISIBLE",
+                "Activation metadata was written but could not be re-read.",
+                true,
+            ));
+        };
+        if committed.component_version != manifest.component.version
+            || path_key(&committed.active_path) != path_key(&published_path.to_string_lossy())
+        {
+            return Err(ComponentError::new(
+                "ACTIVATION_COMMIT_MISMATCH",
+                "Activation metadata did not match the published component after commit.",
+                false,
+            ));
+        }
+        verify_installed_inventory(Path::new(&committed.active_path), manifest)?;
+        self.cleanup_retained_versions(manifest, &committed)?;
         emit_progress(
             progress,
             ComponentProgress {
-                operation_id: journal.operation_id,
-                component_id: component_id.to_string(),
-                component_version: component_version.to_string(),
+                operation_id: journal.operation_id.clone(),
+                component_id: manifest.component.id.clone(),
+                component_version: manifest.component.version.clone(),
                 operation: "activate".to_string(),
-                state: "active".to_string(),
+                state: state.to_string(),
                 bytes_downloaded: 0,
                 total_bytes: 0,
                 percent: 100.0,
-                message: "Activation metadata committed atomically.".to_string(),
+                message: "Activation metadata was committed and re-read successfully.".to_string(),
             },
         );
         Ok(ActivationResult {
-            component_id: component_id.to_string(),
-            component_version: component_version.to_string(),
-            active_path: published_path.to_string_lossy().to_string(),
-            previous_version: metadata.previous_version,
-            state: "active".to_string(),
+            component_id: manifest.component.id.clone(),
+            component_version: manifest.component.version.clone(),
+            active_path: committed.active_path,
+            previous_version: committed.previous_version,
+            state: state.to_string(),
         })
     }
 
     pub fn rollback(
+        &self,
+        component_id: &str,
+        policy: SourcePolicy,
+        progress: Option<&dyn Fn(ComponentProgress)>,
+    ) -> ManagerResult<ActivationResult> {
+        if crate::component_broker::should_delegate_for(self.machine_root()) {
+            return crate::component_broker::delegate(crate::component_broker::BrokerRequest {
+                schema_version: crate::component_broker::BROKER_SCHEMA.to_string(),
+                request_id: format!("rollback-{}", now_epoch_ms()),
+                operation: crate::component_broker::BrokerOperation::Rollback,
+                component_id: Some(component_id.to_string()),
+                component_version: None,
+                operation_id: None,
+                allow_offline_sources: policy.allow_local_test_sources,
+            });
+        }
+        self.rollback_direct(component_id, policy, progress)
+    }
+
+    pub(crate) fn rollback_direct(
         &self,
         component_id: &str,
         policy: SourcePolicy,
@@ -2267,6 +2484,26 @@ impl ComponentManager {
         policy: SourcePolicy,
         progress: Option<&dyn Fn(ComponentProgress)>,
     ) -> ManagerResult<RepairResult> {
+        if crate::component_broker::should_delegate_for(self.machine_root()) {
+            return crate::component_broker::delegate(crate::component_broker::BrokerRequest {
+                schema_version: crate::component_broker::BROKER_SCHEMA.to_string(),
+                request_id: format!("repair-{}", now_epoch_ms()),
+                operation: crate::component_broker::BrokerOperation::Repair,
+                component_id: Some(component_id.to_string()),
+                component_version: None,
+                operation_id: None,
+                allow_offline_sources: policy.allow_local_test_sources,
+            });
+        }
+        self.repair_direct(component_id, policy, progress)
+    }
+
+    pub(crate) fn repair_direct(
+        &self,
+        component_id: &str,
+        policy: SourcePolicy,
+        progress: Option<&dyn Fn(ComponentProgress)>,
+    ) -> ManagerResult<RepairResult> {
         let _lock = self.acquire_lock()?;
         let Some((_, activation)) = self.read_activation(component_id)? else {
             return Err(ComponentError::new(
@@ -2306,6 +2543,21 @@ impl ComponentManager {
     }
 
     pub fn uninstall(&self, component_id: &str) -> ManagerResult<UninstallResult> {
+        if crate::component_broker::should_delegate_for(self.machine_root()) {
+            return crate::component_broker::delegate(crate::component_broker::BrokerRequest {
+                schema_version: crate::component_broker::BROKER_SCHEMA.to_string(),
+                request_id: format!("uninstall-{}", now_epoch_ms()),
+                operation: crate::component_broker::BrokerOperation::Uninstall,
+                component_id: Some(component_id.to_string()),
+                component_version: None,
+                operation_id: None,
+                allow_offline_sources: false,
+            });
+        }
+        self.uninstall_direct(component_id)
+    }
+
+    pub(crate) fn uninstall_direct(&self, component_id: &str) -> ManagerResult<UninstallResult> {
         let _lock = self.acquire_lock()?;
         validate_component_id(component_id)?;
         self.ensure_machine_storage()?;
@@ -2350,6 +2602,21 @@ impl ComponentManager {
     }
 
     pub fn recover(&self) -> ManagerResult<RecoveryResult> {
+        if crate::component_broker::should_delegate_for(self.machine_root()) {
+            return crate::component_broker::delegate(crate::component_broker::BrokerRequest {
+                schema_version: crate::component_broker::BROKER_SCHEMA.to_string(),
+                request_id: format!("reconcile-{}", now_epoch_ms()),
+                operation: crate::component_broker::BrokerOperation::Reconcile,
+                component_id: None,
+                component_version: None,
+                operation_id: None,
+                allow_offline_sources: false,
+            });
+        }
+        self.recover_direct()
+    }
+
+    pub(crate) fn recover_direct(&self) -> ManagerResult<RecoveryResult> {
         let _lock = self.acquire_lock()?;
         self.ensure_machine_storage()?;
         let recovered_journals = self.recover_journals_locked()?;
@@ -2385,7 +2652,10 @@ impl ComponentManager {
                 Ok(journal) => journal,
                 Err(_) => continue,
             };
-            if journal.checkpoint != "published" {
+            if !matches!(
+                journal.checkpoint.as_str(),
+                "activation-intent" | "published" | "quarantined"
+            ) {
                 continue;
             }
             let manifest_bytes = fs::read(&journal.manifest_path)
@@ -2403,6 +2673,9 @@ impl ComponentManager {
             if !published.is_dir() {
                 continue;
             }
+            if verify_installed_inventory(&published, &manifest).is_err() {
+                continue;
+            }
             let metadata = ActivationMetadata {
                 schema_version: ACTIVATION_SCHEMA.to_string(),
                 state: "active".to_string(),
@@ -2416,7 +2689,7 @@ impl ComponentManager {
             };
             let metadata_path = PathBuf::from(&journal.metadata_path);
             ensure_child_path(&self.paths.activation_root, &metadata_path)?;
-            verify_installed_inventory(&published, &manifest)?;
+            checkpoint_failure("recovery-metadata")?;
             atomic_write_json(&metadata_path, &metadata)?;
             journal.checkpoint = "active".to_string();
             journal.updated_at_epoch_ms = now_epoch_ms();
@@ -2444,7 +2717,10 @@ impl ComponentManager {
                 }
                 if let Ok(bytes) = fs::read(entry.path()) {
                     if let Ok(journal) = serde_json::from_slice::<ActivationJournal>(&bytes) {
-                        if journal.checkpoint == "staged" {
+                        if matches!(
+                            journal.checkpoint.as_str(),
+                            "staged" | "activation-intent" | "quarantined"
+                        ) {
                             referenced.insert(journal.stage_path);
                         }
                     }
@@ -2604,6 +2880,20 @@ fn now_epoch_ms() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or_default()
+}
+
+fn checkpoint_failure(checkpoint: &str) -> ManagerResult<()> {
+    if env::var("AIVE_ACTIVATION_FAIL_CHECKPOINT")
+        .ok()
+        .is_some_and(|value| value.eq_ignore_ascii_case(checkpoint))
+    {
+        return Err(ComponentError::new(
+            "FAILURE_INJECTED",
+            format!("Activation failure injected at checkpoint {checkpoint}."),
+            true,
+        ));
+    }
+    Ok(())
 }
 
 fn validate_component_id(value: &str) -> ManagerResult<()> {
@@ -3506,7 +3796,10 @@ impl ComponentManager {
             if let Ok(journal) = serde_json::from_slice::<ActivationJournal>(&bytes) {
                 if journal.component_id == component_id
                     && journal.component_version == component_version
-                    && journal.checkpoint == "staged"
+                    && matches!(
+                        journal.checkpoint.as_str(),
+                        "staged" | "activation-intent" | "published" | "quarantined"
+                    )
                 {
                     journals.push(journal);
                 }

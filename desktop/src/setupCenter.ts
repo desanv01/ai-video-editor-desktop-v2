@@ -52,6 +52,20 @@ export interface SetupCatalogInfo {
   source: "production" | "offline-import";
   verifiedAtEpochMs: number;
   path: string;
+  sourcePath?: string | null;
+}
+
+export interface CatalogRejection {
+  attemptedSource: string;
+  attemptedPath: string | null;
+  code: string;
+  reason: string;
+  rejectedAtEpochMs: number;
+}
+
+export interface SetupCatalogStatus {
+  activeTrustedCatalog: SetupCatalogInfo | null;
+  lastRejectedAttempt: CatalogRejection | null;
 }
 
 export interface SetupState {
@@ -74,6 +88,7 @@ export interface SetupImportResult {
 export interface BundledCatalogDiscovery {
   available: boolean;
   path: string | null;
+  defaultPath: string | null;
   handoffRoot: string | null;
   detail: string;
 }
@@ -96,7 +111,30 @@ export interface SetupSystemChecksResult {
   freeSpaceBytes: number | null;
   componentRoot: string;
   userStateRoot: string;
+  writer: SetupActivationWriterProbe;
   checks: SetupSystemCheck[];
+}
+
+export interface SetupActivationWriterProbe {
+  transactionOk: boolean;
+  activationReady: boolean;
+  childDirectories: boolean;
+  createWriteFlush: boolean;
+  sameVolumeRename: boolean;
+  atomicReplace: boolean;
+  cleanupOk: boolean;
+  aclSummary: string;
+  processElevated: boolean;
+  broker: {
+    schemaVersion: string;
+    installed: boolean;
+    markerValid: boolean;
+    elevated: boolean;
+    ready: boolean;
+    status: string;
+    detail: string;
+  };
+  detail: string;
 }
 
 export interface SetupCatalogConfiguration {
@@ -170,6 +208,11 @@ export function catalogEntryFor(
 
 export function catalogEntryIsInstallable(entry: SetupCatalogEntry | null): boolean {
   return entry?.availability === "available" && entry.manifest !== null;
+}
+
+export function systemChecksAreCurrentAndHealthy(checks: SetupSystemChecksResult | null): boolean {
+  if (!checks?.supported || !checks.writer.activationReady) return false;
+  return checks.checks.every(check => check.severity !== "error");
 }
 
 export function requiredComponentsReady(statuses: ComponentStatusResult[]): boolean {
@@ -260,6 +303,7 @@ export function friendlySetupMessage(code: string): string {
   switch (code) {
     case "DIALOG_OPEN_FAILED": return "The catalog file picker could not be opened. Use the bundled lecturer catalog or check desktop dialog permissions.";
     case "CATALOG_FILE_INVALID": return "Choose exactly one JSON catalog file from the lecturer handoff.";
+    case "CATALOG_TEMPLATE_REJECTED": return "That file is a production-catalog template, not a signed catalog. Use the bundled lecturer catalog or an approved offline catalog.";
     case "CATALOG_FILE_UNREADABLE": return "The selected catalog JSON could not be read. Nothing was installed.";
     case "BUNDLED_CATALOG_UNAVAILABLE": return "No bundled lecturer catalog is available in this shell. Browse for a trusted handoff copy.";
     case "BUNDLED_CATALOG_INVALID": return "The bundled lecturer handoff is incomplete or outside the trusted resource boundary.";
@@ -272,7 +316,7 @@ export function friendlySetupMessage(code: string): string {
     case "CATALOG_MANIFEST_MISMATCH": return "A catalog entry did not match its signed component manifest.";
     case "DISK_SPACE_LOW": return "There is not enough space to stage this component and retain rollback data.";
     case "ELEVATION_REQUIRED":
-    case "STORAGE_NOT_WRITABLE": return "The component store is not writable. Approve the scoped UAC action or repair the per-machine component-store permissions.";
+    case "STORAGE_NOT_WRITABLE": return "Activation needs the installed per-machine repair helper. Choose Repair, approve the scoped UAC prompt, then run the exact check again.";
     case "DOWNLOAD_PAUSED": return "The download is paused and can be resumed from its saved staging cursor.";
     case "DOWNLOAD_CANCELLED": return "The operation was cancelled. Any resumable download state was retained for a later retry.";
     case "DOWNLOAD_HASH_MISMATCH":
@@ -324,6 +368,7 @@ export interface SetupClient {
   getState: () => Promise<SetupState>;
   saveState: (state: SetupState) => Promise<SetupState>;
   getCatalog: () => Promise<SetupCatalogInfo | null>;
+  getCatalogStatus: () => Promise<SetupCatalogStatus>;
   discoverBundledCatalog: () => Promise<BundledCatalogDiscovery>;
   importBundledCatalog: () => Promise<SetupImportResult>;
   importCatalog: (catalogJson: string, source: "production" | "offline-import") => Promise<SetupImportResult>;
@@ -338,6 +383,7 @@ export function createSetupClient(transport: SetupBridgeTransport): SetupClient 
     getState: () => transport.invoke<SetupState>("setup_get_state"),
     saveState: (state: SetupState) => transport.invoke<SetupState>("setup_save_state", { state }),
     getCatalog: () => transport.invoke<SetupCatalogInfo | null>("setup_get_catalog"),
+    getCatalogStatus: () => transport.invoke<SetupCatalogStatus>("setup_get_catalog_status"),
     discoverBundledCatalog: () => transport.invoke<BundledCatalogDiscovery>("setup_discover_bundled_catalog"),
     importBundledCatalog: () => transport.invoke<SetupImportResult>("setup_import_bundled_catalog"),
     importCatalog: (catalogJson: string, source: "production" | "offline-import") =>

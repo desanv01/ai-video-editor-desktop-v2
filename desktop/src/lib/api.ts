@@ -30,7 +30,6 @@ import type {
   LayoutCueUpdate,
   ExportPresetCatalog,
   AppStorageLayout,
-  DesktopBootstrapResult,
   NativeImportProgress,
   NativeImportResult,
   PrimaryImportChunkResponse,
@@ -494,11 +493,6 @@ export async function getSupervisorDiagnostics(): Promise<SupervisorDiagnostics>
 export async function getAppStorageLayout(): Promise<AppStorageLayout> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<AppStorageLayout>("get_app_storage_layout");
-}
-
-export async function bootstrapDesktopBackend(): Promise<DesktopBootstrapResult> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<DesktopBootstrapResult>("bootstrap_desktop_backend");
 }
 
 export async function pickNativePrimaryVideoPath(): Promise<string | null> {

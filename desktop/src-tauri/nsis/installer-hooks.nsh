@@ -2,7 +2,7 @@
 ; The identity remains stable across upgrades:
 ;   product: AI Video Editor Desktop V2
 ;   id:      com.fyp.ai-video-editor.desktop-v2
-;   layout:  per-machine Program Files shell + ProgramData components
+;   layout:  per-machine Program Files\Shell + ProgramData components
 ; Program Files remains immutable at runtime; user writes go to the scoped
 ; ProgramData component perimeter and per-user LocalAppData/content roots.
 ; User projects, uploads, exports, models, databases, and settings are not
@@ -11,7 +11,7 @@
 !macro NSIS_HOOK_PREINSTALL
   SetShellVarContext all
   SetRegView 64
-  StrCpy $INSTDIR "$PROGRAMFILES64\AI Video Editor Desktop V2"
+  StrCpy $INSTDIR "$PROGRAMFILES64\AI Video Editor Desktop V2\Shell"
   ; Tauri's generated section sets an output directory before this hook.  Set
   ; it again after enforcing the x64 path so every payload file and uninstaller
   ; resource lands under the same Program Files perimeter.
@@ -53,6 +53,12 @@
   CreateDirectory "$4"
   IfErrors machine_perimeter_failed
   StrCpy $4 "$2\Catalog"
+  CreateDirectory "$4"
+  IfErrors machine_perimeter_failed
+  StrCpy $4 "$2\Broker"
+  CreateDirectory "$4"
+  IfErrors machine_perimeter_failed
+  StrCpy $4 "$2\Broker\Requests"
   CreateDirectory "$4"
   IfErrors machine_perimeter_failed
   Goto machine_perimeter_ready
@@ -127,7 +133,7 @@
 
   FileOpen $0 "$INSTDIR\desktop-v2.identity.json" w
   IfErrors identity_failed
-  FileWrite $0 '{"productName":"AI Video Editor Desktop V2","identifier":"com.fyp.ai-video-editor.desktop-v2","version":"2.0.0-rc.3","channel":"beta"}'
+  FileWrite $0 '{"productName":"AI Video Editor Desktop V2","identifier":"com.fyp.ai-video-editor.desktop-v2","version":"2.0.0-rc.4","channel":"beta"}'
   FileClose $0
   Goto identity_done
   identity_failed:
@@ -135,13 +141,20 @@
     Abort
   identity_done:
 
-  CreateDirectory "$SMPROGRAMS\AI Video Editor Desktop V2"
-  ClearErrors
-  CreateShortCut "$DESKTOP\AI Video Editor Desktop V2.lnk" "$1"
-  CreateShortCut "$SMPROGRAMS\AI Video Editor Desktop V2\AI Video Editor Desktop V2.lnk" "$1"
-  IfErrors shortcut_failed
+  ; The generated Tauri NSIS section is the sole shortcut owner.  This hook
+  ; intentionally creates no .lnk files, preventing the duplicate desktop
+  ; shortcut observed in the rc.3 clean-laptop evidence.
+  FileOpen $0 "$INSTDIR\component-broker.json" w
+  IfErrors broker_marker_failed
+  FileWrite $0 '{"schemaVersion":"desktop.component-broker.v1","identifier":"aive-component-broker","scope":"per-machine","productIdentifier":"com.fyp.ai-video-editor.desktop-v2"}'
+  FileClose $0
+  Goto broker_marker_done
+  broker_marker_failed:
+    MessageBox MB_ICONSTOP|MB_OK "AI Video Editor Desktop V2 could not write its component repair marker. Setup was aborted."
+    Abort
+  broker_marker_done:
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Video Editor Desktop V2" "DisplayName" "AI Video Editor Desktop V2"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Video Editor Desktop V2" "DisplayVersion" "2.0.0-rc.3"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Video Editor Desktop V2" "DisplayVersion" "2.0.0-rc.4"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Video Editor Desktop V2" "Publisher" "AI Video Editor"
   WriteRegStr HKLM "Software\AI Video Editor Desktop V2" "Identifier" "com.fyp.ai-video-editor.desktop-v2"
   WriteRegStr HKLM "Software\AI Video Editor Desktop V2" "InstallPath" "$INSTDIR"
@@ -149,20 +162,14 @@
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Video Editor"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Video Editor"
   Goto postinstall_done
-  shortcut_failed:
-    MessageBox MB_ICONSTOP|MB_OK "AI Video Editor Desktop V2 could not create its shortcuts. Setup was aborted; run Repair after fixing the shell profile."
-    Abort
   postinstall_done:
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
   SetShellVarContext all
-  ; The app must close its owned supervisor/job before uninstall.  No generic
-  ; forced process termination is used; Rust recognizes only an exact V2 ownership marker and
-  ; reports locked leftovers for safe reboot cleanup.
-  Delete "$DESKTOP\AI Video Editor Desktop V2.lnk"
-  Delete "$SMPROGRAMS\AI Video Editor Desktop V2\AI Video Editor Desktop V2.lnk"
-  RMDir "$SMPROGRAMS\AI Video Editor Desktop V2"
+  ; The generated Tauri NSIS uninstall section owns the shortcuts.  The app
+  ; must be closed before uninstall; locked runtime files are left for the
+  ; standard Windows restart/retry path rather than force-killing processes.
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
@@ -175,7 +182,9 @@
   SetShellVarContext all
   SetRegView 64
   Delete "$INSTDIR\desktop-v2.identity.json"
+  Delete "$INSTDIR\component-broker.json"
   RMDir "$INSTDIR"
+  RMDir "$PROGRAMFILES64\AI Video Editor Desktop V2"
   ; Default uninstall removes only machine-scoped application/runtime state.
   StrCpy $2 "$APPDATA\AI Video Editor"
   ReadEnvStr $3 "ProgramData"
@@ -189,6 +198,8 @@
   RMDir /r "$2\Activation"
   RMDir /r "$2\Downloads\Staging"
   RMDir /r "$2\Catalog"
+  RMDir /r "$2\Broker\Requests"
+  RMDir "$2\Broker"
   RMDir "$2\Downloads"
   RMDir "$2"
   machine_cleanup_done:

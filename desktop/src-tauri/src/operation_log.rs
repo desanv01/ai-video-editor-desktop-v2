@@ -20,6 +20,14 @@ pub struct OperationLogEntry {
     pub operation: String,
     pub state: String,
     pub detail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_category: Option<String>,
 }
 
 pub fn redact_operation_text(value: &str) -> String {
@@ -52,6 +60,19 @@ pub fn redact_operation_text(value: &str) -> String {
             }
         }
     }
+    for (environment_key, replacement) in [
+        ("USERPROFILE", "%USERPROFILE%"),
+        ("LOCALAPPDATA", "%LOCALAPPDATA%"),
+        ("PROGRAMDATA", "%PROGRAMDATA%"),
+        ("PROGRAMFILES", "%PROGRAMFILES%"),
+        ("PROGRAMFILES(X86)", "%PROGRAMFILES(X86)%"),
+    ] {
+        if let Ok(root) = std::env::var(environment_key) {
+            if !root.is_empty() {
+                output = output.replace(&root, replacement);
+            }
+        }
+    }
     output
 }
 
@@ -66,11 +87,15 @@ fn log_path(root: &Path) -> PathBuf {
     root.join(LOG_FILE_NAME)
 }
 
-fn append_operation_at(
+fn append_operation_event_at(
     root: &Path,
     operation: &str,
     state: &str,
     detail: &str,
+    component_id: Option<&str>,
+    component_version: Option<&str>,
+    checkpoint: Option<&str>,
+    io_category: Option<&str>,
 ) -> Result<(), String> {
     fs::create_dir_all(root)
         .map_err(|_| "OPERATION_LOG_UNAVAILABLE: log directory is not writable.".to_string())?;
@@ -91,6 +116,10 @@ fn append_operation_at(
         operation: redact_operation_text(operation),
         state: redact_operation_text(state),
         detail: redact_operation_text(detail),
+        component_id: component_id.map(redact_operation_text),
+        component_version: component_version.map(redact_operation_text),
+        checkpoint: checkpoint.map(redact_operation_text),
+        io_category: io_category.map(redact_operation_text),
     };
     let line = serde_json::to_string(&entry).map_err(|_| {
         "OPERATION_LOG_SERIALIZE_FAILED: the operation record could not be encoded.".to_string()
@@ -109,9 +138,30 @@ fn append_operation_at(
 }
 
 pub fn append_operation(operation: &str, state: &str, detail: &str) {
+    append_operation_event(operation, state, detail, None, None, None, None);
+}
+
+pub fn append_operation_event(
+    operation: &str,
+    state: &str,
+    detail: &str,
+    component_id: Option<&str>,
+    component_version: Option<&str>,
+    checkpoint: Option<&str>,
+    io_category: Option<&str>,
+) {
     if let Some(root) = dirs::data_local_dir().map(|path| path.join("AI Video Editor").join("Logs"))
     {
-        let _ = append_operation_at(&root, operation, state, detail);
+        let _ = append_operation_event_at(
+            &root,
+            operation,
+            state,
+            detail,
+            component_id,
+            component_version,
+            checkpoint,
+            io_category,
+        );
     }
 }
 
@@ -127,6 +177,13 @@ fn read_tail_at(root: &Path, limit: usize) -> Result<Vec<OperationLogEntry>, Str
         .collect::<Vec<_>>();
     entries.reverse();
     Ok(entries)
+}
+
+pub(crate) fn current_tail(limit: usize) -> Vec<OperationLogEntry> {
+    dirs::data_local_dir()
+        .map(|path| path.join("AI Video Editor").join("Logs"))
+        .and_then(|root| read_tail_at(&root, limit).ok())
+        .unwrap_or_default()
 }
 
 #[tauri::command]
@@ -148,11 +205,15 @@ mod tests {
             std::process::id(),
             now_epoch_ms()
         ));
-        append_operation_at(
+        append_operation_event_at(
             &root,
             "catalog-import",
             "failed",
             "api_key=super-secret token=private-value",
+            None,
+            None,
+            None,
+            None,
         )
         .expect("operation record");
         let entries = read_tail_at(&root, 10).expect("tail");
@@ -160,6 +221,7 @@ mod tests {
         assert!(!entries[0].detail.contains("super-secret"));
         assert!(!entries[0].detail.contains("private-value"));
         assert!(entries[0].detail.contains("[REDACTED]"));
+        assert!(entries[0].component_id.is_none());
         let _ = fs::remove_dir_all(root);
     }
 }
