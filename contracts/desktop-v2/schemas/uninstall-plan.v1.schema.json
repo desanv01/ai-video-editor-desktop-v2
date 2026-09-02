@@ -4,7 +4,7 @@
   "title": "AI Video Editor Desktop V2 professional uninstall choices",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "generatedAtEpochMs", "roots", "removeByDefault", "preserveByDefault", "fullWipePaths", "ownedProcesses", "warnings", "defaultChoice", "fullWipeConfirmation"],
+  "required": ["schemaVersion", "generatedAtEpochMs", "roots", "removeByDefault", "preserveByDefault", "fullWipePaths", "fullWipeCredentialTargets", "ownedProcesses", "warnings", "defaultChoice", "fullWipeConfirmation"],
   "properties": {
     "schemaVersion": { "const": "desktop.uninstall-plan.v1" },
     "generatedAtEpochMs": { "type": "integer", "minimum": 0 },
@@ -12,6 +12,11 @@
     "removeByDefault": { "type": "array", "items": { "$ref": "#/$defs/path" } },
     "preserveByDefault": { "type": "array", "items": { "$ref": "#/$defs/path" } },
     "fullWipePaths": { "type": "array", "items": { "$ref": "#/$defs/path" } },
+    "fullWipeCredentialTargets": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^AI Video Editor Desktop V2/provider/[A-Za-z0-9._-]+/(api_key|access_token|password|hf_token|custom_endpoint_key)$" }
+    },
     "ownedProcesses": { "type": "array", "items": { "$ref": "#/$defs/process" } },
     "warnings": { "type": "array", "items": { "type": "string" } },
     "defaultChoice": { "type": "string" },

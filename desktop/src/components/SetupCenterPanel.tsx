@@ -35,6 +35,7 @@ import {
 import type { DesktopV2BootstrapResult, SupervisorStatus } from "../desktopV2.ts";
 import { ProviderOnboardingPanel } from "./ProviderOnboardingPanel";
 import * as api from "../lib/api";
+import { provisioningClient } from "../provisioning";
 import {
   aggregateProgress,
   canLaunchEditor,
@@ -136,7 +137,12 @@ export function SetupCenterPanel({
     let unlisten: (() => void) | undefined;
     void componentManager.onProgress(next => {
       if (disposed) return;
-      setProgressByOperation(current => ({ ...current, [next.operationId]: next }));
+      setProgressByOperation(current => {
+        const updated = { ...current, [next.operationId]: next };
+        const downloaded = Object.values(updated).reduce((sum, item) => sum + item.bytesDownloaded, 0);
+        void provisioningClient.checkpoint("downloading", downloaded).catch(() => undefined);
+        return updated;
+      });
       setPaused(next.state === "paused");
       const now = performance.now();
       const previous = progressSamplesRef.current[next.componentId];
@@ -310,7 +316,12 @@ export function SetupCenterPanel({
     setStage("activate");
     await componentManager.stage(componentId, target.version, target.operationId, allowTestSources);
     throwIfCancellationRequested();
-    await componentManager.activate(componentId, target.version, target.operationId, allowTestSources);
+    await provisioningClient.setAtomicSection(true);
+    try {
+      await componentManager.activate(componentId, target.version, target.operationId, allowTestSources);
+    } finally {
+      await provisioningClient.setAtomicSection(false).catch(() => undefined);
+    }
     // Activation is an atomic safe checkpoint.  If cancellation arrived while
     // it was committing, leave the active version intact and stop before the
     // next component/readiness phase.
@@ -393,11 +404,25 @@ export function SetupCenterPanel({
     );
     const ordered = [...installableSelectedIds].sort((left, right) => (left === "ffmpeg" ? -1 : right === "ffmpeg" ? 1 : 0));
     try {
+      const totalBytes = ordered.reduce((sum, id) => sum + (catalogEntryFor(catalogInfo.catalog, id)?.artifactBytes ?? 0), 0);
+      let journal = await provisioningClient.status();
+      if (journal && ["running", "cancelling"].includes(journal.state) && journal.operationKind !== "core-setup") {
+        throw { code: "PROVISIONING_BUSY", message: "Finish the current optional AI operation before core setup." };
+      }
+      if (resume && journal && ["interrupted", "failed", "cancelled"].includes(journal.state)) {
+        journal = await provisioningClient.retry();
+      } else if (!journal || !["running", "cancelling"].includes(journal.state)) {
+        journal = await provisioningClient.begin("core-setup", "desktop-core", totalBytes);
+      }
+      if (journal.checkpoint === "discovered") {
+        await provisioningClient.checkpoint("catalog-reconciled", 0);
+      }
       await saveNextState({ ...currentState, acceptedLicenseVersions: { ...currentState.acceptedLicenseVersions, ...acceptedLicenseVersions } });
       for (const componentId of ordered) {
         throwIfCancellationRequested();
         await installComponent(componentId, resume && Boolean(stateRef.current.incompleteOperationIds[componentId]));
       }
+      await provisioningClient.checkpoint("activated", totalBytes);
       throwIfCancellationRequested();
       setStage("readiness");
       operationStageRef.current = "readiness";
@@ -424,10 +449,17 @@ export function SetupCenterPanel({
         incompleteOperationIds: {},
       });
       await refreshStatuses();
+      await provisioningClient.complete();
       setStage("complete");
       onSetupComplete(ready, completed);
     } catch (operationError) {
       const nextError = normalizeSetupError(operationError);
+      try {
+        const journal = await provisioningClient.status();
+        if (journal?.operationKind === "core-setup" && journal.state !== "completed") {
+          await provisioningClient.fail(nextError.code);
+        }
+      } catch { /* setup may have failed before coordination began */ }
       setError(nextError);
       setStage(nextError.code === "ENGINE_NOT_READY" ? "readiness" : operationStageRef.current);
       setResumeAvailable(true);
@@ -460,6 +492,7 @@ export function SetupCenterPanel({
     const componentId = currentComponentRef.current;
     const target = componentId ? targetsRef.current[componentId] : null;
     try {
+      try { await provisioningClient.cancel(); } catch { /* no active provisioning journal */ }
       if (operationStageRef.current === "download" && target) {
         await componentManager.cancel(target.operationId);
       } else if (operationStageRef.current === "readiness") {
@@ -622,8 +655,7 @@ export function SetupCenterPanel({
 
         <aside className="space-y-4" aria-label="Setup context">
           <ProgressSummary stage={stage} progress={progress} selectedCount={installableSelectedIds.length} />
-          <StorageBoundaryCard bootstrap={bootstrap} />
-          <CatalogCard catalogInfo={catalogInfo} bundledCatalog={bundledCatalog} onImport={importCatalog} onUseBundled={importBundledCatalog} onRefresh={() => void refreshProductionCatalog()} busy={busy} />
+          <details className="rounded-xl border border-surface-border bg-surface-overlay p-4"><summary className="cursor-pointer text-xs font-medium text-gray-300">Setup details</summary><div className="mt-4 space-y-4"><StorageBoundaryCard bootstrap={bootstrap} /><CatalogCard catalogInfo={catalogInfo} bundledCatalog={bundledCatalog} onImport={importCatalog} onUseBundled={importBundledCatalog} onRefresh={() => void refreshProductionCatalog()} busy={busy} /></div></details>
           {selectedStatus ? <StatusDetail status={selectedStatus} onClose={() => setSelectedStatus(null)} /> : null}
           {copyMessage ? <p role="status" className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">{copyMessage}</p> : null}
           <button type="button" onClick={() => void copyDiagnostics()} className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-surface-border px-3 py-2 text-xs font-medium text-gray-300 hover:border-accent hover:text-white focus:outline-none focus:ring-2 focus:ring-accent/70">
@@ -636,17 +668,22 @@ export function SetupCenterPanel({
 }
 
 function SetupStepper({ stage }: { stage: SetupStage }) {
-  const labels: SetupStage[] = ["welcome", "system-check", "choose-components", "review", "download", "verify", "activate", "readiness", "complete"];
-  const index = setupStepIndex(stage);
+  const labels = ["Welcome", "Check this PC", "Install Core", "Install Media Tools", "Verify and Start", "Optional AI Setup", "Ready"];
+  const index = stage === "welcome" ? 0
+    : stage === "system-check" ? 1
+      : ["choose-components", "review"].includes(stage) ? 2
+        : stage === "download" ? 3
+          : ["verify", "activate", "readiness"].includes(stage) ? 4
+            : stage === "complete" ? 6 : Math.min(6, setupStepIndex(stage));
   return (
     <ol className="mt-6 grid grid-cols-3 gap-2 sm:grid-cols-9" aria-label="Setup progress">
-      {labels.map((item, itemIndex) => (
-        <li key={item} className="min-w-0">
+      {labels.map((label, itemIndex) => (
+        <li key={label} className="min-w-0">
           <div className={`flex items-center gap-1.5 text-[10px] font-medium ${itemIndex <= index ? "text-accent-100" : "text-gray-500"}`}>
             <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[10px] ${itemIndex < index ? "border-accent bg-accent text-white" : itemIndex === index ? "border-accent text-accent" : "border-surface-border text-gray-500"}`} aria-hidden="true">
               {itemIndex < index ? <Check className="h-3 w-3" /> : itemIndex + 1}
             </span>
-            <span className="truncate">{setupStepLabel(item)}</span>
+            <span className="truncate">{label}</span>
           </div>
         </li>
       ))}
@@ -671,15 +708,15 @@ function WelcomeStep({ setupRequired, engineReady, resumeAvailable, busy, onCont
           <div>
             <h3 className="text-lg font-semibold text-white">A small, guided setup</h3>
             <p className="mt-2 text-sm leading-6 text-gray-300">
-              {engineReady ? "The authenticated engine is ready. Review installed versions or launch the editor." : setupRequired ? "The base shell is ready, but the required engine components have not been activated yet." : "The shell found a recoverable component state. Setup will check it before making changes."}
+              {engineReady ? "Your editing tools are ready. You can review them or open the editor." : setupRequired ? "We’ll check this PC, install the included core and media tools, and verify everything before you begin." : "Setup found a saved step and will check it before making changes."}
             </p>
           </div>
         </div>
       </div>
       <div className="mt-5 grid gap-3 sm:grid-cols-3">
-        <Feature icon={<FileKey2 className="h-4 w-4" />} title="Signed" detail="Catalogs and manifests are checked against the shell trust root." />
-        <Feature icon={<HardDrive className="h-4 w-4" />} title="Scoped" detail="Runtime components live in the immutable ProgramData store." />
-        <Feature icon={<LockKeyhole className="h-4 w-4" />} title="Gated" detail="The editor unlocks only after authenticated readiness." />
+        <Feature icon={<FileKey2 className="h-4 w-4" />} title="Verified" detail="Every included app tool is checked before it can run." />
+        <Feature icon={<HardDrive className="h-4 w-4" />} title="Local" detail="Core editing and media tools are installed on this PC." />
+        <Feature icon={<LockKeyhole className="h-4 w-4" />} title="Private" detail="Optional online AI stays off until you choose it." />
       </div>
       <div className="mt-6 flex flex-wrap gap-3">
         <button type="button" autoFocus onClick={onContinue} disabled={busy} className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white hover:bg-accent-hover disabled:cursor-wait disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-accent/70">
@@ -697,7 +734,7 @@ function SystemCheckStep({ checks, busy, onRun, onContinue }: { checks: SetupSys
   const blocking = checks?.checks.some(check => check.severity === "error") ?? false;
   return (
     <div>
-      <StepHeading icon={<ClipboardCopy className="h-5 w-5" />} title="Check this computer" detail="We check the supported Windows target, architecture, disk, storage boundaries, scoped permissions, network path, and the current supervisor state." />
+      <StepHeading icon={<ClipboardCopy className="h-5 w-5" />} title="Check this PC" detail="We’ll make sure Windows, free space, and app permissions are ready before installing anything." />
       {!checks ? <button type="button" onClick={onRun} disabled={busy} className="mt-6 inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white hover:bg-accent-hover focus:outline-none focus:ring-2 focus:ring-accent/70"><RefreshCw className={`h-4 w-4 ${busy ? "animate-spin" : ""}`} aria-hidden="true" /> Run checks</button> : <>
         <div className="mt-5 space-y-2" role="status" aria-live="polite">
           {checks.checks.map(check => <CheckRow key={check.id} check={check} />)}
@@ -768,7 +805,7 @@ function ReviewStep({ catalog, selectedIds, licenseAccepted, ready, busy, onLice
   const licenses = entries.filter(entry => entry.licenseVersion);
   return (
     <div>
-      <StepHeading icon={<FileCheck2 className="h-5 w-5" />} title="Review requirements" detail="The manager will download to ProgramData staging, verify the signed hash and inventory, run the signed self-test, then atomically activate each component." />
+      <StepHeading icon={<FileCheck2 className="h-5 w-5" />} title="Review what will be installed" detail="Setup verifies each included tool, tests it, and keeps your current working version safe during updates." />
       <div className="mt-5 grid gap-3 sm:grid-cols-3"><ReviewStat label="Components" value={`${entries.length}`} /><ReviewStat label="Download" value={formatBytes(totalBytes)} /><ReviewStat label="Rollback" value="Previous version retained" /></div>
       <div className="mt-5 space-y-2">{entries.map(entry => <div key={entry.componentId} className="flex items-center justify-between gap-3 rounded-lg border border-surface-border bg-surface-overlay px-3 py-3 text-sm"><span className="font-medium text-white">{entry.displayName}{entry.required ? <span className="ml-2 text-[10px] uppercase tracking-wide text-accent">Required</span> : null}</span><span className="text-xs text-gray-400">{formatBytes(entry.artifactBytes)} · {entry.licenseName || "License in manifest"}</span></div>)}</div>
       <label className="mt-5 flex items-start gap-3 rounded-xl border border-surface-border bg-surface-overlay p-4 text-sm text-gray-300"><input type="checkbox" checked={licenseAccepted} onChange={event => onLicenseAccepted(event.target.checked)} className="mt-0.5 h-4 w-4 rounded border-gray-500 bg-surface accent-accent" /><span>I have reviewed the component source and license information for this catalog. I understand that setup installs only signed artifacts from the selected channel.</span></label>
@@ -813,7 +850,7 @@ function OperationStep({ stage, progress, progressByOperation, transferMetrics, 
 function ReadinessStep({ supervisor, busy, cancelRequested, error, onCancel, onRetry, onDiagnostics }: { supervisor: SupervisorStatus | null; busy: boolean; cancelRequested: boolean; error: SetupError | null; onCancel: () => void; onRetry: () => void; onDiagnostics: () => void }) {
   const ready = canLaunchEditor(supervisor);
   const blocked = ["setup-required", "component-repair-required", "repair-required", "storage-blocked", "launch-blocked", "protocol-incompatible", "session-auth-failed", "fatal-shell-failure", "fatal"].includes(supervisor?.state ?? "");
-  return <div><StepHeading icon={<Cpu className="h-5 w-5" />} title="Waiting for authenticated readiness" detail="The supervisor owns the native process, authenticates the loopback bridge, and reports capabilities before the editor can open." /><div className={`mt-6 rounded-xl border p-5 ${ready ? "border-emerald-400/30 bg-emerald-500/10" : blocked ? "border-rose-400/30 bg-rose-500/10" : "border-amber-400/30 bg-amber-500/10"}`} role="status" aria-live="polite"><div className="flex items-start gap-3">{ready ? <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-300" aria-hidden="true" /> : <RefreshCw className={`h-5 w-5 shrink-0 text-amber-200 ${busy ? "animate-spin" : ""}`} aria-hidden="true" />}<div><p className="font-semibold text-white">{ready ? "Engine authenticated and ready" : blocked ? "Engine needs recovery" : "Starting the owned engine"}</p><p className="mt-2 text-sm leading-6 text-gray-300">{supervisor?.detail ?? "Waiting for the supervisor status event…"}</p>{supervisor?.lastError ? <p className="mt-2 break-words text-xs text-amber-100">Code: {supervisor.lastError.split(":", 1)[0]}</p> : null}{supervisor?.remediationCodes.length ? <p className="mt-2 text-xs text-accent-100">Next: {supervisor.remediationCodes.join(" · ")}</p> : null}{supervisor?.capabilities ? <p className="mt-2 text-xs text-gray-400">Capabilities: {supervisor.capabilities.items.filter(item => item.state !== "unavailable").map(item => item.id).join(", ") || "basic engine"}</p> : null}</div></div></div>{busy ? <button type="button" onClick={onCancel} disabled={cancelRequested} className="mt-5 inline-flex items-center gap-2 rounded-lg border border-amber-400/40 px-4 py-2.5 text-sm font-medium text-amber-100 hover:bg-amber-500/10 disabled:cursor-wait disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-accent/70"><XCircle className="h-4 w-4" aria-hidden="true" /> {cancelRequested ? "Stopping safely…" : "Cancel safely"}</button> : null}{error ? <ErrorCallout error={error} technicalOpen={false} onToggleTechnical={() => undefined} onRetry={onRetry} onDiagnostics={onDiagnostics} /> : null}</div>;
+  return <div><StepHeading icon={<Cpu className="h-5 w-5" />} title="Verify and Start" detail="We’re doing a final local check, then your workspace will open." /><div className={`mt-6 rounded-xl border p-5 ${ready ? "border-emerald-400/30 bg-emerald-500/10" : blocked ? "border-rose-400/30 bg-rose-500/10" : "border-amber-400/30 bg-amber-500/10"}`} role="status" aria-live="polite"><div className="flex items-start gap-3">{ready ? <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-300" aria-hidden="true" /> : <RefreshCw className={`h-5 w-5 shrink-0 text-amber-200 ${busy ? "animate-spin" : ""}`} aria-hidden="true" />}<div><p className="font-semibold text-white">{ready ? "Your workspace is ready" : blocked ? "A quick repair is needed" : "Starting your workspace"}</p><p className="mt-2 text-sm leading-6 text-gray-300">{ready ? "All required editing tools passed their checks." : blocked ? "Your projects are safe. Open recovery details to continue." : "This usually takes only a moment."}</p>{blocked ? <details className="mt-3"><summary className="cursor-pointer text-xs text-gray-400">Recovery details</summary><p className="mt-2 text-xs text-amber-100">{supervisor?.detail}</p></details> : null}</div></div></div>{busy ? <button type="button" onClick={onCancel} disabled={cancelRequested} className="mt-5 inline-flex items-center gap-2 rounded-lg border border-amber-400/40 px-4 py-2.5 text-sm font-medium text-amber-100 hover:bg-amber-500/10 disabled:cursor-wait disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-accent/70"><XCircle className="h-4 w-4" aria-hidden="true" /> {cancelRequested ? "Stopping safely…" : "Cancel safely"}</button> : null}{error ? <ErrorCallout error={error} technicalOpen={false} onToggleTechnical={() => undefined} onRetry={onRetry} onDiagnostics={onDiagnostics} /> : null}</div>;
 }
 
 function CompletionStep({ supervisor, statuses, engineReady, onLaunchEditor, onManage }: { supervisor: SupervisorStatus | null; statuses: ComponentStatusResult[]; engineReady: boolean; onLaunchEditor: () => void; onManage: () => void }) {
@@ -848,7 +885,10 @@ function CatalogCard({ catalogInfo, bundledCatalog, onImport, onUseBundled, onRe
 }
 
 function ProgressSummary({ stage, progress, selectedCount }: { stage: SetupStage; progress: ReturnType<typeof aggregateProgress>; selectedCount: number }) {
-  return <div className="rounded-xl border border-surface-border bg-surface-overlay p-4"><div className="flex items-center justify-between gap-2"><p className="text-xs font-semibold uppercase tracking-[0.15em] text-gray-500">Current step</p><span className="text-[11px] text-accent">{setupStepLabel(stage)}</span></div><p className="mt-3 text-sm font-semibold text-white">{selectedCount > 0 ? `${selectedCount} installable component${selectedCount === 1 ? "" : "s"} selected` : "No installable components selected"}</p><div className="mt-3 h-2 overflow-hidden rounded-full bg-surface-raised"><div className="h-full rounded-full bg-accent motion-reduce:transition-none" style={{ width: `${progress.percent}%` }} /></div><p className="mt-2 text-xs text-gray-400">{progress.percent.toFixed(1)}% · {progress.message}</p></div>;
+  const completed = stage === "complete";
+  const percent = completed ? 100 : progress.percent;
+  const message = completed ? "Setup complete" : progress.message;
+  return <div className="rounded-xl border border-surface-border bg-surface-overlay p-4"><div className="flex items-center justify-between gap-2"><p className="text-xs font-semibold uppercase tracking-[0.15em] text-gray-500">Current step</p><span className="text-[11px] text-accent">{setupStepLabel(stage)}</span></div><p className="mt-3 text-sm font-semibold text-white">{selectedCount > 0 ? `${selectedCount} installable component${selectedCount === 1 ? "" : "s"} selected` : completed ? "Core tools installed" : "Preparing your tools"}</p><div className="mt-3 h-2 overflow-hidden rounded-full bg-surface-raised"><div className="h-full rounded-full bg-accent motion-reduce:transition-none" style={{ width: `${percent}%` }} /></div><p className="mt-2 text-xs text-gray-400">{percent.toFixed(1)}% · {message}</p></div>;
 }
 
 function StorageBoundaryCard({ bootstrap }: { bootstrap: DesktopV2BootstrapResult | null }) {

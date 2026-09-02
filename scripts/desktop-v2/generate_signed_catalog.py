@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import base64
 import copy
+import hashlib
 import json
 import re
 from datetime import datetime, timedelta, timezone
@@ -26,6 +27,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 SCHEMA_VERSION = "desktop.setup-catalog.v1"
 COMPONENT_SCHEMA_VERSION = "desktop.component-manifest.v1"
 REQUIRED_COMPONENTS = ("aive-engine", "ffmpeg")
+TEST_KEY_ID = "test-fixture-2026"
+TEST_KEY_LABEL = b"Desktop V2 Phase 3 NON-PRODUCTION FIXTURE KEY"
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,9 +37,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ffmpeg-manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--detached-signature", type=Path, required=True)
-    parser.add_argument("--private-key-file", type=Path, required=True)
-    parser.add_argument("--key-id", required=True)
-    parser.add_argument("--catalog-id", default="aive-desktop-v2-lecturer-rc-2.0.0-rc.2")
+    parser.add_argument("--private-key-file", type=Path)
+    parser.add_argument("--key-id")
+    parser.add_argument("--test-fixture", action="store_true", help="Use the deterministic non-production fixture key.")
+    parser.add_argument("--catalog-id", default="aive-desktop-v2-rc6-developer-test")
     parser.add_argument("--channel", choices=("stable", "beta", "nightly"), default="beta")
     parser.add_argument("--generated-at")
     parser.add_argument("--expires-at")
@@ -53,6 +57,16 @@ def read_seed(path: Path) -> bytes:
     if len(seed) != 32:
         raise ValueError("Ed25519 seed must contain exactly 32 bytes")
     return seed
+
+
+def signing_material(args: argparse.Namespace) -> tuple[str, bytes]:
+    if args.test_fixture:
+        if args.private_key_file or args.key_id:
+            raise ValueError("--test-fixture cannot be combined with a release seed or key id")
+        return TEST_KEY_ID, hashlib.sha256(TEST_KEY_LABEL).digest()
+    if not args.private_key_file or not args.key_id:
+        raise ValueError("release catalog signing requires --private-key-file and --key-id")
+    return args.key_id, read_seed(args.private_key_file.resolve())
 
 
 def iso_now() -> str:
@@ -154,6 +168,7 @@ def production_template(catalog: dict[str, object]) -> dict[str, object]:
 
 def main() -> int:
     args = parse_args()
+    key_id, seed = signing_material(args)
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", args.catalog_id):
         raise ValueError("catalog id contains unsafe characters")
     engine = load_manifest(args.engine_manifest.resolve())
@@ -171,9 +186,9 @@ def main() -> int:
         "generatedAt": generated_at,
         "expiresAt": expires_at,
         "entries": [component_entry(engine), component_entry(ffmpeg)],
-        "signature": {"algorithm": "ed25519", "keyId": args.key_id, "value": ""},
+        "signature": {"algorithm": "ed25519", "keyId": key_id, "value": ""},
     }
-    signature = Ed25519PrivateKey.from_private_bytes(read_seed(args.private_key_file.resolve())).sign(
+    signature = Ed25519PrivateKey.from_private_bytes(seed).sign(
         canonical_json(catalog)
     )
     catalog["signature"]["value"] = base64.b64encode(signature).decode("ascii")  # type: ignore[index]
@@ -182,7 +197,7 @@ def main() -> int:
     args.detached_signature.resolve().write_bytes(signature)
     if args.production_template:
         write_json(args.production_template.resolve(), production_template(catalog))
-    print(json.dumps({"catalog": str(args.output.resolve()), "detachedSignature": str(args.detached_signature.resolve()), "keyId": args.key_id, "channel": args.channel}, sort_keys=True, indent=2))
+    print(json.dumps({"catalog": str(args.output.resolve()), "detachedSignature": str(args.detached_signature.resolve()), "keyId": key_id, "channel": args.channel, "profile": "developer-test" if args.test_fixture else "external-release"}, sort_keys=True, indent=2))
     return 0
 
 

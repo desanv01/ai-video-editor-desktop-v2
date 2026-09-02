@@ -9,17 +9,24 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import hmac
+import importlib
 import json
 import os
+import re
 import signal
 import sys
+import time
 from pathlib import Path
 
 
 BACKEND_ROOT = Path(__file__).resolve().parent
 APP_ROOT = BACKEND_ROOT / "app"
-STARTUP_HANDSHAKE_PROTOCOL = "desktop.engine-handshake.v1"
-ENGINE_VERSION = "2.0.0-rc.3"
+STARTUP_HANDSHAKE_PROTOCOL = "desktop.engine-handshake.v2"
+ENGINE_ID = "aive-engine"
+ENGINE_VERSION = "2.0.0-rc.6"
+SELF_TEST_DEADLINE_SECONDS = 15.0
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
@@ -35,6 +42,16 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--session-id",
         default=os.environ.get("AIVE_ENGINE_SESSION_ID", ""),
+    )
+    parser.add_argument(
+        "--control-address",
+        default=os.environ.get("AIVE_ENGINE_CONTROL_ADDRESS", ""),
+        help="Supervisor-owned 127.0.0.1 host:port for the authenticated startup control message.",
+    )
+    parser.add_argument(
+        "--control-nonce",
+        default=os.environ.get("AIVE_ENGINE_CONTROL_NONCE", ""),
+        help="Per-launch supervisor nonce authenticated by the startup HMAC.",
     )
     parser.add_argument(
         "--ffmpeg-component-root",
@@ -57,20 +74,134 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _contract_root() -> Path:
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    if frozen_root:
+        return Path(frozen_root) / "contracts" / "desktop-v2" / "schemas"
+    return BACKEND_ROOT.parent / "contracts" / "desktop-v2" / "schemas"
+
+
 def _self_test() -> int:
+    """Run bounded, offline checks that exercise the actual frozen imports.
+
+    The build wrapper also enforces a subprocess timeout.  Keeping the checks
+    offline and read-only makes this safe to run before activation on a clean
+    machine without creating a user profile or touching project data.
+    """
+
+    started = time.monotonic()
+    checks: list[str] = []
+    for module_name in (
+        "fastapi",
+        "uvicorn",
+        "sqlalchemy",
+        "aiosqlite",
+        "desktop_native.app",
+        "desktop_native.runtime",
+        "services.native_imports",
+    ):
+        importlib.import_module(module_name)
+        checks.append(f"import:{module_name}")
+        if time.monotonic() - started > SELF_TEST_DEADLINE_SECONDS:
+            raise TimeoutError("native engine self-test exceeded its internal deadline")
+
+    contract_root = _contract_root()
+    for filename in (
+        "engine-control.v1.schema.json",
+        "engine-handshake.v2.schema.json",
+        "health-readiness.v1.schema.json",
+        "native-import-operation.v1.schema.json",
+    ):
+        payload = json.loads((contract_root / filename).read_text(encoding="utf-8"))
+        if payload.get("$schema") != "https://json-schema.org/draft/2020-12/schema":
+            raise ValueError(f"unsupported or missing JSON schema marker in {filename}")
+        checks.append(f"contract:{filename}")
+
+    frozen = bool(getattr(sys, "frozen", False))
     print(
         json.dumps(
             {
-                "component": "aive-engine",
+                "schemaVersion": "desktop.engine-self-test.v1",
+                "component": ENGINE_ID,
                 "version": ENGINE_VERSION,
                 "profile": "desktop-native",
                 "packaging": "onedir",
+                "runtime": "frozen" if frozen else "source",
+                "frozen": frozen,
                 "status": "ok",
+                "checks": checks,
+                "durationMs": round((time.monotonic() - started) * 1000),
+                "deadlineMs": round(SELF_TEST_DEADLINE_SECONDS * 1000),
             },
             sort_keys=True,
         )
     )
     return 0
+
+
+def _handshake_message(
+    *,
+    session_id: str,
+    nonce: str,
+    pid: int,
+    component_id: str,
+    component_version: str,
+    host: str,
+    assigned_port: int,
+) -> bytes:
+    """Return the stable v2 HMAC input shared with the native supervisor."""
+
+    return "\n".join(
+        (
+            STARTUP_HANDSHAKE_PROTOCOL,
+            session_id,
+            nonce,
+            str(pid),
+            component_id,
+            component_version,
+            host,
+            str(assigned_port),
+        )
+    ).encode("utf-8")
+
+
+def build_startup_handshake(
+    *,
+    session_id: str,
+    bearer_token: str,
+    assigned_port: int,
+    pid: int | None = None,
+    nonce: str,
+) -> dict[str, object]:
+    """Build an authenticated diagnostic describing the bound loopback API."""
+
+    process_id = pid or os.getpid()
+    host = "127.0.0.1"
+    proof = hmac.new(
+        bearer_token.encode("utf-8"),
+        _handshake_message(
+            session_id=session_id,
+            nonce=nonce,
+            pid=process_id,
+            component_id=ENGINE_ID,
+            component_version=ENGINE_VERSION,
+            host=host,
+            assigned_port=assigned_port,
+        ),
+        hashlib.sha256,
+    ).hexdigest()
+    return {
+        "type": "aive-engine-startup",
+        "protocolVersion": STARTUP_HANDSHAKE_PROTOCOL,
+        "sessionId": session_id,
+        "nonce": nonce,
+        "pid": process_id,
+        "componentId": ENGINE_ID,
+        "componentVersion": ENGINE_VERSION,
+        "host": host,
+        "assignedPort": assigned_port,
+        "hmacSha256": proof,
+    }
 
 
 def _configure_environment(args: argparse.Namespace) -> object:
@@ -80,6 +211,19 @@ def _configure_environment(args: argparse.Namespace) -> object:
         raise SystemExit("--port must be between 0 and 65535")
     if len(args.bearer_token) < 32:
         raise SystemExit("--bearer-token or AIVE_ENGINE_BEARER_TOKEN must be at least 32 characters")
+    if not args.session_id or not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", args.session_id):
+        raise SystemExit("--session-id or AIVE_ENGINE_SESSION_ID must be a valid supervisor session")
+    if not args.control_nonce or not re.fullmatch(r"[A-Za-z0-9_-]{22,128}", args.control_nonce):
+        raise SystemExit("--control-nonce or AIVE_ENGINE_CONTROL_NONCE must be a valid supervisor nonce")
+    control_host, separator, control_port = args.control_address.rpartition(":")
+    if separator != ":" or control_host != "127.0.0.1":
+        raise SystemExit("--control-address must identify a supervisor-owned 127.0.0.1 port")
+    try:
+        parsed_control_port = int(control_port)
+    except ValueError as exc:
+        raise SystemExit("--control-address port must be an integer") from exc
+    if parsed_control_port < 1 or parsed_control_port > 65535:
+        raise SystemExit("--control-address port must be between 1 and 65535")
 
     # Import only the isolated path module before selecting the profile.
     from desktop_native.paths import NativeDesktopPaths
@@ -102,12 +246,40 @@ def _configure_environment(args: argparse.Namespace) -> object:
             "DESKTOP_BEARER_TOKEN": args.bearer_token,
             "DESKTOP_SESSION_ID": args.session_id or "native-session",
             "AIVE_ENGINE_PORT": str(args.port),
+            "AIVE_ENGINE_CONTROL_ADDRESS": args.control_address,
+            "AIVE_ENGINE_CONTROL_NONCE": args.control_nonce,
         }
     )
     if args.allow_tool_fixture:
         os.environ["AIVE_NATIVE_TEST_TOOL_FIXTURE"] = "1"
     paths.ensure_directories()
     return paths
+
+
+async def _publish_control_handshake(args: argparse.Namespace, assigned_port: int) -> None:
+    control_host, _, control_port = args.control_address.rpartition(":")
+    message = build_startup_handshake(
+        session_id=args.session_id,
+        bearer_token=args.bearer_token,
+        assigned_port=assigned_port,
+        nonce=args.control_nonce,
+    )
+    reader: asyncio.StreamReader
+    writer: asyncio.StreamWriter
+    reader, writer = await asyncio.wait_for(
+        asyncio.open_connection(control_host, int(control_port)),
+        timeout=5.0,
+    )
+    del reader
+    try:
+        encoded = json.dumps(message, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        if len(encoded) > 16 * 1024:
+            raise RuntimeError("startup control message exceeded the bounded payload limit")
+        writer.write(encoded + b"\n")
+        await asyncio.wait_for(writer.drain(), timeout=5.0)
+    finally:
+        writer.close()
+        await writer.wait_closed()
 
 
 async def _serve(args: argparse.Namespace) -> None:
@@ -163,24 +335,10 @@ async def _serve(args: argparse.Namespace) -> None:
             runtime.assigned_port = int(sockets[0].getsockname()[1])
     if not runtime.assigned_port:
         raise RuntimeError("native engine did not receive an OS-assigned loopback port")
-    # This is the only startup handshake.  It intentionally contains no
-    # bearer token, data path, command line, or environment value.  The
-    # supervisor already knows the token it generated and authenticates all
-    # subsequent readiness/capability requests itself.
-    print(
-        json.dumps(
-            {
-                "type": "aive-engine-startup",
-                "protocolVersion": STARTUP_HANDSHAKE_PROTOCOL,
-                "host": "127.0.0.1",
-                "port": runtime.assigned_port,
-                "pid": os.getpid(),
-            },
-            separators=(",", ":"),
-            sort_keys=True,
-        ),
-        flush=True,
-    )
+    # Stdout/stderr are diagnostics only.  Startup identity and port
+    # discovery travel over the supervisor-owned authenticated loopback
+    # control channel so readiness never depends on stdout framing or lifetime.
+    await _publish_control_handshake(args, runtime.assigned_port)
     try:
         await server.main_loop()
     finally:

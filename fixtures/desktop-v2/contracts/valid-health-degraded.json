@@ -33,6 +33,12 @@
       "detail": "FFmpeg self-test completed.",
       "remediationCodes": []
     },
+    "nativeImport": {
+      "state": "ready",
+      "required": true,
+      "detail": "Durable native import storage is ready.",
+      "remediationCodes": []
+    },
     "aiModel": {
       "state": "not-configured",
       "required": false,
@@ -41,7 +47,7 @@
     }
   },
   "capabilities": {
-    "available": ["api", "database", "ffmpeg"],
+    "available": ["api", "database", "ffmpeg", "native-import"],
     "degraded": ["vector-store"],
     "unavailable": ["ai-model"]
   },

@@ -228,12 +228,16 @@ class ProjectModelTests(unittest.TestCase):
             required_free_bytes=30 * 1024 * 1024 * 1024,
             staging_relative_path="staging/native-imports/session-token-lecture.mp4",
             staging_part_relative_path="staging/native-imports/session-token-lecture.mp4.part",
+            operation_id="session-token",
+            phase="accepted",
+            status_url=f"/api/v1/projects/{project_id}/imports/native/primary/session-token",
             warnings=["1 orphaned or stale staged import file(s) already exist. Review diagnostics before cleanup."],
         )
 
         self.assertEqual(response.project_id, project_id)
         self.assertIn(".part", response.staging_part_relative_path)
         self.assertGreater(response.available_disk_bytes, response.file_size_bytes)
+        self.assertEqual(response.phase, "accepted")
 
     def test_project_update_schema_supports_dashboard_rename_and_setup_changes(self):
         request = ProjectUpdateRequest(

@@ -18,15 +18,16 @@ use crate::operation_log;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use reqwest::blocking::{Client, Response};
 use reqwest::Method;
+use ring::hmac;
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -34,7 +35,7 @@ use tauri::{AppHandle, Emitter, State};
 
 pub const SUPERVISOR_STATUS_EVENT: &str = "desktop-engine-status";
 pub const SUPERVISOR_CAPABILITIES_EVENT: &str = "desktop-engine-capabilities";
-pub const STARTUP_HANDSHAKE_PROTOCOL: &str = "desktop.engine-handshake.v1";
+pub const STARTUP_HANDSHAKE_PROTOCOL: &str = "desktop.engine-handshake.v2";
 pub const SUPERVISOR_STATUS_SCHEMA: &str = "desktop.supervisor-status.v1";
 pub const SUPERVISOR_DIAGNOSTICS_SCHEMA: &str = "desktop.supervisor-diagnostics.v1";
 const INSTALLED_RUNTIME_POLICY_DESCRIPTION: &str =
@@ -141,9 +142,20 @@ pub fn transition_state(state: SupervisorPhase, event: SupervisorEvent) -> Super
 pub struct StartupHandshake {
     pub handshake_type: String,
     pub protocol_version: String,
+    pub session_id: String,
+    pub nonce: String,
+    pub component_id: String,
+    pub component_version: String,
     pub host: String,
     pub port: u16,
     pub pid: u32,
+    pub hmac_sha256: String,
+}
+
+struct StartupControlListener {
+    listener: TcpListener,
+    address: String,
+    nonce: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -888,8 +900,9 @@ fn startup_attempt(
             )
         })?;
     let log = Arc::new(RotatingLog::new(log_path.clone()));
-    let (process, handshake_rx) =
-        launch_engine(&bundle, &session, log).map_err(|failure| failure)?;
+    let control = new_startup_control_listener()
+        .map_err(|error| StartupFailure::fatal("CONTROL_LISTENER_FAILED", error))?;
+    let process = launch_engine(&bundle, &session, &control, log).map_err(|failure| failure)?;
     let expected_pid = process.pid;
     {
         let mut runtime = state.inner.lock().map_err(|_| {
@@ -910,13 +923,15 @@ fn startup_attempt(
             SupervisorPhase::Launching,
             SupervisorEvent::WaitForHandshake,
         ),
-        "Waiting for the bounded token-free native startup handshake.".to_string(),
+        "Waiting for the bounded authenticated native startup control message.".to_string(),
         Vec::new(),
     );
     let handshake = wait_for_handshake(
-        &handshake_rx,
+        &control,
         &process,
+        &session,
         expected_pid,
+        &bundle.engine.component_version,
         STARTUP_DEADLINE,
         state,
     )?;
@@ -1041,11 +1056,33 @@ fn new_session() -> Result<SessionSecrets, String> {
     })
 }
 
+fn new_startup_control_listener() -> Result<StartupControlListener, String> {
+    let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        .map_err(|error| format!("Could not bind the startup control listener: {error}"))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| format!("Could not configure the startup control listener: {error}"))?;
+    let address = listener
+        .local_addr()
+        .map_err(|error| format!("Could not read the startup control address: {error}"))?;
+    let random = SystemRandom::new();
+    let mut nonce_bytes = [0_u8; 24];
+    random
+        .fill(&mut nonce_bytes)
+        .map_err(|_| "The operating system secure random source is unavailable.".to_string())?;
+    Ok(StartupControlListener {
+        listener,
+        address: address.to_string(),
+        nonce: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce_bytes),
+    })
+}
+
 fn launch_engine(
     bundle: &LaunchBundle,
     session: &SessionSecrets,
+    control: &StartupControlListener,
     log: Arc<RotatingLog>,
-) -> Result<(Arc<OwnedProcess>, Receiver<StdoutEvent>), StartupFailure> {
+) -> Result<Arc<OwnedProcess>, StartupFailure> {
     let mut command = Command::new(&bundle.engine.executable_path);
     let manifest_arguments = sanitize_manifest_arguments(&bundle.engine.arguments)?;
     command.args(manifest_arguments);
@@ -1054,8 +1091,6 @@ fn launch_engine(
         "0",
         "--data-root",
         bundle.user_data_root.to_string_lossy().as_ref(),
-        "--session-id",
-        session.session_id.as_str(),
         "--ffmpeg-component-root",
         bundle.ffmpeg.active_path.as_str(),
     ]);
@@ -1070,6 +1105,8 @@ fn launch_engine(
         .env("DESKTOP_BEARER_TOKEN", &session.bearer_token)
         .env("AIVE_ENGINE_SESSION_ID", &session.session_id)
         .env("DESKTOP_SESSION_ID", &session.session_id)
+        .env("AIVE_ENGINE_CONTROL_ADDRESS", &control.address)
+        .env("AIVE_ENGINE_CONTROL_NONCE", &control.nonce)
         .env("AIVE_DESKTOP_DATA_ROOT", &bundle.user_data_root)
         .env("AIVE_FFMPEG_COMPONENT_ROOT", &bundle.ffmpeg.active_path)
         .stdin(Stdio::null())
@@ -1115,25 +1152,20 @@ fn launch_engine(
         )
     })?;
     let process = Arc::new(OwnedProcess::new(child, pid, job));
-    let (handshake_tx, handshake_rx) = mpsc::channel();
-    spawn_output_reader(
-        stdout,
-        true,
-        log.clone(),
-        Some(handshake_tx),
-        &session.bearer_token,
-    );
-    spawn_output_reader(stderr, false, log, None, &session.bearer_token);
-    Ok((process, handshake_rx))
+    spawn_output_reader(stdout, true, log.clone(), &session.bearer_token);
+    spawn_output_reader(stderr, false, log, &session.bearer_token);
+    Ok(process)
 }
 
 fn sanitize_manifest_arguments(arguments: &[String]) -> Result<Vec<String>, StartupFailure> {
-    const SUPERVISOR_VALUE_FLAGS: [&str; 5] = [
+    const SUPERVISOR_VALUE_FLAGS: [&str; 7] = [
         "--port",
         "--data-root",
         "--session-id",
         "--ffmpeg-component-root",
         "--component-root",
+        "--control-address",
+        "--control-nonce",
     ];
     const SUPERVISOR_BOOLEAN_FLAGS: [&str; 2] = ["--self-test", "--allow-tool-fixture"];
     let mut sanitized = Vec::with_capacity(arguments.len());
@@ -1165,17 +1197,10 @@ fn sanitize_manifest_arguments(arguments: &[String]) -> Result<Vec<String>, Star
     Ok(sanitized)
 }
 
-#[derive(Debug, Clone)]
-struct StdoutEvent {
-    line: String,
-    oversized: bool,
-}
-
 fn spawn_output_reader<R: Read + Send + 'static>(
     stream: R,
     stdout: bool,
     log: Arc<RotatingLog>,
-    handshake_sender: Option<Sender<StdoutEvent>>,
     bearer_token: &str,
 ) {
     let bearer_token = bearer_token.to_string();
@@ -1191,11 +1216,7 @@ fn spawn_output_reader<R: Read + Send + 'static>(
             }
             let redacted = redact_sensitive(&line, &bearer_token);
             log.append(if stdout { "stdout" } else { "stderr" }, &redacted);
-            if stdout {
-                if let Some(sender) = &handshake_sender {
-                    let _ = sender.send(StdoutEvent { line, oversized });
-                }
-            }
+            let _ = oversized;
         }
     });
 }
@@ -1245,9 +1266,19 @@ pub fn parse_startup_handshake(line: &str) -> Result<StartupHandshake, String> {
         handshake_type: String,
         #[serde(rename = "protocolVersion")]
         protocol_version: String,
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        nonce: String,
+        #[serde(rename = "componentId")]
+        component_id: String,
+        #[serde(rename = "componentVersion")]
+        component_version: String,
         host: String,
-        port: u16,
+        #[serde(rename = "assignedPort")]
+        assigned_port: u16,
         pid: u32,
+        #[serde(rename = "hmacSha256")]
+        hmac_sha256: String,
     }
     let raw: RawHandshake =
         serde_json::from_str(line.trim()).map_err(|_| "HANDSHAKE_MALFORMED".to_string())?;
@@ -1260,22 +1291,90 @@ pub fn parse_startup_handshake(line: &str) -> Result<StartupHandshake, String> {
     if raw.host != "127.0.0.1" {
         return Err("HANDSHAKE_HOST_INVALID".to_string());
     }
-    if raw.port == 0 || raw.pid == 0 {
+    if raw.assigned_port == 0 || raw.pid == 0 {
         return Err("HANDSHAKE_ALLOCATION_INVALID".to_string());
+    }
+    if raw.session_id.len() < 8
+        || raw.nonce.len() < 22
+        || raw.hmac_sha256.len() != 64
+        || !raw.hmac_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("HANDSHAKE_AUTH_FIELDS_INVALID".to_string());
     }
     Ok(StartupHandshake {
         handshake_type: raw.handshake_type,
         protocol_version: raw.protocol_version,
+        session_id: raw.session_id,
+        nonce: raw.nonce,
+        component_id: raw.component_id,
+        component_version: raw.component_version,
         host: raw.host,
-        port: raw.port,
+        port: raw.assigned_port,
         pid: raw.pid,
+        hmac_sha256: raw.hmac_sha256,
     })
 }
 
-fn wait_for_handshake(
-    receiver: &Receiver<StdoutEvent>,
-    process: &Arc<OwnedProcess>,
+fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
+    if value.len() % 2 != 0 {
+        return Err("HANDSHAKE_HMAC_INVALID".to_string());
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let text =
+                std::str::from_utf8(pair).map_err(|_| "HANDSHAKE_HMAC_INVALID".to_string())?;
+            u8::from_str_radix(text, 16).map_err(|_| "HANDSHAKE_HMAC_INVALID".to_string())
+        })
+        .collect()
+}
+
+fn verify_startup_handshake(
+    handshake: &StartupHandshake,
+    session: &SessionSecrets,
+    expected_nonce: &str,
     expected_pid: u32,
+    expected_component_version: &str,
+) -> Result<(), String> {
+    if handshake.session_id != session.session_id {
+        return Err("HANDSHAKE_SESSION_INVALID".to_string());
+    }
+    if handshake.nonce != expected_nonce {
+        return Err("HANDSHAKE_NONCE_INVALID".to_string());
+    }
+    if handshake.pid != expected_pid {
+        return Err("HANDSHAKE_PID_INVALID".to_string());
+    }
+    if handshake.component_id != ENGINE_COMPONENT_ID {
+        return Err("HANDSHAKE_COMPONENT_INVALID".to_string());
+    }
+    if handshake.component_version != expected_component_version {
+        return Err("HANDSHAKE_VERSION_INVALID".to_string());
+    }
+    let canonical = format!(
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        handshake.protocol_version,
+        handshake.session_id,
+        handshake.nonce,
+        handshake.pid,
+        handshake.component_id,
+        handshake.component_version,
+        handshake.host,
+        handshake.port,
+    );
+    let signature = decode_hex(&handshake.hmac_sha256)?;
+    let key = hmac::Key::new(hmac::HMAC_SHA256, session.bearer_token.as_bytes());
+    hmac::verify(&key, canonical.as_bytes(), &signature)
+        .map_err(|_| "HANDSHAKE_HMAC_INVALID".to_string())
+}
+
+fn wait_for_handshake(
+    control: &StartupControlListener,
+    process: &Arc<OwnedProcess>,
+    session: &SessionSecrets,
+    expected_pid: u32,
+    expected_component_version: &str,
     deadline: Duration,
     state: &SupervisorState,
 ) -> Result<StartupHandshake, StartupFailure> {
@@ -1291,51 +1390,71 @@ fn wait_for_handshake(
         if process.exit_status().is_some() {
             return Err(StartupFailure::retryable(
                 "ENGINE_EXITED",
-                "The owned engine exited before publishing its startup handshake.",
+                "The owned engine exited before publishing its startup control message.",
             ));
         }
-        match receiver.recv_timeout(Duration::from_millis(100)) {
-            Ok(event) => {
-                if event.oversized {
+        match control.listener.accept() {
+            Ok((stream, peer)) => {
+                if !peer.ip().is_loopback() {
                     return Err(StartupFailure::repair(
-                        "HANDSHAKE_TOO_LARGE",
-                        "The native engine startup handshake exceeded the bounded line limit.",
+                        "HANDSHAKE_PEER_INVALID",
+                        "The startup control connection was not loopback.",
                         "COMPONENT_VERSION_INCOMPATIBLE",
                     ));
                 }
-                let marker = event.line.contains("aive-engine-startup")
-                    || event.line.contains("protocolVersion");
-                if !marker {
-                    continue;
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut reader = BufReader::new(stream);
+                let (line, oversized) = read_bounded_line(&mut reader, MAX_HANDSHAKE_LINE_BYTES)
+                    .map_err(|error| {
+                        StartupFailure::retryable(
+                            "HANDSHAKE_READ_FAILED",
+                            format!("Could not read the startup control message: {error}"),
+                        )
+                    })?;
+                if oversized {
+                    return Err(StartupFailure::repair(
+                        "HANDSHAKE_TOO_LARGE",
+                        "The native engine startup control message exceeded the bounded line limit.",
+                        "COMPONENT_VERSION_INCOMPATIBLE",
+                    ));
                 }
-                let handshake = parse_startup_handshake(&event.line).map_err(|code| {
+                let handshake = parse_startup_handshake(&line).map_err(|code| {
                     StartupFailure::repair(
                         &code,
-                        "The native engine emitted an invalid startup handshake.",
+                        "The native engine sent an invalid startup control message.",
                         "COMPONENT_VERSION_INCOMPATIBLE",
                     )
                 })?;
-                if handshake.pid != expected_pid {
-                    return Err(StartupFailure::repair(
-                        "HANDSHAKE_PID_INVALID",
-                        "The startup handshake PID does not belong to the owned process.",
+                verify_startup_handshake(
+                    &handshake,
+                    session,
+                    &control.nonce,
+                    expected_pid,
+                    expected_component_version,
+                )
+                .map_err(|code| {
+                    StartupFailure::repair(
+                        &code,
+                        "The native engine startup control message failed authentication or owned-process identity verification.",
                         "COMPONENT_VERSION_INCOMPATIBLE",
-                    ));
-                }
+                    )
+                })?;
                 return Ok(handshake);
             }
-            Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => {
                 return Err(StartupFailure::retryable(
-                    "STDOUT_PIPE_CLOSED",
-                    "The native engine stdout pipe closed before the startup handshake.",
-                ));
+                    "CONTROL_ACCEPT_FAILED",
+                    format!("The startup control listener failed: {error}"),
+                ))
             }
         }
     }
     Err(StartupFailure::retryable(
         "STARTUP_TIMEOUT",
-        "The native engine did not publish a valid startup handshake before the deadline.",
+        "The native engine did not publish a valid authenticated startup control message before the deadline.",
     ))
 }
 
@@ -2442,16 +2561,105 @@ mod tests {
         );
     }
 
+    fn signed_handshake(session: &SessionSecrets, nonce: &str) -> String {
+        let canonical = format!(
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            STARTUP_HANDSHAKE_PROTOCOL,
+            session.session_id,
+            nonce,
+            42,
+            ENGINE_COMPONENT_ID,
+            "2.0.0-rc.6",
+            "127.0.0.1",
+            43123,
+        );
+        let key = hmac::Key::new(hmac::HMAC_SHA256, session.bearer_token.as_bytes());
+        let signature = hmac::sign(&key, canonical.as_bytes())
+            .as_ref()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        serde_json::json!({
+            "type": "aive-engine-startup",
+            "protocolVersion": STARTUP_HANDSHAKE_PROTOCOL,
+            "sessionId": session.session_id,
+            "nonce": nonce,
+            "pid": 42,
+            "componentId": ENGINE_COMPONENT_ID,
+            "componentVersion": "2.0.0-rc.6",
+            "host": "127.0.0.1",
+            "assignedPort": 43123,
+            "hmacSha256": signature,
+        })
+        .to_string()
+    }
+
     #[test]
-    fn handshake_accepts_dynamic_loopback_and_rejects_wrong_protocol_or_host() {
-        let valid = r#"{"type":"aive-engine-startup","protocolVersion":"desktop.engine-handshake.v1","host":"127.0.0.1","port":43123,"pid":42}"#;
-        let handshake = parse_startup_handshake(valid).expect("valid handshake");
+    fn handshake_accepts_authenticated_dynamic_loopback_control_message() {
+        let session = SessionSecrets {
+            session_id: "session-12345678".to_string(),
+            bearer_token: "fixture-token-123456789012345678901234567890".to_string(),
+        };
+        let nonce = "control-nonce-123456789012";
+        let valid = signed_handshake(&session, nonce);
+        let handshake = parse_startup_handshake(&valid).expect("valid handshake");
         assert_eq!(handshake.port, 43123);
+        verify_startup_handshake(&handshake, &session, nonce, 42, "2.0.0-rc.6")
+            .expect("authenticated handshake");
         assert!(parse_startup_handshake(&valid.replace("127.0.0.1", "0.0.0.0")).is_err());
         assert!(parse_startup_handshake(
-            &valid.replace("desktop.engine-handshake.v1", "desktop.engine-handshake.v0")
+            &valid.replace("desktop.engine-handshake.v2", "desktop.engine-handshake.v0")
         )
         .is_err());
+    }
+
+    #[test]
+    fn handshake_rejects_wrong_hmac_pid_session_nonce_component_and_version() {
+        let session = SessionSecrets {
+            session_id: "session-12345678".to_string(),
+            bearer_token: "fixture-token-123456789012345678901234567890".to_string(),
+        };
+        let nonce = "control-nonce-123456789012";
+        let valid = signed_handshake(&session, nonce);
+        let cases = [
+            (valid.replace("42", "43"), "HANDSHAKE_PID_INVALID"),
+            (
+                valid.replace("session-12345678", "session-87654321"),
+                "HANDSHAKE_SESSION_INVALID",
+            ),
+            (
+                valid.replace(nonce, "control-nonce-999999999999"),
+                "HANDSHAKE_NONCE_INVALID",
+            ),
+            (
+                valid.replace(
+                    "\"componentId\":\"aive-engine\"",
+                    "\"componentId\":\"other-engine\"",
+                ),
+                "HANDSHAKE_COMPONENT_INVALID",
+            ),
+            (
+                valid.replace("2.0.0-rc.6", "9.9.9"),
+                "HANDSHAKE_VERSION_INVALID",
+            ),
+        ];
+        for (payload, expected) in cases {
+            let parsed =
+                parse_startup_handshake(&payload).expect("structurally valid adversarial message");
+            assert_eq!(
+                verify_startup_handshake(&parsed, &session, nonce, 42, "2.0.0-rc.6").unwrap_err(),
+                expected
+            );
+        }
+        let parsed = parse_startup_handshake(&valid).expect("valid message");
+        let wrong_key = SessionSecrets {
+            bearer_token: "wrong-token-12345678901234567890123456789000".to_string(),
+            ..session
+        };
+        assert_eq!(
+            verify_startup_handshake(&parsed, &wrong_key, nonce, 42, "2.0.0-rc.6").unwrap_err(),
+            "HANDSHAKE_HMAC_INVALID"
+        );
     }
 
     #[test]

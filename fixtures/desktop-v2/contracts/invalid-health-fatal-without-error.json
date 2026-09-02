@@ -32,12 +32,18 @@
       "required": true,
       "detail": "Not probed.",
       "remediationCodes": ["FFMPEG_MISSING"]
+    },
+    "nativeImport": {
+      "state": "not-ready",
+      "required": true,
+      "detail": "Import storage was not reached.",
+      "remediationCodes": ["STORAGE_NOT_WRITABLE"]
     }
   },
   "capabilities": {
     "available": [],
     "degraded": [],
-    "unavailable": ["api", "database", "ffmpeg"]
+    "unavailable": ["api", "database", "ffmpeg", "native-import"]
   },
   "remediationCodes": ["ENGINE_NOT_RUNNING", "DATABASE_UNAVAILABLE", "FFMPEG_MISSING"]
 }

@@ -1,0 +1,9 @@
+{
+  "buildDistributor": "Gyan.dev",
+  "ffmpegVersion": "8.1.1",
+  "licenseSpdx": "GPL-3.0-only",
+  "sourceArchiveSha256": "49b28c5f16addd40239a66949973458769b7056fb7752c30ac0d53389d09a552",
+  "sourceAssetUrl": "https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/ffmpeg-8.1.1-full_build.zip",
+  "sourceCodeUrl": "https://github.com/FFmpeg/FFmpeg",
+  "sourceCommit": "239f2c733d"
+}

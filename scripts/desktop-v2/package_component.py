@@ -449,9 +449,8 @@ def main() -> int:
                         "warning": "NON-PRODUCTION TEST KEY ONLY",
                         "keyId": TEST_KEY_ID,
                         "algorithm": "ed25519",
-                        "publicKeyBase64": base64.b64encode(
-                            public_key(seed)
-                        ).decode("ascii"),
+                        "publicKeyBase64": base64.b64encode(public_key(seed)).decode("ascii"),
+                        "publicKeySha256": hashlib.sha256(public_key(seed)).hexdigest(),
                     },
                     sort_keys=True,
                     indent=2,

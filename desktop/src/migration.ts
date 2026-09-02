@@ -194,6 +194,7 @@ export interface UninstallPlan {
   removeByDefault: UninstallPath[];
   preserveByDefault: UninstallPath[];
   fullWipePaths: UninstallPath[];
+  fullWipeCredentialTargets: string[];
   ownedProcesses: Array<{ pid: number | null; port: number | null; markerPath: string; owner: string | null; stopAllowed: boolean; reason: string }>;
   warnings: string[];
   defaultChoice: string;
@@ -214,6 +215,7 @@ export interface UninstallReport {
   dryRun: boolean;
   removeAllUserData: boolean;
   removedPaths: string[];
+  removedCredentialTargets: string[];
   preservedPaths: string[];
   lockedLeftovers: string[];
   unsafePaths: string[];

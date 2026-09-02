@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aive.dev/desktop-v2/boot-snapshot.v1.schema.json",
+  "title": "Authoritative Desktop Boot Snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "hydrationComplete", "reconciled", "route",
+    "generatedAtEpochMs", "shellBootState", "coreComponents", "catalog",
+    "provisioning", "supervisor", "firstLaunch", "friendlyTitle",
+    "friendlyDetail", "remediationCodes"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "desktop.boot-snapshot.v1" },
+    "hydrationComplete": { "const": true },
+    "reconciled": { "const": true },
+    "route": {
+      "enum": [
+        "booting", "needs-core-setup", "resumable-setup", "starting-engine",
+        "needs-optional-ai-choice", "ready", "repair-required"
+      ]
+    },
+    "generatedAtEpochMs": { "type": "integer", "minimum": 0 },
+    "shellBootState": {
+      "enum": ["starting", "shell-ready", "setup-required", "engine-available", "recoverable-error"]
+    },
+    "coreComponents": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "type": "object" }
+    },
+    "catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["available", "trusted", "autoDiscovered", "source", "detail"],
+      "properties": {
+        "available": { "type": "boolean" },
+        "trusted": { "type": "boolean" },
+        "autoDiscovered": { "type": "boolean" },
+        "source": { "type": ["string", "null"] },
+        "detail": { "type": "string" }
+      }
+    },
+    "provisioning": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "provisioning-journal.v1.schema.json" }
+      ]
+    },
+    "supervisor": { "type": "object" },
+    "firstLaunch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "optionalAiChoice", "completed", "updatedAtEpochMs"],
+      "properties": {
+        "schemaVersion": { "const": "desktop.first-launch.v1" },
+        "optionalAiChoice": { "enum": ["local", "cloud", "decide-later", null] },
+        "completed": { "type": "boolean" },
+        "updatedAtEpochMs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "friendlyTitle": { "type": "string", "minLength": 1 },
+    "friendlyDetail": { "type": "string", "minLength": 1 },
+    "remediationCodes": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+  }
+}

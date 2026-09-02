@@ -133,7 +133,7 @@
 
   FileOpen $0 "$INSTDIR\desktop-v2.identity.json" w
   IfErrors identity_failed
-  FileWrite $0 '{"productName":"AI Video Editor Desktop V2","identifier":"com.fyp.ai-video-editor.desktop-v2","version":"2.0.0-rc.5","channel":"beta"}'
+  FileWrite $0 '{"productName":"AI Video Editor Desktop V2","identifier":"com.fyp.ai-video-editor.desktop-v2","version":"2.0.0-rc.6","channel":"beta"}'
   FileClose $0
   Goto identity_done
   identity_failed:
@@ -141,9 +141,21 @@
     Abort
   identity_done:
 
-  ; The generated Tauri NSIS section is the sole shortcut owner.  This hook
-  ; intentionally creates no .lnk files, preventing the duplicate desktop
-  ; shortcut observed in the rc.3 clean-laptop evidence.
+  ; The generated Tauri NSIS section is the sole shortcut owner. This hook
+  ; intentionally creates no .lnk files and removes only obsolete, known-name
+  ; V2 links before verifying the two canonical generated links. There is no
+  ; second custom shortcut checkbox or custom shortcut creation path.
+  Delete "$DESKTOP\AI Video Editor Desktop.lnk"
+  Delete "$DESKTOP\AI Video Editor Desktop V2 (1).lnk"
+  Delete "$SMPROGRAMS\AI Video Editor Desktop V2.lnk"
+  IfFileExists "$DESKTOP\AI Video Editor Desktop V2.lnk" desktop_shortcut_verified
+    MessageBox MB_ICONSTOP|MB_OK "AI Video Editor Desktop V2 could not verify its single Desktop shortcut. Setup was aborted."
+    Abort
+  desktop_shortcut_verified:
+  IfFileExists "$SMPROGRAMS\AI Video Editor Desktop V2\AI Video Editor Desktop V2.lnk" start_menu_shortcut_verified
+    MessageBox MB_ICONSTOP|MB_OK "AI Video Editor Desktop V2 could not verify its single Start Menu shortcut. Setup was aborted."
+    Abort
+  start_menu_shortcut_verified:
   FileOpen $0 "$INSTDIR\component-broker.json" w
   IfErrors broker_marker_failed
   FileWrite $0 '{"schemaVersion":"desktop.component-broker.v1","identifier":"aive-component-broker","scope":"per-machine","productIdentifier":"com.fyp.ai-video-editor.desktop-v2"}'
@@ -154,7 +166,7 @@
     Abort
   broker_marker_done:
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Video Editor Desktop V2" "DisplayName" "AI Video Editor Desktop V2"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Video Editor Desktop V2" "DisplayVersion" "2.0.0-rc.5"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Video Editor Desktop V2" "DisplayVersion" "2.0.0-rc.6"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Video Editor Desktop V2" "Publisher" "AI Video Editor"
   WriteRegStr HKLM "Software\AI Video Editor Desktop V2" "Identifier" "com.fyp.ai-video-editor.desktop-v2"
   WriteRegStr HKLM "Software\AI Video Editor Desktop V2" "InstallPath" "$INSTDIR"
@@ -181,10 +193,19 @@
   StrCpy $5 "$LOCALAPPDATA\AI Video Editor"
   SetShellVarContext all
   SetRegView 64
-  Delete "$INSTDIR\desktop-v2.identity.json"
-  Delete "$INSTDIR\component-broker.json"
-  RMDir "$INSTDIR"
-  RMDir "$PROGRAMFILES64\AI Video Editor Desktop V2"
+  ; Deferred cleanup is allowed only for the fixed Program Files perimeter.
+  ; Never recurse here: Tauri owns its enumerated payload removal, and locked
+  ; remnants are left to Windows reboot cleanup without broadening the target.
+  StrCmp /I "$INSTDIR" "$PROGRAMFILES64\AI Video Editor Desktop V2\Shell" program_files_cleanup_allowed program_files_cleanup_skipped
+  program_files_cleanup_allowed:
+    Delete /REBOOTOK "$INSTDIR\desktop-v2.identity.json"
+    Delete /REBOOTOK "$INSTDIR\component-broker.json"
+    RMDir /REBOOTOK "$INSTDIR"
+    RMDir /REBOOTOK "$PROGRAMFILES64\AI Video Editor Desktop V2"
+    Goto program_files_cleanup_done
+  program_files_cleanup_skipped:
+    DetailPrint "Skipping deferred Program Files cleanup for unexpected install path: $INSTDIR"
+  program_files_cleanup_done:
   ; Default uninstall removes only machine-scoped application/runtime state.
   StrCpy $2 "$APPDATA\AI Video Editor"
   ReadEnvStr $3 "ProgramData"

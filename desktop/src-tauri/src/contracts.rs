@@ -1140,6 +1140,7 @@ pub struct HealthChecks {
     pub database: HealthCheck,
     pub vector_store: HealthCheck,
     pub ffmpeg: HealthCheck,
+    pub native_import: HealthCheck,
     #[serde(default)]
     pub ai_model: Option<HealthCheck>,
 }

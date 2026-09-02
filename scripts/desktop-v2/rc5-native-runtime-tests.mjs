@@ -6,7 +6,9 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const read = relativePath => readFileSync(path.join(repoRoot, relativePath), "utf8");
 const readJson = relativePath => JSON.parse(read(relativePath));
-const releaseVersion = "2.0.0-rc.5";
+// Kept as an RC5 regression suite, but release identity follows the current
+// candidate and is additionally frozen by rc6-release-installer-tests.mjs.
+const releaseVersion = "2.0.0-rc.6";
 
 const packageJson = readJson("desktop/package.json");
 const packageLock = readJson("desktop/package-lock.json");
@@ -120,7 +122,7 @@ assert.doesNotMatch(supervisor, /Command::new\("docker"\)/);
 // The custom installer hook owns the immutable shell path and markers only;
 // generated Tauri NSIS remains the one shortcut owner.
 assert.match(hook, /StrCpy \$INSTDIR "\$PROGRAMFILES64\\AI Video Editor Desktop V2\\Shell"/);
-assert.match(hook, /2\.0\.0-rc\.5/);
+assert.match(hook, /2\.0\.0-rc\.6/);
 assert.doesNotMatch(hook.replace(/^\s*;.*/gm, ""), /CreateShortCut/i);
 assert.match(hook, /generated Tauri NSIS section is the sole shortcut owner/i);
 assert.doesNotMatch(hook, /SetOutPath\s+[^\r\n]*\$APPDATA/i);
@@ -129,7 +131,7 @@ const generatedInstaller = path.join(repoRoot, "desktop", "src-tauri", "target",
 if (existsSync(generatedInstaller)) {
   const generated = readFileSync(generatedInstaller, "utf8");
   assert.match(generated, /installer-hooks\.nsh/);
-  assert.match(generated, /VERSION \"2\.0\.0-rc\.5\"/);
+  assert.match(generated, /VERSION \"2\.0\.0-rc\.6\"/);
   console.log(`Generated NSIS inspection PASS: ${generatedInstaller}`);
 } else {
   console.log("Generated NSIS inspection deferred: release bundle has not been built in this checkout.");

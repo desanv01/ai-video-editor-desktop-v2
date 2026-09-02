@@ -4,7 +4,7 @@ Updated for v2: speaker diarization, ASR provider tracking, domain terms.
 """
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Literal, Optional, List
 from datetime import datetime
 from uuid import UUID
 from db.models import (
@@ -179,6 +179,9 @@ class NativeImportInitResponse(BaseModel):
     required_free_bytes: int
     staging_relative_path: str
     staging_part_relative_path: str
+    operation_id: str
+    phase: str = "accepted"
+    status_url: str
     warnings: List[str] = Field(default_factory=list)
 
 
@@ -186,16 +189,24 @@ class NativeImportFinalizeRequest(BaseModel):
     copied_file_size_bytes: int = Field(gt=0, le=10 * 1024 * 1024 * 1024)
 
 
+class NativeImportProgressRequest(BaseModel):
+    phase: Literal["copying", "staged"]
+
+
 class PrimaryImportStatusResponse(BaseModel):
     token: str
     project_id: UUID
     filename: str
     status: str
+    phase: str
     bytes_received: int = 0
     total_bytes: int
     percent: float = 0.0
     complete: bool = False
     updated_at: Optional[datetime] = None
+    restartable: bool = False
+    error: Optional[Dict[str, Any]] = None
+    events: List[Dict[str, Any]] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
 
 

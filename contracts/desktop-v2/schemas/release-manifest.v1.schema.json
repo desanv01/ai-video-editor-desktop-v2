@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aive.dev/desktop-v2/release-manifest.v1.schema.json",
+  "title": "AI Video Editor Desktop V2 release provenance",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "product", "generatedAt", "source", "layout", "installer", "components", "catalog", "trustRoot", "authenticode", "releaseQualification", "verification"],
+  "properties": {
+    "schemaVersion": { "const": "desktop.release-manifest.v1" },
+    "product": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "identifier", "version", "channel"],
+      "properties": {
+        "name": { "const": "AI Video Editor Desktop V2" },
+        "identifier": { "const": "com.fyp.ai-video-editor.desktop-v2" },
+        "version": { "const": "2.0.0-rc.6" },
+        "channel": { "const": "beta" }
+      }
+    },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "branch", "dirty"],
+      "properties": { "commit": { "type": "string" }, "branch": { "type": "string" }, "dirty": { "type": "boolean" } }
+    },
+    "layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["shell", "machineData", "userState", "userContent", "shortcuts"],
+      "properties": {
+        "shell": { "const": "%ProgramFiles%/AI Video Editor Desktop V2/Shell" },
+        "machineData": { "const": "%ProgramData%/AI Video Editor" },
+        "userState": { "const": "%LocalAppData%/AI Video Editor" },
+        "userContent": { "const": "%USERPROFILE%/Documents/AI Video Editor" },
+        "shortcuts": { "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": { "type": "string" } }
+      }
+    },
+    "installer": { "$ref": "#/$defs/installer" },
+    "components": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/component" } },
+    "catalog": { "type": "object" },
+    "trustRoot": { "type": "object" },
+    "authenticode": {
+      "type": "object",
+      "required": ["status", "certificateIncluded", "verificationRequiredBeforeCommercialRelease"],
+      "properties": {
+        "status": { "const": "not-claimed" },
+        "certificateIncluded": { "const": false },
+        "verificationRequiredBeforeCommercialRelease": { "const": true }
+      }
+    },
+    "releaseQualification": {
+      "type": "object",
+      "required": ["label", "productionTrusted", "reason"],
+      "properties": {
+        "label": { "enum": ["developer/test", "external-release-candidate"] },
+        "productionTrusted": { "const": false },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "verification": { "type": "object" }
+  },
+  "$defs": {
+    "file": {
+      "type": "object",
+      "required": ["path", "bytes", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "installer": {
+      "allOf": [
+        { "$ref": "#/$defs/file" },
+        {
+          "type": "object",
+          "required": ["scope", "authenticode"],
+          "properties": { "scope": { "const": "per-machine" }, "authenticode": { "const": "not-claimed" } }
+        }
+      ]
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["componentId", "version", "archive", "manifest", "signature"],
+      "properties": {
+        "componentId": { "enum": ["aive-engine", "ffmpeg"] },
+        "version": { "type": "string", "minLength": 1 },
+        "archive": { "$ref": "#/$defs/file" },
+        "manifest": { "$ref": "#/$defs/file" },
+        "signature": { "$ref": "#/$defs/file" }
+      }
+    }
+  }
+}

@@ -58,18 +58,21 @@ as immutable launch inputs.
 ## Handshake, authentication, and bridge
 
 The native source entrypoint (`backend/native_engine.py`) and the deterministic
-fake fixture bind `127.0.0.1` with requested port `0`. After Uvicorn has
-actually bound its socket, the entrypoint flushes exactly one token-free,
-line-delimited JSON handshake:
+fake fixture bind `127.0.0.1` with requested port `0`. Before launch, the
+supervisor binds a separate ephemeral loopback control listener and generates a
+session nonce. After Uvicorn has actually bound its API socket, the engine sends
+one bounded, HMAC-authenticated JSON message to that listener:
 
 ```json
-{"host":"127.0.0.1","pid":1234,"port":43123,"protocolVersion":"desktop.engine-handshake.v1","type":"aive-engine-startup"}
+{"assignedPort":43123,"componentId":"aive-engine","componentVersion":"2.0.0-rc.6","hmacSha256":"<64 lowercase hex characters>","host":"127.0.0.1","nonce":"<session nonce>","pid":1234,"protocolVersion":"desktop.engine-handshake.v2","sessionId":"<session id>","type":"aive-engine-startup"}
 ```
 
-The supervisor accepts only the exact handshake type and protocol,
-`127.0.0.1`, a nonzero port, a nonzero PID matching the owned child, and no
-unknown JSON fields. The line is capped at 16 KiB; stdout/stderr readers keep
-draining after the handshake so a full pipe cannot deadlock startup.
+The supervisor accepts only a loopback peer and verifies the exact handshake
+type/protocol, session, nonce, component identity/version, assigned port, owned
+PID, and SHA-256 HMAC before probing readiness. The message is capped at 16 KiB.
+Stdout and stderr are diagnostics only; they are drained and redacted, and
+closing either pipe cannot determine readiness or fail an otherwise valid
+control handshake.
 
 Each launch generates 32 cryptographically random bytes with the operating
 system secure random source and passes the base64url token through the child

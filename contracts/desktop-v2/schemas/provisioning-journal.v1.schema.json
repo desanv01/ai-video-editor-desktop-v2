@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aive.dev/desktop-v2/provisioning-journal.v1.schema.json",
+  "title": "Durable Desktop Provisioning Journal",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "operationId", "operationKind", "targetId", "state",
+    "checkpoint", "phaseLabel", "bytesDownloaded", "totalBytes", "percent",
+    "cancelRequested", "inAtomicSection", "retryCount", "lastErrorCode",
+    "updatedAtEpochMs"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "desktop.provisioning-journal.v1" },
+    "operationId": { "type": "string", "pattern": "^provision-[0-9]+$" },
+    "operationKind": { "enum": ["core-setup", "local-transcription-runtime", "local-transcription-model"] },
+    "targetId": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,96}$" },
+    "state": { "enum": ["running", "cancelling", "cancelled", "interrupted", "failed", "completed"] },
+    "checkpoint": { "enum": ["discovered", "catalog-reconciled", "downloading", "downloaded", "verified", "staged", "activated", "complete"] },
+    "phaseLabel": { "type": "string", "minLength": 1 },
+    "bytesDownloaded": { "type": "integer", "minimum": 0 },
+    "totalBytes": { "type": "integer", "minimum": 0 },
+    "percent": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "cancelRequested": { "type": "boolean" },
+    "inAtomicSection": { "type": "boolean" },
+    "retryCount": { "type": "integer", "minimum": 0, "maximum": 255 },
+    "lastErrorCode": { "type": ["string", "null"] },
+    "updatedAtEpochMs": { "type": "integer", "minimum": 0 }
+  }
+}

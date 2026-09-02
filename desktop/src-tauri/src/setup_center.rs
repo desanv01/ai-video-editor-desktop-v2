@@ -36,7 +36,7 @@ pub const PRODUCTION_CATALOG_ENV: &str = "AIVE_SETUP_CATALOG_URL";
 const MAX_CATALOG_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CATALOG_ENTRIES: usize = 64;
 const MIN_SYSTEM_FREE_BYTES: u64 = 512 * 1024 * 1024;
-const MAX_BUNDLED_CATALOG_CANDIDATES: usize = 3;
+const MAX_BUNDLED_CATALOG_CANDIDATES: usize = 9;
 
 fn record_catalog_result<T>(operation: &str, result: &ManagerResult<T>) {
     match result {
@@ -876,6 +876,25 @@ fn discover_bundled_catalog_at(resource_dir: &Path) -> ManagerResult<BundledCata
     })
 }
 
+fn discover_bundled_catalog_roots(roots: &[PathBuf]) -> ManagerResult<BundledCatalogDiscovery> {
+    for root in roots.iter().take(3) {
+        if !root.is_dir() {
+            continue;
+        }
+        let discovery = discover_bundled_catalog_at(root)?;
+        if discovery.available {
+            return Ok(discovery);
+        }
+    }
+    Ok(BundledCatalogDiscovery {
+        available: false,
+        path: None,
+        default_path: None,
+        handoff_root: None,
+        detail: "No included release catalog was found beside the app or in its signed resources. You can choose a trusted catalog manually.".to_string(),
+    })
+}
+
 fn verify_and_intake_catalog(
     catalog_json: &str,
     source: &str,
@@ -1058,7 +1077,21 @@ pub fn setup_discover_bundled_catalog(app: AppHandle) -> ManagerResult<BundledCa
             true,
         )
     })?;
-    discover_bundled_catalog_at(&resource_dir)
+    // Commercial/offline handoffs commonly place Catalog and Components next
+    // to the installed launcher rather than inside the resource directory.
+    // Search only three explicit, canonicalizable roots; each candidate still
+    // has to remain inside its root and contain the sibling Components folder.
+    let mut roots = vec![resource_dir];
+    if let Ok(executable) = env::current_exe() {
+        if let Some(parent) = executable.parent() {
+            roots.push(parent.to_path_buf());
+            if let Some(handoff_parent) = parent.parent() {
+                roots.push(handoff_parent.to_path_buf());
+            }
+        }
+    }
+    roots.dedup();
+    discover_bundled_catalog_roots(&roots)
 }
 
 #[tauri::command]
@@ -1902,6 +1935,34 @@ mod tests {
             )
         );
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bundled_catalog_discovery_finds_catalog_and_components_beside_launcher() {
+        let root = env::temp_dir().join(format!(
+            "aive-setup-sibling-catalog-{}-{}",
+            std::process::id(),
+            now_epoch_ms()
+        ));
+        let catalog = root.join("Catalog").join("offline-catalog.json");
+        fs::create_dir_all(catalog.parent().expect("catalog parent")).unwrap();
+        fs::create_dir_all(root.join("Components")).unwrap();
+        fs::write(&catalog, b"{}").unwrap();
+
+        let missing = root.join("missing-resource-root");
+        let discovered = discover_bundled_catalog_roots(&[missing, root.clone()])
+            .expect("sibling catalog discovery");
+        assert!(discovered.available);
+        assert_eq!(
+            discovered.handoff_root,
+            Some(
+                fs::canonicalize(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string()
+            )
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

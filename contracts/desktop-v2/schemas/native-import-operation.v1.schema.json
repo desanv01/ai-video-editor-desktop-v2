@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aive.dev/desktop-v2/native-import-operation.v1.schema.json",
+  "title": "AI Video Editor durable native import operation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "operationId",
+    "projectId",
+    "phase",
+    "bytesReceived",
+    "totalBytes",
+    "restartable",
+    "cancelable",
+    "events"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "desktop.native-import-operation.v1" },
+    "operationId": { "type": "string", "format": "uuid" },
+    "projectId": { "type": "string", "format": "uuid" },
+    "phase": {
+      "enum": [
+        "accepted",
+        "copying",
+        "staged",
+        "finalizing",
+        "completed",
+        "cancelling",
+        "cancelled",
+        "interrupted",
+        "failed",
+        "quarantined"
+      ]
+    },
+    "bytesReceived": { "type": "integer", "minimum": 0 },
+    "totalBytes": { "type": "integer", "minimum": 1 },
+    "restartable": { "type": "boolean" },
+    "cancelable": { "type": "boolean" },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "error": { "$ref": "#/$defs/error" },
+    "events": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/event" }
+    }
+  },
+  "$defs": {
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^NATIVE_IMPORT_[A-Z0-9_]{3,48}$" },
+        "message": { "type": "string", "minLength": 1 },
+        "retryable": { "type": "boolean" }
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sequence", "eventType", "phase", "at", "payload"],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 1 },
+        "eventType": { "type": "string", "pattern": "^[a-z][a-z0-9._-]{1,63}$" },
+        "phase": { "type": "string", "minLength": 1 },
+        "at": { "type": "string", "format": "date-time" },
+        "payload": { "type": "object" }
+      }
+    }
+  }
+}

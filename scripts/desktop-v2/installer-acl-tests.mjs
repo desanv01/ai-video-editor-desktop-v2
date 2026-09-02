@@ -30,14 +30,14 @@ assert.ok((hook.match(/nsExec::ExecToStack/g) ?? []).length >= 3, "reset, grant,
 assert.ok((hook.match(/StrCmp \$0 "0"/g) ?? []).length >= 3, "every icacls command must gate success on exit code 0");
 assert.match(hook, /Pop \$0\s+Pop \$1/);
 assert.match(hook, /SetShellVarContext current\s+StrCpy \$5 "\$LOCALAPPDATA\\AI Video Editor"/);
-assert.match(hook, /Delete "\$INSTDIR\\desktop-v2\.identity\.json"/);
-assert.match(hook, /RMDir "\$INSTDIR"/);
+assert.match(hook, /Delete \/REBOOTOK "\$INSTDIR\\desktop-v2\.identity\.json"/);
+assert.match(hook, /RMDir \/REBOOTOK "\$INSTDIR"/);
 assert.match(hook, /RMDir \/r "\$2\\Components"/);
 assert.match(hook, /\$2\\Broker\\Requests/);
 assert.match(hook, /RMDir \/r "\$5\\Cache"/);
 assert.doesNotMatch(hook, /CreateShortCut/i, "the generated Tauri NSIS section is the sole shortcut creator");
 assert.doesNotMatch(hook, /Ignore|ignore|continue path/i);
-assert.match(hook, /2\.0\.0-rc\.5/);
+assert.match(hook, /2\.0\.0-rc\.6/);
 assert.match(hook, /com\.fyp\.ai-video-editor\.desktop-v2/);
 
 const generatedCandidates = [
@@ -57,7 +57,7 @@ if (artifact && existsSync(artifact)) {
   const utf16 = bytes.toString("utf16le");
   assert.doesNotMatch(ascii, /\$\{COMMONAPPDATA\}/);
   assert.doesNotMatch(utf16, /\$\{COMMONAPPDATA\}/);
-  assert.match(`${ascii}\n${utf16}`, /2\.0\.0-rc\.5/);
+  assert.match(`${ascii}\n${utf16}`, /2\.0\.0-rc\.6/);
   console.log(`Installer artifact ACL scan PASS: ${artifact}`);
 } else {
   console.log("Installer artifact ACL scan deferred: set AIVE_NSIS_ARTIFACT after the NSIS build.");

@@ -189,13 +189,17 @@ def run_build(output_dir: Path, spec_path: Path, clean: bool) -> Path:
 
 
 def run_self_test(executable: Path) -> dict[str, object]:
-    completed = subprocess.run(
-        [str(executable), "--self-test"],
-        cwd=executable.parent,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            [str(executable), "--self-test"],
+            cwd=executable.parent,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("frozen engine self-test exceeded the 30-second build deadline") from exc
     if completed.returncode != 0:
         raise RuntimeError(
             f"frozen engine self-test failed with exit {completed.returncode}: {completed.stderr.strip()}"
@@ -204,7 +208,12 @@ def run_self_test(executable: Path) -> dict[str, object]:
         payload = json.loads(completed.stdout.strip())
     except json.JSONDecodeError as exc:
         raise RuntimeError("frozen engine self-test did not emit JSON") from exc
-    if payload.get("packaging") != "onedir" or payload.get("status") != "ok":
+    if (
+        payload.get("packaging") != "onedir"
+        or payload.get("status") != "ok"
+        or payload.get("frozen") is not True
+        or payload.get("runtime") != "frozen"
+    ):
         raise RuntimeError(f"unexpected frozen engine self-test payload: {payload}")
     return payload
 

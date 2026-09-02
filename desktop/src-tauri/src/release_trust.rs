@@ -1,14 +1,16 @@
-//! Compiled Desktop V2 lecturer-release identity and trust policy.
+//! Compiled Desktop V2 release identity and public trust policy.
 //!
-//! The matching private Ed25519 seed is stored outside the repository in the
-//! restricted release-secrets folder. Only this public trust root is shipped.
+//! RC.6 source builds default to a coherent, explicitly non-production test
+//! trust root. Commercial builds may override the public key metadata through
+//! build-time environment variables. A private seed is never compiled in.
 
-pub const RELEASE_VERSION: &str = "2.0.0-rc.5";
+pub const RELEASE_VERSION: &str = "2.0.0-rc.6";
 pub const RELEASE_CHANNEL: &str = "beta";
-pub const RELEASE_KEY_ID: &str = "aive-desktop-v2-lecturer-2026";
-pub const RELEASE_PUBLIC_KEY_B64: &str = "MhUdd64qlUHYivcNkTsopbtIA1o2nEMUb8fXV5HHY8A=";
-pub const RELEASE_PUBLIC_KEY_SHA256: &str =
-    "471e7b08109f8723400afea495f63d1d93753e4757386e31560a7cbee6bd2a2d";
+include!(concat!(env!("OUT_DIR"), "/release_trust_build.rs"));
+
+pub fn release_trust_is_production() -> bool {
+    RELEASE_TRUST_PROFILE == "external-release"
+}
 
 /// Signed offline catalogs are a supported release feature. Local artifact
 /// URLs are accepted only after the catalog and embedded manifests verify

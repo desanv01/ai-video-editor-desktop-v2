@@ -116,7 +116,11 @@ def main() -> int:
     root = Path(sys.argv[1]).resolve() if len(sys.argv) == 2 else Path(__file__).resolve().parent
     release_manifest = json.loads((root / "release-manifest.json").read_text(encoding="utf-8"))
     shell_version = parse_shell_version(release_manifest.get("product", {}).get("version"), "release-manifest product.version")
-    trust = json.loads((root / "Catalog" / "lecturer-release-public-key.json").read_text(encoding="utf-8"))
+    trust_path = root / "Catalog" / "release-public-key.json"
+    if not trust_path.is_file():
+        # Compatibility for preserved pre-RC.6 handoffs only.
+        trust_path = root / "Catalog" / "lecturer-release-public-key.json"
+    trust = json.loads(trust_path.read_text(encoding="utf-8"))
     key_id = trust["keyId"]
     public_key_bytes = base64.b64decode(trust["publicKeyBase64"], validate=True)
     if hashlib.sha256(public_key_bytes).hexdigest() != trust["publicKeySha256"]:

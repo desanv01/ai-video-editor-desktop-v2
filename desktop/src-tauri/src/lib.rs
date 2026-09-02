@@ -15,6 +15,7 @@ pub mod desktop_v2;
 pub mod migration;
 pub mod operation_log;
 pub mod provider_credentials;
+pub mod provisioning;
 pub mod release_trust;
 pub mod setup_center;
 pub mod supervisor;
@@ -103,6 +104,12 @@ struct NativeImportInitRequest {
 #[serde(rename_all = "camelCase")]
 struct NativeImportFinalizeRequest {
     copied_file_size_bytes: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeImportProgressRequest {
+    phase: &'static str,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -287,7 +294,6 @@ async fn start_native_primary_import(
     supervisor_state: State<'_, supervisor::SupervisorState>,
     project_id: String,
     source_path: String,
-    _backend_url: String,
 ) -> Result<NativeImportCommandResult, String> {
     let registry = registry_state.inner().clone();
     let supervisor = supervisor_state.inner().clone();
@@ -314,6 +320,16 @@ async fn start_native_primary_import(
         .map_err(|e| format!("Could not initialize native import through the authenticated engine bridge: {e}"))?;
 
         let cancel_flag = registry.register(&init_response.token);
+        let _: serde_json::Value = supervisor
+            .api_request_json(
+                "POST",
+                &format!(
+                    "/api/v1/projects/{project_id}/imports/native/primary/{}/progress",
+                    init_response.token
+                ),
+                Some(&NativeImportProgressRequest { phase: "copying" }),
+            )
+            .map_err(|e| format!("Could not persist native import copy phase: {e}"))?;
         emit_native_import_progress(
             &window,
             &NativeImportProgressEvent {
@@ -356,6 +372,16 @@ async fn start_native_primary_import(
             if part_path.exists() {
                 fs::rename(&part_path, &staged_path).map_err(|e| format!("Could not finalize staged file: {e}"))?;
             }
+            let _: serde_json::Value = supervisor
+                .api_request_json(
+                    "POST",
+                    &format!(
+                        "/api/v1/projects/{project_id}/imports/native/primary/{}/progress",
+                        init_response.token
+                    ),
+                    Some(&NativeImportProgressRequest { phase: "staged" }),
+                )
+                .map_err(|e| format!("Could not persist native import staged phase: {e}"))?;
 
             emit_native_import_progress(
                 &window,
@@ -525,6 +551,10 @@ fn copy_file_with_progress(
     writer
         .flush()
         .map_err(|e| format!("Could not flush staged file: {e}"))?;
+    writer
+        .sync_all()
+        .map_err(|e| format!("Could not durably sync staged partial file: {e}"))?;
+    drop(writer);
     if copied != total_bytes {
         return Err(format!(
             "Copied {copied} bytes but expected {total_bytes} bytes"
@@ -684,6 +714,7 @@ pub fn run() {
         }))
         .manage(NativeImportRegistry::default())
         .manage(component_manager::ComponentManagerState::default())
+        .manage(provisioning::ProvisioningCoordinator::default())
         .manage(supervisor::SupervisorState::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -722,8 +753,21 @@ pub fn run() {
             setup_center::setup_refresh_catalog,
             setup_center::setup_run_system_checks,
             provider_credentials::provider_credential_status,
+            provider_credentials::provider_credential_save,
             provider_credentials::provider_credential_test,
+            provider_credentials::provider_credential_verify,
             provider_credentials::provider_credential_clear,
+            provisioning::desktop_boot_snapshot,
+            provisioning::desktop_hydrate,
+            provisioning::desktop_complete_optional_ai_choice,
+            provisioning::provisioning_begin,
+            provisioning::provisioning_status,
+            provisioning::provisioning_retry,
+            provisioning::provisioning_cancel,
+            provisioning::provisioning_complete,
+            provisioning::provisioning_fail,
+            provisioning::provisioning_checkpoint,
+            provisioning::provisioning_set_atomic_section,
             operation_log::operation_log_tail,
             migration::migration_scan_legacy,
             migration::migration_preview,

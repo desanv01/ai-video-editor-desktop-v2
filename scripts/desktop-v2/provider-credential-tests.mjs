@@ -22,18 +22,28 @@ assert.match(rust, /CredReadW/);
 assert.match(rust, /CredDeleteW/);
 assert.match(rust, /ALLOWED_SECRET_KEYS/);
 assert.match(rust, /MAX_SECRET_BYTES/);
-assert.match(rust, /provider_credential_test/);
+assert.match(rust, /provider_credential_save/);
+assert.match(rust, /provider_credential_verify/);
+assert.match(rust, /\/api\/v1\/settings\/ai\/test-provider/);
+assert.match(rust, /not-verified/);
+assert.match(rust, /api_request_json/);
 assert.match(rust, /provider_credential_clear/);
-assert.match(client, /provider_credential_test/);
+assert.match(client, /provider_credential_save/);
+assert.match(client, /provider_credential_verify/);
 assert.match(client, /provider_credential_clear/);
 assert.match(panel, /type="password"/);
-assert.match(panel, /Test and store/);
+assert.match(panel, /Save securely/);
+assert.match(panel, /Verify provider/);
 assert.match(panel, />\s*Clear</);
-assert.match(panel, /local\/manual/i);
+for (const label of ["Mistral / Voxtral", "OpenAI", "DeepSeek", "Alibaba / Qwen"]) {
+  assert.match(client, new RegExp(label.replace("/", "\\/")));
+}
 assert.match(docs, /DPAPI/);
 assert.match(docs, /per-user/);
 assert.match(lib, /provider_credentials::provider_credential_status/);
+assert.match(lib, /provider_credentials::provider_credential_save/);
+assert.match(lib, /provider_credentials::provider_credential_verify/);
 assert.match(lib, /provider_credentials::provider_credential_test/);
 assert.match(lib, /provider_credentials::provider_credential_clear/);
 
-console.log("Provider credential tests passed: local/manual default, bounded lecturer-owned keys, Credential Manager commands, Test/Clear UI, and redaction boundaries.");
+console.log("Provider credential tests passed: fixed providers, separate secure save/provider verification, Credential Manager boundaries, clear, and redaction.");

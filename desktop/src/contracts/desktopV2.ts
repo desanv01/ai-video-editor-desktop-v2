@@ -418,6 +418,7 @@ export interface HealthChecks {
   database: HealthCheck;
   vectorStore: HealthCheck;
   ffmpeg: HealthCheck;
+  nativeImport: HealthCheck;
   aiModel?: HealthCheck;
 }
 
@@ -993,11 +994,12 @@ export function validateHealthReadiness(input: unknown): HealthReadinessPayload 
     }
     const checks = requireObject(root, "checks", "health", issues);
     if (checks) {
-      checkKeys(checks, ["api", "database", "vectorStore", "ffmpeg", "aiModel"], "health.checks", issues);
+      checkKeys(checks, ["api", "database", "vectorStore", "ffmpeg", "nativeImport", "aiModel"], "health.checks", issues);
       validateCheck(checks.api, "health.checks.api", issues);
       validateCheck(checks.database, "health.checks.database", issues);
       validateCheck(checks.vectorStore, "health.checks.vectorStore", issues);
       validateCheck(checks.ffmpeg, "health.checks.ffmpeg", issues);
+      validateCheck(checks.nativeImport, "health.checks.nativeImport", issues);
       if ("aiModel" in checks) validateCheck(checks.aiModel, "health.checks.aiModel", issues);
     }
     const capabilities = requireObject(root, "capabilities", "health", issues);

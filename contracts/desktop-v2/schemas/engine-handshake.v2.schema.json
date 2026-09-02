@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aive.dev/desktop-v2/engine-handshake.v2.schema.json",
+  "title": "AI Video Editor authenticated native engine startup control message",
+  "description": "A bounded message sent to a supervisor-owned loopback listener. Consumers must verify the HMAC and all owned-process identity fields before trusting assignedPort; stdout and stderr are diagnostics only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type",
+    "protocolVersion",
+    "sessionId",
+    "nonce",
+    "pid",
+    "componentId",
+    "componentVersion",
+    "host",
+    "assignedPort",
+    "hmacSha256"
+  ],
+  "properties": {
+    "type": { "const": "aive-engine-startup" },
+    "protocolVersion": { "const": "desktop.engine-handshake.v2" },
+    "sessionId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{8,64}$" },
+    "nonce": { "type": "string", "pattern": "^[A-Za-z0-9_-]{22,128}$" },
+    "pid": { "type": "integer", "minimum": 1 },
+    "componentId": { "const": "aive-engine" },
+    "componentVersion": { "$ref": "#/$defs/semver" },
+    "host": { "const": "127.0.0.1" },
+    "assignedPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "hmacSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  },
+  "$defs": {
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    }
+  }
+}

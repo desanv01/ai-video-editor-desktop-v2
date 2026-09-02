@@ -7,6 +7,9 @@ from concurrent.futures import ThreadPoolExecutor
 import os
 import signal
 import socket
+import json
+import hashlib
+import hmac
 import sqlite3
 import subprocess
 import sys
@@ -194,7 +197,14 @@ class NativeDesktopTests(unittest.TestCase):
     def test_native_engine_smoke_auth_paths_project_job_and_shutdown(self):
         root = _test_root("engine")
         token = "phase4-native-smoke-token-123456789012345678"
+        session_id = "native-smoke-session"
+        control_nonce = "native-smoke-control-nonce-0001"
         port = _free_port()
+        control = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        control.bind(("127.0.0.1", 0))
+        control.listen(1)
+        control.settimeout(30)
+        control_host, control_port = control.getsockname()
         command = [
             sys.executable,
             str(REPO_ROOT / "backend" / "native_engine.py"),
@@ -204,6 +214,12 @@ class NativeDesktopTests(unittest.TestCase):
             str(port),
             "--bearer-token",
             token,
+            "--session-id",
+            session_id,
+            "--control-address",
+            f"{control_host}:{control_port}",
+            "--control-nonce",
+            control_nonce,
             "--ffmpeg-component-root",
             str(FIXTURE_ROOT),
             "--allow-tool-fixture",
@@ -220,6 +236,26 @@ class NativeDesktopTests(unittest.TestCase):
         base = f"http://127.0.0.1:{port}"
         output = ""
         try:
+            connection, _ = control.accept()
+            with connection:
+                raw_handshake = connection.makefile("rb").readline(16 * 1024)
+            handshake = json.loads(raw_handshake)
+            self.assertEqual(handshake["sessionId"], session_id)
+            self.assertEqual(handshake["nonce"], control_nonce)
+            self.assertEqual(handshake["assignedPort"], port)
+            canonical = "\n".join(
+                str(handshake[key])
+                for key in (
+                    "protocolVersion", "sessionId", "nonce", "pid", "componentId",
+                    "componentVersion", "host", "assignedPort",
+                )
+            ).encode()
+            self.assertTrue(
+                hmac.compare_digest(
+                    handshake["hmacSha256"],
+                    hmac.new(token.encode(), canonical, hashlib.sha256).hexdigest(),
+                )
+            )
             deadline = time.time() + 30
             while time.time() < deadline:
                 if process.poll() is not None:
@@ -269,7 +305,6 @@ class NativeDesktopTests(unittest.TestCase):
                     self.fail(f"native engine did not shut down gracefully: {output}")
                 self.assertEqual(process.returncode, 0, output)
                 self.assertIn("native engine graceful shutdown complete", output)
-                self.assertIn('"type":"aive-engine-startup"', output)
-                self.assertIn('"host":"127.0.0.1"', output)
-                self.assertIn(f'"port":{port}', output)
+                self.assertNotIn('"type":"aive-engine-startup"', output)
                 self.assertNotIn(token, output)
+            control.close()

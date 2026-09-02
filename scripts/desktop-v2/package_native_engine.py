@@ -157,11 +157,9 @@ def main() -> int:
             command.append("--offline-local-source")
         if not args.test_fixture:
             command.extend(["--self-test-argument=--self-test"])
-        if args.test_fixture:
+        if args.test_fixture or args.test_signature:
             command.append("--test-fixture")
-        elif args.test_signature:
-            command.append("--test-fixture")
-        elif args.artifact_url:
+        if args.artifact_url:
             command.extend(["--artifact-url", args.artifact_url])
         subprocess.run(command, cwd=ROOT, check=True)
     finally:

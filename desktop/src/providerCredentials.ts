@@ -8,11 +8,21 @@ export const PROVIDER_SECRET_KEYS = [
   { value: "custom_endpoint_key", label: "Custom endpoint key" },
 ] as const;
 
+export const PROVIDER_CARDS = [
+  { id: "mistral", name: "Mistral / Voxtral", detail: "Hosted transcription and language models." },
+  { id: "openai", name: "OpenAI", detail: "Hosted speech and language models." },
+  { id: "deepseek", name: "DeepSeek", detail: "Hosted language models." },
+  { id: "alibaba", name: "Alibaba / Qwen", detail: "Hosted Qwen language models." },
+] as const;
+
 export interface ProviderCredentialStatus {
   schemaVersion: "desktop.provider-credential.v1";
   providerId: string;
   keyName: string;
   configured: boolean;
+  storageVerified: boolean;
+  providerVerified: boolean;
+  verification: "not-requested" | "verified" | "not-verified";
   storage: string;
   manualDefault: boolean;
   detail: string;
@@ -22,8 +32,10 @@ export interface ProviderCredentialStatus {
 export const providerCredentials = {
   status: (providerId: string, keyName: string) =>
     invoke<ProviderCredentialStatus>("provider_credential_status", { providerId, keyName }),
-  test: (providerId: string, keyName: string, secret: string) =>
-    invoke<ProviderCredentialStatus>("provider_credential_test", { providerId, keyName, secret }),
+  save: (providerId: string, keyName: string, secret: string) =>
+    invoke<ProviderCredentialStatus>("provider_credential_save", { providerId, keyName, secret }),
+  verify: (providerId: string, keyName: string) =>
+    invoke<ProviderCredentialStatus>("provider_credential_verify", { providerId, keyName }),
   clear: (providerId: string, keyName: string) =>
     invoke<ProviderCredentialStatus>("provider_credential_clear", { providerId, keyName }),
 };

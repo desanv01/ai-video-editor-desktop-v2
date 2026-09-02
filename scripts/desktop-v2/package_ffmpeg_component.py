@@ -24,6 +24,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGER = ROOT / "scripts" / "desktop-v2" / "package_component.py"
 FIXTURE_ROOT = ROOT / "fixtures" / "desktop-v2" / "native-tools"
+PINNED_FFMPEG_VERSION = "8.1.1"
+PINNED_SOURCE_URL = "https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/ffmpeg-8.1.1-full_build.zip"
+PINNED_SOURCE_ARCHIVE_SHA256 = "49b28c5f16addd40239a66949973458769b7056fb7752c30ac0d53389d09a552"
+PINNED_SOURCE_COMMIT = "239f2c733d"
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,11 +39,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sha256", help="Exact SHA-256 for the local source directory fingerprint or archive.")
     parser.add_argument("--print-source-hash", action="store_true", help="Print the hash that production packaging will require.")
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--version", required=True)
+    parser.add_argument("--version", default=PINNED_FFMPEG_VERSION)
     parser.add_argument("--channel", choices=("stable", "beta", "nightly"), default="stable")
     parser.add_argument("--minimum-shell-version", default="1.0.0")
-    parser.add_argument("--repository-url", default="https://example.test/ffmpeg")
-    parser.add_argument("--release-url", default="https://example.test/ffmpeg/releases")
+    parser.add_argument("--repository-url", default="https://github.com/FFmpeg/FFmpeg")
+    parser.add_argument("--release-url", default=PINNED_SOURCE_URL)
+    parser.add_argument("--source-metadata", type=Path, help="Reviewed source.json to inject when the upstream archive does not carry one.")
     parser.add_argument("--artifact-url")
     parser.add_argument("--offline-local-source", action="store_true")
     parser.add_argument("--private-key-file", type=Path)
@@ -205,17 +210,43 @@ def _write_fixture_source(destination: Path) -> tuple[Path, Path, Path]:
     return destination / "bin" / "ffmpeg.cmd", destination / "bin" / "ffprobe.cmd", destination / "LICENSES" / "NOTICE.txt"
 
 
-def _stage_component(source_root: Path, stage: Path, version: str, fixture: bool) -> tuple[str, list[str], dict[str, object]]:
+def _validate_source_metadata(metadata: dict[str, object], fixture: bool) -> None:
+    if fixture:
+        if metadata.get("source") != "synthetic-fixture":
+            raise ValueError("test fixture metadata must identify itself as synthetic-fixture")
+        return
+    expected = {
+        "ffmpegVersion": PINNED_FFMPEG_VERSION,
+        "sourceAssetUrl": PINNED_SOURCE_URL,
+        "sourceArchiveSha256": PINNED_SOURCE_ARCHIVE_SHA256,
+        "sourceCommit": PINNED_SOURCE_COMMIT,
+        "licenseSpdx": "GPL-3.0-only",
+    }
+    for key, value in expected.items():
+        if metadata.get(key) != value:
+            raise ValueError(f"source metadata {key} must equal the reviewed FFmpeg 8.1.1 value {value}")
+
+
+def _stage_component(
+    source_root: Path,
+    stage: Path,
+    version: str,
+    fixture: bool,
+    metadata_override: Path | None,
+) -> tuple[str, list[str], dict[str, object]]:
     ffmpeg_source = _find_file(source_root, {"ffmpeg.exe"})
     ffprobe_source = _find_file(source_root, {"ffprobe.exe"})
     license_source = _find_named_file(source_root, {"license", "license.txt", "notice", "notice.txt"})
-    metadata_source = _find_named_file(source_root, {"source.json"})
+    metadata_source = metadata_override or _find_named_file(source_root, {"source.json"})
     if license_source is None or metadata_source is None:
         raise ValueError("source must contain a license/notice file and source.json metadata")
     try:
-        json.loads(metadata_source.read_text(encoding="utf-8"))
+        metadata = json.loads(metadata_source.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"metadata source.json must be valid UTF-8 JSON: {metadata_source}") from exc
+    if not isinstance(metadata, dict):
+        raise ValueError("metadata source.json must be a JSON object")
+    _validate_source_metadata(metadata, fixture)
 
     (stage / "bin").mkdir(parents=True)
     (stage / "LICENSES").mkdir()
@@ -237,6 +268,8 @@ def _stage_component(source_root: Path, stage: Path, version: str, fixture: bool
 
 def main() -> int:
     args = parse_args()
+    if args.version != PINNED_FFMPEG_VERSION:
+        raise ValueError(f"RC.6 packages only the pinned FFmpeg version {PINNED_FFMPEG_VERSION}")
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     if args.print_source_hash:
@@ -270,10 +303,15 @@ def main() -> int:
             raise ValueError(f"source SHA-256 mismatch: expected {args.sha256.lower()}, computed {source_hash}")
         if not args.test_fixture and not args.sha256:
             raise ValueError("production packaging requires --sha256 for the local source")
+        if args.source_archive and args.sha256.lower() != PINNED_SOURCE_ARCHIVE_SHA256:
+            raise ValueError("RC.6 source archive SHA-256 does not match the reviewed FFmpeg 8.1.1 asset")
 
         stage = temporary_root / "component"
         stage.mkdir()
-        entrypoint, self_test, probes = _stage_component(source_root, stage, args.version, fixture)
+        metadata_override = args.source_metadata.resolve() if args.source_metadata else None
+        entrypoint, self_test, probes = _stage_component(
+            source_root, stage, args.version, fixture, metadata_override
+        )
         (stage / "metadata" / "input-sha256.txt").write_text(source_hash + "\n", encoding="utf-8", newline="\n")
         command = [
             sys.executable,
@@ -319,11 +357,9 @@ def main() -> int:
             command.extend(["--key-id", args.key_id])
         if args.offline_local_source:
             command.append("--offline-local-source")
-        if args.test_fixture:
+        if args.test_fixture or args.test_signature:
             command.append("--test-fixture")
-        elif args.test_signature:
-            command.append("--test-fixture")
-        elif args.artifact_url:
+        if args.artifact_url:
             command.extend(["--artifact-url", args.artifact_url])
         subprocess.run(command, cwd=ROOT, check=True)
         print(json.dumps({"sourceSha256": source_hash, "probes": probes}, indent=2, sort_keys=True))

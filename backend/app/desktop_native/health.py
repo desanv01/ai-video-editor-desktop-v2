@@ -11,7 +11,7 @@ from .vector_store import VectorCapability
 
 
 ENGINE_ID = "aive-engine"
-ENGINE_VERSION = "2.0.0-rc.3"
+ENGINE_VERSION = "2.0.0-rc.6"
 
 
 def _now() -> str:
@@ -52,6 +52,7 @@ def build_health_payload(
     startup_error: str | None = None,
     component_id: str = ENGINE_ID,
     component_version: str = ENGINE_VERSION,
+    native_import_ready: bool = True,
 ) -> dict[str, Any]:
     api_check = _check(
         "healthy" if api_ready else "not-ready",
@@ -112,6 +113,16 @@ def build_health_payload(
             detail="No local AI model was requested by the Phase 4 engine profile.",
             remediation_codes=[],
         ),
+        "nativeImport": _check(
+            "ready" if native_import_ready else "not-ready",
+            required=True,
+            detail=(
+                "Durable native import manifests and staging storage are ready."
+                if native_import_ready
+                else "Native import staging storage is not writable."
+            ),
+            remediation_codes=[] if native_import_ready else ["STORAGE_NOT_WRITABLE"],
+        ),
     }
 
     available: list[str] = []
@@ -122,6 +133,7 @@ def build_health_payload(
         ("database", database_check),
         ("vector-store", vector_check),
         ("ffmpeg", ffmpeg_check),
+        ("native-import", checks["nativeImport"]),
     ):
         if check["state"] in {"healthy", "ready"}:
             available.append(capability_id)
@@ -191,6 +203,7 @@ def build_capabilities_payload(
     database_ready: bool,
     component_id: str = ENGINE_ID,
     component_version: str = ENGINE_VERSION,
+    native_import_ready: bool = True,
 ) -> dict[str, Any]:
     items: list[dict[str, Any]] = [
         {
@@ -208,6 +221,20 @@ def build_capabilities_payload(
             if database_ready
             else "SQLite database initialization failed.",
             **({} if database_ready else {"remediationCodes": ["DATABASE_UNAVAILABLE"]}),
+        },
+        {
+            "id": "native-import",
+            "state": "available" if native_import_ready else "unavailable",
+            "source": "backend",
+            "version": component_version,
+            "detail": "Durable accepted operations with persisted phases, events, cancellation and restart recovery."
+            if native_import_ready
+            else "Native import staging storage is unavailable.",
+            **(
+                {}
+                if native_import_ready
+                else {"remediationCodes": ["STORAGE_NOT_WRITABLE"]}
+            ),
         },
     ]
     if vector_capability:

@@ -38,6 +38,7 @@ from models.schemas import (
     NativeImportInitRequest,
     NativeImportInitResponse,
     NativeImportOrphanReport,
+    NativeImportProgressRequest,
     PrimaryImportChunkResponse,
     PrimaryImportStatusResponse,
     ProjectAssetResponse,
@@ -56,6 +57,7 @@ from models.schemas import (
 )
 from services.native_semantic_compositor import prewarm_render_proxy
 from services.native_imports import (
+    NativeImportError,
     append_native_import_chunk,
     cancel_native_import_session,
     create_native_import_session,
@@ -64,6 +66,8 @@ from services.native_imports import (
     load_native_import_session,
     mark_native_import_status,
     quarantine_native_import,
+    record_native_import_progress,
+    restart_native_import_session,
     resolve_staged_path,
 )
 from services.ffmpeg import ffmpeg_service
@@ -335,13 +339,21 @@ def _import_session_status_response(session, *, project_id: UUID) -> PrimaryImpo
         project_id=project_id,
         filename=session.original_filename,
         status=session.status,
+        phase=session.phase,
         bytes_received=bytes_received,
         total_bytes=total_bytes,
         percent=percent,
         complete=bytes_received >= total_bytes and total_bytes > 0,
         updated_at=session.updated_at,
+        restartable=session.restartable,
+        error=session.error,
+        events=session.events,
         warnings=_import_session_warnings(session),
     )
+
+
+def _native_import_http_error(error: NativeImportError) -> HTTPException:
+    return HTTPException(status_code=error.status_code, detail=error.as_dict())
 
 
 async def _finalize_project_primary_import_session(
@@ -1047,6 +1059,7 @@ async def upload_project_primary_video(
 @router.post(
     "/{project_id}/imports/native/primary/init",
     response_model=NativeImportInitResponse,
+    status_code=202,
     tags=["Project Videos"],
 )
 async def init_native_project_primary_import(
@@ -1075,6 +1088,8 @@ async def init_native_project_primary_import(
             file_size_bytes=request.file_size_bytes,
             mime_type=request.mime_type,
         )
+    except NativeImportError as exc:
+        raise _native_import_http_error(exc) from exc
     except ValueError as exc:
         detail = str(exc)
         status_code = 507 if "Insufficient disk space" in detail else 400
@@ -1099,6 +1114,9 @@ async def init_native_project_primary_import(
         required_free_bytes=required_bytes,
         staging_relative_path=session.staging_relative_path,
         staging_part_relative_path=session.staging_part_relative_path,
+        operation_id=session.token,
+        phase=session.phase,
+        status_url=f"/api/v1/projects/{project_id}/imports/native/primary/{session.token}",
         warnings=warnings,
     )
 
@@ -1134,6 +1152,8 @@ async def init_browser_project_primary_import(
             file_size_bytes=request.file_size_bytes,
             mime_type=request.mime_type,
         )
+    except NativeImportError as exc:
+        raise _native_import_http_error(exc) from exc
     except ValueError as exc:
         detail = str(exc)
         status_code = 507 if "Insufficient disk space" in detail else 400
@@ -1158,6 +1178,9 @@ async def init_browser_project_primary_import(
         required_free_bytes=required_bytes,
         staging_relative_path=session.staging_relative_path,
         staging_part_relative_path=session.staging_part_relative_path,
+        operation_id=session.token,
+        phase=session.phase,
+        status_url=f"/api/v1/projects/{project_id}/imports/browser/primary/{session.token}",
         warnings=warnings,
     )
 
@@ -1181,8 +1204,8 @@ async def finalize_native_project_primary_import(
 
     try:
         session = load_native_import_session(settings, token)
-    except FileNotFoundError as exc:
-        raise HTTPException(404, str(exc)) from exc
+    except NativeImportError as exc:
+        raise _native_import_http_error(exc) from exc
 
     if session.project_id != str(project_id):
         raise HTTPException(409, "Import session does not belong to this project")
@@ -1196,6 +1219,76 @@ async def finalize_native_project_primary_import(
         background_tasks=background_tasks,
         db=db,
     )
+
+
+@router.get(
+    "/{project_id}/imports/native/primary/{token}",
+    response_model=PrimaryImportStatusResponse,
+    tags=["Project Videos"],
+)
+async def get_native_project_primary_import_status(
+    project_id: UUID,
+    token: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Poll persisted native import phase, byte progress, events and typed failure."""
+    if not await db.get(Project, project_id):
+        raise HTTPException(404, "Project not found")
+    try:
+        session = load_native_import_session(settings, token)
+    except NativeImportError as exc:
+        raise _native_import_http_error(exc) from exc
+    if session.project_id != str(project_id):
+        raise HTTPException(409, "Import session does not belong to this project")
+    return _import_session_status_response(session, project_id=project_id)
+
+
+@router.post(
+    "/{project_id}/imports/native/primary/{token}/progress",
+    response_model=PrimaryImportStatusResponse,
+    tags=["Project Videos"],
+)
+async def record_native_project_primary_import_progress(
+    project_id: UUID,
+    token: str,
+    request: NativeImportProgressRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Record shell-owned copy boundaries; received bytes are read from storage."""
+    if not await db.get(Project, project_id):
+        raise HTTPException(404, "Project not found")
+    try:
+        session = load_native_import_session(settings, token)
+        if session.project_id != str(project_id):
+            raise HTTPException(409, "Import session does not belong to this project")
+        session = record_native_import_progress(settings, session, phase=request.phase)
+    except NativeImportError as exc:
+        raise _native_import_http_error(exc) from exc
+    return _import_session_status_response(session, project_id=project_id)
+
+
+@router.post(
+    "/{project_id}/imports/native/primary/{token}/restart",
+    response_model=PrimaryImportStatusResponse,
+    status_code=202,
+    tags=["Project Videos"],
+)
+async def restart_native_project_primary_import(
+    project_id: UUID,
+    token: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Accept restart of an interrupted/failed operation against durable staging."""
+    if not await db.get(Project, project_id):
+        raise HTTPException(404, "Project not found")
+    try:
+        session = load_native_import_session(settings, token)
+        if session.project_id != str(project_id):
+            raise HTTPException(409, "Import session does not belong to this project")
+        session = restart_native_import_session(settings, token)
+    except NativeImportError as exc:
+        raise _native_import_http_error(exc) from exc
+    return _import_session_status_response(session, project_id=project_id)
 
 
 @router.post(
@@ -1213,12 +1306,16 @@ async def cancel_native_project_primary_import(
         raise HTTPException(404, "Project not found")
 
     try:
-        session, removed_files = cancel_native_import_session(settings, token)
-    except FileNotFoundError as exc:
-        raise HTTPException(404, str(exc)) from exc
+        session = load_native_import_session(settings, token)
+    except NativeImportError as exc:
+        raise _native_import_http_error(exc) from exc
 
     if session.project_id != str(project_id):
         raise HTTPException(409, "Import session does not belong to this project")
+    try:
+        session, removed_files = cancel_native_import_session(settings, token)
+    except NativeImportError as exc:
+        raise _native_import_http_error(exc) from exc
 
     return NativeImportCancelResponse(
         token=token,
@@ -1244,8 +1341,8 @@ async def get_browser_project_primary_import_status(
 
     try:
         session = load_native_import_session(settings, token)
-    except FileNotFoundError as exc:
-        raise HTTPException(404, str(exc)) from exc
+    except NativeImportError as exc:
+        raise _native_import_http_error(exc) from exc
 
     if session.project_id != str(project_id):
         raise HTTPException(409, "Import session does not belong to this project")
@@ -1271,8 +1368,8 @@ async def append_browser_project_primary_import_chunk(
 
     try:
         session = load_native_import_session(settings, token)
-    except FileNotFoundError as exc:
-        raise HTTPException(404, str(exc)) from exc
+    except NativeImportError as exc:
+        raise _native_import_http_error(exc) from exc
 
     if session.project_id != str(project_id):
         raise HTTPException(409, "Import session does not belong to this project")
@@ -1325,8 +1422,8 @@ async def finalize_browser_project_primary_import(
 
     try:
         session = load_native_import_session(settings, token)
-    except FileNotFoundError as exc:
-        raise HTTPException(404, str(exc)) from exc
+    except NativeImportError as exc:
+        raise _native_import_http_error(exc) from exc
 
     if session.project_id != str(project_id):
         raise HTTPException(409, "Import session does not belong to this project")
@@ -1357,12 +1454,16 @@ async def cancel_browser_project_primary_import(
         raise HTTPException(404, "Project not found")
 
     try:
-        session, removed_files = cancel_native_import_session(settings, token)
-    except FileNotFoundError as exc:
-        raise HTTPException(404, str(exc)) from exc
+        session = load_native_import_session(settings, token)
+    except NativeImportError as exc:
+        raise _native_import_http_error(exc) from exc
 
     if session.project_id != str(project_id):
         raise HTTPException(409, "Import session does not belong to this project")
+    try:
+        session, removed_files = cancel_native_import_session(settings, token)
+    except NativeImportError as exc:
+        raise _native_import_http_error(exc) from exc
 
     return NativeImportCancelResponse(
         token=token,

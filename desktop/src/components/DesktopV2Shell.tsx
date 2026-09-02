@@ -36,6 +36,7 @@ import * as api from "../lib/api";
 import { SetupCenterPanel } from "./SetupCenterPanel";
 import { MigrationCleanupWizard } from "./MigrationCleanupWizard";
 import { migrationClient, type LegacyInventory } from "../migration";
+import { provisioningClient, routeNeedsSetup, type DesktopBootSnapshot, type FirstLaunchState } from "../provisioning";
 
 type ShellPanel = "setup" | "diagnostics" | "migration";
 
@@ -84,6 +85,7 @@ export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void })
   const [diagnosticMessage, setDiagnosticMessage] = useState<string | null>(null);
   const [migrationInventory, setMigrationInventory] = useState<LegacyInventory | null>(null);
   const [webview2, setWebview2] = useState<WebView2RuntimeStatus | null>(null);
+  const [bootSnapshot, setBootSnapshot] = useState<DesktopBootSnapshot | null>(null);
 
   const loadShell = useCallback(async () => {
     setLoading(true);
@@ -92,6 +94,17 @@ export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void })
     let nextBootstrap: DesktopV2BootstrapResult | null = null;
     let nextSetupState = setupState;
     let nextStatuses: ComponentStatusResult[] = [];
+    let reconciledSnapshot: DesktopBootSnapshot;
+
+    try {
+      // This is the authority for the first render. It performs journal,
+      // catalog, and component recovery before React receives any booleans.
+      reconciledSnapshot = await provisioningClient.hydrate();
+    } catch (error) {
+      setFailure(normalizeShellFailure(error));
+      setLoading(false);
+      return;
+    }
 
     try {
       const runtime = await getWebView2RuntimeStatus();
@@ -160,7 +173,7 @@ export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void })
 
     const requiredReady = requiredComponentsReady(nextStatuses);
     const bootstrapHealthy = nextBootstrap?.bootState !== "recoverable-error";
-    const shouldSetup = !requiredReady || !bootstrapHealthy;
+    const shouldSetup = routeNeedsSetup(reconciledSnapshot.route);
     setSetupRequired(shouldSetup);
     const persistedHealthyState = requiredReady && !nextSetupState.onboardingCompleted
       ? { ...nextSetupState, onboardingCompleted: true }
@@ -197,7 +210,7 @@ export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void })
         } catch {
           setSupervisorDiagnostics(null);
         }
-        if (persistedHealthyState.onboardingCompleted && canLaunchEditor(status)) onEngineReady();
+        if (reconciledSnapshot.firstLaunch.completed && canLaunchEditor(status)) onEngineReady();
       } else {
         setSupervisor(status);
         try {
@@ -210,6 +223,14 @@ export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void })
       setSupervisor(null);
       setSupervisorDiagnostics(null);
     } finally {
+      try {
+        const finalSnapshot = await provisioningClient.hydrate();
+        setBootSnapshot(finalSnapshot);
+        setSetupRequired(routeNeedsSetup(finalSnapshot.route));
+        if (finalSnapshot.route === "ready") onEngineReady();
+      } catch {
+        setBootSnapshot(reconciledSnapshot);
+      }
       setLoading(false);
     }
   }, [onEngineReady, setupState]);
@@ -230,7 +251,14 @@ export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void })
         const stopListening = await listen<SupervisorStatus>("desktop-engine-status", event => {
           if (cancelled) return;
           setSupervisor(event.payload);
-          if (event.payload.engineReady && setupState.onboardingCompleted) onEngineReady();
+          if (event.payload.engineReady) {
+            void provisioningClient.hydrate().then(snapshot => {
+              if (cancelled) return;
+              setBootSnapshot(snapshot);
+              setSetupRequired(routeNeedsSetup(snapshot.route));
+              if (snapshot.route === "ready") onEngineReady();
+            });
+          }
         });
         if (cancelled) stopListening();
         else unlisten = stopListening;
@@ -288,44 +316,76 @@ export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void })
     setSupervisor(status);
     setSetupState(state);
     setSetupRequired(false);
+    void provisioningClient.hydrate().then(snapshot => {
+      setBootSnapshot(snapshot);
+      setSetupRequired(routeNeedsSetup(snapshot.route));
+    });
   };
 
   const handleLaunchEditor = () => {
-    if (canLaunchEditor(supervisor)) onEngineReady();
+    if (bootSnapshot?.route === "ready" && canLaunchEditor(supervisor)) onEngineReady();
   };
+
+  const handleOptionalAiChoice = async (choice: FirstLaunchState["optionalAiChoice"]) => {
+    await provisioningClient.completeOptionalAiChoice(choice);
+    const snapshot = await provisioningClient.hydrate();
+    setBootSnapshot(snapshot);
+    if (snapshot.route === "ready") onEngineReady();
+  };
+
+  if (!bootSnapshot) {
+    return <BootHydrationScreen failure={failure} loading={loading} onRetry={() => void loadShell()} />;
+  }
 
   return (
     <div className="flex h-screen min-h-[700px] flex-col overflow-hidden bg-surface text-gray-100">
       <header className="flex shrink-0 items-center justify-between border-b border-surface-border bg-surface-raised px-5 py-3">
         <div className="flex items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-accent/20 text-accent ring-1 ring-accent/40"><ShieldCheck className="h-5 w-5" aria-hidden="true" /></div>
-          <div><div className="text-sm font-semibold tracking-wide text-white">{displayInfo?.productName ?? DESKTOP_V2_PRODUCT_NAME}</div><div className="text-[11px] uppercase tracking-[0.18em] text-gray-500">{displayInfo?.productLine ?? DESKTOP_V2_PRODUCT_LINE} · offline-safe shell</div></div>
+          <div><div className="text-sm font-semibold tracking-wide text-white">{displayInfo?.productName ?? DESKTOP_V2_PRODUCT_NAME}</div><div className="text-[11px] uppercase tracking-[0.18em] text-gray-500">{displayInfo?.productLine ?? DESKTOP_V2_PRODUCT_LINE} · Your creative workspace</div></div>
         </div>
         <div className="flex items-center gap-3 text-xs text-gray-400"><span className="rounded-full border border-surface-border bg-surface-overlay px-3 py-1">v{displayInfo?.shellVersion ?? "2.0.0"}</span><span className={`hidden rounded-full border px-3 py-1 sm:inline-flex ${setupRequired ? "border-amber-400/30 bg-amber-500/10 text-amber-200" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"}`}>{bootLabel}</span></div>
       </header>
 
       <div className="flex min-h-0 flex-1">
         <aside className="hidden w-64 shrink-0 border-r border-surface-border bg-surface-raised p-4 md:block">
-          <p className="px-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500">Desktop control</p>
-          <nav className="mt-3 space-y-1" aria-label="Desktop control">
-            <ShellNavButton active={panel === "setup"} icon={<Wrench className="h-4 w-4" />} label="Setup Center" onClick={() => setPanel("setup")} />
+          <p className="px-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500">Workspace</p>
+          <nav className="mt-3 space-y-1" aria-label="Workspace">
+            <ShellNavButton active={panel === "setup"} icon={<Wrench className="h-4 w-4" />} label="Setup" onClick={() => setPanel("setup")} />
             {migrationInventory ? <ShellNavButton active={panel === "migration"} icon={<ArchiveIcon />} label="Migration & Cleanup" onClick={() => setPanel("migration")} /> : null}
             <ShellNavButton active={panel === "diagnostics"} icon={<FileSearch className="h-4 w-4" />} label="Diagnostics" onClick={() => void handleDiagnostics()} />
           </nav>
-          <div className="mt-8 rounded-xl border border-surface-border bg-surface-overlay p-3 text-xs leading-5 text-gray-400"><LockKeyhole className="mb-2 h-4 w-4 text-accent" aria-hidden="true" />The shell is local-only. Backend, Docker, downloads, and engine processes remain gated until the authenticated supervisor is ready.</div>
-          <div className="mt-3 rounded-xl border border-surface-border bg-surface-overlay p-3 text-xs leading-5 text-gray-500"><Settings2 className="mb-2 h-4 w-4 text-gray-400" aria-hidden="true" />Component management remains available after setup for update channel, version, health, repair, rollback, and optional removal.</div>
+          <div className="mt-8 rounded-xl border border-surface-border bg-surface-overlay p-3 text-xs leading-5 text-gray-400"><LockKeyhole className="mb-2 h-4 w-4 text-accent" aria-hidden="true" />Your local workspace and projects stay on this PC unless you choose to connect an online provider.</div>
+          <div className="mt-3 rounded-xl border border-surface-border bg-surface-overlay p-3 text-xs leading-5 text-gray-500"><Settings2 className="mb-2 h-4 w-4 text-gray-400" aria-hidden="true" />You can revisit setup, optional AI, and repairs here at any time.</div>
         </aside>
 
         <main className="min-h-0 flex-1 overflow-auto">
           <div className="mx-auto max-w-6xl px-5 py-6 lg:px-8 lg:py-8">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">Desktop V2 base shell</p><h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">{setupRequired ? "Finish local setup with confidence." : "Your local workspace is ready."}</h1><p className="mt-3 max-w-2xl text-sm leading-6 text-gray-400">{setupRequired ? "Install and verify the native components from inside the app, then launch only after the supervisor proves authenticated readiness." : "The shell has bypassed onboarding because the required components are active. Use Setup Center any time to manage the installation."}</p></div><button type="button" onClick={() => void loadShell()} className="inline-flex items-center justify-center gap-2 rounded-lg border border-surface-border bg-surface-raised px-3 py-2 text-xs font-medium text-gray-200 hover:border-accent hover:text-white focus:outline-none focus:ring-2 focus:ring-accent/70"><RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} aria-hidden="true" /> Refresh shell status</button></div>
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">AI Video Editor</p><h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">{bootSnapshot.friendlyTitle}</h1><p className="mt-3 max-w-2xl text-sm leading-6 text-gray-400">{bootSnapshot.friendlyDetail}</p></div><button type="button" onClick={() => void loadShell()} className="inline-flex items-center justify-center gap-2 rounded-lg border border-surface-border bg-surface-raised px-3 py-2 text-xs font-medium text-gray-200 hover:border-accent hover:text-white focus:outline-none focus:ring-2 focus:ring-accent/70"><RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} aria-hidden="true" /> Check again</button></div>
             {failure ? <ShellFailure failure={failure} onDiagnostics={() => void handleDiagnostics()} /> : null}
-            {panel === "setup" ? <SetupCenterPanel bootstrap={bootstrap} supervisor={supervisor} initialStatuses={statuses} initialState={setupState} initialCatalog={catalogInfo} setupRequired={setupRequired} onSupervisorStatus={setSupervisor} onSetupComplete={handleSetupComplete} onLaunchEditor={handleLaunchEditor} onOpenDiagnostics={() => void handleDiagnostics()} /> : panel === "migration" && migrationInventory ? <MigrationCleanupWizard inventory={migrationInventory} onContinue={() => setPanel("setup")} /> : <DiagnosticsPanel bootstrap={bootstrap} supervisor={supervisor} supervisorDiagnostics={supervisorDiagnostics} webview2={webview2} message={diagnosticMessage} onGenerate={() => void handleDiagnostics()} />}
+            {panel === "setup" ? bootSnapshot.route === "needs-optional-ai-choice" ? <OptionalAiChoicePanel onChoose={handleOptionalAiChoice} /> : <SetupCenterPanel bootstrap={bootstrap} supervisor={supervisor} initialStatuses={statuses} initialState={setupState} initialCatalog={catalogInfo} setupRequired={setupRequired} onSupervisorStatus={setSupervisor} onSetupComplete={handleSetupComplete} onLaunchEditor={handleLaunchEditor} onOpenDiagnostics={() => void handleDiagnostics()} /> : panel === "migration" && migrationInventory ? <MigrationCleanupWizard inventory={migrationInventory} onContinue={() => setPanel("setup")} /> : <DiagnosticsPanel bootstrap={bootstrap} supervisor={supervisor} supervisorDiagnostics={supervisorDiagnostics} webview2={webview2} message={diagnosticMessage} onGenerate={() => void handleDiagnostics()} />}
           </div>
         </main>
       </div>
     </div>
   );
+}
+
+function BootHydrationScreen({ failure, loading, onRetry }: { failure: ReturnType<typeof normalizeShellFailure> | null; loading: boolean; onRetry: () => void }) {
+  return <div className="flex h-screen items-center justify-center bg-surface px-6 text-gray-100"><div className="w-full max-w-md rounded-2xl border border-surface-border bg-surface-raised p-7 text-center shadow-2xl"><div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-accent/15 text-accent"><ShieldCheck className="h-6 w-6" aria-hidden="true" /></div><p className="mt-5 text-xs font-semibold uppercase tracking-[0.2em] text-accent">AI Video Editor</p><h1 className="mt-2 text-2xl font-semibold text-white">{failure ? "We couldn’t finish opening the workspace" : "Opening your workspace"}</h1><p className="mt-3 text-sm leading-6 text-gray-400">{failure ? "Your projects are safe. Try the local readiness check again, or open recovery after the app starts." : "Checking your saved setup and local tools before anything is shown."}</p>{failure ? <button type="button" onClick={onRetry} className="mt-5 inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white"><RefreshCw className="h-4 w-4" aria-hidden="true" /> Try again</button> : <div className="mx-auto mt-6 h-1.5 w-48 overflow-hidden rounded-full bg-surface-overlay"><div className={`h-full w-1/2 rounded-full bg-accent ${loading ? "animate-pulse" : ""}`} /></div>}</div></div>;
+}
+
+function OptionalAiChoicePanel({ onChoose }: { onChoose: (choice: FirstLaunchState["optionalAiChoice"]) => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const choose = async (choice: FirstLaunchState["optionalAiChoice"]) => {
+    setBusy(true);
+    try { await onChoose(choice); } finally { setBusy(false); }
+  };
+  return <section className="mt-6 rounded-2xl border border-surface-border bg-surface-raised p-6 sm:p-8"><p className="text-xs font-semibold uppercase tracking-[0.18em] text-accent">Optional AI Setup</p><h2 className="mt-2 text-2xl font-semibold text-white">How would you like to use AI?</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-gray-400">The editor is ready. This choice is optional and can be changed later in Settings.</p><div className="mt-6 grid gap-3 sm:grid-cols-3"><ChoiceCard title="Work locally" detail="Use local tools and add transcription models only when you confirm each download." onClick={() => void choose("local")} disabled={busy} /><ChoiceCard title="Connect a provider" detail="Add a supported provider later using Windows protected credential storage." onClick={() => void choose("cloud")} disabled={busy} /><ChoiceCard title="Decide later" detail="Open the editor now without configuring optional AI." onClick={() => void choose("decide-later")} disabled={busy} /></div></section>;
+}
+
+function ChoiceCard({ title, detail, onClick, disabled }: { title: string; detail: string; onClick: () => void; disabled: boolean }) {
+  return <button type="button" onClick={onClick} disabled={disabled} className="rounded-xl border border-surface-border bg-surface-overlay p-4 text-left transition-colors hover:border-accent hover:bg-accent/10 disabled:opacity-50"><span className="block text-sm font-semibold text-white">{title}</span><span className="mt-2 block text-xs leading-5 text-gray-400">{detail}</span></button>;
 }
 
 function ShellFailure({ failure, onDiagnostics }: { failure: ReturnType<typeof normalizeShellFailure>; onDiagnostics: () => void }) {

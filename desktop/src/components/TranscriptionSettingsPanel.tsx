@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import * as api from "../lib/api";
+import { provisioningClient } from "../provisioning";
 import type {
   AIProcessingMode,
   BackendAISettings,
@@ -130,6 +131,12 @@ export function TranscriptionSettingsPanel({ isOpen, onClose }: Props) {
     try {
       const nextCatalog = await api.getLocalTranscriptionModels();
       setCatalog(nextCatalog);
+      const operation = await provisioningClient.status().catch(() => null);
+      if (operation?.operationKind === "local-transcription-model"
+        && (operation.state === "running" || operation.state === "cancelling")
+        && nextCatalog.models.some(model => model.model_id === operation.targetId && model.downloaded)) {
+        await provisioningClient.complete();
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -150,15 +157,23 @@ export function TranscriptionSettingsPanel({ isOpen, onClose }: Props) {
   if (!isOpen) return null;
 
   const handleDownload = async (model: LocalTranscriptionModel) => {
+    if (!window.confirm(`Download ${model.label} (${model.size}) for local transcription? This uses your internet connection and stores the model on this device.`)) return;
     setBusyModelId(model.model_id);
+    let coordinationStarted = false;
     setError(null);
     setNotice(null);
     try {
+      await provisioningClient.begin("local-transcription-model", model.model_id);
+      coordinationStarted = true;
       const job = await api.downloadLocalTranscriptionModel(model.model_id, true);
       setSelectedModelId(model.model_id);
       setNotice(job.status === "completed" ? `${model.label} is ready.` : `Downloading ${model.label}.`);
+      if (job.status === "completed") await provisioningClient.complete();
       await refreshCatalog();
     } catch (err) {
+      if (coordinationStarted) {
+        try { await provisioningClient.cancel(); } catch { /* operation already reached a terminal state */ }
+      }
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusyModelId(null);

@@ -13,6 +13,7 @@ if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
 from services.native_imports import (
+    NativeImportError,
     append_native_import_chunk,
     cancel_native_import_session,
     create_native_import_session,
@@ -20,6 +21,8 @@ from services.native_imports import (
     list_native_import_orphans,
     load_native_import_session,
     quarantine_native_import,
+    recover_native_import_sessions,
+    restart_native_import_session,
     resolve_staged_path,
 )
 
@@ -61,6 +64,8 @@ class NativeImportsTests(unittest.TestCase):
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(payload["project_id"], "project-1")
         self.assertEqual(payload["status"], "initialized")
+        self.assertEqual(payload["phase"], "accepted")
+        self.assertEqual(payload["events"][0]["eventType"], "operation.accepted")
 
     def test_create_session_rejects_insufficient_disk_space(self):
         with patch("services.native_imports.shutil.disk_usage", return_value=(100, 90, 1024)):
@@ -121,6 +126,8 @@ class NativeImportsTests(unittest.TestCase):
         self.assertEqual(received, 11)
         self.assertTrue(complete)
         self.assertEqual(session.status, "copied")
+        self.assertEqual(session.phase, "staged")
+        self.assertEqual(session.events[-1]["eventType"], "copy.staged")
 
         staged_path = resolve_staged_path(self.settings, session, part=False)
         part_path = resolve_staged_path(self.settings, session, part=True)
@@ -166,6 +173,36 @@ class NativeImportsTests(unittest.TestCase):
         self.assertFalse(warnings)
         self.assertEqual(len(orphans), 1)
         self.assertIn("quarantined_after_finalize_failure", orphans[0]["reason"])
+
+    def test_restart_recovery_persists_typed_error_and_event_history(self):
+        with patch("services.native_imports.shutil.disk_usage", return_value=(100, 50, 40 * 1024 * 1024 * 1024)):
+            session, _, _ = create_native_import_session(
+                settings=self.settings,
+                project_id="project-1",
+                original_filename="Lecture.mp4",
+                file_size_bytes=11,
+                mime_type="video/mp4",
+            )
+        session, _, _ = append_native_import_chunk(
+            self.settings, session, offset=0, chunk=b"hello ",
+        )
+        self.assertEqual(session.phase, "copying")
+        self.assertEqual(recover_native_import_sessions(self.settings), 1)
+
+        interrupted = load_native_import_session(self.settings, session.token)
+        self.assertEqual(interrupted.phase, "interrupted")
+        self.assertTrue(interrupted.restartable)
+        self.assertEqual(interrupted.error["code"], "NATIVE_IMPORT_ENGINE_RESTARTED")
+        restarted = restart_native_import_session(self.settings, session.token)
+        self.assertEqual(restarted.phase, "copying")
+        self.assertFalse(restarted.restartable)
+        self.assertEqual(restarted.events[-1]["eventType"], "operation.restarted")
+
+    def test_missing_operation_has_typed_error(self):
+        with self.assertRaises(NativeImportError) as caught:
+            load_native_import_session(self.settings, "missing")
+        self.assertEqual(caught.exception.code, "NATIVE_IMPORT_NOT_FOUND")
+        self.assertEqual(caught.exception.status_code, 404)
 
 
 if __name__ == "__main__":

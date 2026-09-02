@@ -537,6 +537,7 @@ pub struct UninstallPlan {
     pub remove_by_default: Vec<UninstallPath>,
     pub preserve_by_default: Vec<UninstallPath>,
     pub full_wipe_paths: Vec<UninstallPath>,
+    pub full_wipe_credential_targets: Vec<String>,
     pub owned_processes: Vec<OwnedProcessCandidate>,
     pub warnings: Vec<String>,
     pub default_choice: String,
@@ -551,6 +552,7 @@ pub struct UninstallReport {
     pub dry_run: bool,
     pub remove_all_user_data: bool,
     pub removed_paths: Vec<String>,
+    pub removed_credential_targets: Vec<String>,
     pub preserved_paths: Vec<String>,
     pub locked_leftovers: Vec<String>,
     pub unsafe_paths: Vec<String>,
@@ -3179,6 +3181,7 @@ pub fn build_uninstall_plan(roots: &MigrationRoots) -> Result<UninstallPlan, Str
         remove_by_default: remove,
         preserve_by_default: preserve,
         full_wipe_paths: full_wipe,
+        full_wipe_credential_targets: crate::provider_credentials::known_credential_targets(),
         owned_processes: owned_process_candidates(roots),
         warnings: vec!["The default uninstall choice preserves projects, uploads, exports, models, databases, and settings.".to_string(), "Locked paths are reported for safe reboot cleanup; arbitrary processes are never terminated.".to_string()],
         default_choice: "remove-shell-runtime-preserve-user-data".to_string(),
@@ -3207,6 +3210,7 @@ pub fn execute_uninstall(
         dry_run: options.dry_run,
         remove_all_user_data: options.remove_all_user_data,
         removed_paths: Vec::new(),
+        removed_credential_targets: Vec::new(),
         preserved_paths: plan
             .preserve_by_default
             .iter()
@@ -3245,6 +3249,12 @@ pub fn execute_uninstall(
                 &mut report,
             );
         }
+        let credential_wipe =
+            crate::provider_credentials::delete_known_credentials_for_full_wipe(options.dry_run);
+        report
+            .removed_credential_targets
+            .extend(credential_wipe.removed_targets);
+        report.warnings.extend(credential_wipe.warnings);
         report.preserved_paths.clear();
     }
     if !report.locked_leftovers.is_empty() && options.schedule_reboot_cleanup {

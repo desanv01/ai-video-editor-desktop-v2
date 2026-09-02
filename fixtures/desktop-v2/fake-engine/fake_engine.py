@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import os
 import signal
+import socket
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -12,7 +15,36 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 TOKEN = os.environ.get("AIVE_ENGINE_BEARER_TOKEN", "")
 MODE = os.environ.get("AIVE_FAKE_ENGINE_MODE", "ready")
 PORT = int(os.environ.get("AIVE_ENGINE_PORT", "0"))
+SESSION_ID = os.environ.get("AIVE_ENGINE_SESSION_ID", "fixture-session")
+CONTROL_ADDRESS = os.environ.get("AIVE_ENGINE_CONTROL_ADDRESS", "")
+CONTROL_NONCE = os.environ.get("AIVE_ENGINE_CONTROL_NONCE", "fixture-control-nonce-000000")
+COMPONENT_VERSION = os.environ.get("AIVE_FAKE_ENGINE_COMPONENT_VERSION", "1.0.0")
 PID = os.getpid()
+PROTOCOL = "desktop.engine-handshake.v2"
+
+
+def _canonical(handshake: dict[str, object]) -> bytes:
+    return "\n".join(
+        str(handshake[key])
+        for key in (
+            "protocolVersion",
+            "sessionId",
+            "nonce",
+            "pid",
+            "componentId",
+            "componentVersion",
+            "host",
+            "assignedPort",
+        )
+    ).encode("utf-8")
+
+
+def _send_control(payload: bytes) -> None:
+    host, separator, port = CONTROL_ADDRESS.rpartition(":")
+    if separator != ":" or host != "127.0.0.1":
+        raise RuntimeError("fake engine requires a supervisor-owned loopback control address")
+    with socket.create_connection((host, int(port)), timeout=5) as control:
+        control.sendall(payload + b"\n")
 
 
 def _payload(path: str) -> dict[str, object]:
@@ -20,7 +52,7 @@ def _payload(path: str) -> dict[str, object]:
         return {
             "schemaVersion": "desktop.capabilities.v1",
             "componentId": "aive-engine",
-            "componentVersion": "1.0.0",
+            "componentVersion": COMPONENT_VERSION,
             "generatedAt": "2026-08-20T00:00:00Z",
             "requested": ["api", "database", "ffmpeg"],
             "items": [
@@ -38,15 +70,16 @@ def _payload(path: str) -> dict[str, object]:
             "alive": True,
             "pid": PID,
             "componentId": "aive-engine",
-            "componentVersion": "1.0.0",
+            "componentVersion": COMPONENT_VERSION,
         },
         "checks": {
             "api": {"state": "healthy", "required": True, "detail": "fixture", "remediationCodes": []},
             "database": {"state": "ready", "required": True, "detail": "fixture", "remediationCodes": []},
             "vectorStore": {"state": "ready", "required": False, "detail": "fixture", "remediationCodes": []},
             "ffmpeg": {"state": "ready", "required": True, "detail": "fixture", "remediationCodes": []},
+            "nativeImport": {"state": "ready", "required": True, "detail": "fixture", "remediationCodes": []},
         },
-        "capabilities": {"available": ["api", "database", "ffmpeg"], "degraded": [], "unavailable": []},
+        "capabilities": {"available": ["api", "database", "ffmpeg", "native-import"], "degraded": [], "unavailable": []},
         "remediationCodes": [],
     }
 
@@ -101,28 +134,41 @@ def main() -> int:
         return 0
     handshake: dict[str, object] = {
         "type": "aive-engine-startup",
-        "protocolVersion": "desktop.engine-handshake.v1",
+        "protocolVersion": PROTOCOL,
+        "sessionId": SESSION_ID,
+        "nonce": CONTROL_NONCE,
+        "componentId": "aive-engine",
+        "componentVersion": COMPONENT_VERSION,
         "host": "127.0.0.1",
-        "port": assigned,
+        "assignedPort": assigned,
         "pid": PID,
     }
     if MODE == "wrong-protocol":
         handshake["protocolVersion"] = "desktop.engine-handshake.v0"
-        sys.stdout.write(json.dumps(handshake, separators=(",", ":")) + "\n")
-        sys.stdout.flush()
     elif MODE == "wrong-host":
         handshake["host"] = "0.0.0.0"
-        sys.stdout.write(json.dumps(handshake, separators=(",", ":")) + "\n")
-        sys.stdout.flush()
-    elif MODE == "malformed":
-        sys.stdout.write('{"type":"aive-engine-startup"\n')
-        sys.stdout.flush()
+    elif MODE == "wrong-pid":
+        handshake["pid"] = PID + 1
+    elif MODE == "wrong-session":
+        handshake["sessionId"] = "wrong-session"
+    elif MODE == "wrong-nonce":
+        handshake["nonce"] = "wrong-control-nonce-00000000"
+    elif MODE == "wrong-component":
+        handshake["componentId"] = "other-engine"
+    elif MODE == "wrong-version":
+        handshake["componentVersion"] = "9.9.9"
+    handshake["hmacSha256"] = hmac.new(TOKEN.encode(), _canonical(handshake), hashlib.sha256).hexdigest()
+    if MODE == "wrong-hmac":
+        handshake["hmacSha256"] = "0" * 64
+    if MODE == "malformed":
+        control_payload = b'{"type":"aive-engine-startup"'
     elif MODE == "oversized":
-        sys.stdout.write(json.dumps({"type": "aive-engine-startup", "padding": "x" * 20_000}) + "\n")
-        sys.stdout.flush()
+        control_payload = json.dumps({"type": "aive-engine-startup", "padding": "x" * 20_000}).encode()
     else:
-        sys.stdout.write(json.dumps(handshake, separators=(",", ":")) + "\n")
-        sys.stdout.flush()
+        control_payload = json.dumps(handshake, separators=(",", ":")).encode()
+    if MODE == "stdout-close-before-control":
+        os.close(sys.stdout.fileno())
+    _send_control(control_payload)
     signal.signal(signal.SIGTERM, lambda *_args: server.shutdown())
     server.serve_forever()
     server.server_close()

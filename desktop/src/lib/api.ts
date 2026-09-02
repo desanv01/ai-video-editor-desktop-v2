@@ -527,7 +527,6 @@ export async function startNativePrimaryImport(
   return invoke<NativeImportResult>("start_native_primary_import", {
     projectId,
     sourcePath,
-    backendUrl: getBackendBaseUrl(),
   });
 }
 

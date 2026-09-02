@@ -23,13 +23,14 @@
     "checks": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["api", "database", "vectorStore", "ffmpeg"],
+      "required": ["api", "database", "vectorStore", "ffmpeg", "nativeImport"],
       "properties": {
         "api": { "$ref": "#/$defs/check" },
         "database": { "$ref": "#/$defs/check" },
         "vectorStore": { "$ref": "#/$defs/check" },
         "ffmpeg": { "$ref": "#/$defs/check" },
-        "aiModel": { "$ref": "#/$defs/check" }
+        "aiModel": { "$ref": "#/$defs/check" },
+        "nativeImport": { "$ref": "#/$defs/check" }
       }
     },
     "capabilities": {

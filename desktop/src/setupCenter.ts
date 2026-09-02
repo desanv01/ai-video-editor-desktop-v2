@@ -226,14 +226,14 @@ export function optionalComponentIsSelected(state: SetupState, componentId: stri
 export function setupStepLabel(stage: SetupStage): string {
   switch (stage) {
     case "welcome": return "Welcome";
-    case "system-check": return "System check";
-    case "choose-components": return "Choose components";
-    case "review": return "Review";
-    case "download": return "Download";
-    case "verify": return "Verify";
-    case "activate": return "Install and activate";
-    case "readiness": return "Engine readiness";
-    case "complete": return "Complete";
+    case "system-check": return "Check this PC";
+    case "choose-components": return "Install Core";
+    case "review": return "Install Media Tools";
+    case "download": return "Installing";
+    case "verify": return "Verify and Start";
+    case "activate": return "Verify and Start";
+    case "readiness": return "Verify and Start";
+    case "complete": return "Ready";
     case "management": return "Component management";
     case "diagnostics": return "Diagnostics";
   }

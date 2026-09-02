@@ -35,7 +35,7 @@ class NativeDesktopRuntime:
     requested_port: int = 0
     assigned_port: int = 0
     requested_capabilities: list[str] = field(
-        default_factory=lambda: ["api", "database", "vector-store", "ffmpeg"]
+        default_factory=lambda: ["api", "database", "vector-store", "ffmpeg", "native-import"]
     )
     allow_tool_fixture: bool = False
     database_ready: bool = False
@@ -95,6 +95,11 @@ class NativeDesktopRuntime:
                 recovered = self.jobs.recover_inflight()
                 if recovered:
                     logger.info("recovered %s interrupted native jobs", recovered)
+            from services.native_imports import recover_native_import_sessions
+
+            recovered_imports = recover_native_import_sessions(settings)
+            if recovered_imports:
+                logger.info("recovered %s interrupted native import operations", recovered_imports)
 
             # The existing RAG service is selected by the native profile at
             # import time.  Reusing its client keeps project/video APIs and
@@ -186,7 +191,7 @@ class NativeDesktopRuntime:
                     "version": ENGINE_VERSION,
                     "path": str(self.paths.components),
                     "active": True,
-                    "capabilities": ["api", "database", "vector-store", "ffmpeg"],
+                    "capabilities": ["api", "database", "vector-store", "ffmpeg", "native-import"],
                 }
             ],
             "requestedCapabilities": self.requested_capabilities,
