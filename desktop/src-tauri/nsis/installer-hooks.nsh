@@ -25,7 +25,7 @@
   ReadEnvStr $3 "ProgramData"
   StrCmp $3 "" machine_data_resolution_failed
   StrCpy $4 "$3\AI Video Editor"
-  StrCmp /I $2 $4 machine_data_resolved
+  StrCmp $2 $4 machine_data_resolved
   DetailPrint "Unexpected machine data root. Expected: $4"
   DetailPrint "Resolved NSIS machine data root: $2"
   Goto machine_data_resolution_failed
@@ -196,7 +196,7 @@
   ; Deferred cleanup is allowed only for the fixed Program Files perimeter.
   ; Never recurse here: Tauri owns its enumerated payload removal, and locked
   ; remnants are left to Windows reboot cleanup without broadening the target.
-  StrCmp /I "$INSTDIR" "$PROGRAMFILES64\AI Video Editor Desktop V2\Shell" program_files_cleanup_allowed program_files_cleanup_skipped
+  StrCmp "$INSTDIR" "$PROGRAMFILES64\AI Video Editor Desktop V2\Shell" program_files_cleanup_allowed program_files_cleanup_skipped
   program_files_cleanup_allowed:
     Delete /REBOOTOK "$INSTDIR\desktop-v2.identity.json"
     Delete /REBOOTOK "$INSTDIR\component-broker.json"
@@ -210,7 +210,7 @@
   StrCpy $2 "$APPDATA\AI Video Editor"
   ReadEnvStr $3 "ProgramData"
   StrCpy $4 "$3\AI Video Editor"
-  StrCmp /I $2 $4 machine_cleanup_resolved
+  StrCmp $2 $4 machine_cleanup_resolved
   DetailPrint "Skipping machine cleanup because NSIS resolved an unexpected root: $2"
   Goto machine_cleanup_done
   machine_cleanup_resolved:

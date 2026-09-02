@@ -56,6 +56,7 @@ assert.match(migration, /V2_PRODUCT_IDENTIFIER|com\.fyp\.ai-video-editor\.deskto
 // restore the two known V2 links only when explicitly requested.
 assert.doesNotMatch(installerCode, /CreateShortCut/i, "the custom NSIS hook must not create a duplicate shortcut");
 assert.match(installer, /generated Tauri NSIS section is the sole shortcut owner/i, "shortcut ownership must be documented at the installer boundary");
+assert.doesNotMatch(installerCode, /\bStrCmp\s+\/I\b/, "NSIS StrCmp does not accept an /I parameter");
 const shortcutSectionStart = migration.indexOf("fn shortcut_paths_for_v2");
 const shortcutSectionEnd = migration.indexOf("fn write_shortcut", shortcutSectionStart);
 assert.ok(shortcutSectionStart >= 0 && shortcutSectionEnd > shortcutSectionStart, "V2 shortcut ownership helper must be present");
