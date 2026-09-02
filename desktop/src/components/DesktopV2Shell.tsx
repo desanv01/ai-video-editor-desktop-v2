@@ -14,8 +14,10 @@ import {
   DESKTOP_V2_PRODUCT_NAME,
   getWebView2RuntimeStatus,
   normalizeShellFailure,
+  redactDiagnosticText,
   type DesktopV2BootstrapResult,
   type ShellInfo,
+  type SupervisorDiagnostics,
   type SupervisorStatus,
   type WebView2RuntimeStatus,
   supervisorStateLabel,
@@ -71,6 +73,7 @@ export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void })
   const [shellInfo, setShellInfo] = useState<ShellInfo | null>(null);
   const [bootstrap, setBootstrap] = useState<DesktopV2BootstrapResult | null>(null);
   const [supervisor, setSupervisor] = useState<SupervisorStatus | null>(null);
+  const [supervisorDiagnostics, setSupervisorDiagnostics] = useState<SupervisorDiagnostics | null>(null);
   const [statuses, setStatuses] = useState<ComponentStatusResult[]>([]);
   const [setupState, setSetupState] = useState<SetupState>(() => defaultSetupState());
   const [catalogInfo, setCatalogInfo] = useState<SetupCatalogInfo | null>(null);
@@ -174,16 +177,38 @@ export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void })
     try {
       let status = await api.getSupervisorStatus();
       if (requiredReady && bootstrapHealthy) {
-        if (status.state === "stopped" || status.state === "repair-required" || status.state === "fatal") {
+        if ([
+          "stopped",
+          "cancelled-stopped",
+          "component-repair-required",
+          "repair-required",
+          "storage-blocked",
+          "launch-blocked",
+          "protocol-incompatible",
+          "session-auth-failed",
+          "fatal-shell-failure",
+          "fatal",
+        ].includes(status.state)) {
           status = await api.startSupervisor();
         }
         setSupervisor(status);
+        try {
+          setSupervisorDiagnostics(await api.getSupervisorDiagnostics());
+        } catch {
+          setSupervisorDiagnostics(null);
+        }
         if (persistedHealthyState.onboardingCompleted && canLaunchEditor(status)) onEngineReady();
       } else {
         setSupervisor(status);
+        try {
+          setSupervisorDiagnostics(await api.getSupervisorDiagnostics());
+        } catch {
+          setSupervisorDiagnostics(null);
+        }
       }
     } catch {
       setSupervisor(null);
+      setSupervisorDiagnostics(null);
     } finally {
       setLoading(false);
     }
@@ -247,6 +272,11 @@ export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void })
     setPanel("diagnostics");
     setDiagnosticMessage(null);
     try {
+      try {
+        setSupervisorDiagnostics(await api.getSupervisorDiagnostics());
+      } catch {
+        setSupervisorDiagnostics(null);
+      }
       const result = await api.generateDesktopDiagnosticSnapshot();
       setDiagnosticMessage(result.created ? `Snapshot created at ${result.path ?? "the per-user Logs directory"}.` : result.detail);
     } catch {
@@ -290,7 +320,7 @@ export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void })
           <div className="mx-auto max-w-6xl px-5 py-6 lg:px-8 lg:py-8">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">Desktop V2 base shell</p><h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">{setupRequired ? "Finish local setup with confidence." : "Your local workspace is ready."}</h1><p className="mt-3 max-w-2xl text-sm leading-6 text-gray-400">{setupRequired ? "Install and verify the native components from inside the app, then launch only after the supervisor proves authenticated readiness." : "The shell has bypassed onboarding because the required components are active. Use Setup Center any time to manage the installation."}</p></div><button type="button" onClick={() => void loadShell()} className="inline-flex items-center justify-center gap-2 rounded-lg border border-surface-border bg-surface-raised px-3 py-2 text-xs font-medium text-gray-200 hover:border-accent hover:text-white focus:outline-none focus:ring-2 focus:ring-accent/70"><RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} aria-hidden="true" /> Refresh shell status</button></div>
             {failure ? <ShellFailure failure={failure} onDiagnostics={() => void handleDiagnostics()} /> : null}
-            {panel === "setup" ? <SetupCenterPanel bootstrap={bootstrap} supervisor={supervisor} initialStatuses={statuses} initialState={setupState} initialCatalog={catalogInfo} setupRequired={setupRequired} onSupervisorStatus={setSupervisor} onSetupComplete={handleSetupComplete} onLaunchEditor={handleLaunchEditor} onOpenDiagnostics={() => void handleDiagnostics()} /> : panel === "migration" && migrationInventory ? <MigrationCleanupWizard inventory={migrationInventory} onContinue={() => setPanel("setup")} /> : <DiagnosticsPanel bootstrap={bootstrap} supervisor={supervisor} webview2={webview2} message={diagnosticMessage} onGenerate={() => void handleDiagnostics()} />}
+            {panel === "setup" ? <SetupCenterPanel bootstrap={bootstrap} supervisor={supervisor} initialStatuses={statuses} initialState={setupState} initialCatalog={catalogInfo} setupRequired={setupRequired} onSupervisorStatus={setSupervisor} onSetupComplete={handleSetupComplete} onLaunchEditor={handleLaunchEditor} onOpenDiagnostics={() => void handleDiagnostics()} /> : panel === "migration" && migrationInventory ? <MigrationCleanupWizard inventory={migrationInventory} onContinue={() => setPanel("setup")} /> : <DiagnosticsPanel bootstrap={bootstrap} supervisor={supervisor} supervisorDiagnostics={supervisorDiagnostics} webview2={webview2} message={diagnosticMessage} onGenerate={() => void handleDiagnostics()} />}
           </div>
         </main>
       </div>
@@ -302,8 +332,21 @@ function ShellFailure({ failure, onDiagnostics }: { failure: ReturnType<typeof n
   return <div className="mt-5 rounded-xl border border-amber-400/30 bg-amber-500/10 p-4"><div className="flex items-start gap-3"><FileWarning className="mt-0.5 h-5 w-5 shrink-0 text-amber-200" aria-hidden="true" /><div><p className="text-sm font-semibold text-amber-50">{failure.message}</p><p className="mt-1 text-xs text-amber-100/70">{failure.code} · technical details stay in Diagnostics.</p><button type="button" onClick={onDiagnostics} className="mt-3 inline-flex items-center gap-2 rounded-md border border-amber-300/30 px-3 py-1.5 text-xs font-medium text-amber-100 hover:bg-amber-500/10 focus:outline-none focus:ring-2 focus:ring-accent/70"><FileSearch className="h-3.5 w-3.5" aria-hidden="true" /> Open Diagnostics</button></div></div></div>;
 }
 
-function DiagnosticsPanel({ bootstrap, supervisor, webview2, message, onGenerate }: { bootstrap: DesktopV2BootstrapResult | null; supervisor: SupervisorStatus | null; webview2: WebView2RuntimeStatus | null; message: string | null; onGenerate: () => void }) {
-  return <section className="mt-6 rounded-2xl border border-surface-border bg-surface-raised p-5 sm:p-7" aria-labelledby="diagnostics-title"><div className="flex items-start gap-3"><FileSearch className="mt-0.5 h-5 w-5 text-accent" aria-hidden="true" /><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-accent">Diagnostics</p><h2 id="diagnostics-title" className="mt-2 text-2xl font-semibold text-white">Redacted recovery details</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-gray-400">Generate a local snapshot with shell state, storage boundary checks, component status, supervisor readiness, and redacted technical details. Tokens and provider secrets are never persisted.</p></div></div><div className="mt-6 grid gap-3 sm:grid-cols-4"><DiagnosticTile label="Shell boot" value={bootstrap?.bootState ?? "Unavailable"} /><DiagnosticTile label="Supervisor" value={supervisorStateLabel(supervisor)} /><DiagnosticTile label="Engine gate" value={supervisor?.engineReady ? "Authenticated" : "Locked"} /><DiagnosticTile label="WebView2" value={webview2?.available ? webview2.version ?? "Detected" : webview2 ? "Required" : "Unknown"} /></div>{webview2 && !webview2.available ? <p role="alert" className="mt-5 rounded-lg border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm text-red-100">{webview2.detail}</p> : null}{message ? <p role="status" className="mt-5 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">{message}</p> : null}<button type="button" onClick={onGenerate} className="mt-6 inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white hover:bg-accent-hover focus:outline-none focus:ring-2 focus:ring-accent/70"><FileSearch className="h-4 w-4" aria-hidden="true" /> Generate redacted snapshot</button></section>;
+function DiagnosticsPanel({ bootstrap, supervisor, supervisorDiagnostics, webview2, message, onGenerate }: { bootstrap: DesktopV2BootstrapResult | null; supervisor: SupervisorStatus | null; supervisorDiagnostics: SupervisorDiagnostics | null; webview2: WebView2RuntimeStatus | null; message: string | null; onGenerate: () => void }) {
+  const lastError = supervisor?.lastError ? redactDiagnosticText(supervisor.lastError) : null;
+  const remediation = supervisor?.remediationCodes.join(" · ") || "None reported";
+  return <section className="mt-6 rounded-2xl border border-surface-border bg-surface-raised p-5 sm:p-7" aria-labelledby="diagnostics-title">
+    <div className="flex items-start gap-3"><FileSearch className="mt-0.5 h-5 w-5 text-accent" aria-hidden="true" /><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-accent">Diagnostics</p><h2 id="diagnostics-title" className="mt-2 text-2xl font-semibold text-white">Redacted recovery details</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-gray-400">Generate a local snapshot with shell state, storage boundary checks, component status, supervisor readiness, and redacted technical details. Tokens and provider secrets are never persisted.</p></div></div>
+    <div className="mt-6 grid gap-3 sm:grid-cols-4"><DiagnosticTile label="Shell boot" value={bootstrap?.bootState ?? "Unavailable"} /><DiagnosticTile label="Supervisor" value={supervisorStateLabel(supervisor)} /><DiagnosticTile label="Engine gate" value={supervisor?.engineReady ? "Authenticated" : "Locked"} /><DiagnosticTile label="WebView2" value={webview2?.available ? webview2.version ?? "Detected" : webview2 ? "Required" : "Unknown"} /></div>
+    {supervisor ? <div className={`mt-5 rounded-xl border p-4 ${supervisor.engineReady ? "border-emerald-400/30 bg-emerald-500/10" : "border-amber-400/30 bg-amber-500/10"}`} aria-live="polite"><div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-semibold text-white">Readiness detail</p><span className="rounded-full bg-black/20 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-gray-300">{supervisor.state}</span></div><p className="mt-2 text-sm leading-6 text-gray-200">{supervisor.detail}</p>{lastError ? <p className="mt-3 break-words text-xs text-amber-100"><span className="font-semibold">Last failure:</span> {lastError}</p> : null}<dl className="mt-3 grid gap-2 text-xs text-gray-400 sm:grid-cols-2"><div><dt className="text-gray-500">Component</dt><dd className="text-gray-300">{supervisor.componentId ?? "Not selected"}{supervisor.componentVersion ? ` · ${supervisor.componentVersion}` : ""}</dd></div><div><dt className="text-gray-500">Readiness probe</dt><dd className="text-gray-300">{supervisor.lastProbeStatus ? `HTTP ${supervisor.lastProbeStatus}` : "Not completed"}</dd></div><div><dt className="text-gray-500">Capabilities probe</dt><dd className="text-gray-300">{supervisor.lastCapabilitiesStatus ? `HTTP ${supervisor.lastCapabilitiesStatus}` : "Not completed"}</dd></div><div><dt className="text-gray-500">Handshake</dt><dd className="text-gray-300">{formatDiagnosticTimestamp(supervisor.handshakeAtEpochMs)}</dd></div><div><dt className="text-gray-500">Readiness</dt><dd className="text-gray-300">{formatDiagnosticTimestamp(supervisor.readinessAtEpochMs)}</dd></div><div><dt className="text-gray-500">Capabilities</dt><dd className="text-gray-300">{formatDiagnosticTimestamp(supervisor.capabilitiesAtEpochMs)}</dd></div><div><dt className="text-gray-500">Child exit</dt><dd className="text-gray-300">{supervisor.lastExitCode === null || supervisor.lastExitCode === undefined ? "Not observed" : supervisor.lastExitCode}</dd></div><div><dt className="text-gray-500">Remediation</dt><dd className="break-words text-gray-300">{remediation}</dd></div></dl>{supervisor.verificationPolicy ? <details className="mt-3"><summary className="cursor-pointer text-[11px] text-gray-500">Installed-runtime verification policy</summary><p className="mt-2 break-words text-[10px] leading-4 text-gray-500">{supervisor.verificationPolicy}</p></details> : null}{supervisorDiagnostics?.logTail.length ? <details className="mt-3"><summary className="cursor-pointer text-[11px] text-gray-500">Redacted native stdout/stderr tail</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/20 p-3 text-[10px] leading-4 text-gray-400">{supervisorDiagnostics.logTail.slice(-12).join("\n")}</pre></details> : null}</div> : <p className="mt-5 rounded-lg border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">Supervisor status is unavailable. Refresh the shell before retrying native setup.</p>}
+    {webview2 && !webview2.available ? <p role="alert" className="mt-5 rounded-lg border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm text-red-100">{webview2.detail}</p> : null}{message ? <p role="status" className="mt-5 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">{message}</p> : null}<button type="button" onClick={onGenerate} className="mt-6 inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white hover:bg-accent-hover focus:outline-none focus:ring-2 focus:ring-accent/70"><FileSearch className="h-4 w-4" aria-hidden="true" /> Generate redacted snapshot</button>
+  </section>;
+}
+
+function formatDiagnosticTimestamp(epochMs?: number | null): string {
+  if (epochMs === null || epochMs === undefined) return "Not observed";
+  const date = new Date(Number(epochMs));
+  return Number.isNaN(date.getTime()) ? "Invalid timestamp" : date.toLocaleString();
 }
 
 function DiagnosticTile({ label, value }: { label: string; value: string }) {

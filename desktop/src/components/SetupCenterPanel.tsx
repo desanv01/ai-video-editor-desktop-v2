@@ -104,11 +104,14 @@ export function SetupCenterPanel({
   const [selectedStatus, setSelectedStatus] = useState<ComponentStatusResult | null>(null);
   const [copyMessage, setCopyMessage] = useState<string | null>(null);
   const [paused, setPaused] = useState(false);
+  const [cancelRequested, setCancelRequested] = useState(false);
   const targetsRef = useRef<Record<string, ComponentTarget>>({});
   const stateRef = useRef(initialState);
   const currentComponentRef = useRef<string | null>(null);
   const operationStageRef = useRef<SetupStage>("download");
   const progressSamplesRef = useRef<Record<string, { bytes: number; at: number }>>({});
+  const cancelRequestedRef = useRef(false);
+  const supervisorStartedRef = useRef(false);
 
   const selectedOptionalIds = state.selectedOptionalPacks;
   const selectedIds = useMemo(
@@ -275,14 +278,43 @@ export function SetupCenterPanel({
     void saveNextState(next).catch(operationError => setError(normalizeSetupError(operationError)));
   };
 
+  const throwIfCancellationRequested = () => {
+    if (cancelRequestedRef.current) {
+      throw {
+        code: "SETUP_CANCELLED",
+        message: "Setup cancellation was requested at a safe boundary.",
+        retryable: true,
+        remediationCodes: ["RESUME_SETUP"],
+      };
+    }
+  };
+
+  const stopSupervisorForCancellation = async () => {
+    if (!supervisorStartedRef.current) return;
+    let next = await api.stopSupervisor();
+    onSupervisorStatus(next);
+    for (let attempt = 0; attempt < 40 && !["stopped", "cancelled-stopped"].includes(next.state); attempt += 1) {
+      await new Promise(resolve => window.setTimeout(resolve, 100));
+      next = await api.getSupervisorStatus();
+      onSupervisorStatus(next);
+    }
+  };
+
   const finishComponent = async (componentId: string, target: ComponentTarget, allowTestSources: boolean) => {
+    throwIfCancellationRequested();
     operationStageRef.current = "verify";
     setStage("verify");
     await componentManager.verify(componentId, target.version, allowTestSources);
+    throwIfCancellationRequested();
     operationStageRef.current = "activate";
     setStage("activate");
     await componentManager.stage(componentId, target.version, target.operationId, allowTestSources);
+    throwIfCancellationRequested();
     await componentManager.activate(componentId, target.version, target.operationId, allowTestSources);
+    // Activation is an atomic safe checkpoint.  If cancellation arrived while
+    // it was committing, leave the active version intact and stop before the
+    // next component/readiness phase.
+    throwIfCancellationRequested();
   };
 
   const installComponent = async (componentId: string, resume = false) => {
@@ -291,6 +323,7 @@ export function SetupCenterPanel({
       throw { code: "CATALOG_MANIFEST_MISSING", message: "The selected component has no verified artifact." };
     }
     currentComponentRef.current = componentId;
+    throwIfCancellationRequested();
     operationStageRef.current = "download";
     const allowTestSources = catalogInfo?.source === "offline-import";
     let target = targetsRef.current[componentId];
@@ -314,6 +347,7 @@ export function SetupCenterPanel({
       setStage("download");
       await componentManager.download(componentId, target.version, target.operationId, allowTestSources);
     }
+    throwIfCancellationRequested();
     await finishComponent(componentId, target, allowTestSources);
     const incompleteOperationIds = { ...stateRef.current.incompleteOperationIds };
     delete incompleteOperationIds[componentId];
@@ -324,6 +358,8 @@ export function SetupCenterPanel({
     setBusy(true);
     setError(null);
     setResumeAvailable(false);
+    cancelRequestedRef.current = false;
+    setCancelRequested(false);
     const currentState = stateRef.current;
     let currentChecks = checks;
     if (!currentChecks) {
@@ -358,18 +394,29 @@ export function SetupCenterPanel({
     const ordered = [...installableSelectedIds].sort((left, right) => (left === "ffmpeg" ? -1 : right === "ffmpeg" ? 1 : 0));
     try {
       await saveNextState({ ...currentState, acceptedLicenseVersions: { ...currentState.acceptedLicenseVersions, ...acceptedLicenseVersions } });
-      for (const componentId of ordered) await installComponent(componentId, resume && Boolean(stateRef.current.incompleteOperationIds[componentId]));
+      for (const componentId of ordered) {
+        throwIfCancellationRequested();
+        await installComponent(componentId, resume && Boolean(stateRef.current.incompleteOperationIds[componentId]));
+      }
+      throwIfCancellationRequested();
       setStage("readiness");
+      operationStageRef.current = "readiness";
+      supervisorStartedRef.current = true;
       const starting = await api.startSupervisor();
       onSupervisorStatus(starting);
       let ready = starting;
       for (let attempt = 0; attempt < 80 && !canLaunchEditor(ready); attempt += 1) {
+        throwIfCancellationRequested();
         await new Promise(resolve => window.setTimeout(resolve, 250));
         ready = await api.getSupervisorStatus();
         onSupervisorStatus(ready);
-        if (["repair-required", "fatal"].includes(ready.state)) break;
+        if (["setup-required", "component-repair-required", "repair-required", "storage-blocked", "launch-blocked", "protocol-incompatible", "session-auth-failed", "fatal-shell-failure", "fatal", "cancelled-stopped"].includes(ready.state)) break;
       }
-      if (!canLaunchEditor(ready)) throw { code: ready.lastError ?? "ENGINE_NOT_READY", message: ready.detail };
+      throwIfCancellationRequested();
+      if (!canLaunchEditor(ready)) {
+        const code = ready.lastError?.split(":", 1)[0] || "ENGINE_NOT_READY";
+        throw { code, message: ready.detail, remediationCodes: ready.remediationCodes };
+      }
       const completed = await saveNextState({
         ...stateRef.current,
         onboardingCompleted: true,
@@ -385,11 +432,15 @@ export function SetupCenterPanel({
       setStage(nextError.code === "ENGINE_NOT_READY" ? "readiness" : operationStageRef.current);
       setResumeAvailable(true);
     } finally {
+      supervisorStartedRef.current = false;
+      cancelRequestedRef.current = false;
+      setCancelRequested(false);
       setBusy(false);
     }
   };
 
   const pauseCurrent = async () => {
+    if (operationStageRef.current !== "download" || cancelRequestedRef.current) return;
     const componentId = currentComponentRef.current;
     const target = componentId ? targetsRef.current[componentId] : null;
     if (!target) return;
@@ -402,17 +453,21 @@ export function SetupCenterPanel({
   };
 
   const cancelCurrent = async () => {
+    if (!busy || cancelRequestedRef.current) return;
+    cancelRequestedRef.current = true;
+    setCancelRequested(true);
+    setPaused(false);
     const componentId = currentComponentRef.current;
     const target = componentId ? targetsRef.current[componentId] : null;
-    if (!target) return;
     try {
-      await componentManager.cancel(target.operationId);
-      setPaused(false);
-      setBusy(false);
-      setError(normalizeSetupError({ code: "DOWNLOAD_CANCELLED", retryable: true }));
-      setResumeAvailable(true);
+      if (operationStageRef.current === "download" && target) {
+        await componentManager.cancel(target.operationId);
+      } else if (operationStageRef.current === "readiness") {
+        await stopSupervisorForCancellation();
+      }
     } catch (operationError) {
-      setError(normalizeSetupError(operationError));
+      const nextError = normalizeSetupError(operationError);
+      if (nextError.code !== "OPERATION_NOT_FOUND") setError(nextError);
     }
   };
 
@@ -427,7 +482,7 @@ export function SetupCenterPanel({
       error,
       checks,
       statuses: statuses.map(status => ({ id: status.id, state: status.state, version: status.version, detail: status.detail })),
-      supervisor: supervisor ? { state: supervisor.state, engineReady: supervisor.engineReady, componentVersion: supervisor.componentVersion, detail: supervisor.detail, remediationCodes: supervisor.remediationCodes } : null,
+      supervisor: supervisor ? { state: supervisor.state, engineReady: supervisor.engineReady, componentId: supervisor.componentId, componentVersion: supervisor.componentVersion, detail: supervisor.detail, lastError: supervisor.lastError, lastExitCode: supervisor.lastExitCode, handshakeAtEpochMs: supervisor.handshakeAtEpochMs, readinessAtEpochMs: supervisor.readinessAtEpochMs, lastProbeStatus: supervisor.lastProbeStatus, capabilitiesAtEpochMs: supervisor.capabilitiesAtEpochMs, lastCapabilitiesStatus: supervisor.lastCapabilitiesStatus, verificationPolicy: supervisor.verificationPolicy, remediationCodes: supervisor.remediationCodes } : null,
     }, null, 2);
     try {
       await navigator.clipboard.writeText(payload);
@@ -543,6 +598,7 @@ export function SetupCenterPanel({
               progressByOperation={progressByOperation}
               transferMetrics={transferMetrics}
               paused={paused}
+              cancelRequested={cancelRequested}
               selectedIds={installableSelectedIds}
               busy={busy}
               error={error}
@@ -554,7 +610,7 @@ export function SetupCenterPanel({
             />
           )}
           {stage === "readiness" && (
-            <ReadinessStep supervisor={supervisor} busy={busy} error={error} onRetry={() => void installSelected(true)} onDiagnostics={onOpenDiagnostics} />
+            <ReadinessStep supervisor={supervisor} busy={busy} cancelRequested={cancelRequested} error={error} onCancel={() => void cancelCurrent()} onRetry={() => void installSelected(true)} onDiagnostics={onOpenDiagnostics} />
           )}
           {stage === "complete" && (
             <CompletionStep supervisor={supervisor} statuses={statuses} engineReady={engineReady} onLaunchEditor={onLaunchEditor} onManage={openManagement} />
@@ -722,12 +778,13 @@ function ReviewStep({ catalog, selectedIds, licenseAccepted, ready, busy, onLice
   );
 }
 
-function OperationStep({ stage, progress, progressByOperation, transferMetrics, paused, selectedIds, busy, error, onPause, onResume, onCancel, onRetry, onDiagnostics }: {
+function OperationStep({ stage, progress, progressByOperation, transferMetrics, paused, cancelRequested, selectedIds, busy, error, onPause, onResume, onCancel, onRetry, onDiagnostics }: {
   stage: SetupStage;
   progress: ReturnType<typeof aggregateProgress>;
   progressByOperation: Record<string, ComponentProgress>;
   transferMetrics: Record<string, { speedBytesPerSecond: number; etaSeconds: number | null }>;
   paused: boolean;
+  cancelRequested: boolean;
   selectedIds: string[];
   busy: boolean;
   error: SetupError | null;
@@ -748,14 +805,15 @@ function OperationStep({ stage, progress, progressByOperation, transferMetrics, 
       <div className="mt-6" role="status" aria-live="polite"><div className="flex items-end justify-between gap-3"><span className="text-3xl font-semibold text-white">{progress.percent.toFixed(1)}%</span><span className="text-xs text-gray-400">{formatBytes(progress.bytesDownloaded)}{progress.totalBytes > 0 ? ` / ${formatBytes(progress.totalBytes)}` : ""}</span></div><div className="mt-3 h-3 overflow-hidden rounded-full bg-surface-overlay" aria-label={`Overall setup progress ${progress.percent.toFixed(1)} percent`} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.percent}><div className="h-full rounded-full bg-accent transition-[width] duration-300 motion-reduce:transition-none" style={{ width: `${Math.min(100, progress.percent)}%` }} /></div><div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-400"><span>{progress.message}</span>{speed > 0 ? <span>{formatBytes(speed)}/s</span> : null}{eta !== null ? <span>About {formatDuration(eta)} remaining</span> : null}</div></div>
       <div className="mt-5 space-y-2">{selectedIds.map(id => { const latest = Object.values(progressByOperation).filter(item => item.componentId === id).slice(-1)[0]; return <div key={id} className="flex items-center justify-between gap-3 rounded-lg border border-surface-border bg-surface-overlay px-3 py-3 text-sm"><div className="flex min-w-0 items-center gap-2">{latest?.state === "active" ? <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" aria-hidden="true" /> : latest?.state === "failed" ? <XCircle className="h-4 w-4 shrink-0 text-rose-300" aria-hidden="true" /> : <RefreshCw className="h-4 w-4 shrink-0 text-accent" aria-hidden="true" />}<span className="truncate text-white">{displayComponentName(id)}</span></div><span className="text-xs text-gray-400">{latest ? `${latest.percent.toFixed(0)}% · ${latest.state}` : "Queued"}</span></div>; })}</div>
       {error ? <ErrorCallout error={error} technicalOpen={false} onToggleTechnical={() => undefined} onRetry={onRetry} onDiagnostics={onDiagnostics} /> : null}
-      <div className="mt-6 flex flex-wrap gap-3">{busy ? paused ? <button type="button" onClick={onResume} className="inline-flex items-center gap-2 rounded-lg border border-accent/50 px-4 py-2.5 text-sm font-medium text-accent-100 hover:bg-accent/10 focus:outline-none focus:ring-2 focus:ring-accent/70"><Play className="h-4 w-4" aria-hidden="true" /> Resume download</button> : <button type="button" onClick={onPause} className="inline-flex items-center gap-2 rounded-lg border border-surface-border px-4 py-2.5 text-sm font-medium text-gray-200 hover:border-accent focus:outline-none focus:ring-2 focus:ring-accent/70"><Pause className="h-4 w-4" aria-hidden="true" /> Pause download</button> : null}<button type="button" onClick={onCancel} className="inline-flex items-center gap-2 rounded-lg border border-amber-400/40 px-4 py-2.5 text-sm font-medium text-amber-100 hover:bg-amber-500/10 focus:outline-none focus:ring-2 focus:ring-accent/70"><XCircle className="h-4 w-4" aria-hidden="true" /> Cancel safely</button></div>
+      <div className="mt-6 flex flex-wrap gap-3">{busy && stage === "download" ? paused ? <button type="button" onClick={onResume} disabled={cancelRequested} className="inline-flex items-center gap-2 rounded-lg border border-accent/50 px-4 py-2.5 text-sm font-medium text-accent-100 hover:bg-accent/10 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-accent/70"><Play className="h-4 w-4" aria-hidden="true" /> Resume download</button> : <button type="button" onClick={onPause} disabled={cancelRequested} className="inline-flex items-center gap-2 rounded-lg border border-surface-border px-4 py-2.5 text-sm font-medium text-gray-200 hover:border-accent disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-accent/70"><Pause className="h-4 w-4" aria-hidden="true" /> Pause download</button> : null}{busy ? <button type="button" onClick={onCancel} disabled={cancelRequested} className="inline-flex items-center gap-2 rounded-lg border border-amber-400/40 px-4 py-2.5 text-sm font-medium text-amber-100 hover:bg-amber-500/10 disabled:cursor-wait disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-accent/70"><XCircle className="h-4 w-4" aria-hidden="true" /> {cancelRequested ? "Finishing safely…" : "Cancel safely"}</button> : null}</div>
     </div>
   );
 }
 
-function ReadinessStep({ supervisor, busy, error, onRetry, onDiagnostics }: { supervisor: SupervisorStatus | null; busy: boolean; error: SetupError | null; onRetry: () => void; onDiagnostics: () => void }) {
+function ReadinessStep({ supervisor, busy, cancelRequested, error, onCancel, onRetry, onDiagnostics }: { supervisor: SupervisorStatus | null; busy: boolean; cancelRequested: boolean; error: SetupError | null; onCancel: () => void; onRetry: () => void; onDiagnostics: () => void }) {
   const ready = canLaunchEditor(supervisor);
-  return <div><StepHeading icon={<Cpu className="h-5 w-5" />} title="Waiting for authenticated readiness" detail="The supervisor owns the native process, authenticates the loopback bridge, and reports capabilities before the editor can open." /><div className={`mt-6 rounded-xl border p-5 ${ready ? "border-emerald-400/30 bg-emerald-500/10" : "border-amber-400/30 bg-amber-500/10"}`} role="status" aria-live="polite"><div className="flex items-start gap-3">{ready ? <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-300" aria-hidden="true" /> : <RefreshCw className={`h-5 w-5 shrink-0 text-amber-200 ${busy ? "animate-spin" : ""}`} aria-hidden="true" />}<div><p className="font-semibold text-white">{ready ? "Engine authenticated and ready" : supervisor?.state === "repair-required" || supervisor?.state === "fatal" ? "Engine needs recovery" : "Starting the owned engine"}</p><p className="mt-2 text-sm leading-6 text-gray-300">{supervisor?.detail ?? "Waiting for the supervisor status event…"}</p>{supervisor?.capabilities ? <p className="mt-2 text-xs text-gray-400">Capabilities: {supervisor.capabilities.items.filter(item => item.state !== "unavailable").map(item => item.id).join(", ") || "basic engine"}</p> : null}</div></div></div>{error ? <ErrorCallout error={error} technicalOpen={false} onToggleTechnical={() => undefined} onRetry={onRetry} onDiagnostics={onDiagnostics} /> : null}</div>;
+  const blocked = ["setup-required", "component-repair-required", "repair-required", "storage-blocked", "launch-blocked", "protocol-incompatible", "session-auth-failed", "fatal-shell-failure", "fatal"].includes(supervisor?.state ?? "");
+  return <div><StepHeading icon={<Cpu className="h-5 w-5" />} title="Waiting for authenticated readiness" detail="The supervisor owns the native process, authenticates the loopback bridge, and reports capabilities before the editor can open." /><div className={`mt-6 rounded-xl border p-5 ${ready ? "border-emerald-400/30 bg-emerald-500/10" : blocked ? "border-rose-400/30 bg-rose-500/10" : "border-amber-400/30 bg-amber-500/10"}`} role="status" aria-live="polite"><div className="flex items-start gap-3">{ready ? <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-300" aria-hidden="true" /> : <RefreshCw className={`h-5 w-5 shrink-0 text-amber-200 ${busy ? "animate-spin" : ""}`} aria-hidden="true" />}<div><p className="font-semibold text-white">{ready ? "Engine authenticated and ready" : blocked ? "Engine needs recovery" : "Starting the owned engine"}</p><p className="mt-2 text-sm leading-6 text-gray-300">{supervisor?.detail ?? "Waiting for the supervisor status event…"}</p>{supervisor?.lastError ? <p className="mt-2 break-words text-xs text-amber-100">Code: {supervisor.lastError.split(":", 1)[0]}</p> : null}{supervisor?.remediationCodes.length ? <p className="mt-2 text-xs text-accent-100">Next: {supervisor.remediationCodes.join(" · ")}</p> : null}{supervisor?.capabilities ? <p className="mt-2 text-xs text-gray-400">Capabilities: {supervisor.capabilities.items.filter(item => item.state !== "unavailable").map(item => item.id).join(", ") || "basic engine"}</p> : null}</div></div></div>{busy ? <button type="button" onClick={onCancel} disabled={cancelRequested} className="mt-5 inline-flex items-center gap-2 rounded-lg border border-amber-400/40 px-4 py-2.5 text-sm font-medium text-amber-100 hover:bg-amber-500/10 disabled:cursor-wait disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-accent/70"><XCircle className="h-4 w-4" aria-hidden="true" /> {cancelRequested ? "Stopping safely…" : "Cancel safely"}</button> : null}{error ? <ErrorCallout error={error} technicalOpen={false} onToggleTechnical={() => undefined} onRetry={onRetry} onDiagnostics={onDiagnostics} /> : null}</div>;
 }
 
 function CompletionStep({ supervisor, statuses, engineReady, onLaunchEditor, onManage }: { supervisor: SupervisorStatus | null; statuses: ComponentStatusResult[]; engineReady: boolean; onLaunchEditor: () => void; onManage: () => void }) {

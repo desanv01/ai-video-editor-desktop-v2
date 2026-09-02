@@ -128,15 +128,29 @@ export interface DiagnosticSnapshotResult {
 
 export type SupervisorPhase =
   | "stopped"
+  | "resolving-installed-components"
   | "resolving"
+  | "launching"
   | "starting"
+  | "awaiting-handshake"
   | "waiting-for-handshake"
+  | "probing-readiness"
   | "probing"
   | "ready"
+  | "degraded-usable"
   | "degraded"
   | "stopping"
   | "crashed-backoff"
+  | "setup-required"
+  | "component-repair-required"
   | "repair-required"
+  | "storage-blocked"
+  | "launch-blocked"
+  | "engine-retryable-failure"
+  | "protocol-incompatible"
+  | "session-auth-failed"
+  | "cancelled-stopped"
+  | "fatal-shell-failure"
   | "fatal";
 
 export interface EngineCapabilitiesPayload {
@@ -170,6 +184,13 @@ export interface SupervisorStatus {
   detail: string;
   remediationCodes: string[];
   lastError: string | null;
+  lastExitCode?: number | null;
+  handshakeAtEpochMs?: number | null;
+  readinessAtEpochMs?: number | null;
+  lastProbeStatus?: number | null;
+  capabilitiesAtEpochMs?: number | null;
+  lastCapabilitiesStatus?: number | null;
+  verificationPolicy?: string;
   nextRetryAtEpochMs: number | null;
   capabilities: EngineCapabilitiesPayload | null;
   logPath: string | null;
@@ -219,21 +240,35 @@ export function engineViewsEnabled(result: Pick<DesktopV2BootstrapResult, "bootS
 }
 
 export function supervisorViewsEnabled(status: Pick<SupervisorStatus, "state" | "engineReady"> | null): boolean {
-  return status?.state === "ready" && status.engineReady;
+  return Boolean(status?.engineReady && (status.state === "ready" || status.state === "degraded-usable" || status.state === "degraded"));
 }
 
 export function supervisorStateLabel(status: SupervisorStatus | null, loading = false): string {
   if (loading) return "Starting shell";
   switch (status?.state) {
+    case "resolving-installed-components":
     case "resolving": return "Checking components";
+    case "launching":
     case "starting": return "Starting engine";
+    case "awaiting-handshake":
     case "waiting-for-handshake": return "Waiting for engine";
+    case "probing-readiness":
     case "probing": return "Checking readiness";
     case "ready": return "Engine ready";
+    case "degraded-usable":
     case "degraded": return "Engine degraded";
     case "stopping": return "Stopping engine";
     case "crashed-backoff": return "Recovering engine";
+    case "setup-required": return "Setup required";
+    case "component-repair-required":
     case "repair-required": return "Repair required";
+    case "storage-blocked": return "Storage blocked";
+    case "launch-blocked": return "Launch blocked";
+    case "engine-retryable-failure": return "Retrying engine";
+    case "protocol-incompatible": return "Protocol mismatch";
+    case "session-auth-failed": return "Session authentication failed";
+    case "cancelled-stopped": return "Stopped safely";
+    case "fatal-shell-failure":
     case "fatal": return "Engine unavailable";
     default: return "Shell ready";
   }

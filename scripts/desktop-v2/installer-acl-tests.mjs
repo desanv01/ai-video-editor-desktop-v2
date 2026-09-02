@@ -37,7 +37,7 @@ assert.match(hook, /\$2\\Broker\\Requests/);
 assert.match(hook, /RMDir \/r "\$5\\Cache"/);
 assert.doesNotMatch(hook, /CreateShortCut/i, "the generated Tauri NSIS section is the sole shortcut creator");
 assert.doesNotMatch(hook, /Ignore|ignore|continue path/i);
-assert.match(hook, /2\.0\.0-rc\.4/);
+assert.match(hook, /2\.0\.0-rc\.5/);
 assert.match(hook, /com\.fyp\.ai-video-editor\.desktop-v2/);
 
 const generatedCandidates = [
@@ -57,7 +57,7 @@ if (artifact && existsSync(artifact)) {
   const utf16 = bytes.toString("utf16le");
   assert.doesNotMatch(ascii, /\$\{COMMONAPPDATA\}/);
   assert.doesNotMatch(utf16, /\$\{COMMONAPPDATA\}/);
-  assert.match(`${ascii}\n${utf16}`, /2\.0\.0-rc\.4/);
+  assert.match(`${ascii}\n${utf16}`, /2\.0\.0-rc\.5/);
   console.log(`Installer artifact ACL scan PASS: ${artifact}`);
 } else {
   console.log("Installer artifact ACL scan deferred: set AIVE_NSIS_ARTIFACT after the NSIS build.");

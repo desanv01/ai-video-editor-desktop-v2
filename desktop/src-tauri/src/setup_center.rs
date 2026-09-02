@@ -1636,7 +1636,7 @@ pub fn setup_run_system_checks(
     let supervisor_status = supervisor.status();
     let native_health_ok = matches!(
         supervisor_status.state,
-        SupervisorPhase::Ready | SupervisorPhase::Degraded
+        SupervisorPhase::Ready | SupervisorPhase::DegradedUsable
     ) && supervisor_status.engine_ready;
     push_check(
         &mut checks,
@@ -1661,7 +1661,20 @@ pub fn setup_run_system_checks(
         } else {
             "Complete setup, then start or retry the authenticated supervisor."
         },
-        Some(format!("supervisor_state={:?}", supervisor_status.state)),
+        Some(format!(
+            "supervisor_state={:?}; engine_ready={}; last_error={:?}; last_exit_code={:?}; handshake_at_epoch_ms={:?}; readiness_at_epoch_ms={:?}; last_probe_status={:?}; capabilities_at_epoch_ms={:?}; last_capabilities_status={:?}; remediation_codes={:?}; verification_policy={}",
+            supervisor_status.state,
+            supervisor_status.engine_ready,
+            supervisor_status.last_error,
+            supervisor_status.last_exit_code,
+            supervisor_status.handshake_at_epoch_ms,
+            supervisor_status.readiness_at_epoch_ms,
+            supervisor_status.last_probe_status,
+            supervisor_status.capabilities_at_epoch_ms,
+            supervisor_status.last_capabilities_status,
+            supervisor_status.remediation_codes,
+            supervisor_status.verification_policy,
+        )),
     );
 
     let (network_severity, network_explanation, network_remediation) = if probe_network {

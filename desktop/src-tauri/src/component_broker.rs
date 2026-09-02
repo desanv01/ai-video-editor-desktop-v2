@@ -442,10 +442,13 @@ fn validate_request(request: &BrokerRequest) -> ManagerResult<()> {
 }
 
 fn policy_from_request(request: &BrokerRequest) -> SourcePolicy {
-    if request.allow_offline_sources {
-        SourcePolicy::OFFLINE_IMPORT
-    } else {
-        SourcePolicy::PRODUCTION
+    match request.operation {
+        // These operations only inspect immutable active/retained payloads.
+        // They must remain usable when the original catalog was imported
+        // offline, without turning that historical URL into a prerequisite.
+        BrokerOperation::Repair | BrokerOperation::Rollback => SourcePolicy::INSTALLED_RUNTIME,
+        BrokerOperation::Activate if request.allow_offline_sources => SourcePolicy::OFFLINE_IMPORT,
+        _ => SourcePolicy::PRODUCTION,
     }
 }
 

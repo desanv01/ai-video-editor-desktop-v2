@@ -273,7 +273,7 @@ export function aggregateProgress(
 }
 
 export function canLaunchEditor(supervisor: Pick<SupervisorStatus, "state" | "engineReady"> | null): boolean {
-  return Boolean(supervisor?.engineReady && (supervisor.state === "ready" || supervisor.state === "degraded"));
+  return Boolean(supervisor?.engineReady && (supervisor.state === "ready" || supervisor.state === "degraded-usable" || supervisor.state === "degraded"));
 }
 
 export function normalizeSetupError(error: unknown): SetupError {
@@ -309,6 +309,7 @@ export function friendlySetupMessage(code: string): string {
     case "BUNDLED_CATALOG_INVALID": return "The bundled lecturer handoff is incomplete or outside the trusted resource boundary.";
     case "CATALOG_NETWORK_ERROR": return "The component catalog could not be reached. Check network, proxy, or TLS settings, or use Offline import.";
     case "HTTPS_REQUIRED": return "This source is not trusted for production. Production catalogs and artifacts must use HTTPS.";
+    case "SOURCE_POLICY_INVALID": return "This installed-runtime check cannot be used to acquire a new component. Retry setup from the selected signed catalog.";
     case "SIGNATURE_INVALID": return "The catalog or component signature could not be verified. Nothing was installed.";
     case "UNKNOWN_TRUST_KEY": return "This catalog was signed by an unknown publisher. Import a catalog from the approved release channel.";
     case "CATALOG_SCHEMA_INVALID": return "This catalog is not compatible with the installed shell.";
@@ -319,6 +320,7 @@ export function friendlySetupMessage(code: string): string {
     case "STORAGE_NOT_WRITABLE": return "Activation needs the installed per-machine repair helper. Choose Repair, approve the scoped UAC prompt, then run the exact check again.";
     case "DOWNLOAD_PAUSED": return "The download is paused and can be resumed from its saved staging cursor.";
     case "DOWNLOAD_CANCELLED": return "The operation was cancelled. Any resumable download state was retained for a later retry.";
+    case "SETUP_CANCELLED": return "Setup was cancelled safely. No partial activation was left behind; any completed atomic activation remains valid and saved work can be resumed.";
     case "DOWNLOAD_HASH_MISMATCH":
     case "ARTIFACT_HASH_MISMATCH": return "The downloaded bytes do not match the signed artifact hash. The artifact was discarded.";
     case "OS_INCOMPATIBLE":
@@ -328,6 +330,11 @@ export function friendlySetupMessage(code: string): string {
     case "COMPONENT_VERSION_INCOMPATIBLE": return "The component failed integrity or readiness checks and needs repair or rollback.";
     case "ENGINE_CRASHED":
     case "ENGINE_CRASH_BUDGET_EXHAUSTED": return "The native engine stopped during startup. Retry, repair, or roll back the active component.";
+    case "ENGINE_NOT_READY": return "The native engine did not report authenticated readiness. Review Diagnostics before retrying.";
+    case "SESSION_AUTH_FAILED": return "The native engine rejected its launch session. Retry the authenticated startup or repair the active component.";
+    case "READINESS_SCHEMA_INVALID":
+    case "CAPABILITIES_SCHEMA_INVALID":
+    case "PROTOCOL_INCOMPATIBLE": return "The installed engine and shell readiness contracts do not match. Repair or roll back the active engine.";
     case "UAC_CANCELLED": return "The permission request was cancelled. No component was moved into the active slot.";
     case "OPERATION_RETRY_EXHAUSTED": return "Setup has exhausted its safe retries. Review Diagnostics before trying again.";
     default: return "Setup could not finish this step. Review the remediation guidance or open Diagnostics.";

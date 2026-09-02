@@ -9,7 +9,7 @@
 use crate::component_broker::BrokerHealth;
 use crate::contracts::{canonical_windows_storage_layout, StorageLayout, STORAGE_LAYOUT_VERSION};
 use crate::operation_log::OperationLogEntry;
-use crate::supervisor::SupervisorState;
+use crate::supervisor::{SupervisorDiagnostics, SupervisorState, SupervisorStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::env;
@@ -248,6 +248,7 @@ struct DiagnosticSnapshot {
     operation_tail: Vec<OperationLogEntry>,
     perimeter_summary: DiagnosticPerimeterSummary,
     catalog_rejection: Option<crate::setup_center::CatalogRejection>,
+    supervisor_diagnostics: SupervisorDiagnostics,
     supervisor_readiness: String,
     technical_details: Vec<String>,
 }
@@ -1296,6 +1297,20 @@ pub fn generate_diagnostic_snapshot(
     let activation = inspect_activation_metadata_internal(&paths);
     let boot_state = boot_state_for_activation(&activation.public);
     let supervisor_status = supervisor.status();
+    let supervisor_diagnostics = supervisor.diagnostics();
+    let mut technical_details = technical_detail_list(&activation, None);
+    if let Some(last_error) = supervisor_status.last_error.as_deref() {
+        technical_details.push(format!(
+            "supervisor.lastError={}",
+            redact_diagnostic_text(last_error)
+        ));
+    }
+    if !supervisor_diagnostics.log_tail.is_empty() {
+        technical_details.push(format!(
+            "supervisor.stdoutStderrTailLines={}",
+            supervisor_diagnostics.log_tail.len()
+        ));
+    }
     let snapshot = DiagnosticSnapshot {
         schema_version: DIAGNOSTIC_SNAPSHOT_VERSION.to_string(),
         generated_at_epoch_ms: now_epoch_ms(),
@@ -1313,11 +1328,9 @@ pub fn generate_diagnostic_snapshot(
         operation_tail: crate::operation_log::current_tail(50),
         perimeter_summary: diagnostic_perimeter_summary(&paths),
         catalog_rejection: crate::setup_center::load_catalog_rejection().ok().flatten(),
-        supervisor_readiness: format!(
-            "state={:?}; engineReady={}",
-            supervisor_status.state, supervisor_status.engine_ready
-        ),
-        technical_details: technical_detail_list(&activation, None),
+        supervisor_diagnostics,
+        supervisor_readiness: supervisor_readiness_summary(&supervisor_status),
+        technical_details,
     };
     let diagnostic_id = format!("diag-{}", snapshot.generated_at_epoch_ms);
     let log_path = PathBuf::from(&paths.user_logs);
@@ -1364,6 +1377,30 @@ pub fn generate_diagnostic_snapshot(
             remediation_codes: vec!["STORAGE_NOT_WRITABLE".to_string()],
         },
     }
+}
+
+fn supervisor_readiness_summary(status: &SupervisorStatus) -> String {
+    let last_error = status
+        .last_error
+        .as_deref()
+        .map(redact_diagnostic_text)
+        .unwrap_or_else(|| "none".to_string());
+    format!(
+        "state={:?}; engineReady={}; component={:?}; version={:?}; lastError={}; lastExitCode={:?}; handshakeAtEpochMs={:?}; readinessAtEpochMs={:?}; lastProbeStatus={:?}; capabilitiesAtEpochMs={:?}; lastCapabilitiesStatus={:?}; remediationCodes={:?}; verificationPolicy={}",
+        status.state,
+        status.engine_ready,
+        status.component_id,
+        status.component_version,
+        last_error,
+        status.last_exit_code,
+        status.handshake_at_epoch_ms,
+        status.readiness_at_epoch_ms,
+        status.last_probe_status,
+        status.capabilities_at_epoch_ms,
+        status.last_capabilities_status,
+        status.remediation_codes,
+        redact_diagnostic_text(&status.verification_policy),
+    )
 }
 
 fn replace_sensitive_value(input: &str, marker: &str) -> String {

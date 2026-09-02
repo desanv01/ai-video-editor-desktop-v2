@@ -37,6 +37,8 @@ pub const SUPERVISOR_CAPABILITIES_EVENT: &str = "desktop-engine-capabilities";
 pub const STARTUP_HANDSHAKE_PROTOCOL: &str = "desktop.engine-handshake.v1";
 pub const SUPERVISOR_STATUS_SCHEMA: &str = "desktop.supervisor-status.v1";
 pub const SUPERVISOR_DIAGNOSTICS_SCHEMA: &str = "desktop.supervisor-diagnostics.v1";
+const INSTALLED_RUNTIME_POLICY_DESCRIPTION: &str =
+    "installed-runtime: signed manifest, identity, inventory, immutable path, entrypoint, and activation metadata; artifact URL not acquired";
 const ENGINE_COMPONENT_ID: &str = "aive-engine";
 const FFMPEG_COMPONENT_ID: &str = "ffmpeg";
 const MAX_RETRIES: u32 = 3;
@@ -59,16 +61,30 @@ const BACKOFFS: [Duration; 3] = [
 #[serde(rename_all = "kebab-case")]
 pub enum SupervisorPhase {
     Stopped,
-    Resolving,
-    Starting,
-    WaitingForHandshake,
-    Probing,
+    #[serde(alias = "resolving")]
+    ResolvingInstalledComponents,
+    #[serde(alias = "starting")]
+    Launching,
+    #[serde(alias = "waiting-for-handshake")]
+    AwaitingHandshake,
+    #[serde(alias = "probing")]
+    ProbingReadiness,
     Ready,
-    Degraded,
+    #[serde(alias = "degraded")]
+    DegradedUsable,
     Stopping,
     CrashedBackoff,
-    RepairRequired,
-    Fatal,
+    SetupRequired,
+    #[serde(alias = "repair-required")]
+    ComponentRepairRequired,
+    StorageBlocked,
+    LaunchBlocked,
+    EngineRetryableFailure,
+    ProtocolIncompatible,
+    SessionAuthFailed,
+    CancelledStopped,
+    #[serde(alias = "fatal")]
+    FatalShellFailure,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,20 +108,28 @@ pub enum SupervisorEvent {
 pub fn transition_state(state: SupervisorPhase, event: SupervisorEvent) -> SupervisorPhase {
     match (state, event) {
         (_, SupervisorEvent::Stop) => SupervisorPhase::Stopping,
-        (_, SupervisorEvent::Repair) => SupervisorPhase::RepairRequired,
-        (_, SupervisorEvent::Fatal) => SupervisorPhase::Fatal,
+        (_, SupervisorEvent::Repair) => SupervisorPhase::ComponentRepairRequired,
+        (_, SupervisorEvent::Fatal) => SupervisorPhase::FatalShellFailure,
         (_, SupervisorEvent::Reset) => SupervisorPhase::Stopped,
         (SupervisorPhase::Stopped, SupervisorEvent::Resolve)
-        | (SupervisorPhase::CrashedBackoff, SupervisorEvent::Resolve) => SupervisorPhase::Resolving,
-        (SupervisorPhase::Resolving, SupervisorEvent::Launch)
-        | (SupervisorPhase::CrashedBackoff, SupervisorEvent::Launch) => SupervisorPhase::Starting,
-        (SupervisorPhase::Starting, SupervisorEvent::WaitForHandshake) => {
-            SupervisorPhase::WaitingForHandshake
+        | (SupervisorPhase::CrashedBackoff, SupervisorEvent::Resolve)
+        | (SupervisorPhase::EngineRetryableFailure, SupervisorEvent::Resolve)
+        | (SupervisorPhase::CancelledStopped, SupervisorEvent::Resolve) => {
+            SupervisorPhase::ResolvingInstalledComponents
         }
-        (SupervisorPhase::WaitingForHandshake, SupervisorEvent::Probe) => SupervisorPhase::Probing,
-        (SupervisorPhase::Probing, SupervisorEvent::Ready) => SupervisorPhase::Ready,
-        (SupervisorPhase::Probing, SupervisorEvent::Degraded) => SupervisorPhase::Degraded,
-        (SupervisorPhase::Ready | SupervisorPhase::Degraded, SupervisorEvent::Crash) => {
+        (SupervisorPhase::ResolvingInstalledComponents, SupervisorEvent::Launch)
+        | (SupervisorPhase::CrashedBackoff, SupervisorEvent::Launch) => SupervisorPhase::Launching,
+        (SupervisorPhase::Launching, SupervisorEvent::WaitForHandshake) => {
+            SupervisorPhase::AwaitingHandshake
+        }
+        (SupervisorPhase::AwaitingHandshake, SupervisorEvent::Probe) => {
+            SupervisorPhase::ProbingReadiness
+        }
+        (SupervisorPhase::ProbingReadiness, SupervisorEvent::Ready) => SupervisorPhase::Ready,
+        (SupervisorPhase::ProbingReadiness, SupervisorEvent::Degraded) => {
+            SupervisorPhase::DegradedUsable
+        }
+        (SupervisorPhase::Ready | SupervisorPhase::DegradedUsable, SupervisorEvent::Crash) => {
             SupervisorPhase::CrashedBackoff
         }
         (current, _) => current,
@@ -139,6 +163,13 @@ pub struct SupervisorStatus {
     pub detail: String,
     pub remediation_codes: Vec<String>,
     pub last_error: Option<String>,
+    pub last_exit_code: Option<i32>,
+    pub handshake_at_epoch_ms: Option<u128>,
+    pub readiness_at_epoch_ms: Option<u128>,
+    pub last_probe_status: Option<u16>,
+    pub capabilities_at_epoch_ms: Option<u128>,
+    pub last_capabilities_status: Option<u16>,
+    pub verification_policy: String,
     pub next_retry_at_epoch_ms: Option<u128>,
     pub capabilities: Option<CapabilitiesPayload>,
     pub log_path: Option<String>,
@@ -187,6 +218,18 @@ struct RecoveryMetadata {
     component_version: Option<String>,
     retry_count: u32,
     last_exit_code: Option<i32>,
+    #[serde(default)]
+    handshake_at_epoch_ms: Option<u128>,
+    #[serde(default)]
+    readiness_at_epoch_ms: Option<u128>,
+    #[serde(default)]
+    last_probe_status: Option<u16>,
+    #[serde(default)]
+    capabilities_at_epoch_ms: Option<u128>,
+    #[serde(default)]
+    last_capabilities_status: Option<u16>,
+    #[serde(default)]
+    verification_policy: Option<String>,
     updated_at_epoch_ms: u128,
     rollback_requested: bool,
 }
@@ -212,6 +255,7 @@ struct StartupFailure {
     retryable: bool,
     repair_required: bool,
     remediation_codes: Vec<String>,
+    phase: SupervisorPhase,
 }
 
 impl StartupFailure {
@@ -222,6 +266,7 @@ impl StartupFailure {
             retryable: true,
             repair_required: false,
             remediation_codes: vec!["RESTART_REQUIRED".to_string()],
+            phase: SupervisorPhase::EngineRetryableFailure,
         }
     }
 
@@ -232,6 +277,7 @@ impl StartupFailure {
             retryable: false,
             repair_required: true,
             remediation_codes: vec![remediation.to_string()],
+            phase: startup_failure_phase(code),
         }
     }
 
@@ -242,8 +288,46 @@ impl StartupFailure {
             retryable: false,
             repair_required: false,
             remediation_codes: vec!["RESTART_REQUIRED".to_string()],
+            phase: SupervisorPhase::FatalShellFailure,
         }
     }
+}
+
+fn startup_failure_phase(code: &str) -> SupervisorPhase {
+    if code == "STOP_REQUESTED" {
+        return SupervisorPhase::CancelledStopped;
+    }
+    if matches!(
+        code,
+        "COMPONENT_NOT_ACTIVE" | "MANIFEST_NOT_FOUND" | "SETUP_REQUIRED"
+    ) {
+        return SupervisorPhase::SetupRequired;
+    }
+    if code.starts_with("STORAGE_")
+        || code.starts_with("LOCK_")
+        || matches!(
+            code,
+            "ELEVATION_REQUIRED"
+                | "USER_DATA_UNAVAILABLE"
+                | "LOG_PATH_UNAVAILABLE"
+                | "BROKER_NOT_READY"
+        )
+    {
+        return SupervisorPhase::StorageBlocked;
+    }
+    if code == "COMPONENT_LAUNCH_FAILED" {
+        return SupervisorPhase::LaunchBlocked;
+    }
+    if code == "SESSION_AUTH_FAILED" {
+        return SupervisorPhase::SessionAuthFailed;
+    }
+    if code.starts_with("HANDSHAKE_")
+        || code.starts_with("READINESS_")
+        || code.starts_with("CAPABILITIES_")
+    {
+        return SupervisorPhase::ProtocolIncompatible;
+    }
+    SupervisorPhase::ComponentRepairRequired
 }
 
 struct SupervisorRuntime {
@@ -300,6 +384,13 @@ impl SupervisorState {
                     detail,
                     remediation_codes: Vec::new(),
                     last_error: None,
+                    last_exit_code: None,
+                    handshake_at_epoch_ms: None,
+                    readiness_at_epoch_ms: None,
+                    last_probe_status: None,
+                    capabilities_at_epoch_ms: None,
+                    last_capabilities_status: None,
+                    verification_policy: INSTALLED_RUNTIME_POLICY_DESCRIPTION.to_string(),
                     next_retry_at_epoch_ms: None,
                     capabilities: None,
                     log_path: None,
@@ -370,6 +461,13 @@ impl SupervisorState {
             runtime.status.detail =
                 "Resolving verified active core-engine and FFmpeg components.".to_string();
             runtime.status.last_error = None;
+            runtime.status.last_exit_code = None;
+            runtime.status.handshake_at_epoch_ms = None;
+            runtime.status.readiness_at_epoch_ms = None;
+            runtime.status.last_probe_status = None;
+            runtime.status.capabilities_at_epoch_ms = None;
+            runtime.status.last_capabilities_status = None;
+            runtime.status.capabilities = None;
             runtime.status.remediation_codes.clear();
             runtime.status.next_retry_at_epoch_ms = None;
             persist_recovery(&runtime);
@@ -392,6 +490,13 @@ impl SupervisorState {
             runtime.status.retry_count = 0;
             runtime.status.rollback_requested = false;
             runtime.status.last_error = None;
+            runtime.status.last_exit_code = None;
+            runtime.status.handshake_at_epoch_ms = None;
+            runtime.status.readiness_at_epoch_ms = None;
+            runtime.status.last_probe_status = None;
+            runtime.status.capabilities_at_epoch_ms = None;
+            runtime.status.last_capabilities_status = None;
+            runtime.status.capabilities = None;
             runtime.status.remediation_codes.clear();
             runtime.status.state = SupervisorPhase::Stopped;
             runtime.status.detail =
@@ -418,6 +523,13 @@ impl SupervisorState {
             runtime.status.retry_count = 0;
             runtime.status.rollback_requested = false;
             runtime.status.last_error = None;
+            runtime.status.last_exit_code = None;
+            runtime.status.handshake_at_epoch_ms = None;
+            runtime.status.readiness_at_epoch_ms = None;
+            runtime.status.last_probe_status = None;
+            runtime.status.capabilities_at_epoch_ms = None;
+            runtime.status.last_capabilities_status = None;
+            runtime.status.capabilities = None;
             runtime.status.detail =
                 "Restart requested; stopping the owned engine process.".to_string();
             runtime.status.remediation_codes.clear();
@@ -475,7 +587,11 @@ impl SupervisorState {
             (
                 runtime.status.port,
                 runtime.session.clone(),
-                runtime.status.engine_ready && runtime.status.state == SupervisorPhase::Ready,
+                runtime.status.engine_ready
+                    && matches!(
+                        runtime.status.state,
+                        SupervisorPhase::Ready | SupervisorPhase::DegradedUsable
+                    ),
             )
         };
         if !ready {
@@ -596,9 +712,14 @@ fn start_request_is_blocked(
         || matches!(
             state,
             SupervisorPhase::Ready
-                | SupervisorPhase::Degraded
-                | SupervisorPhase::RepairRequired
-                | SupervisorPhase::Fatal
+                | SupervisorPhase::DegradedUsable
+                | SupervisorPhase::SetupRequired
+                | SupervisorPhase::ComponentRepairRequired
+                | SupervisorPhase::StorageBlocked
+                | SupervisorPhase::LaunchBlocked
+                | SupervisorPhase::ProtocolIncompatible
+                | SupervisorPhase::SessionAuthFailed
+                | SupervisorPhase::FatalShellFailure
         )
 }
 
@@ -612,7 +733,7 @@ fn run_startup(state: SupervisorState, app: AppHandle) {
             .map(|flag| flag.load(Ordering::SeqCst))
             .unwrap_or(true);
         if stop_requested {
-            finish_stopped(
+            finish_cancelled(
                 &state,
                 &app,
                 "Startup was cancelled before the engine became ready.",
@@ -626,6 +747,7 @@ fn run_startup(state: SupervisorState, app: AppHandle) {
                 Err(_) => return,
             };
             runtime.status.retry_count = runtime.status.retry_count.saturating_add(1);
+            runtime.status.state = transition_state(runtime.status.state, SupervisorEvent::Resolve);
             runtime.status.state = transition_state(runtime.status.state, SupervisorEvent::Launch);
             runtime.status.detail = format!(
                 "Starting verified native engine (attempt {}/{MAX_RETRIES}).",
@@ -648,9 +770,12 @@ fn run_startup(state: SupervisorState, app: AppHandle) {
                     runtime.stop_in_progress = false;
                     runtime.status.state = match outcome {
                         StartupOutcome::Ready => SupervisorPhase::Ready,
-                        StartupOutcome::Degraded => SupervisorPhase::Degraded,
+                        StartupOutcome::Degraded => SupervisorPhase::DegradedUsable,
                     };
-                    runtime.status.engine_ready = matches!(outcome, StartupOutcome::Ready);
+                    // DegradedUsable is still a truthful launch gate: the
+                    // authenticated engine can serve the core workflow while
+                    // optional capabilities report their own degradation.
+                    runtime.status.engine_ready = true;
                     runtime.status.detail = match outcome {
                         StartupOutcome::Ready => "Authenticated native engine readiness confirmed.".to_string(),
                         StartupOutcome::Degraded => "Native engine is authenticated but one or more optional capabilities are degraded.".to_string(),
@@ -662,7 +787,10 @@ fn run_startup(state: SupervisorState, app: AppHandle) {
                 if let Some(process) = process {
                     start_exit_monitor(state.clone(), app.clone(), process);
                 }
-                if phase == SupervisorPhase::Ready {
+                if matches!(
+                    phase,
+                    SupervisorPhase::Ready | SupervisorPhase::DegradedUsable
+                ) {
                     if let Some(capabilities) = state.status().capabilities {
                         let _ = app.emit(SUPERVISOR_CAPABILITIES_EVENT, capabilities);
                     }
@@ -672,25 +800,29 @@ fn run_startup(state: SupervisorState, app: AppHandle) {
             Err(failure) => {
                 cleanup_failed_process(&state);
                 if failure.code == "STOP_REQUESTED" {
-                    finish_stopped(&state, &app, &failure.message);
+                    finish_cancelled(&state, &app, &failure.message);
                     return;
                 }
                 if failure.repair_required {
-                    set_terminal_failure(&state, &app, SupervisorPhase::RepairRequired, failure);
+                    set_terminal_failure(&state, &app, failure.phase, failure);
                     return;
                 }
                 if !failure.retryable || attempt_number >= MAX_RETRIES {
                     if attempt_number >= MAX_RETRIES {
                         request_last_known_good_rollback(&state);
                     }
-                    set_terminal_failure(&state, &app, SupervisorPhase::Fatal, failure);
+                    let terminal_phase = if failure.retryable {
+                        SupervisorPhase::FatalShellFailure
+                    } else {
+                        failure.phase
+                    };
+                    set_terminal_failure(&state, &app, terminal_phase, failure);
                     return;
                 }
                 let backoff = BACKOFFS[(attempt_number as usize - 1).min(BACKOFFS.len() - 1)];
                 {
                     if let Ok(mut runtime) = state.inner.lock() {
-                        runtime.status.state =
-                            transition_state(runtime.status.state, SupervisorEvent::Crash);
+                        runtime.status.state = SupervisorPhase::EngineRetryableFailure;
                         runtime.status.engine_ready = false;
                         runtime.status.detail = format!(
                             "Engine startup failed; retrying after {} ms.",
@@ -709,7 +841,7 @@ fn run_startup(state: SupervisorState, app: AppHandle) {
                 }
                 emit_status(&app, &state.status());
                 if !sleep_with_stop(&state, backoff) {
-                    finish_stopped(&state, &app, "Startup retry was cancelled.");
+                    finish_cancelled(&state, &app, "Startup retry was cancelled.");
                     return;
                 }
             }
@@ -738,7 +870,7 @@ fn startup_attempt(
     set_phase(
         state,
         app,
-        SupervisorPhase::Starting,
+        SupervisorPhase::Launching,
         format!(
             "Launching {} {} from its verified active path.",
             bundle.engine.component_id, bundle.engine.component_version
@@ -774,7 +906,10 @@ fn startup_attempt(
     set_phase(
         state,
         app,
-        transition_state(SupervisorPhase::Starting, SupervisorEvent::WaitForHandshake),
+        transition_state(
+            SupervisorPhase::Launching,
+            SupervisorEvent::WaitForHandshake,
+        ),
         "Waiting for the bounded token-free native startup handshake.".to_string(),
         Vec::new(),
     );
@@ -792,13 +927,14 @@ fn startup_attempt(
         runtime.status.host = Some(handshake.host.clone());
         runtime.status.port = Some(handshake.port);
         runtime.status.protocol_version = Some(handshake.protocol_version.clone());
+        runtime.status.handshake_at_epoch_ms = Some(now_epoch_ms());
         persist_recovery(&runtime);
     }
     process.set_port(handshake.port);
     set_phase(
         state,
         app,
-        transition_state(SupervisorPhase::WaitingForHandshake, SupervisorEvent::Probe),
+        transition_state(SupervisorPhase::AwaitingHandshake, SupervisorEvent::Probe),
         "Authenticating readiness and capability probes on the announced loopback port."
             .to_string(),
         Vec::new(),
@@ -823,7 +959,10 @@ fn startup_attempt(
             StartupFailure::fatal("SUPERVISOR_LOCK_FAILED", "Supervisor state lock poisoned.")
         })?;
         runtime.status.capabilities = Some(capabilities.clone());
-        runtime.status.engine_ready = matches!(outcome, StartupOutcome::Ready);
+        runtime.status.engine_ready = true;
+        runtime.status.readiness_at_epoch_ms = Some(now_epoch_ms());
+        runtime.status.last_probe_status = Some(200);
+        runtime.status.capabilities_at_epoch_ms = Some(now_epoch_ms());
         runtime.status.detail = health_detail(&health);
         runtime.status.remediation_codes = health
             .remediation_codes
@@ -844,14 +983,14 @@ fn resolve_launch_bundle() -> Result<LaunchBundle, StartupFailure> {
         .verified_active_component(
             ENGINE_COMPONENT_ID,
             ComponentType::Backend,
-            SourcePolicy::PRODUCTION,
+            SourcePolicy::INSTALLED_RUNTIME,
         )
         .map_err(component_failure)?;
     let ffmpeg = manager
         .verified_active_component(
             FFMPEG_COMPONENT_ID,
             ComponentType::Ffmpeg,
-            SourcePolicy::PRODUCTION,
+            SourcePolicy::INSTALLED_RUNTIME,
         )
         .map_err(component_failure)?;
     let user_data_root = PathBuf::from(&paths.user_root);
@@ -879,11 +1018,11 @@ fn component_failure(error: ComponentError) -> StartupFailure {
     } else {
         "COMPONENT_VERSION_INCOMPATIBLE"
     };
-    StartupFailure::repair(
-        &error.code,
-        "A verified active native component could not be resolved; Docker and global tools were not attempted.",
-        remediation,
-    )
+    let message = format!(
+        "Installed component verification failed with {}: {}. Only the signed active component store was inspected; Docker and global tools were not attempted.",
+        error.code, error.message
+    );
+    StartupFailure::repair(&error.code, message, remediation)
 }
 
 fn new_session() -> Result<SessionSecrets, String> {
@@ -1231,79 +1370,83 @@ fn probe_until_ready(
             .header("Authorization", format!("Bearer {}", session.bearer_token))
             .send()
         {
-            Ok(response) if response.status().as_u16() == 401 => {
-                return Err(StartupFailure::repair(
-                    "SESSION_AUTH_FAILED",
-                    "The native engine rejected the supervisor session bearer token.",
-                    "SESSION_AUTH_FAILED",
-                ));
-            }
-            Ok(response) if response.status().is_success() => {
-                let body = bounded_response_text(response).map_err(|error| {
-                    StartupFailure::repair(
-                        "READINESS_PAYLOAD_INVALID",
-                        error,
-                        "COMPONENT_VERSION_INCOMPATIBLE",
-                    )
-                })?;
-                let health = parse_health_readiness(&body).map_err(|_| {
-                    StartupFailure::repair(
-                        "READINESS_SCHEMA_INVALID",
-                        "The native engine readiness payload failed the Phase 1 schema/version contract.",
-                        "COMPONENT_VERSION_INCOMPATIBLE",
-                    )
-                })?;
-                if health.process.pid != handshake.pid
-                    || health.process.component_id != ENGINE_COMPONENT_ID
-                    || health.process.component_version != expected_component_version
-                {
+            Ok(response) => {
+                let response_status = response.status().as_u16();
+                record_probe_status(state, response_status);
+                if response_status == 401 {
                     return Err(StartupFailure::repair(
-                        "READINESS_PROCESS_MISMATCH",
-                        "The readiness payload does not identify the owned core engine process.",
+                        "SESSION_AUTH_FAILED",
+                        "The native engine rejected the supervisor session bearer token.",
+                        "SESSION_AUTH_FAILED",
+                    ));
+                }
+                if response.status().is_success() {
+                    let body = bounded_response_text(response).map_err(|error| {
+                        StartupFailure::repair(
+                            "READINESS_PAYLOAD_INVALID",
+                            error,
+                            "COMPONENT_VERSION_INCOMPATIBLE",
+                        )
+                    })?;
+                    let health = parse_health_readiness(&body).map_err(|_| {
+                        StartupFailure::repair(
+                            "READINESS_SCHEMA_INVALID",
+                            "The native engine readiness payload failed the Phase 1 schema/version contract.",
+                            "COMPONENT_VERSION_INCOMPATIBLE",
+                        )
+                    })?;
+                    if health.process.pid != handshake.pid
+                        || health.process.component_id != ENGINE_COMPONENT_ID
+                        || health.process.component_version != expected_component_version
+                    {
+                        return Err(StartupFailure::repair(
+                            "READINESS_PROCESS_MISMATCH",
+                            "The readiness payload does not identify the owned core engine process.",
+                            "COMPONENT_VERSION_INCOMPATIBLE",
+                        ));
+                    }
+                    match health.overall_state {
+                        HealthOverallState::Ready | HealthOverallState::Degraded => {
+                            let capabilities =
+                                probe_capabilities(&client, session, handshake.port, state)?;
+                            let outcome = if health.overall_state == HealthOverallState::Ready {
+                                StartupOutcome::Ready
+                            } else {
+                                StartupOutcome::Degraded
+                            };
+                            return Ok((health, capabilities, outcome));
+                        }
+                        HealthOverallState::Fatal => {
+                            let retryable = health
+                                .fatal_error
+                                .as_ref()
+                                .map(|error| error.retryable)
+                                .unwrap_or(false);
+                            let failure = if retryable {
+                                StartupFailure::retryable(
+                                    "ENGINE_FATAL_STARTUP",
+                                    "The native engine reported a retryable fatal readiness state.",
+                                )
+                            } else {
+                                StartupFailure::repair(
+                                    "ENGINE_FATAL_STARTUP",
+                                    "The native engine reported a non-retryable fatal readiness state.",
+                                    "COMPONENT_VERSION_INCOMPATIBLE",
+                                )
+                            };
+                            return Err(failure);
+                        }
+                        HealthOverallState::Starting => {}
+                    }
+                } else if response.status().is_client_error() {
+                    return Err(StartupFailure::repair(
+                        "READINESS_REQUEST_REJECTED",
+                        "The native engine rejected the authenticated readiness request.",
                         "COMPONENT_VERSION_INCOMPATIBLE",
                     ));
                 }
-                match health.overall_state {
-                    HealthOverallState::Ready | HealthOverallState::Degraded => {
-                        let capabilities = probe_capabilities(&client, session, handshake.port)?;
-                        let outcome = if health.overall_state == HealthOverallState::Ready {
-                            StartupOutcome::Ready
-                        } else {
-                            StartupOutcome::Degraded
-                        };
-                        return Ok((health, capabilities, outcome));
-                    }
-                    HealthOverallState::Fatal => {
-                        let retryable = health
-                            .fatal_error
-                            .as_ref()
-                            .map(|error| error.retryable)
-                            .unwrap_or(false);
-                        let failure = if retryable {
-                            StartupFailure::retryable(
-                                "ENGINE_FATAL_STARTUP",
-                                "The native engine reported a retryable fatal readiness state.",
-                            )
-                        } else {
-                            StartupFailure::repair(
-                                "ENGINE_FATAL_STARTUP",
-                                "The native engine reported a non-retryable fatal readiness state.",
-                                "COMPONENT_VERSION_INCOMPATIBLE",
-                            )
-                        };
-                        return Err(failure);
-                    }
-                    HealthOverallState::Starting => {}
-                }
             }
-            Ok(response) if response.status().is_client_error() => {
-                return Err(StartupFailure::repair(
-                    "READINESS_REQUEST_REJECTED",
-                    "The native engine rejected the authenticated readiness request.",
-                    "COMPONENT_VERSION_INCOMPATIBLE",
-                ));
-            }
-            Ok(_) | Err(_) => {}
+            Err(_) => {}
         }
         if started.elapsed() >= STARTUP_DEADLINE {
             return Err(StartupFailure::retryable(
@@ -1319,6 +1462,7 @@ fn probe_capabilities(
     client: &Client,
     session: &SessionSecrets,
     port: u16,
+    state: &SupervisorState,
 ) -> Result<CapabilitiesPayload, StartupFailure> {
     let response = client
         .get(format!("http://127.0.0.1:{port}/capabilities"))
@@ -1327,6 +1471,7 @@ fn probe_capabilities(
         .map_err(|error| {
             StartupFailure::retryable("CAPABILITIES_REQUEST_FAILED", error.to_string())
         })?;
+    record_capabilities_status(state, response.status().as_u16());
     if response.status().as_u16() == 401 {
         return Err(StartupFailure::repair(
             "SESSION_AUTH_FAILED",
@@ -1391,8 +1536,10 @@ fn start_exit_monitor(state: SupervisorState, app: AppHandle, process: Arc<Owned
             } else if runtime.status.retry_count >= MAX_RETRIES {
                 runtime.process = None;
                 runtime.session = None;
-                runtime.status.state = SupervisorPhase::Fatal;
+                runtime.status.state = SupervisorPhase::FatalShellFailure;
                 runtime.status.engine_ready = false;
+                runtime.status.last_exit_code =
+                    process.exit_status().and_then(|status| status.code());
                 runtime.status.last_error = Some("ENGINE_CRASH_BUDGET_EXHAUSTED".to_string());
                 runtime.status.detail =
                     "The owned engine crashed repeatedly; automatic recovery is paused."
@@ -1407,12 +1554,20 @@ fn start_exit_monitor(state: SupervisorState, app: AppHandle, process: Arc<Owned
                 runtime.process = None;
                 runtime.session = None;
                 runtime.start_in_progress = true;
-                runtime.status.state =
-                    transition_state(runtime.status.state, SupervisorEvent::Crash);
+                runtime.status.state = SupervisorPhase::EngineRetryableFailure;
                 runtime.status.engine_ready = false;
+                runtime.status.last_exit_code =
+                    process.exit_status().and_then(|status| status.code());
                 runtime.status.detail =
                     "The owned engine crashed; bounded recovery backoff is active.".to_string();
-                runtime.status.last_error = Some("ENGINE_CRASHED".to_string());
+                runtime.status.last_error = Some(format!(
+                    "ENGINE_CRASHED: owned process exited with code {}.",
+                    runtime
+                        .status
+                        .last_exit_code
+                        .map(|code| code.to_string())
+                        .unwrap_or_else(|| "unknown".to_string())
+                ));
                 runtime.status.remediation_codes = vec!["RESTART_REQUIRED".to_string()];
                 runtime.status.next_retry_at_epoch_ms =
                     Some(now_epoch_ms() + BACKOFFS[0].as_millis() as u128);
@@ -1428,7 +1583,7 @@ fn start_exit_monitor(state: SupervisorState, app: AppHandle, process: Arc<Owned
             if sleep_with_stop(&state, BACKOFFS[0]) {
                 run_startup(state, app);
             } else {
-                finish_stopped(&state, &app, "Crash recovery was cancelled.");
+                finish_cancelled(&state, &app, "Crash recovery was cancelled.");
             }
         }
     });
@@ -1462,14 +1617,22 @@ fn stop_worker(
         runtime.stop_requested = None;
         let restart = runtime.restart_after_stop && !runtime.app_closed;
         runtime.restart_after_stop = false;
-        runtime.status.state = SupervisorPhase::Stopped;
+        runtime.status.state = if restart {
+            SupervisorPhase::Stopped
+        } else {
+            SupervisorPhase::CancelledStopped
+        };
         runtime.status.engine_ready = false;
         runtime.status.port = None;
         runtime.status.pid = None;
         runtime.status.host = None;
         runtime.status.protocol_version = None;
         runtime.status.capabilities = None;
-        runtime.status.detail = "The owned native engine stopped cleanly.".to_string();
+        runtime.status.detail = if restart {
+            "The owned native engine stopped cleanly before restart.".to_string()
+        } else {
+            "The owned native engine was stopped safely; setup can resume without changing the active version.".to_string()
+        };
         runtime.status.remediation_codes.clear();
         runtime.status.next_retry_at_epoch_ms = None;
         persist_recovery(&runtime);
@@ -1497,6 +1660,10 @@ fn cleanup_failed_process(state: &SupervisorState) {
         .lock()
         .ok()
         .and_then(|mut runtime| runtime.process.take());
+    let exit_code = process
+        .as_ref()
+        .and_then(|process| process.exit_status())
+        .and_then(|status| status.code());
     if let Some(process) = process {
         process.kill_owned();
         let _ = process.wait_for_exit(Duration::from_secs(2));
@@ -1509,17 +1676,43 @@ fn cleanup_failed_process(state: &SupervisorState) {
         runtime.status.host = None;
         runtime.status.protocol_version = None;
         runtime.status.capabilities = None;
+        if exit_code.is_some() {
+            runtime.status.last_exit_code = exit_code;
+        }
         persist_recovery(&runtime);
     }
 }
 
-fn finish_stopped(state: &SupervisorState, app: &AppHandle, detail: &str) {
+fn record_probe_status(state: &SupervisorState, status: u16) {
+    if let Ok(mut runtime) = state.inner.lock() {
+        runtime.status.last_probe_status = Some(status);
+        persist_recovery(&runtime);
+    }
+}
+
+fn record_capabilities_status(state: &SupervisorState, status: u16) {
+    if let Ok(mut runtime) = state.inner.lock() {
+        runtime.status.last_capabilities_status = Some(status);
+        persist_recovery(&runtime);
+    }
+}
+
+fn finish_cancelled(state: &SupervisorState, app: &AppHandle, detail: &str) {
+    finish_stopped_with_phase(state, app, SupervisorPhase::CancelledStopped, detail);
+}
+
+fn finish_stopped_with_phase(
+    state: &SupervisorState,
+    app: &AppHandle,
+    phase: SupervisorPhase,
+    detail: &str,
+) {
     cleanup_failed_process(state);
     if let Ok(mut runtime) = state.inner.lock() {
         runtime.start_in_progress = false;
         runtime.stop_in_progress = false;
         runtime.session = None;
-        runtime.status.state = SupervisorPhase::Stopped;
+        runtime.status.state = phase;
         runtime.status.engine_ready = false;
         runtime.status.detail = detail.to_string();
         runtime.status.remediation_codes.clear();
@@ -1541,10 +1734,31 @@ fn set_terminal_failure(
         runtime.session = None;
         runtime.status.state = phase;
         runtime.status.engine_ready = false;
-        runtime.status.detail = if phase == SupervisorPhase::RepairRequired {
-            "Native engine startup needs local component repair or setup.".to_string()
-        } else {
-            "Native engine startup failed after bounded recovery attempts.".to_string()
+        runtime.status.detail = match phase {
+            SupervisorPhase::SetupRequired => {
+                "Setup is required before the native engine can launch.".to_string()
+            }
+            SupervisorPhase::ComponentRepairRequired => {
+                "The active native component failed an integrity or path check and needs repair."
+                    .to_string()
+            }
+            SupervisorPhase::StorageBlocked => {
+                "The native component store or user data path is not available for launch."
+                    .to_string()
+            }
+            SupervisorPhase::LaunchBlocked => {
+                "The verified native engine entrypoint could not be started.".to_string()
+            }
+            SupervisorPhase::ProtocolIncompatible => {
+                "The native engine handshake or readiness contract is incompatible.".to_string()
+            }
+            SupervisorPhase::SessionAuthFailed => {
+                "The native engine rejected the authenticated supervisor session.".to_string()
+            }
+            SupervisorPhase::FatalShellFailure => {
+                "Native engine startup failed after bounded recovery attempts.".to_string()
+            }
+            _ => failure.message.clone(),
         };
         runtime.status.last_error = Some(format!(
             "{}: {}",
@@ -1564,7 +1778,7 @@ fn request_last_known_good_rollback(state: &SupervisorState) {
         ComponentManager::new(PathBuf::from(paths.program_data_root).join("AI Video Editor"))
     };
     if manager
-        .rollback(ENGINE_COMPONENT_ID, SourcePolicy::PRODUCTION, None)
+        .rollback(ENGINE_COMPONENT_ID, SourcePolicy::INSTALLED_RUNTIME, None)
         .is_ok()
     {
         if let Ok(mut runtime) = state.inner.lock() {
@@ -1627,7 +1841,13 @@ fn persist_recovery(runtime: &SupervisorRuntime) {
         component_id: runtime.status.component_id.clone(),
         component_version: runtime.status.component_version.clone(),
         retry_count: runtime.status.retry_count,
-        last_exit_code: None,
+        last_exit_code: runtime.status.last_exit_code,
+        handshake_at_epoch_ms: runtime.status.handshake_at_epoch_ms,
+        readiness_at_epoch_ms: runtime.status.readiness_at_epoch_ms,
+        last_probe_status: runtime.status.last_probe_status,
+        capabilities_at_epoch_ms: runtime.status.capabilities_at_epoch_ms,
+        last_capabilities_status: runtime.status.last_capabilities_status,
+        verification_policy: Some(runtime.status.verification_policy.clone()),
         updated_at_epoch_ms: now_epoch_ms(),
         rollback_requested: runtime.status.rollback_requested,
     };
@@ -1654,7 +1874,10 @@ fn load_recovery(path: &Path) -> (bool, u32, bool) {
     let age = now_epoch_ms().saturating_sub(metadata.updated_at_epoch_ms);
     if metadata.schema_version != "desktop.supervisor-recovery.v1"
         || age > RECOVERY_MAX_AGE.as_millis() as u128
-        || metadata.state != SupervisorPhase::Stopped
+        || !matches!(
+            metadata.state,
+            SupervisorPhase::Stopped | SupervisorPhase::CancelledStopped
+        )
     {
         let _ = fs::remove_file(path);
         return (true, 0, false);
@@ -2184,13 +2407,13 @@ mod tests {
     fn state_machine_covers_startup_crash_repair_and_reset() {
         let mut state = SupervisorPhase::Stopped;
         state = transition_state(state, SupervisorEvent::Resolve);
-        assert_eq!(state, SupervisorPhase::Resolving);
+        assert_eq!(state, SupervisorPhase::ResolvingInstalledComponents);
         state = transition_state(state, SupervisorEvent::Launch);
-        assert_eq!(state, SupervisorPhase::Starting);
+        assert_eq!(state, SupervisorPhase::Launching);
         state = transition_state(state, SupervisorEvent::WaitForHandshake);
-        assert_eq!(state, SupervisorPhase::WaitingForHandshake);
+        assert_eq!(state, SupervisorPhase::AwaitingHandshake);
         state = transition_state(state, SupervisorEvent::Probe);
-        assert_eq!(state, SupervisorPhase::Probing);
+        assert_eq!(state, SupervisorPhase::ProbingReadiness);
         state = transition_state(state, SupervisorEvent::Ready);
         assert_eq!(state, SupervisorPhase::Ready);
         assert_eq!(
@@ -2199,19 +2422,19 @@ mod tests {
         );
         assert_eq!(
             transition_state(state, SupervisorEvent::Repair),
-            SupervisorPhase::RepairRequired
+            SupervisorPhase::ComponentRepairRequired
         );
         assert_eq!(
             transition_state(state, SupervisorEvent::Fatal),
-            SupervisorPhase::Fatal
+            SupervisorPhase::FatalShellFailure
         );
         assert_eq!(
             transition_state(state, SupervisorEvent::Reset),
             SupervisorPhase::Stopped
         );
         assert_eq!(
-            transition_state(SupervisorPhase::Fatal, SupervisorEvent::Ready),
-            SupervisorPhase::Fatal
+            transition_state(SupervisorPhase::FatalShellFailure, SupervisorEvent::Ready),
+            SupervisorPhase::FatalShellFailure
         );
         assert_eq!(
             transition_state(SupervisorPhase::Ready, SupervisorEvent::Launch),
@@ -2256,6 +2479,12 @@ mod tests {
             component_version: Some("1.0.0".to_string()),
             retry_count: 1,
             last_exit_code: None,
+            handshake_at_epoch_ms: None,
+            readiness_at_epoch_ms: None,
+            last_probe_status: None,
+            capabilities_at_epoch_ms: None,
+            last_capabilities_status: None,
+            verification_policy: None,
             updated_at_epoch_ms: 1,
             rollback_requested: false,
         })
@@ -2276,7 +2505,7 @@ mod tests {
             true,
             false,
             false,
-            SupervisorPhase::Starting
+            SupervisorPhase::Launching
         ));
         assert!(start_request_is_blocked(
             false,
@@ -2300,7 +2529,7 @@ mod tests {
             false,
             false,
             false,
-            SupervisorPhase::RepairRequired
+            SupervisorPhase::ComponentRepairRequired
         ));
         assert!(!start_request_is_blocked(
             false,
@@ -2312,7 +2541,7 @@ mod tests {
             false,
             false,
             false,
-            SupervisorPhase::Resolving
+            SupervisorPhase::ResolvingInstalledComponents
         ));
     }
 
@@ -2326,6 +2555,7 @@ mod tests {
         assert!(missing.repair_required);
         assert_eq!(missing.code, "COMPONENT_NOT_ACTIVE");
         assert_eq!(missing.remediation_codes, vec!["ENGINE_NOT_RUNNING"]);
+        assert_eq!(missing.phase, SupervisorPhase::SetupRequired);
 
         let elevation = component_failure(ComponentError::new(
             "ELEVATION_REQUIRED",
@@ -2334,6 +2564,7 @@ mod tests {
         ));
         assert!(elevation.repair_required);
         assert_eq!(elevation.remediation_codes, vec!["STORAGE_NOT_WRITABLE"]);
+        assert_eq!(elevation.phase, SupervisorPhase::StorageBlocked);
 
         let corrupt = component_failure(ComponentError::new(
             "ACTIVATION_METADATA_INVALID",
@@ -2344,6 +2575,28 @@ mod tests {
         assert_eq!(
             corrupt.remediation_codes,
             vec!["COMPONENT_VERSION_INCOMPATIBLE"]
+        );
+        assert_eq!(corrupt.phase, SupervisorPhase::ComponentRepairRequired);
+        assert_eq!(
+            StartupFailure::repair("SESSION_AUTH_FAILED", "auth", "SESSION_AUTH_FAILED").phase,
+            SupervisorPhase::SessionAuthFailed
+        );
+        assert_eq!(
+            StartupFailure::repair(
+                "READINESS_SCHEMA_INVALID",
+                "protocol",
+                "COMPONENT_VERSION_INCOMPATIBLE"
+            )
+            .phase,
+            SupervisorPhase::ProtocolIncompatible
+        );
+        assert_eq!(
+            StartupFailure::retryable("ENGINE_EXITED", "exit").phase,
+            SupervisorPhase::EngineRetryableFailure
+        );
+        assert_eq!(
+            StartupFailure::repair("STOP_REQUESTED", "cancelled", "ENGINE_NOT_RUNNING").phase,
+            SupervisorPhase::CancelledStopped
         );
     }
 
@@ -2413,6 +2666,12 @@ mod tests {
                 component_version: Some("1.0.0".to_string()),
                 retry_count: 3,
                 last_exit_code: Some(1),
+                handshake_at_epoch_ms: None,
+                readiness_at_epoch_ms: None,
+                last_probe_status: None,
+                capabilities_at_epoch_ms: None,
+                last_capabilities_status: None,
+                verification_policy: None,
                 updated_at_epoch_ms: 1,
                 rollback_requested: false,
             })
@@ -2433,6 +2692,12 @@ mod tests {
                 component_version: Some("1.0.0".to_string()),
                 retry_count: 1,
                 last_exit_code: None,
+                handshake_at_epoch_ms: None,
+                readiness_at_epoch_ms: None,
+                last_probe_status: None,
+                capabilities_at_epoch_ms: None,
+                last_capabilities_status: None,
+                verification_policy: None,
                 updated_at_epoch_ms: now_epoch_ms(),
                 rollback_requested: false,
             })

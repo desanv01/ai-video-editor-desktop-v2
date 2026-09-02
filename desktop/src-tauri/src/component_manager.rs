@@ -104,21 +104,37 @@ impl std::error::Error for ComponentError {}
 
 #[derive(Debug, Clone, Copy)]
 pub struct SourcePolicy {
+    /// Allows explicitly supported local sources during signed offline intake.
     pub allow_local_test_sources: bool,
+    /// Keeps artifact-source validation tied to acquisition operations.  An
+    /// installed-runtime check deliberately sets this to false: it still
+    /// validates the signed manifest and active payload, but it must not
+    /// require or resolve the original catalog URL.
+    pub validate_artifact_source: bool,
 }
 
 impl SourcePolicy {
     pub const PRODUCTION: Self = Self {
         allow_local_test_sources: false,
+        validate_artifact_source: true,
     };
 
     pub const OFFLINE_IMPORT: Self = Self {
         allow_local_test_sources: true,
+        validate_artifact_source: true,
+    };
+
+    /// Policy for verifying an already-installed immutable component at
+    /// runtime.  This policy cannot be used to intake or acquire artifacts.
+    pub const INSTALLED_RUNTIME: Self = Self {
+        allow_local_test_sources: false,
+        validate_artifact_source: false,
     };
 
     pub const fn development_test() -> Self {
         Self {
             allow_local_test_sources: true,
+            validate_artifact_source: true,
         }
     }
 }
@@ -772,6 +788,7 @@ impl ComponentManager {
         manifest_json: &str,
         policy: SourcePolicy,
     ) -> ManagerResult<ManifestIntakeResult> {
+        ensure_artifact_source_policy(policy)?;
         if manifest_json.len() > MAX_MANIFEST_BYTES {
             return Err(ComponentError::new(
                 "MANIFEST_TOO_LARGE",
@@ -1106,6 +1123,7 @@ impl ComponentManager {
         target_version: Option<&str>,
         policy: SourcePolicy,
     ) -> ManagerResult<InstallationPlan> {
+        ensure_artifact_source_policy(policy)?;
         validate_component_id(component_id)?;
         let versions = self.catalog_versions(component_id)?;
         if versions.is_empty() {
@@ -1294,7 +1312,7 @@ impl ComponentManager {
                     .read_manifest(
                         &id,
                         &activation.component_version,
-                        SourcePolicy::OFFLINE_IMPORT,
+                        SourcePolicy::INSTALLED_RUNTIME,
                     )
                     .ok();
                 let active_verified = activation.state == "active"
@@ -1383,6 +1401,7 @@ impl ComponentManager {
         control: OperationControl,
         progress: Option<&dyn Fn(ComponentProgress)>,
     ) -> ManagerResult<DownloadResult> {
+        ensure_artifact_source_policy(policy)?;
         let _lock = self.acquire_lock()?;
         let manifest = self.read_manifest(component_id, component_version, policy)?;
         self.ensure_machine_storage()?;
@@ -1835,6 +1854,7 @@ impl ComponentManager {
         component_version: &str,
         policy: SourcePolicy,
     ) -> ManagerResult<VerificationResult> {
+        ensure_artifact_source_policy(policy)?;
         let _lock = self.acquire_lock()?;
         let manifest = self.read_manifest(component_id, component_version, policy)?;
         let result = self.verify_artifact(&manifest)?;
@@ -1873,6 +1893,7 @@ impl ComponentManager {
         operation_id: Option<String>,
         progress: Option<&dyn Fn(ComponentProgress)>,
     ) -> ManagerResult<StageResult> {
+        ensure_artifact_source_policy(policy)?;
         let _lock = self.acquire_lock()?;
         let manifest = self.read_manifest(component_id, component_version, policy)?;
         self.resolve_plan(component_id, Some(component_version), policy)?;
@@ -2057,6 +2078,7 @@ impl ComponentManager {
         operation_id: Option<String>,
         progress: Option<&dyn Fn(ComponentProgress)>,
     ) -> ManagerResult<ActivationResult> {
+        ensure_artifact_source_policy(policy)?;
         if crate::component_broker::should_delegate_for(self.machine_root()) {
             let request_id = operation_id
                 .clone()
@@ -2373,7 +2395,7 @@ impl ComponentManager {
     pub fn rollback(
         &self,
         component_id: &str,
-        policy: SourcePolicy,
+        _policy: SourcePolicy,
         progress: Option<&dyn Fn(ComponentProgress)>,
     ) -> ManagerResult<ActivationResult> {
         if crate::component_broker::should_delegate_for(self.machine_root()) {
@@ -2384,10 +2406,12 @@ impl ComponentManager {
                 component_id: Some(component_id.to_string()),
                 component_version: None,
                 operation_id: None,
-                allow_offline_sources: policy.allow_local_test_sources,
+                // Rollback reads and validates an already-installed payload;
+                // it never acquires the original artifact.
+                allow_offline_sources: false,
             });
         }
-        self.rollback_direct(component_id, policy, progress)
+        self.rollback_direct(component_id, SourcePolicy::INSTALLED_RUNTIME, progress)
     }
 
     pub(crate) fn rollback_direct(
@@ -2403,7 +2427,7 @@ impl ComponentManager {
     fn rollback_locked(
         &self,
         component_id: &str,
-        policy: SourcePolicy,
+        _policy: SourcePolicy,
         progress: Option<&dyn Fn(ComponentProgress)>,
     ) -> ManagerResult<ActivationResult> {
         validate_component_id(component_id)?;
@@ -2437,7 +2461,11 @@ impl ComponentManager {
                 false,
             ));
         }
-        let previous_manifest = self.read_manifest(component_id, &previous_version, policy)?;
+        let previous_manifest = self.read_manifest(
+            component_id,
+            &previous_version,
+            SourcePolicy::INSTALLED_RUNTIME,
+        )?;
         verify_installed_inventory(&previous_path_buf, &previous_manifest)?;
         let metadata_path = self.metadata_path(&previous_manifest)?;
         let metadata = ActivationMetadata {
@@ -2481,7 +2509,7 @@ impl ComponentManager {
     pub fn repair(
         &self,
         component_id: &str,
-        policy: SourcePolicy,
+        _policy: SourcePolicy,
         progress: Option<&dyn Fn(ComponentProgress)>,
     ) -> ManagerResult<RepairResult> {
         if crate::component_broker::should_delegate_for(self.machine_root()) {
@@ -2492,10 +2520,12 @@ impl ComponentManager {
                 component_id: Some(component_id.to_string()),
                 component_version: None,
                 operation_id: None,
-                allow_offline_sources: policy.allow_local_test_sources,
+                // Repair verifies the active/retained installed payload and
+                // must not revalidate or reacquire its catalog URL.
+                allow_offline_sources: false,
             });
         }
-        self.repair_direct(component_id, policy, progress)
+        self.repair_direct(component_id, SourcePolicy::INSTALLED_RUNTIME, progress)
     }
 
     pub(crate) fn repair_direct(
@@ -2513,7 +2543,11 @@ impl ComponentManager {
             ));
         };
         let active_path = PathBuf::from(&activation.active_path);
-        let manifest = self.read_manifest(component_id, &activation.component_version, policy)?;
+        let manifest = self.read_manifest(
+            component_id,
+            &activation.component_version,
+            SourcePolicy::INSTALLED_RUNTIME,
+        )?;
         match verify_installed_inventory(&active_path, &manifest) {
             Ok(()) => Ok(RepairResult {
                 component_id: component_id.to_string(),
@@ -3125,6 +3159,17 @@ fn validate_https_url(value: &str, field: &str) -> ManagerResult<()> {
     Ok(())
 }
 
+fn ensure_artifact_source_policy(policy: SourcePolicy) -> ManagerResult<()> {
+    if policy.validate_artifact_source {
+        return Ok(());
+    }
+    Err(ComponentError::new(
+        "SOURCE_POLICY_INVALID",
+        "Installed-runtime verification policy cannot be used for catalog intake or artifact acquisition.",
+        false,
+    ))
+}
+
 fn validate_artifact_url(value: &str, policy: SourcePolicy) -> ManagerResult<()> {
     let parsed = Url::parse(value).map_err(|error| {
         ComponentError::new(
@@ -3133,6 +3178,12 @@ fn validate_artifact_url(value: &str, policy: SourcePolicy) -> ManagerResult<()>
             false,
         )
     })?;
+    if !policy.validate_artifact_source {
+        // Launch verification reads the signed manifest only to bind its
+        // identity/inventory to an existing active payload.  It must never
+        // turn the historical acquisition URL into a launch prerequisite.
+        return Ok(());
+    }
     if parsed.scheme() == "https" {
         return Ok(());
     }
@@ -4915,6 +4966,7 @@ fn tauri_manager() -> ComponentManager {
 fn command_policy(requested_offline_sources: bool) -> SourcePolicy {
     SourcePolicy {
         allow_local_test_sources: requested_offline_sources,
+        validate_artifact_source: true,
     }
 }
 
@@ -5618,6 +5670,87 @@ mod tests {
     }
 
     #[test]
+    fn installed_runtime_verification_does_not_revalidate_offline_acquisition_source() {
+        let root = TestRoot::new();
+        let mut manifest = root.fixture("1.0.0");
+        let source_archive = Url::parse(&manifest.artifact.url)
+            .unwrap()
+            .to_file_path()
+            .unwrap();
+        let offline_root = root.root.join("offline-catalog");
+        let offline_components = offline_root.join("Components");
+        fs::create_dir_all(&offline_components).unwrap();
+        fs::copy(
+            source_archive,
+            offline_components.join("synthetic-1.0.0.tar.gz"),
+        )
+        .unwrap();
+        manifest.artifact.url = "offline:Components/synthetic-1.0.0.tar.gz".to_string();
+        sign_test_manifest(&mut manifest);
+        let manager =
+            ComponentManager::with_offline_root(root.root.join("offline-machine"), offline_root);
+        manager
+            .intake_manifest(
+                &serde_json::to_string(&manifest).unwrap(),
+                SourcePolicy::OFFLINE_IMPORT,
+            )
+            .unwrap();
+        manager
+            .download(
+                "synthetic",
+                "1.0.0",
+                SourcePolicy::OFFLINE_IMPORT,
+                Some("offline-download".to_string()),
+                OperationControl::default(),
+                None,
+            )
+            .unwrap();
+        manager
+            .verify("synthetic", "1.0.0", SourcePolicy::OFFLINE_IMPORT)
+            .unwrap();
+        let staged = manager
+            .stage(
+                "synthetic",
+                "1.0.0",
+                SourcePolicy::OFFLINE_IMPORT,
+                Some("offline-stage".to_string()),
+                None,
+            )
+            .unwrap();
+        manager
+            .activate(
+                "synthetic",
+                "1.0.0",
+                SourcePolicy::OFFLINE_IMPORT,
+                Some(staged.operation_id),
+                None,
+            )
+            .unwrap();
+
+        // Launch verification must be independent of the source used to
+        // acquire the already-active payload.  Removing the offline-root
+        // record simulates a clean launch with no catalog acquisition context.
+        fs::remove_file(manager.machine_root().join("Catalog/offline-root.json")).unwrap();
+        let active = manager
+            .verified_active_component(
+                "synthetic",
+                ComponentType::Utility,
+                SourcePolicy::INSTALLED_RUNTIME,
+            )
+            .unwrap();
+        assert_eq!(active.component_version, "1.0.0");
+        assert!(Path::new(&active.executable_path).is_file());
+        assert_code(
+            manager.verified_active_component(
+                "synthetic",
+                ComponentType::Utility,
+                SourcePolicy::PRODUCTION,
+            ),
+            "HTTPS_REQUIRED",
+        );
+    }
+
+    #[test]
     fn traversal_duplicate_and_decompression_bomb_archives_fail_before_activation() {
         let root = TestRoot::new();
         let base = root.fixture("1.0.0");
@@ -6174,7 +6307,11 @@ mod tests {
                 .unwrap();
             assert_eq!(activated.state, "active");
             let active = manager
-                .verified_active_component(component_id, expected_type, policy)
+                .verified_active_component(
+                    component_id,
+                    expected_type,
+                    SourcePolicy::INSTALLED_RUNTIME,
+                )
                 .unwrap();
             assert_eq!(active.component_version, version);
             assert!(Path::new(&active.executable_path).is_file());
@@ -6185,10 +6322,18 @@ mod tests {
         }
 
         let engine = manager
-            .verified_active_component("aive-engine", ComponentType::Backend, policy)
+            .verified_active_component(
+                "aive-engine",
+                ComponentType::Backend,
+                SourcePolicy::INSTALLED_RUNTIME,
+            )
             .unwrap();
         let ffmpeg = manager
-            .verified_active_component("ffmpeg", ComponentType::Ffmpeg, policy)
+            .verified_active_component(
+                "ffmpeg",
+                ComponentType::Ffmpeg,
+                SourcePolicy::INSTALLED_RUNTIME,
+            )
             .unwrap();
         let engine_self_test = Command::new(&engine.executable_path)
             .arg("--self-test")
