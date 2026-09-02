@@ -11,6 +11,10 @@ const template = await readFile(path.join(repoRoot, "docs", "desktop-v2", "AV_FA
 assert.match(builder, /onedir/);
 assert.match(builder, /oneFile.*False|onefile.*False/s);
 assert.match(builder, /upx=False/);
+assert.match(builder, /safe_dynamic_libs\('asyncpg'\)/);
+assert.match(builder, /safe_submodules\('asyncpg'\)/);
+assert.match(builder, /asyncpg\.pgproto\.pgproto/);
+assert.match(builder, /asyncpg\.protocol\.protocol/);
 assert.match(sbom, /CycloneDX/);
 assert.match(sbom, /sha256/);
 assert.match(sbom, /sorted/);

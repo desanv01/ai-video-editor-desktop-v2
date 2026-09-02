@@ -73,6 +73,7 @@ datas += safe_data_files('pydantic')
 datas += safe_data_files('pydantic_settings')
 
 binaries = []
+binaries += safe_dynamic_libs('asyncpg')
 binaries += safe_dynamic_libs('qdrant_client')
 binaries += safe_dynamic_libs('onnxruntime')
 
@@ -85,6 +86,11 @@ hiddenimports = [
     'aiosqlite',
     'aiosqlite.core',
     'aiosqlite.cursor',
+    # asyncpg loads these compiled extensions dynamically.  PyInstaller cannot
+    # infer them from SQLAlchemy's dialect import, so keep the two runtime
+    # entry points explicit as well as collecting the full package below.
+    'asyncpg.pgproto.pgproto',
+    'asyncpg.protocol.protocol',
     'desktop_native.app',
     'desktop_native.health',
     'desktop_native.jobs',
@@ -105,6 +111,7 @@ hiddenimports = [
     'services.transcription',
     'rag.vector_store',
 ]
+hiddenimports += safe_submodules('asyncpg')
 hiddenimports += safe_submodules('qdrant_client')
 hiddenimports += safe_submodules('sqlalchemy')
 
