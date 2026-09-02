@@ -16,7 +16,7 @@ assert.match(hook, /StrCpy \$INSTDIR "\$PROGRAMFILES64\\AI Video Editor Desktop 
 assert.match(hook, /SetOutPath \$INSTDIR/);
 assert.match(hook, /StrCpy \$2 "\$APPDATA\\AI Video Editor"/);
 assert.match(hook, /ReadEnvStr \$3 "ProgramData"/);
-assert.match(hook, /StrCmp \/I \$2 \$4/);
+assert.match(hook, /StrCmp \$2 \$4/);
 assert.match(hook, /nsExec::ExecToStack \/OEM '\"\$SYSDIR\\icacls\.exe\" \"\$2\"/);
 assert.match(hook, /\/inheritance:r/);
 assert.match(hook, /\*S-1-5-18:\(OI\)\(CI\)\(F\)/);

@@ -34,7 +34,7 @@ assert.match(hook, /\$LOCALAPPDATA\\AI Video Editor/);
 assert.doesNotMatch(executableHook, /CreateShortCut/i);
 assert.equal((hook.match(/shortcut_verified:/g) ?? []).length, 2, "postinstall must verify one Desktop and one Start Menu shortcut");
 assert.match(hook, /second custom shortcut checkbox/i);
-assert.match(hook, /StrCmp \/I "\$INSTDIR" "\$PROGRAMFILES64\\AI Video Editor Desktop V2\\Shell" program_files_cleanup_allowed/);
+assert.match(hook, /StrCmp "\$INSTDIR" "\$PROGRAMFILES64\\AI Video Editor Desktop V2\\Shell" program_files_cleanup_allowed/);
 assert.match(hook, /Delete \/REBOOTOK "\$INSTDIR\\desktop-v2\.identity\.json"/);
 assert.match(hook, /RMDir \/REBOOTOK "\$INSTDIR"/);
 assert.doesNotMatch(hook, /RMDir \/r \/REBOOTOK "\$INSTDIR"/i);
