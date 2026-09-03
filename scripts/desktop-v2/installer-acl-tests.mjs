@@ -7,6 +7,8 @@ const scriptRoot = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptRoot, "../..");
 const hookPath = path.join(repoRoot, "desktop", "src-tauri", "nsis", "installer-hooks.nsh");
 const hook = readFileSync(hookPath, "utf8");
+const templatePath = path.join(repoRoot, "desktop", "src-tauri", "nsis", "installer-template.nsi");
+const installerTemplate = readFileSync(templatePath, "utf8");
 
 assert.doesNotMatch(hook, /COMMONAPPDATA/, "the invalid NSIS shell token must never reach the hook source");
 assert.doesNotMatch(hook, /\$\{[^}]+\}\\AI Video Editor/, "machine paths must not contain an unresolved placeholder");
@@ -30,14 +32,14 @@ assert.ok((hook.match(/nsExec::ExecToStack/g) ?? []).length >= 3, "reset, grant,
 assert.ok((hook.match(/StrCmp \$0 "0"/g) ?? []).length >= 3, "every icacls command must gate success on exit code 0");
 assert.match(hook, /Pop \$0\s+Pop \$1/);
 assert.match(hook, /SetShellVarContext current\s+StrCpy \$5 "\$LOCALAPPDATA\\AI Video Editor"/);
-assert.match(hook, /Delete \/REBOOTOK "\$INSTDIR\\desktop-v2\.identity\.json"/);
-assert.match(hook, /RMDir \/REBOOTOK "\$INSTDIR"/);
+assert.match(installerTemplate, /Delete \/REBOOTOK "\$INSTDIR\\desktop-v2\.identity\.json"/);
+assert.match(installerTemplate, /RMDir \/REBOOTOK "\$INSTDIR"/);
 assert.match(hook, /RMDir \/r "\$2\\Components"/);
 assert.match(hook, /\$2\\Broker\\Requests/);
 assert.match(hook, /RMDir \/r "\$5\\Cache"/);
 assert.doesNotMatch(hook, /CreateShortCut/i, "the generated Tauri NSIS section is the sole shortcut creator");
 assert.doesNotMatch(hook, /Ignore|ignore|continue path/i);
-assert.match(hook, /2\.0\.0-rc\.6/);
+assert.match(installerTemplate, /2\.0\.0-rc\.6/);
 assert.match(hook, /com\.fyp\.ai-video-editor\.desktop-v2/);
 
 const generatedCandidates = [

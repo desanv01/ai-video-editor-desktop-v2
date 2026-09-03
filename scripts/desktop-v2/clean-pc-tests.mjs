@@ -14,11 +14,14 @@ assert.match(validation, /Get-FileHash/);
 assert.match(validation, /Detect-WebView2/);
 assert.match(validation, /Run-DesktopV2Smoke/);
 for (const field of ["restartEvidence", "repairEvidence", "uninstallEvidence"]) assert.match(validation, new RegExp(field));
-assert.match(smoke, /synthetic-source\.mp4/);
+assert.match(smoke, /rc6-e2e-source\.mp4/);
+assert.match(smoke, /actual-component-archives-extracted-to-disposable-temp/);
 assert.match(smoke, /ffprobe/);
 assert.match(smoke, /encodeExit/);
 assert.match(smoke, /decodeExit/);
-assert.match(smoke, /pending-external-clean-PC/);
+for (const gate of ["cleanPcInstall", "repair", "uninstall"]) {
+  assert.match(smoke, new RegExp(`${gate} = 'not-tested'`));
+}
 assert.match(docs, /CI\/local/);
 assert.match(docs, /genuine clean Windows 10\/11/i);
 assert.match(docs, /Credential Manager/);

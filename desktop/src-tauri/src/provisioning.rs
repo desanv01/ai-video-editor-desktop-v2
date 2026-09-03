@@ -5,7 +5,7 @@
 //! operation, durable ProgramData checkpoints, safe cancellation boundaries,
 //! and a single reconciled snapshot consumed by React.
 
-use crate::component_manager::{ComponentManager, ComponentStatusResult};
+use crate::component_manager::{ComponentManager, ComponentStatusResult, SourcePolicy};
 use crate::desktop_v2::{get_canonical_paths, ShellBootState, USER_DATA_DIRECTORY};
 use crate::setup_center::{self, BundledCatalogDiscovery};
 use crate::supervisor::{SupervisorState, SupervisorStatus};
@@ -647,6 +647,72 @@ fn friendly_copy(route: &DesktopHydrationRoute) -> (String, String) {
     }
 }
 
+fn cached_catalog_source_is_usable(catalog: &setup_center::SetupCatalogInfo) -> bool {
+    if catalog.source != "offline-import" {
+        return true;
+    }
+    let Some(source_path) = catalog.source_path.as_deref().map(Path::new) else {
+        return false;
+    };
+    let Some(catalog_dir) = source_path.parent() else {
+        return false;
+    };
+    let Some(handoff_root) = catalog_dir.parent() else {
+        return false;
+    };
+    source_path.is_file()
+        && catalog_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("Catalog"))
+        && handoff_root.join("Components").is_dir()
+}
+
+fn catalog_needs_reconciliation(
+    catalog: Option<&setup_center::SetupCatalogInfo>,
+    discovery: Option<&BundledCatalogDiscovery>,
+    core_components: &[ComponentStatusResult],
+) -> bool {
+    discovery.is_some_and(|value| value.available)
+        && (catalog.is_none()
+            || catalog.is_some_and(|value| !cached_catalog_source_is_usable(value))
+            || core_components.iter().any(|item| item.state != "active"))
+}
+
+fn boot_route_after_reconciliation(
+    recovered: bool,
+    core_components: &[ComponentStatusResult],
+    catalog_available: bool,
+    provisioning: Option<&ProvisioningJournal>,
+    supervisor_ready: bool,
+    first_launch_completed: bool,
+) -> DesktopHydrationRoute {
+    let activation_repair_required = core_components
+        .iter()
+        .any(|item| item.state == "repair-required");
+    let core_ready = core_components.iter().all(|item| item.state == "active");
+    let resumable = provisioning.is_some_and(ProvisioningJournal::resumable);
+    if !recovered {
+        DesktopHydrationRoute::RepairRequired
+    } else if activation_repair_required {
+        if catalog_available {
+            DesktopHydrationRoute::ResumableSetup
+        } else {
+            DesktopHydrationRoute::RepairRequired
+        }
+    } else if resumable {
+        DesktopHydrationRoute::ResumableSetup
+    } else if !core_ready {
+        DesktopHydrationRoute::NeedsCoreSetup
+    } else if !supervisor_ready {
+        DesktopHydrationRoute::StartingEngine
+    } else if !first_launch_completed {
+        DesktopHydrationRoute::NeedsOptionalAiChoice
+    } else {
+        DesktopHydrationRoute::Ready
+    }
+}
+
 fn build_boot_snapshot(
     app: &AppHandle,
     coordinator: &ProvisioningCoordinator,
@@ -663,51 +729,65 @@ fn build_boot_snapshot(
     let paths = get_canonical_paths();
     let machine_root = PathBuf::from(&paths.program_data_root).join(USER_DATA_DIRECTORY);
     let manager = ComponentManager::new(machine_root);
-    let recovered = manager.recover().is_ok();
-    if !recovered {
-        remediation_codes.push("COMPONENT_RECOVERY_REQUIRED".to_string());
-    }
-
-    let mut auto_discovered = false;
-    let mut discovery: Option<BundledCatalogDiscovery> = None;
-    let mut catalog = setup_center::setup_get_catalog().ok().flatten();
-    if catalog.is_none() {
-        discovery = setup_center::setup_discover_bundled_catalog(app.clone()).ok();
-        if discovery.as_ref().is_some_and(|value| value.available) {
-            if let Ok(imported) = setup_center::setup_import_bundled_catalog(app.clone()) {
-                catalog = Some(imported.catalog);
-                auto_discovered = true;
-            }
-        }
-    }
-
-    let core_components = vec![
+    let mut recovered = manager.recover().is_ok();
+    let mut core_components = vec![
         status_for(&manager, "aive-engine"),
         status_for(&manager, "ffmpeg"),
     ];
-    let repair_required = !recovered
-        || core_components
+    let mut auto_discovered = false;
+    let discovery = match setup_center::setup_discover_bundled_catalog(app.clone()) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            remediation_codes.push(error.code);
+            None
+        }
+    };
+    let mut catalog = setup_center::setup_get_catalog().ok().flatten();
+    if catalog_needs_reconciliation(catalog.as_ref(), discovery.as_ref(), &core_components) {
+        if let Ok(imported) = setup_center::setup_import_bundled_catalog(app.clone()) {
+            catalog = Some(imported.catalog);
+            auto_discovered = true;
+            // Re-run activation recovery after the repaired handoff has
+            // refreshed manifests and the persisted offline artifact root.
+            recovered = manager.recover().is_ok();
+            core_components = vec![
+                status_for(&manager, "aive-engine"),
+                status_for(&manager, "ffmpeg"),
+            ];
+        }
+    }
+
+    // A repaired installer may leave a valid retained component behind a
+    // corrupt active version. Installed-runtime repair is source-independent
+    // and can safely roll back without downloading or touching user projects.
+    if recovered {
+        for component in core_components
             .iter()
-            .any(|item| item.state == "repair-required");
-    let core_ready = core_components.iter().all(|item| item.state == "active");
+            .filter(|item| item.state == "repair-required")
+        {
+            if let Err(error) = manager.repair(&component.id, SourcePolicy::INSTALLED_RUNTIME, None)
+            {
+                remediation_codes.push(error.code);
+            }
+        }
+        core_components = vec![
+            status_for(&manager, "aive-engine"),
+            status_for(&manager, "ffmpeg"),
+        ];
+    }
+    if !recovered {
+        remediation_codes.push("COMPONENT_RECOVERY_REQUIRED".to_string());
+    }
     let supervisor = supervisor_state.status();
     let first_launch = load_first_launch();
-    let resumable = provisioning
-        .as_ref()
-        .is_some_and(ProvisioningJournal::resumable);
-    let route = if repair_required {
-        DesktopHydrationRoute::RepairRequired
-    } else if resumable {
-        DesktopHydrationRoute::ResumableSetup
-    } else if !core_ready {
-        DesktopHydrationRoute::NeedsCoreSetup
-    } else if !supervisor.engine_ready {
-        DesktopHydrationRoute::StartingEngine
-    } else if !first_launch.completed {
-        DesktopHydrationRoute::NeedsOptionalAiChoice
-    } else {
-        DesktopHydrationRoute::Ready
-    };
+    let route = boot_route_after_reconciliation(
+        recovered,
+        &core_components,
+        catalog.is_some(),
+        provisioning.as_ref(),
+        supervisor.engine_ready,
+        first_launch.completed,
+    );
     let (friendly_title, friendly_detail) = friendly_copy(&route);
     let trusted = catalog.is_some();
     let source = catalog.as_ref().map(|value| value.source.clone());
@@ -718,9 +798,9 @@ fn build_boot_snapshot(
     } else {
         "No included release catalog is available yet.".to_string()
     };
-    let shell_boot_state = if repair_required {
+    let shell_boot_state = if route == DesktopHydrationRoute::RepairRequired {
         ShellBootState::RecoverableError
-    } else if core_ready {
+    } else if core_components.iter().all(|item| item.state == "active") {
         ShellBootState::EngineAvailable
     } else {
         ShellBootState::SetupRequired
@@ -771,6 +851,19 @@ pub fn desktop_hydrate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn component(id: &str, state: &str) -> ComponentStatusResult {
+        ComponentStatusResult {
+            id: id.to_string(),
+            display_name: None,
+            version: None,
+            state: state.to_string(),
+            active_path: None,
+            downloaded_bytes: 0,
+            detail: String::new(),
+            remediation_codes: Vec::new(),
+        }
+    }
 
     fn test_root(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("aive-provisioning-{name}-{}", now_epoch_ms()))
@@ -851,5 +944,62 @@ mod tests {
             )
             .is_ok());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repaired_activation_routes_to_resume_when_trusted_reinstall_is_available() {
+        let broken = vec![
+            component("aive-engine", "repair-required"),
+            component("ffmpeg", "active"),
+        ];
+        assert_eq!(
+            boot_route_after_reconciliation(true, &broken, true, None, false, false),
+            DesktopHydrationRoute::ResumableSetup
+        );
+        assert_eq!(
+            boot_route_after_reconciliation(true, &broken, false, None, false, false),
+            DesktopHydrationRoute::RepairRequired
+        );
+    }
+
+    #[test]
+    fn recovered_components_progress_idempotently_through_start_and_first_launch() {
+        let active = vec![
+            component("aive-engine", "active"),
+            component("ffmpeg", "active"),
+        ];
+        assert_eq!(
+            boot_route_after_reconciliation(true, &active, true, None, false, false),
+            DesktopHydrationRoute::StartingEngine
+        );
+        assert_eq!(
+            boot_route_after_reconciliation(true, &active, true, None, true, false),
+            DesktopHydrationRoute::NeedsOptionalAiChoice
+        );
+        assert_eq!(
+            boot_route_after_reconciliation(true, &active, true, None, true, true),
+            DesktopHydrationRoute::Ready
+        );
+    }
+
+    #[test]
+    fn sibling_catalog_is_reconciled_for_missing_or_partial_core() {
+        let discovery = BundledCatalogDiscovery {
+            available: true,
+            path: Some("Catalog/offline-catalog.json".to_string()),
+            default_path: None,
+            handoff_root: Some("handoff".to_string()),
+            detail: String::new(),
+        };
+        let partial = vec![
+            component("aive-engine", "available"),
+            component("ffmpeg", "not-installed"),
+        ];
+        assert!(catalog_needs_reconciliation(
+            None,
+            Some(&discovery),
+            &partial
+        ));
+        assert!(!catalog_needs_reconciliation(None, None, &partial));
     }
 }

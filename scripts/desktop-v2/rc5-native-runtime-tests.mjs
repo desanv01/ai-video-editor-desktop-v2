@@ -27,6 +27,7 @@ const setupPanel = read("desktop/src/components/SetupCenterPanel.tsx");
 const shellPanel = read("desktop/src/components/DesktopV2Shell.tsx");
 const shellRust = read("desktop/src-tauri/src/lib.rs");
 const hook = read("desktop/src-tauri/nsis/installer-hooks.nsh");
+const installerTemplate = read("desktop/src-tauri/nsis/installer-template.nsi");
 
 for (const value of [packageJson.version, packageLock.version, packageLock.packages[""].version]) {
   assert.equal(value, releaseVersion);
@@ -119,12 +120,13 @@ assert.doesNotMatch(shellRust, /bootstrap_desktop_backend/);
 assert.doesNotMatch(shellRust, /Command::new\("docker"\)/);
 assert.doesNotMatch(supervisor, /Command::new\("docker"\)/);
 
-// The custom installer hook owns the immutable shell path and markers only;
-// generated Tauri NSIS remains the one shortcut owner.
+// The hook owns machine ACL/ancillary state; the pinned template owns the
+// immutable payload transaction, committed identity, and two shortcuts.
 assert.match(hook, /StrCpy \$INSTDIR "\$PROGRAMFILES64\\AI Video Editor Desktop V2\\Shell"/);
-assert.match(hook, /2\.0\.0-rc\.6/);
+assert.match(installerTemplate, /2\.0\.0-rc\.6/);
 assert.doesNotMatch(hook.replace(/^\s*;.*/gm, ""), /CreateShortCut/i);
-assert.match(hook, /generated Tauri NSIS section is the sole shortcut owner/i);
+assert.equal((installerTemplate.match(/\bCreateShortcut\b/g) ?? []).length, 2);
+assert.match(hook, /installer-template\.nsi is the single owner/i);
 assert.doesNotMatch(hook, /SetOutPath\s+[^\r\n]*\$APPDATA/i);
 
 const generatedInstaller = path.join(repoRoot, "desktop", "src-tauri", "target", "release", "nsis", "x64", "installer.nsi");

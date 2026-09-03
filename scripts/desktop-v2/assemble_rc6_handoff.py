@@ -24,6 +24,13 @@ VERSION = "2.0.0-rc.6"
 TARGET_PREFIX = "AI-Video-Editor-Desktop-V2-RC6-Handoff-"
 FORBIDDEN_PRIOR = ("rc2", "rc.2", "rc4", "rc.4", "rc5", "rc.5")
 TEST_PUBLIC_KEY_SHA256 = "22094d0fd9318ff224ea22abeec545b5c5d653fd8be5b480790de2d7743bb404"
+LECTURER_GUIDES = {
+    "RC6_LECTURER_SETUP.md": "LECTURER-SETUP.md",
+    "RC6_LECTURER_INSTALL.md": "INSTALL.md",
+    "RC6_LECTURER_USE.md": "USE.md",
+    "RC6_LECTURER_TROUBLESHOOTING.md": "TROUBLESHOOTING.md",
+    "RC6_LECTURER_UNINSTALL.md": "UNINSTALL.md",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -156,14 +163,33 @@ def main() -> int:
         copy(evidence.resolve(), target / "Evidence" / evidence.name)
     for name in ("verify_handoff_signatures.py", "Verify-RC6Release.ps1", "Sign-DesktopV2Release.ps1"):
         copy(source_root / "scripts" / "desktop-v2" / name, target / ("verify-handoff-signatures.py" if name == "verify_handoff_signatures.py" else name))
+    for name in ("Run-DesktopV2Smoke.ps1", "rc6-native-product-e2e.py"):
+        copy(source_root / "scripts" / "desktop-v2" / name, target / "SMOKE" / name)
+    for source_name, handoff_name in LECTURER_GUIDES.items():
+        copy(source_root / "docs" / "desktop-v2" / source_name, target / handoff_name)
     copy(source_root / "docs" / "desktop-v2" / "RC6_RELEASE_PROVENANCE.md", target / "Evidence" / "RC6_RELEASE_PROVENANCE.md")
     copy(source_root / "contracts" / "desktop-v2" / "ffmpeg-8.1.1.provenance.json", target / "Evidence" / "ffmpeg-8.1.1.provenance.json")
     label = "DEVELOPER/TEST — NOT PRODUCTION-TRUSTED" if args.signing_profile == "developer-test" else "EXTERNAL RELEASE CANDIDATE — VERIFICATION REQUIRED"
     (target / "START-HERE.md").write_text(
         f"# AI Video Editor Desktop V2 {VERSION}\n\n**{label}**\n\n"
-        "Run `Verify-RC6Release.ps1` and `verify-handoff-signatures.py` before installation. "
-        "The default developer/test trust root is coherent with this shell build but is public and non-production. "
-        "Authenticode is not claimed. Do not distribute as lecturer-ready or commercial release evidence.\n",
+        "This handoff is an unsigned release-candidate build for supervised evaluation. "
+        "Authenticode is not claimed. The default developer/test trust root is coherent with this shell build, "
+        "but its public test key is not a production publisher identity. Do not represent it as a signed commercial release.\n\n"
+        "## Before installation\n\n"
+        "From PowerShell in this folder, run:\n\n"
+        "```powershell\n"
+        "powershell -NoProfile -ExecutionPolicy Bypass -File .\\Verify-RC6Release.ps1 -HandoffRoot .\n"
+        "python .\\verify-handoff-signatures.py .\n"
+        "```\n\n"
+        "Both commands must pass. The Python verifier needs Python with `cryptography`; the installed application does not.\n\n"
+        "## Guides\n\n"
+        "1. [Lecturer setup](LECTURER-SETUP.md)\n"
+        "2. [Install](INSTALL.md)\n"
+        "3. [Use](USE.md)\n"
+        "4. [Troubleshooting](TROUBLESHOOTING.md)\n"
+        "5. [Uninstall and data retention](UNINSTALL.md)\n\n"
+        "`SMOKE\\Run-DesktopV2Smoke.ps1` is an operator test for extracted packaged components. "
+        "It is not clean-PC installation, repair, or uninstall evidence.\n",
         encoding="utf-8", newline="\n",
     )
     command = [

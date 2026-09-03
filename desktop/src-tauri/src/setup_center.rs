@@ -33,10 +33,16 @@ pub const SETUP_CATALOG_FILE: &str = "setup-catalog.json";
 pub const SETUP_CATALOG_REJECTION_FILE: &str = "setup-catalog-rejection.json";
 pub const SETUP_STATE_FILE: &str = "setup-state.json";
 pub const PRODUCTION_CATALOG_ENV: &str = "AIVE_SETUP_CATALOG_URL";
+pub const INSTALLER_HANDOFF_ORIGIN_SCHEMA: &str = "desktop.installer-handoff-origin.v1";
+pub const INSTALLER_HANDOFF_ORIGIN_FILE: &str = "handoff-root.json";
+pub const INSTALLER_HANDOFF_CATALOG_RELATIVE_PATH: &str = "Catalog/offline-catalog.json";
+pub const INSTALLER_HANDOFF_COMPONENTS_RELATIVE_PATH: &str = "Components";
 const MAX_CATALOG_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CATALOG_ENTRIES: usize = 64;
 const MIN_SYSTEM_FREE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_BUNDLED_CATALOG_CANDIDATES: usize = 9;
+const MAX_BUNDLED_CATALOG_ROOTS: usize = 4;
+const MAX_INSTALLER_HANDOFF_ORIGIN_BYTES: u64 = 16 * 1024;
 
 fn record_catalog_result<T>(operation: &str, result: &ManagerResult<T>) {
     match result {
@@ -137,6 +143,15 @@ pub struct BundledCatalogDiscovery {
     pub default_path: Option<String>,
     pub handoff_root: Option<String>,
     pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct InstallerHandoffOrigin {
+    schema_version: String,
+    handoff_root: String,
+    catalog_relative_path: String,
+    components_relative_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -727,6 +742,113 @@ fn path_is_same_or_child(root: &Path, candidate: &Path) -> bool {
     candidate == root || candidate.starts_with(&(root + "/"))
 }
 
+fn installer_handoff_origin_path() -> PathBuf {
+    PathBuf::from(get_canonical_paths().program_data_root)
+        .join("AI Video Editor")
+        .join("Installer")
+        .join(INSTALLER_HANDOFF_ORIGIN_FILE)
+}
+
+fn load_installer_handoff_origin_at(marker_path: &Path) -> ManagerResult<Option<PathBuf>> {
+    if !marker_path.exists() {
+        return Ok(None);
+    }
+    let metadata = fs::metadata(marker_path).map_err(|_| {
+        setup_error(
+            "INSTALLER_HANDOFF_ORIGIN_UNREADABLE",
+            "The saved installer handoff location could not be read. Setup can still browse for a trusted handoff copy.",
+            true,
+        )
+    })?;
+    if !metadata.is_file() || metadata.len() > MAX_INSTALLER_HANDOFF_ORIGIN_BYTES {
+        return Err(setup_error(
+            "INSTALLER_HANDOFF_ORIGIN_INVALID",
+            "The saved installer handoff location is not a valid bounded marker.",
+            false,
+        ));
+    }
+    let bytes = fs::read(marker_path).map_err(|_| {
+        setup_error(
+            "INSTALLER_HANDOFF_ORIGIN_UNREADABLE",
+            "The saved installer handoff location could not be read. Setup can still browse for a trusted handoff copy.",
+            true,
+        )
+    })?;
+    let origin: InstallerHandoffOrigin = serde_json::from_slice(&bytes).map_err(|_| {
+        setup_error(
+            "INSTALLER_HANDOFF_ORIGIN_INVALID",
+            "The saved installer handoff location is not compatible with this shell.",
+            false,
+        )
+    })?;
+    if origin.schema_version != INSTALLER_HANDOFF_ORIGIN_SCHEMA
+        || origin.catalog_relative_path != INSTALLER_HANDOFF_CATALOG_RELATIVE_PATH
+        || origin.components_relative_path != INSTALLER_HANDOFF_COMPONENTS_RELATIVE_PATH
+    {
+        return Err(setup_error(
+            "INSTALLER_HANDOFF_ORIGIN_INVALID",
+            "The saved installer handoff location uses an unsupported layout.",
+            false,
+        ));
+    }
+
+    let requested_root = PathBuf::from(&origin.handoff_root);
+    if !requested_root.is_absolute() {
+        return Err(setup_error(
+            "INSTALLER_HANDOFF_ORIGIN_INVALID",
+            "The saved installer handoff location must be an absolute folder.",
+            false,
+        ));
+    }
+    let root = fs::canonicalize(&requested_root).map_err(|_| {
+        setup_error(
+            "INSTALLER_HANDOFF_ORIGIN_STALE",
+            "The original installer handoff folder is no longer available. Reconnect it or browse for another trusted copy.",
+            true,
+        )
+    })?;
+    if !root.is_dir() {
+        return Err(setup_error(
+            "INSTALLER_HANDOFF_ORIGIN_STALE",
+            "The original installer handoff folder is no longer available. Reconnect it or browse for another trusted copy.",
+            true,
+        ));
+    }
+    let catalog =
+        fs::canonicalize(root.join("Catalog").join("offline-catalog.json")).map_err(|_| {
+            setup_error(
+                "INSTALLER_HANDOFF_ORIGIN_INCOMPLETE",
+                "The original installer handoff is missing its signed catalog.",
+                false,
+            )
+        })?;
+    let components = fs::canonicalize(root.join("Components")).map_err(|_| {
+        setup_error(
+            "INSTALLER_HANDOFF_ORIGIN_INCOMPLETE",
+            "The original installer handoff is missing its component payload folder.",
+            false,
+        )
+    })?;
+    if !catalog.is_file()
+        || !components.is_dir()
+        || !path_is_same_or_child(&root, &catalog)
+        || !path_is_same_or_child(&root, &components)
+        || offline_catalog_handoff_root(&catalog)? != root
+    {
+        return Err(setup_error(
+            "INSTALLER_HANDOFF_ORIGIN_INVALID",
+            "The saved installer handoff location escaped or no longer matches its approved layout.",
+            false,
+        ));
+    }
+    let _ = read_bounded_catalog_file(&catalog)?;
+    Ok(Some(root))
+}
+
+fn load_installer_handoff_origin() -> ManagerResult<Option<PathBuf>> {
+    load_installer_handoff_origin_at(&installer_handoff_origin_path())
+}
+
 fn bundled_catalog_candidates(resource_dir: &Path) -> Vec<PathBuf> {
     [
         resource_dir
@@ -877,14 +999,26 @@ fn discover_bundled_catalog_at(resource_dir: &Path) -> ManagerResult<BundledCata
 }
 
 fn discover_bundled_catalog_roots(roots: &[PathBuf]) -> ManagerResult<BundledCatalogDiscovery> {
-    for root in roots.iter().take(3) {
+    let mut first_error = None;
+    for root in roots.iter().take(MAX_BUNDLED_CATALOG_ROOTS) {
         if !root.is_dir() {
             continue;
         }
-        let discovery = discover_bundled_catalog_at(root)?;
-        if discovery.available {
-            return Ok(discovery);
+        match discover_bundled_catalog_at(root) {
+            Ok(discovery) if discovery.available => return Ok(discovery),
+            Ok(_) => {}
+            Err(error) => {
+                // A partial resource handoff left by an interrupted installer
+                // must not mask a complete sibling handoff beside the repaired
+                // launcher. Every root retains its own containment checks.
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
         }
+    }
+    if let Some(error) = first_error {
+        return Err(error);
     }
     Ok(BundledCatalogDiscovery {
         available: false,
@@ -1070,18 +1204,21 @@ pub fn setup_get_catalog_status() -> ManagerResult<SetupCatalogStatus> {
 
 #[tauri::command]
 pub fn setup_discover_bundled_catalog(app: AppHandle) -> ManagerResult<BundledCatalogDiscovery> {
-    let resource_dir = app.path().resource_dir().map_err(|error| {
-        setup_error(
-            "BUNDLED_CATALOG_UNAVAILABLE",
-            format!("The application resource directory could not be resolved: {error}"),
-            true,
-        )
-    })?;
     // Commercial/offline handoffs commonly place Catalog and Components next
     // to the installed launcher rather than inside the resource directory.
-    // Search only three explicit, canonicalizable roots; each candidate still
+    // Search only four explicit, canonicalizable roots; each candidate still
     // has to remain inside its root and contain the sibling Components folder.
-    let mut roots = vec![resource_dir];
+    // A repaired/partial install may temporarily lack its resource directory,
+    // so resolving that optional root must not suppress the persisted installer
+    // origin or executable siblings.
+    let mut roots = Vec::new();
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        roots.push(resource_dir);
+    }
+    let installer_origin = load_installer_handoff_origin();
+    if let Ok(Some(root)) = &installer_origin {
+        roots.push(root.clone());
+    }
     if let Ok(executable) = env::current_exe() {
         if let Some(parent) = executable.parent() {
             roots.push(parent.to_path_buf());
@@ -1091,7 +1228,27 @@ pub fn setup_discover_bundled_catalog(app: AppHandle) -> ManagerResult<BundledCa
         }
     }
     roots.dedup();
-    discover_bundled_catalog_roots(&roots)
+    if roots.is_empty() {
+        return Err(setup_error(
+            "BUNDLED_CATALOG_UNAVAILABLE",
+            "Neither the application resource directory nor launcher directory could be resolved.",
+            true,
+        ));
+    }
+    match discover_bundled_catalog_roots(&roots) {
+        Ok(discovery) if discovery.available => Ok(discovery),
+        Ok(_) => match installer_origin {
+            Err(error) => Err(error),
+            _ => Ok(BundledCatalogDiscovery {
+                available: false,
+                path: None,
+                default_path: None,
+                handoff_root: None,
+                detail: "No included release catalog was found beside the app or at the saved installer handoff. You can choose a trusted catalog manually.".to_string(),
+            }),
+        },
+        Err(error) => Err(error),
+    }
 }
 
 #[tauri::command]
@@ -1949,8 +2106,10 @@ mod tests {
         fs::create_dir_all(root.join("Components")).unwrap();
         fs::write(&catalog, b"{}").unwrap();
 
-        let missing = root.join("missing-resource-root");
-        let discovered = discover_bundled_catalog_roots(&[missing, root.clone()])
+        let partial = root.join("partial-resources");
+        fs::create_dir_all(partial.join("Catalog")).unwrap();
+        fs::write(partial.join("Catalog").join("offline-catalog.json"), b"{}").unwrap();
+        let discovered = discover_bundled_catalog_roots(&[partial, root.clone()])
             .expect("sibling catalog discovery");
         assert!(discovered.available);
         assert_eq!(
@@ -1963,6 +2122,90 @@ mod tests {
             )
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn persisted_installer_origin_resolves_external_handoff_without_copying_assets() {
+        let fixture = env::temp_dir().join(format!(
+            "aive-installer-origin-{}-{}",
+            std::process::id(),
+            now_epoch_ms()
+        ));
+        let handoff = fixture.join("external-handoff");
+        fs::create_dir_all(handoff.join("Catalog")).unwrap();
+        fs::create_dir_all(handoff.join("Components")).unwrap();
+        fs::write(handoff.join("Catalog").join("offline-catalog.json"), b"{}").unwrap();
+        let marker = fixture
+            .join("ProgramData")
+            .join(INSTALLER_HANDOFF_ORIGIN_FILE);
+        fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        fs::write(
+            &marker,
+            serde_json::to_vec(&InstallerHandoffOrigin {
+                schema_version: INSTALLER_HANDOFF_ORIGIN_SCHEMA.to_string(),
+                handoff_root: fs::canonicalize(&handoff)
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string(),
+                catalog_relative_path: INSTALLER_HANDOFF_CATALOG_RELATIVE_PATH.to_string(),
+                components_relative_path: INSTALLER_HANDOFF_COMPONENTS_RELATIVE_PATH.to_string(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let resolved = load_installer_handoff_origin_at(&marker)
+            .expect("valid persisted origin")
+            .expect("persisted root");
+        assert_eq!(resolved, fs::canonicalize(&handoff).unwrap());
+        let discovered = discover_bundled_catalog_roots(&[resolved]).expect("catalog discovery");
+        assert!(discovered.available);
+        let _ = fs::remove_dir_all(fixture);
+    }
+
+    #[test]
+    fn persisted_installer_origin_rejects_layout_override_and_stale_root() {
+        let fixture = env::temp_dir().join(format!(
+            "aive-installer-origin-invalid-{}-{}",
+            std::process::id(),
+            now_epoch_ms()
+        ));
+        fs::create_dir_all(&fixture).unwrap();
+        let marker = fixture.join(INSTALLER_HANDOFF_ORIGIN_FILE);
+        fs::write(
+            &marker,
+            format!(
+                r#"{{"schemaVersion":"{}","handoffRoot":"{}","catalogRelativePath":"../catalog.json","componentsRelativePath":"Components"}}"#,
+                INSTALLER_HANDOFF_ORIGIN_SCHEMA,
+                fixture.to_string_lossy().replace('\\', "\\\\")
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            load_installer_handoff_origin_at(&marker)
+                .expect_err("relative path override must fail")
+                .code,
+            "INSTALLER_HANDOFF_ORIGIN_INVALID"
+        );
+
+        fs::write(
+            &marker,
+            serde_json::to_vec(&InstallerHandoffOrigin {
+                schema_version: INSTALLER_HANDOFF_ORIGIN_SCHEMA.to_string(),
+                handoff_root: fixture.join("missing").to_string_lossy().to_string(),
+                catalog_relative_path: INSTALLER_HANDOFF_CATALOG_RELATIVE_PATH.to_string(),
+                components_relative_path: INSTALLER_HANDOFF_COMPONENTS_RELATIVE_PATH.to_string(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            load_installer_handoff_origin_at(&marker)
+                .expect_err("stale origin must fail")
+                .code,
+            "INSTALLER_HANDOFF_ORIGIN_STALE"
+        );
+        let _ = fs::remove_dir_all(fixture);
     }
 
     #[test]

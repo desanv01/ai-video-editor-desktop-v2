@@ -77,7 +77,7 @@ function testRustSafetyAndUiWiring() {
   assert.match(installerSource, /installMode|per-machine/i);
   assert.match(installerSource, /Abort/);
   assert.doesNotMatch(installerSource, /CreateShortCut/i);
-  assert.match(installerSource, /generated Tauri NSIS section is the sole shortcut owner/i);
+  assert.match(installerSource, /installer-template\.nsi is the single owner/i);
   assert.match(installerSource, /AI Video Editor Desktop V2/);
   assert.match(installerSource, /\$APPDATA\\AI Video Editor/);
   assert.doesNotMatch(installerSource, /COMMONAPPDATA/);

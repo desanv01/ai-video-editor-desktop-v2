@@ -172,7 +172,6 @@ export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void })
     }
 
     const requiredReady = requiredComponentsReady(nextStatuses);
-    const bootstrapHealthy = nextBootstrap?.bootState !== "recoverable-error";
     const shouldSetup = routeNeedsSetup(reconciledSnapshot.route);
     setSetupRequired(shouldSetup);
     const persistedHealthyState = requiredReady && !nextSetupState.onboardingCompleted
@@ -189,7 +188,8 @@ export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void })
 
     try {
       let status = await api.getSupervisorStatus();
-      if (requiredReady && bootstrapHealthy) {
+      const reconciledCoreReady = reconciledSnapshot.coreComponents.every(component => component.state === "active");
+      if (reconciledCoreReady && reconciledSnapshot.shellBootState === "engine-available") {
         if ([
           "stopped",
           "cancelled-stopped",
@@ -203,6 +203,25 @@ export function DesktopV2Shell({ onEngineReady }: { onEngineReady: () => void })
           "fatal",
         ].includes(status.state)) {
           status = await api.startSupervisor();
+        }
+        const startupTerminalStates = [
+          "setup-required",
+          "component-repair-required",
+          "repair-required",
+          "storage-blocked",
+          "launch-blocked",
+          "protocol-incompatible",
+          "session-auth-failed",
+          "cancelled-stopped",
+          "fatal-shell-failure",
+          "fatal",
+        ];
+        // A repaired install can start quickly enough to emit readiness before
+        // the post-hydration event listener subscribes. This bounded poll
+        // closes that race without starting a second supervisor operation.
+        for (let attempt = 0; attempt < 60 && !canLaunchEditor(status) && !startupTerminalStates.includes(status.state); attempt += 1) {
+          await new Promise(resolve => window.setTimeout(resolve, 250));
+          status = await api.getSupervisorStatus();
         }
         setSupervisor(status);
         try {

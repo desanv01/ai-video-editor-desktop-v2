@@ -44,6 +44,7 @@
       },
       "nsis": {
         "installMode": "perMachine",
+        "template": "nsis/installer-template.nsi",
         "startMenuFolder": "AI Video Editor Desktop V2",
         "displayLanguageSelector": false,
         "installerHooks": "nsis/installer-hooks.nsh"

@@ -7,7 +7,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../
 
 const readSource = relativePath => readFile(path.join(repoRoot, relativePath), "utf8");
 
-const [installer, migration, migrationClient, desktopV2, contracts, app, componentManager, nativeBuild, providerCredentials, tauriConfig] = await Promise.all([
+const [installer, migration, migrationClient, desktopV2, contracts, app, componentManager, nativeBuild, providerCredentials, tauriConfig, installerTemplate] = await Promise.all([
   readSource("desktop/src-tauri/nsis/installer-hooks.nsh"),
   readSource("desktop/src-tauri/src/migration.rs"),
   readSource("desktop/src/migration.ts"),
@@ -18,6 +18,7 @@ const [installer, migration, migrationClient, desktopV2, contracts, app, compone
   readSource("scripts/desktop-v2/build_native_engine.py"),
   readSource("desktop/src-tauri/src/provider_credentials.rs"),
   readSource("desktop/src-tauri/tauri.conf.json"),
+  readSource("desktop/src-tauri/nsis/installer-template.nsi"),
 ]);
 
 function mustInclude(source, text, message) {
@@ -45,18 +46,18 @@ assert.match(
 mustInclude(installer, 'StrCpy $INSTDIR "$PROGRAMFILES64\\AI Video Editor Desktop V2\\Shell"', "NSIS must install the shell at the canonical x64 Program Files path");
 mustInclude(installer, "SetShellVarContext all", "the installer must use a per-machine shell context");
 mustInclude(installer, "SetRegView 64", "the installer must use the 64-bit machine registry view");
-mustInclude(installer, '"InstallPath" "$INSTDIR"', "the installer identity must point at the canonical shell directory");
+mustInclude(installerTemplate, '"InstallPath" "$INSTDIR"', "the installer identity must point at the canonical shell directory");
 assert.match(tauriConfig, /"installMode":\s*"perMachine"/, "Tauri must declare a per-machine installer");
 assert.match(tauriConfig, /"startMenuFolder":\s*"AI Video Editor Desktop V2"/, "the Start Menu owner must use the V2 identity");
 mustInclude(contracts, 'shell_install: storage_descriptor("%ProgramFiles%\\\\AI Video Editor Desktop V2\\\\Shell"', "storage contracts must publish the canonical shell path");
 mustInclude(contracts, "program_files_runtime_writable: false", "Program Files must remain immutable at runtime");
 assert.match(migration, /V2_PRODUCT_IDENTIFIER|com\.fyp\.ai-video-editor\.desktop-v2/, "installer identity ownership must be product-scoped");
 
-// Tauri's generated NSIS section is the installer shortcut owner. Repair may
-// restore the two known V2 links only when explicitly requested.
+// The pinned RC6 NSIS template is the sole installer shortcut owner.
 assert.doesNotMatch(installerCode, /CreateShortCut/i, "the custom NSIS hook must not create a duplicate shortcut");
-assert.match(installer, /generated Tauri NSIS section is the sole shortcut owner/i, "shortcut ownership must be documented at the installer boundary");
-assert.doesNotMatch(installerCode, /\bStrCmp\s+\/I\b/, "NSIS StrCmp does not accept an /I parameter");
+assert.equal((installerTemplate.match(/\bCreateShortcut\b/g) ?? []).length, 2, "pinned template must own exactly two shortcuts");
+assert.match(installer, /installer-template\.nsi is the single owner/i, "shortcut ownership must be documented at the installer boundary");
+assert.doesNotMatch(`${installerCode}\n${installerTemplate}`, /\bStrCmp\s+\/I\b/, "NSIS StrCmp does not accept an /I parameter");
 const shortcutSectionStart = migration.indexOf("fn shortcut_paths_for_v2");
 const shortcutSectionEnd = migration.indexOf("fn write_shortcut", shortcutSectionStart);
 assert.ok(shortcutSectionStart >= 0 && shortcutSectionEnd > shortcutSectionStart, "V2 shortcut ownership helper must be present");
@@ -94,14 +95,16 @@ for (const [relative, classification] of [["Projects", "projects"], ["Exports", 
 }
 assert.match(uninstallSection, /remove_by_default:\s*false[\s\S]*?preserve_by_default:\s*true/, "preserved paths must be excluded from the default removal set");
 assert.match(migration, /default_choice:\s*"remove-shell-runtime-preserve-user-data"/, "the default uninstall choice must be data-preserving");
-assert.match(installer, /Config, uploads, models, database,[\s\S]*projects, and exports are deliberately preserved/i, "the NSIS uninstall hook must state its data-preserving contract");
-const destructiveHookLines = installerCode
+assert.match(installer, /preserves settings, content, databases, models, projects,[\s\S]*exports, and every Credential Manager entry/i, "the NSIS uninstall hook must state its data-preserving contract");
+const preFullWipeInstallerCode = installerCode.slice(0, installerCode.indexOf("StrCmp $FullWipeCheckboxState 1"));
+const destructiveHookLines = preFullWipeInstallerCode
   .split(/\r?\n/)
   .filter(line => /\b(?:RMDir|Delete)\b/i.test(line))
   .join("\n");
 assert.doesNotMatch(destructiveHookLines, /\$5\\(?:Config|uploads|models|database|Projects|Exports)/i, "NSIS must not remove user content or settings roots");
 assert.doesNotMatch(destructiveHookLines, /\$2\\(?:Config|uploads|models|database|Projects|Exports)/i, "machine cleanup must not reach user content names");
-assert.doesNotMatch(installerCode, /CredDelete|provider_credential_clear|Credential Manager/i, "default NSIS uninstall must not clear provider credentials");
+const defaultNsisUninstall = preFullWipeInstallerCode.slice(preFullWipeInstallerCode.indexOf("!macro NSIS_HOOK_POSTUNINSTALL"));
+assert.doesNotMatch(defaultNsisUninstall, /CredDelete|cmdkey|provider_credential_clear/i, "default NSIS uninstall must not clear provider credentials");
 mustInclude(providerCredentials, 'pub const PROVIDER_CREDENTIAL_STORAGE: &str = "windows-credential-manager-per-user";', "provider credentials must have a protected per-user storage owner");
 mustInclude(providerCredentials, "Credential Manager", "provider credential ownership must be explicit");
 mustInclude(providerCredentials, "provider_credential_clear", "credential deletion must remain an explicit provider command");
