@@ -43,7 +43,7 @@ assert.match(
   /let shell_install = roots\s*\.program_files\s*\.join\(PROGRAM_FILES_DIRECTORY\)\s*\.join\("Shell"\)/,
   "Desktop V2 path resolution must derive the shell from the Program Files root",
 );
-mustInclude(installer, 'StrCpy $INSTDIR "$PROGRAMFILES64\\AI Video Editor Desktop V2\\Shell"', "NSIS must install the shell at the canonical x64 Program Files path");
+mustInclude(installerTemplate, 'StrCpy $INSTDIR "${AIVEINSTALLDIR}"', "NSIS must assign the canonical x64 Program Files shell path without selecting it as the output directory");
 mustInclude(installer, "SetShellVarContext all", "the installer must use a per-machine shell context");
 mustInclude(installer, "SetRegView 64", "the installer must use the 64-bit machine registry view");
 mustInclude(installerTemplate, '"InstallPath" "$INSTDIR"', "the installer identity must point at the canonical shell directory");
@@ -118,8 +118,9 @@ assert.match(nativeBuild, /one-file\s+mode[\s\S]*engine can start directly from 
 assert.match(desktopV2, /let shared_components = roots[\s\S]*?\.program_data[\s\S]*?\.join\("Components"\)/, "native components must resolve under ProgramData");
 assert.match(app, /fn webview_user_data_directory\(local_app_data: &Path\)[\s\S]*?local_app_data\.join\(desktop_v2::PRODUCT_IDENTIFIER\)/, "only per-user WebView2 data may use LocalAppData");
 assert.doesNotMatch(installerCode, /\bSetOutPath\s+[^\r\n]*\$APPDATA/i, "NSIS must not extract runtime payloads into APPDATA");
-assert.equal((installerCode.match(/\bSetOutPath\b/gi) ?? []).length, 1, "the custom hook must have one immutable shell output target");
-mustInclude(installer, "SetOutPath $INSTDIR", "the custom hook output target must remain the canonical shell directory");
+assert.doesNotMatch(installerCode, /\bSetOutPath\b/i, "the custom hook must never select the live shell as its output/current directory");
+assert.doesNotMatch(installerTemplate, /\bSetOutPath\s+"?\$INSTDIR"?/i, "the template must not ambiguously enter whatever path $INSTDIR currently names");
+assert.match(installerTemplate, /SetOutPath "\$\{AIVESTAGINGDIR\}"/, "payload extraction must target the owned sibling staging directory");
 assert.doesNotMatch(tauriConfig, /AppData/i, "bundle configuration must not declare an AppData runtime payload");
 
 // Full wipe is a separate, bounded operation: it defaults off, requires the

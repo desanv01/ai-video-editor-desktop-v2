@@ -4,14 +4,30 @@
 ; Program Files remains immutable at runtime; scoped machine writes use the
 ; exact ProgramData perimeter and per-user content remains preserve-by-default.
 
+!macro AIVE_REPARSE_RESULT PATH RESULT
+  StrCpy ${RESULT} 0
+  System::Call 'kernel32::GetFileAttributesW(w "${PATH}") i .r0'
+  IntCmp $0 -1 +3
+  IntOp $0 $0 & 0x400
+  StrCmp $0 0 +2
+    StrCpy ${RESULT} 1
+!macroend
+
 !macro AIVE_CREATE_MACHINE_DIR PATH CREATED_FLAG LABEL
-  IfFileExists "${PATH}\." ${LABEL}_exists 0
-    StrCpy ${CREATED_FLAG} 1
+  IfFileExists "${PATH}\." ${LABEL}_exists ${LABEL}_create
   ${LABEL}_exists:
+    StrCpy $4 "${PATH}"
+    !insertmacro AIVE_REPARSE_RESULT "${PATH}" $7
+    StrCmp $7 1 machine_perimeter_reparse
+    Goto ${LABEL}_ready
+  ${LABEL}_create:
+    StrCpy ${CREATED_FLAG} 1
+  ${LABEL}_ready:
   ClearErrors
   StrCpy $4 "${PATH}"
   CreateDirectory "$4"
   IfErrors machine_perimeter_failed
+  Call WriteTransactionJournal
 !macroend
 
 !macro AIVE_DELETE_KNOWN_CREDENTIAL PROVIDER KEY
@@ -26,11 +42,14 @@
   ${LABEL}_done:
 !macroend
 
+!macro AIVE_REMOVE_OWNED_TREE PATH LABEL
+  Push "${PATH}"
+  Call un.RemoveTreeNoReparse
+!macroend
+
 !macro NSIS_HOOK_PREINSTALL
   SetShellVarContext all
   SetRegView 64
-  StrCpy $INSTDIR "$PROGRAMFILES64\AI Video Editor Desktop V2\Shell"
-  SetOutPath $INSTDIR
 
   ; Resolve the machine perimeter exactly. Never fall back to a user profile.
   StrCpy $2 "$APPDATA\AI Video Editor"
@@ -41,8 +60,10 @@
   DetailPrint "Unexpected machine data root. Expected: $4"
   DetailPrint "Resolved NSIS machine data root: $2"
   machine_data_resolution_failed:
-    MessageBox MB_ICONSTOP|MB_OK "AI Video Editor Desktop V2 could not resolve its machine component perimeter to %ProgramData%. No partial installation will be accepted."
-    Abort
+    StrCpy $FailureCode ${AIVE_E_INVARIANT}
+    StrCpy $FailureStage "machine-perimeter"
+    StrCpy $FailureMessage "Setup could not resolve its machine component perimeter to ProgramData."
+    Call FailInstall
   machine_data_resolved:
 
   ; Track only directories this transaction created. Rollback removes only
@@ -58,35 +79,41 @@
   !insertmacro AIVE_CREATE_MACHINE_DIR "$2\Provisioning" $TxnCreatedProvisioning machine_provisioning
   !insertmacro AIVE_CREATE_MACHINE_DIR "$2\Installer" $TxnCreatedInstaller machine_installer
   Goto machine_perimeter_ready
+  machine_perimeter_reparse:
+    DetailPrint "Refusing reparse-point machine perimeter directory: $4"
+    StrCpy $FailureCode ${AIVE_E_CONFLICT}
+    StrCpy $FailureStage "machine-perimeter-reparse"
+    StrCpy $FailureMessage "Setup found a reparse point inside its machine component perimeter. Preserve it and resolve the conflict manually."
+    Call FailInstall
   machine_perimeter_failed:
     DetailPrint "CreateDirectory failed for: $4"
-    MessageBox MB_ICONSTOP|MB_OK "AI Video Editor Desktop V2 could not prepare its machine component perimeter. Failed path: $4. No partial installation will be accepted."
-    Abort
+    StrCpy $FailureCode ${AIVE_E_INVARIANT}
+    StrCpy $FailureStage "machine-perimeter"
+    StrCpy $FailureMessage "Setup could not prepare an owned machine component directory."
+    Call FailInstall
   machine_perimeter_ready:
 
-  nsExec::ExecToStack /OEM '"$SYSDIR\icacls.exe" "$2" /reset /T'
-  Pop $0
-  Pop $1
-  DetailPrint "icacls reset exit code: $0"
-  StrCmp $0 "0" acl_reset_ready
-    MessageBox MB_ICONSTOP|MB_OK "AI Video Editor Desktop V2 could not reset the machine component perimeter ACL. icacls exit code: $0."
-    Abort
-  acl_reset_ready:
-  nsExec::ExecToStack /OEM '"$SYSDIR\icacls.exe" "$2" /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)(F)" "*S-1-5-32-544:(OI)(CI)(F)" "*S-1-5-32-545:(OI)(CI)(M)" /T'
+  ; Apply policy at the owned root without recursively rewriting ACLs or
+  ; ownership on pre-existing component/user-created content.
+  nsExec::ExecToStack /OEM '"$SYSDIR\icacls.exe" "$2" /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)(F)" "*S-1-5-32-544:(OI)(CI)(F)" "*S-1-5-32-545:(OI)(CI)(M)"'
   Pop $0
   Pop $1
   DetailPrint "icacls perimeter policy exit code: $0"
   StrCmp $0 "0" acl_ready
-    MessageBox MB_ICONSTOP|MB_OK "AI Video Editor Desktop V2 could not secure its machine component perimeter. icacls exit code: $0."
-    Abort
+    StrCpy $FailureCode ${AIVE_E_INVARIANT}
+    StrCpy $FailureStage "machine-acl"
+    StrCpy $FailureMessage "Setup could not secure its machine component perimeter."
+    Call FailInstall
   acl_ready:
-  nsExec::ExecToStack /OEM '"$SYSDIR\icacls.exe" "$2" /setowner "*S-1-5-32-544" /T'
+  nsExec::ExecToStack /OEM '"$SYSDIR\icacls.exe" "$2" /setowner "*S-1-5-32-544"'
   Pop $0
   Pop $1
   DetailPrint "icacls owner policy exit code: $0"
   StrCmp $0 "0" owner_ready
-    MessageBox MB_ICONSTOP|MB_OK "AI Video Editor Desktop V2 could not set the machine component perimeter owner. icacls exit code: $0."
-    Abort
+    StrCpy $FailureCode ${AIVE_E_INVARIANT}
+    StrCpy $FailureStage "machine-owner"
+    StrCpy $FailureMessage "Setup could not set the machine component perimeter owner."
+    Call FailInstall
   owner_ready:
 !macroend
 
@@ -102,8 +129,10 @@
   FileClose $0
   Goto broker_marker_done
   broker_marker_failed:
-    MessageBox MB_ICONSTOP|MB_OK "AI Video Editor Desktop V2 could not write its component repair marker. Setup was aborted."
-    Abort
+    StrCpy $FailureCode ${AIVE_E_IDENTITY}
+    StrCpy $FailureStage "identity-component"
+    StrCpy $FailureMessage "Setup could not write its component repair identity marker."
+    Call FailInstall
   broker_marker_done:
 
   ; Persist handoff provenance only for the bounded portable handoff layout.
@@ -115,6 +144,7 @@
     CopyFiles /SILENT "$PROGRAMDATA\AI Video Editor\Installer\handoff-root.json" "$PROGRAMDATA\AI Video Editor\Installer\handoff-root.json.rc6-rollback"
     IfErrors handoff_origin_failed
     StrCpy $TxnHadInstallerOrigin 1
+    Call WriteTransactionJournal
   handoff_origin_no_prior:
   ${WordReplace} "$EXEDIR" "\" "/" "+*" $7
   Delete "$PROGRAMDATA\AI Video Editor\Installer\handoff-root.json.part"
@@ -123,11 +153,14 @@
   FileWrite $0 '{"schemaVersion":"desktop.installer-handoff-origin.v1","handoffRoot":"$7","catalogRelativePath":"Catalog/offline-catalog.json","componentsRelativePath":"Components"}'
   FileClose $0
   StrCpy $TxnWroteInstallerOrigin 1
+  Call WriteTransactionJournal
   System::Call 'kernel32::MoveFileExW(w "$PROGRAMDATA\AI Video Editor\Installer\handoff-root.json.part", w "$PROGRAMDATA\AI Video Editor\Installer\handoff-root.json", i 0x1) i .r0'
   StrCmp $0 0 handoff_origin_failed handoff_origin_done
   handoff_origin_failed:
-    MessageBox MB_ICONSTOP|MB_OK "AI Video Editor Desktop V2 could not atomically persist the installer handoff origin. Setup was aborted."
-    Abort
+    StrCpy $FailureCode ${AIVE_E_HANDOFF}
+    StrCpy $FailureStage "handoff"
+    StrCpy $FailureMessage "Setup could not atomically persist the installer handoff origin."
+    Call FailInstall
   handoff_origin_done:
 !macroend
 
@@ -153,16 +186,24 @@
     DetailPrint "Skipping machine cleanup because NSIS resolved an unexpected root: $2"
     Goto machine_cleanup_done
   machine_cleanup_resolved:
+    !insertmacro AIVE_REPARSE_RESULT "$2" $7
+    StrCmp $7 1 0 machine_cleanup_not_reparse
+      DetailPrint "Preserving reparse-point machine root: $2"
+      Goto machine_cleanup_done
+  machine_cleanup_not_reparse:
     Delete /REBOOTOK "$2\Installer\handoff-root.json"
     Delete /REBOOTOK "$2\Installer\handoff-root.json.part"
     Delete /REBOOTOK "$2\Installer\handoff-root.json.rc6-rollback"
-    RMDir /r "$2\Components"
-    RMDir /r "$2\Activation"
-    RMDir /r "$2\Downloads\Staging"
-    RMDir /r "$2\Catalog"
-    RMDir /r "$2\Broker\Requests"
-    RMDir /r "$2\Provisioning"
-    RMDir /r "$2\Installer"
+    !insertmacro AIVE_REMOVE_OWNED_TREE "$2\Components" cleanup_components
+    !insertmacro AIVE_REMOVE_OWNED_TREE "$2\Activation" cleanup_activation
+    !insertmacro AIVE_REMOVE_OWNED_TREE "$2\Downloads\Staging" cleanup_staging
+    !insertmacro AIVE_REMOVE_OWNED_TREE "$2\Catalog" cleanup_catalog
+    !insertmacro AIVE_REMOVE_OWNED_TREE "$2\Broker\Requests" cleanup_requests
+    !insertmacro AIVE_REMOVE_OWNED_TREE "$2\Provisioning" cleanup_provisioning
+    ; Keep redacted installer/uninstaller logs for durable diagnostics.
+    Delete /REBOOTOK "$2\Installer\transaction-rc6.json"
+    Delete /REBOOTOK "$2\Installer\transaction-rc6.json.part"
+    RMDir "$2\Installer"
     RMDir "$2\Broker"
     RMDir "$2\Downloads"
     RMDir "$2"
@@ -172,28 +213,35 @@
     !insertmacro AIVE_REPORT_MACHINE_LEFTOVER "$2\Catalog" report_catalog
     !insertmacro AIVE_REPORT_MACHINE_LEFTOVER "$2\Broker" report_broker
     !insertmacro AIVE_REPORT_MACHINE_LEFTOVER "$2\Provisioning" report_provisioning
-    !insertmacro AIVE_REPORT_MACHINE_LEFTOVER "$2\Installer" report_installer
-    !insertmacro AIVE_REPORT_MACHINE_LEFTOVER "$2" report_machine_root
   machine_cleanup_done:
-  RMDir /r "$5\Cache"
-  RMDir /r "$5\Temp"
-  RMDir /r "$5\Logs"
-  RMDir /r "$5\State"
-  RMDir "$5"
+  !insertmacro AIVE_REPARSE_RESULT "$5" $7
+  StrCmp $7 1 local_runtime_done
+    !insertmacro AIVE_REMOVE_OWNED_TREE "$5\Cache" cleanup_user_cache
+    !insertmacro AIVE_REMOVE_OWNED_TREE "$5\Temp" cleanup_user_temp
+    !insertmacro AIVE_REMOVE_OWNED_TREE "$5\Logs" cleanup_user_logs
+    !insertmacro AIVE_REMOVE_OWNED_TREE "$5\State" cleanup_user_state
+    RMDir "$5"
+  local_runtime_done:
 
   ; Full wipe is separately allowlisted and reachable only from the explicit,
   ; unchecked UI choice or the exact unattended token handled by the template.
   StrCmp $FullWipeCheckboxState 1 0 full_wipe_done
-    RMDir /r "$5\Config"
-    RMDir /r "$5\uploads"
-    RMDir /r "$5\models"
-    RMDir /r "$5\database"
-    RMDir /r "$5\postgresql"
-    RMDir /r "$5\qdrant"
-    RMDir /r "$6\Projects"
-    RMDir /r "$6\Exports"
-    RMDir /r "$6\Models"
+    !insertmacro AIVE_REPARSE_RESULT "$5" $7
+    StrCmp $7 1 full_wipe_documents
+    !insertmacro AIVE_REMOVE_OWNED_TREE "$5\Config" cleanup_user_config
+    !insertmacro AIVE_REMOVE_OWNED_TREE "$5\uploads" cleanup_user_uploads
+    !insertmacro AIVE_REMOVE_OWNED_TREE "$5\models" cleanup_user_models
+    !insertmacro AIVE_REMOVE_OWNED_TREE "$5\database" cleanup_user_database
+    !insertmacro AIVE_REMOVE_OWNED_TREE "$5\postgresql" cleanup_user_postgresql
+    !insertmacro AIVE_REMOVE_OWNED_TREE "$5\qdrant" cleanup_user_qdrant
+  full_wipe_documents:
+    !insertmacro AIVE_REPARSE_RESULT "$6" $7
+    StrCmp $7 1 full_wipe_credentials
+    !insertmacro AIVE_REMOVE_OWNED_TREE "$6\Projects" cleanup_documents_projects
+    !insertmacro AIVE_REMOVE_OWNED_TREE "$6\Exports" cleanup_documents_exports
+    !insertmacro AIVE_REMOVE_OWNED_TREE "$6\Models" cleanup_documents_models
     RMDir "$6"
+  full_wipe_credentials:
     !insertmacro AIVE_DELETE_KNOWN_CREDENTIAL mistral api_key
     !insertmacro AIVE_DELETE_KNOWN_CREDENTIAL mistral access_token
     !insertmacro AIVE_DELETE_KNOWN_CREDENTIAL mistral password

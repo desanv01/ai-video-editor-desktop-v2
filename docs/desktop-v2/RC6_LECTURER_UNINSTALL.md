@@ -13,7 +13,9 @@ AI Video Editor Desktop V2 separates the installed shell/components from valuabl
 
 Open **Windows Settings > Apps > Installed apps**, find **AI Video Editor Desktop V2**, and choose **Uninstall**. Approve elevation if requested and reboot if Windows reports locked files.
 
-The default path removes the shell, shortcuts, and component-owned machine runtime state. It preserves per-user settings/uploads/models/databases, projects, exports, and provider credentials so that a later reinstall can resume work. Valuable user data is not an installer cleanup target.
+The uninstaller acquires the same setup mutex, switches to a safe temporary working directory, and verifies its embedded package generation against the exact identity JSON, canonical install path, committed marker, main EXE, live uninstaller, and ARP registration before deleting owned files. A stale, mismatched, or reparse-point installation refuses with code `2109`. Normal NSIS temporary self-copy execution remains supported. Before deletion, the verified shell is atomically moved to a unique sibling tombstone and journaled, so delayed deletion can never target a later reinstall at the canonical path. Redacted output is written to `%ProgramData%\AI Video Editor\Installer\uninstall-rc6.log`.
+
+The default path removes the shell, owned shortcuts, and component-owned machine runtime state. It preserves per-user settings/uploads/models/databases, projects, exports, provider credentials, and redacted installer logs so that a later reinstall can resume work. Unknown files and reparse points are preserved rather than traversed.
 
 Expected preserved locations include:
 
@@ -29,7 +31,9 @@ Full wipe is destructive and is separate from normal uninstall. Use it only when
 REMOVE ALL AI VIDEO EDITOR USER DATA
 ```
 
-The wipe may remove known AI Video Editor user-data roots and known provider credential targets. It must never enumerate or clear unrelated credentials, arbitrary folders, repository checkouts, or Docker data. Do not reproduce full wipe with broad `Remove-Item`, registry cleaners, or manual recursive deletion.
+The uninstall confirmation page also has an unchecked **Remove ALL AI Video Editor user data...** box. For authorized unattended uninstall, the exact installer token is `/FULLWIPE=REMOVE_ALL_AI_VIDEO_EDITOR_USER_DATA`. The application-side reviewed-plan confirmation phrase remains `REMOVE ALL AI VIDEO EDITOR USER DATA`.
+
+The wipe may remove only known AI Video Editor user-data roots and the fixed provider/credential-name allowlist. It must never enumerate or clear unrelated credentials, arbitrary folders, repository checkouts, or Docker data. Do not reproduce full wipe with broad `Remove-Item`, registry cleaners, or manual recursive deletion.
 
 ## Validate the result
 

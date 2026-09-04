@@ -9,6 +9,10 @@ Complete the RC.6 verification in the setup guide before running the installer. 
 3. Approve the Windows administrator prompt. The installer is per-machine and targets `%ProgramFiles%\AI Video Editor Desktop V2\Shell`.
 4. Finish setup, then launch **AI Video Editor Desktop V2** from its Start menu or Desktop shortcut.
 
+Setup first classifies the existing state. An exact empty RC.6-owned residue is removed automatically. A nonempty unknown or reparse-point `Shell`/staging/rollback directory is preserved and Setup stops with conflict code `2112`. Updates are extracted and validated in a sibling staging directory before the genuine prior shell is moved to rollback protection. If rollback cannot complete, do not manually delete either tree; retain them and the journal for recovery.
+
+Redacted diagnostics are written to `%ProgramData%\AI Video Editor\Installer\setup-rc6.log` and the durable current-phase journal is `transaction-rc6.json`. Silent Setup returns the stable code shown in the troubleshooting guide. Exit `3010` is used only after a new installation is committed and old-version cleanup requires restart.
+
 A new installation intentionally begins without the heavy engine and media components. The first launch opens Setup Center.
 
 ## Complete Setup Center
@@ -32,4 +36,4 @@ Setup Center verifies catalog trust, expiry and compatibility, archive hashes, i
 
 No clean-PC success is implied merely because the source build or operator smoke passed. Record the Windows version, installer filename/hash, verifier output, UAC result, shortcut targets, first-launch result, and any reboot requirement on the actual evaluation PC.
 
-Next: see the use guide in `USE.md` in the assembled handoff.
+Next: see `CONFIGURATION.md`, then `USE.md` in the assembled handoff.

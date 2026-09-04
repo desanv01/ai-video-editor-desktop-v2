@@ -4,6 +4,8 @@ AI Video Editor Desktop V2 `2.0.0-rc.6` is a Windows x64 release candidate for s
 
 Do not install a handoff that lacks `START-HERE.md`, `release-manifest.json`, `SHA256SUMS.txt`, `Verify-RC6Release.ps1`, or the two signed component archives. Do not use RC.4/RC.5 files to fill gaps in an RC.6 folder.
 
+The distributed ZIP must have an adjacent `.sha256` file. Hash the downloaded ZIP before extraction and compare the complete 64-character value. After extraction, run both bundled verifiers below; a ZIP hash does not replace the internal exact-file and signature checks.
+
 ## What the test PC needs
 
 - Windows 10 or 11 x64 and an administrator available for the per-machine installer and component activation prompts.
@@ -35,6 +37,7 @@ Stop if a verifier fails, if Windows reports that the files changed after downlo
 | Per-user settings, logs, and disposable runtime state | `%LocalAppData%\AI Video Editor` |
 | Projects, uploads, exports, and models | `%USERPROFILE%\Documents\AI Video Editor` |
 | Provider secrets | Windows Credential Manager |
+| Redacted Setup/uninstall diagnostics | `%ProgramData%\AI Video Editor\Installer\*-rc6.log` |
 
 The installer and repair helper may request elevation only for the bounded Program Files and ProgramData areas. Never grant `Everyone` write access to Program Files or move user projects into the component directory.
 
@@ -50,4 +53,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\SMOKE\Run-DesktopV2Smoke.p
 
 This extracts the actual archives into disposable temporary storage and tests a valid MP4 through project creation, durable native import, provider-free process/export, playable-output probing, engine restart, and redirected-root persistence. It does **not** install the shell and is not evidence of a clean-PC install, UAC, shortcuts, repair, or uninstall.
 
-Continue with `RC6_LECTURER_INSTALL.md` in the source tree, or `INSTALL.md` in an assembled handoff.
+Continue with `RC6_LECTURER_INSTALL.md` and `RC6_LECTURER_CONFIGURATION.md` in the source tree, or `INSTALL.md` and `CONFIGURATION.md` in an assembled handoff.

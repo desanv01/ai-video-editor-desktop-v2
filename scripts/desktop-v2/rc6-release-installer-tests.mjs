@@ -35,14 +35,14 @@ assert.equal(tauri.bundle.windows.wix.enableElevatedUpdateTask, false);
 
 const executableHook = hook.split(/\r?\n/).filter(line => !/^\s*;/.test(line)).join("\n");
 const executableTemplate = installerTemplate.split(/\r?\n/).filter(line => !/^\s*;/.test(line)).join("\n");
-assert.match(hook, /\$PROGRAMFILES64\\AI Video Editor Desktop V2\\Shell/);
+assert.match(installerTemplate, /AIVEINSTALLERPARENT "\$PROGRAMFILES64\\AI Video Editor Desktop V2"/);
 assert.match(hook, /\$APPDATA\\AI Video Editor/);
 assert.match(hook, /\$LOCALAPPDATA\\AI Video Editor/);
 assert.doesNotMatch(executableHook, /CreateShortCut/i);
 assert.equal((executableTemplate.match(/\bCreateShortcut\b/g) ?? []).length, 2, "template must own exactly one Desktop and one Start Menu shortcut");
-assert.equal((installerTemplate.match(/IsShortcutTarget/g) ?? []).length, 2, "template must verify both shortcuts before registration commit");
+assert.equal((installerTemplate.match(/IsShortcutTarget/g) ?? []).length, 6, "template must verify both shortcuts at install, uninstall, and interrupted-uninstall recovery");
 assert.match(installerTemplate, /Call CreateAndVerifyRequiredShortcuts[\s\S]*?Call CommitInstallRegistration/);
-assert.match(installerTemplate, /Delete \/REBOOTOK "\$INSTDIR\\desktop-v2\.identity\.json"/);
+assert.match(installerTemplate, /Delete \/REBOOTOK "\$INSTDIR\\\$\{AIVEIDENTITY\}"/);
 assert.match(installerTemplate, /RMDir \/REBOOTOK "\$INSTDIR"/);
 assert.doesNotMatch(installerTemplate, /RMDir \/r \/REBOOTOK "\$INSTDIR"/i);
 
@@ -98,9 +98,11 @@ assert.match(verifier, /authenticode\.status -ne 'not-claimed'/);
 assert.match(verifier, /FFmpeg 8\.1\.1/);
 assert.match(docs, /No production signing seed was found/);
 assert.match(docs, /not-claimed/);
-for (const handoffName of ["LECTURER-SETUP.md", "INSTALL.md", "USE.md", "TROUBLESHOOTING.md", "UNINSTALL.md"]) {
+for (const handoffName of ["LECTURER-SETUP.md", "INSTALL.md", "CONFIGURATION.md", "USE.md", "TROUBLESHOOTING.md", "UNINSTALL.md"]) {
   assert.match(assembler, new RegExp(handoffName.replace(".", "\\.")));
 }
+assert.match(assembler, /zipSha256/);
+assert.match(assembler, /\.zip\.sha256/);
 assert.match(assembler, /Run-DesktopV2Smoke\.ps1/);
 assert.match(assembler, /rc6-native-product-e2e\.py/);
 assert.match(assembler, /target \/ "SMOKE" \/ name/);

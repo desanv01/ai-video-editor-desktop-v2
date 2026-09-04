@@ -10,6 +10,7 @@ is never described as lecturer-ready or production-trusted.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -27,6 +28,7 @@ TEST_PUBLIC_KEY_SHA256 = "22094d0fd9318ff224ea22abeec545b5c5d653fd8be5b480790de2
 LECTURER_GUIDES = {
     "RC6_LECTURER_SETUP.md": "LECTURER-SETUP.md",
     "RC6_LECTURER_INSTALL.md": "INSTALL.md",
+    "RC6_LECTURER_CONFIGURATION.md": "CONFIGURATION.md",
     "RC6_LECTURER_USE.md": "USE.md",
     "RC6_LECTURER_TROUBLESHOOTING.md": "TROUBLESHOOTING.md",
     "RC6_LECTURER_UNINSTALL.md": "UNINSTALL.md",
@@ -122,8 +124,9 @@ def main() -> int:
     final_target = output_root / f"{TARGET_PREFIX}{timestamp(args)}"
     target = output_root / f".{final_target.name}.partial"
     zip_path = final_target.with_suffix(".zip")
-    if target.exists() or final_target.exists() or zip_path.exists():
-        raise ValueError("refusing to overwrite an existing timestamped RC.6 handoff, partial staging root, or ZIP")
+    zip_checksum_path = zip_path.with_suffix(".zip.sha256")
+    if target.exists() or final_target.exists() or zip_path.exists() or zip_checksum_path.exists():
+        raise ValueError("refusing to overwrite an existing timestamped RC.6 handoff, partial staging root, ZIP, or ZIP checksum")
 
     for path in [args.installer, args.catalog, args.catalog_signature, args.public_key, *args.evidence]:
         reject_prior(path)
@@ -185,9 +188,10 @@ def main() -> int:
         "## Guides\n\n"
         "1. [Lecturer setup](LECTURER-SETUP.md)\n"
         "2. [Install](INSTALL.md)\n"
-        "3. [Use](USE.md)\n"
-        "4. [Troubleshooting](TROUBLESHOOTING.md)\n"
-        "5. [Uninstall and data retention](UNINSTALL.md)\n\n"
+        "3. [Configure](CONFIGURATION.md)\n"
+        "4. [Use](USE.md)\n"
+        "5. [Troubleshooting](TROUBLESHOOTING.md)\n"
+        "6. [Uninstall and data retention](UNINSTALL.md)\n\n"
         "`SMOKE\\Run-DesktopV2Smoke.ps1` is an operator test for extracted packaged components. "
         "It is not clean-PC installation, repair, or uninstall evidence.\n",
         encoding="utf-8", newline="\n",
@@ -206,9 +210,12 @@ def main() -> int:
     ], check=True, cwd=source_root)
     target.rename(final_target)
     deterministic_zip(final_target, zip_path)
+    zip_sha256 = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    zip_checksum_path.write_text(f"{zip_sha256}  {zip_path.name}\n", encoding="utf-8", newline="\n")
     print(json.dumps({
         "status": "assembled", "version": VERSION, "label": label,
-        "handoff": str(final_target), "zip": str(zip_path), "keyId": catalog_key_id,
+        "handoff": str(final_target), "zip": str(zip_path), "zipSha256": zip_sha256,
+        "zipChecksum": str(zip_checksum_path), "keyId": catalog_key_id,
     }, indent=2, sort_keys=True))
     return 0
 

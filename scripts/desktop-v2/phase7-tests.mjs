@@ -9,6 +9,7 @@ const migrationSource = await readFile(path.join(repoRoot, "desktop", "src-tauri
 const wizardSource = await readFile(path.join(repoRoot, "desktop", "src", "components", "MigrationCleanupWizard.tsx"), "utf8");
 const shellSource = await readFile(path.join(repoRoot, "desktop", "src", "components", "DesktopV2Shell.tsx"), "utf8");
 const installerSource = await readFile(path.join(repoRoot, "desktop", "src-tauri", "nsis", "installer-hooks.nsh"), "utf8");
+const installerTemplate = await readFile(path.join(repoRoot, "desktop", "src-tauri", "nsis", "installer-template.nsi"), "utf8");
 const inventorySchema = JSON.parse(await readFile(path.join(repoRoot, "contracts", "desktop-v2", "schemas", "migration-inventory.v1.schema.json"), "utf8"));
 const reportSchema = JSON.parse(await readFile(path.join(repoRoot, "contracts", "desktop-v2", "schemas", "migration-report.v1.schema.json"), "utf8"));
 const uninstallSchema = JSON.parse(await readFile(path.join(repoRoot, "contracts", "desktop-v2", "schemas", "uninstall-plan.v1.schema.json"), "utf8"));
@@ -75,7 +76,7 @@ function testRustSafetyAndUiWiring() {
   assert.match(shellSource, /MigrationCleanupWizard/);
   assert.match(shellSource, /migrationClient\.scan/);
   assert.match(installerSource, /installMode|per-machine/i);
-  assert.match(installerSource, /Abort/);
+  assert.match(installerTemplate, /Function FailInstall[\s\S]*?Abort/);
   assert.doesNotMatch(installerSource, /CreateShortCut/i);
   assert.match(installerSource, /installer-template\.nsi is the single owner/i);
   assert.match(installerSource, /AI Video Editor Desktop V2/);

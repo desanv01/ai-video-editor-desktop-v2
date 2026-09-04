@@ -13,11 +13,11 @@ An interrupted import can be polled and resumed/retried after restart. Use **Can
 
 The guided workflow advances from source validation through processing, transcript/review, edit decisions, and export. Follow the visible next action and resolve the first blocker shown. Local ingest, source checks, manual review, and provider-free media operations remain useful when no AI provider is configured.
 
-Provider-backed transcription or generation requires a lecturer-owned credential:
+Provider-backed transcription or generation requires a lecturer-owned credential. Follow `CONFIGURATION.md` for the current RC.6 labels:
 
 1. Open **Settings** and choose the provider section.
 2. Select one of the fixed supported providers; do not paste a provider identifier into a diagnostic field.
-3. Save the key securely to Windows Credential Manager and select **Verify provider**.
+3. Enter the credential through the provider control and select **Test**. Use **Clear** only for that provider value; an environment-sourced value is managed outside the app.
 4. Keep secrets out of screenshots, project notes, JSON evidence, and support messages.
 
 If local transcription is offered, review its model download size, hash, storage location, and consent prompt before downloading. Models live in the user-data boundary, not Program Files or the component archive.

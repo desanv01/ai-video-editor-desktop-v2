@@ -122,8 +122,9 @@ assert.doesNotMatch(supervisor, /Command::new\("docker"\)/);
 
 // The hook owns machine ACL/ancillary state; the pinned template owns the
 // immutable payload transaction, committed identity, and two shortcuts.
-assert.match(hook, /StrCpy \$INSTDIR "\$PROGRAMFILES64\\AI Video Editor Desktop V2\\Shell"/);
-assert.match(installerTemplate, /2\.0\.0-rc\.6/);
+assert.match(installerTemplate, /StrCpy \$INSTDIR "\$\{AIVEINSTALLDIR\}"/);
+assert.doesNotMatch(hook, /SetOutPath\s+[^\r\n]*\$INSTDIR/i);
+assert.match(installerTemplate, /!define AIVEPACKAGEID "rc6-sep4-installer-recovery-v1"/);
 assert.doesNotMatch(hook.replace(/^\s*;.*/gm, ""), /CreateShortCut/i);
 assert.equal((installerTemplate.match(/\bCreateShortcut\b/g) ?? []).length, 2);
 assert.match(hook, /installer-template\.nsi is the single owner/i);

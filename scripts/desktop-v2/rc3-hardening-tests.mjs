@@ -22,6 +22,7 @@ const contractsTs = await text("desktop/src/contracts/desktopV2.ts");
 const storageSchema = JSON.parse(await text("contracts/desktop-v2/schemas/storage-layout.v1.schema.json"));
 const storageFixture = JSON.parse(await text("fixtures/desktop-v2/contracts/valid-storage-layout.json"));
 const installerHook = await text("desktop/src-tauri/nsis/installer-hooks.nsh");
+const installerTemplate = await text("desktop/src-tauri/nsis/installer-template.nsi");
 const handoffReadme = await text("desktop/src-tauri/resources/lecturer-handoff/README.txt");
 const handoffAssembler = await text("scripts/desktop-v2/assemble_rc3_handoff.py");
 
@@ -100,7 +101,8 @@ assert.match(contractsTs, /%ProgramFiles%\\\\AI Video Editor Desktop V2\\\\Shell
 assert.match(storageSchema.properties.paths.properties.shellInstall.$ref, /pathDescriptor/);
 assert.match(storageSchema.$defs.pathDescriptor.properties.pathTemplate.pattern, /AI Video Editor Desktop V2/);
 assert.equal(storageFixture.paths.shellInstall.pathTemplate, "%ProgramFiles%\\AI Video Editor Desktop V2\\Shell");
-assert.match(installerHook, /\$PROGRAMFILES64\\AI Video Editor Desktop V2/);
+assert.match(installerTemplate, /AIVEINSTALLERPARENT "\$PROGRAMFILES64\\AI Video Editor Desktop V2"/);
+assert.doesNotMatch(installerHook, /SetOutPath\s+[^\r\n]*\$INSTDIR/i);
 
 assert.match(handoffReadme, /Catalog\/offline-catalog\.json/);
 assert.match(handoffReadme, /Components/);
