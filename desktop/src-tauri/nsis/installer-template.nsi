@@ -126,6 +126,9 @@ Var TxnWroteInstallerOrigin
 Var FullWipeCheckbox
 Var FullWipeCheckboxState
 Var UninstallTombstone
+Var UninstallLocalRoot
+Var UninstallDocumentsRoot
+Var RecoveryActive
 
 Name "${PRODUCTNAME}"
 BrandingText "${COPYRIGHT}"
@@ -354,7 +357,12 @@ FunctionEnd
 
 Function FailInstall
   Call AppendSetupLog
-  Call WriteTransactionJournal
+  ; Recovery must retain the durable semantic phase that selected its retry
+  ; path. FailureStage is diagnostic and must not replace uninstall/commit
+  ; phases when a recovery attempt aborts.
+  ${If} $RecoveryActive != 1
+    Call WriteTransactionJournal
+  ${EndIf}
   SetErrorLevel $FailureCode
   ${IfNot} ${Silent}
     MessageBox MB_ICONSTOP|MB_OK "$FailureMessage$\r$\n$\r$\nSetup code: $FailureCode ($FailureStage)$\r$\nLog: ${AIVESETUPLOG}"
@@ -458,6 +466,69 @@ Function HasCoherentPayload
   coherent_payload_done:
 FunctionEnd
 
+; $0=input directory, $1=1 only for the exact current committed payload.
+Function HasCurrentPayload
+  StrCpy $1 0
+  IfFileExists "$0\${AIVEIDENTITY}" 0 current_payload_done
+  IfFileExists "$0\${MAINBINARYNAME}.exe" 0 current_payload_done
+  IfFileExists "$0\uninstall.exe" 0 current_payload_done
+  FileOpen $2 "$0\${AIVEIDENTITY}" r
+  IfErrors current_payload_done
+  FileRead $2 $3
+  FileClose $2
+  StrCmp $3 '{"schemaVersion":"desktop.install-identity.v1","productName":"AI Video Editor Desktop V2","identifier":"${AIVEIDENTIFIER}","packageIdentity":"${AIVEPACKAGEID}","version":"${VERSION}","channel":"beta","canonicalPath":"%ProgramFiles%/AI Video Editor Desktop V2/Shell","installCommitted":true}' 0 current_payload_done
+  StrCpy $1 1
+  current_payload_done:
+FunctionEnd
+
+; Accept exactly one canonical sibling leaf generated from numeric PID-tick.
+; $1=1 only for <parent>\Shell.rc6-uninstall-[0-9]+-[0-9]+.
+Function IsValidUninstallTombstone
+  StrCpy $1 0
+  ${GetParent} "$UninstallTombstone" $2
+  StrCmp $2 "${AIVEINSTALLERPARENT}" 0 valid_tombstone_done
+  ${GetFileName} "$UninstallTombstone" $3
+  StrCmp $3 "Shell.rc6-uninstall-$TxnId" 0 valid_tombstone_done
+  System::Call 'kernel32::GetFullPathNameW(w "$UninstallTombstone", i ${NSIS_MAX_STRLEN}, w .r4, p0) i .r5'
+  StrCmp $5 0 valid_tombstone_done
+  StrCmp $4 "$UninstallTombstone" 0 valid_tombstone_done
+  StrLen $5 "$TxnId"
+  ${If} $5 < 3
+    Goto valid_tombstone_done
+  ${EndIf}
+  StrCpy $6 0
+  StrCpy $7 0
+  valid_tombstone_char_loop:
+    ${If} $6 >= $5
+      Goto valid_tombstone_chars_done
+    ${EndIf}
+    StrCpy $8 "$TxnId" 1 $6
+    StrCmp $8 "-" valid_tombstone_hyphen
+    StrCmp $8 "0" valid_tombstone_next
+    StrCmp $8 "1" valid_tombstone_next
+    StrCmp $8 "2" valid_tombstone_next
+    StrCmp $8 "3" valid_tombstone_next
+    StrCmp $8 "4" valid_tombstone_next
+    StrCmp $8 "5" valid_tombstone_next
+    StrCmp $8 "6" valid_tombstone_next
+    StrCmp $8 "7" valid_tombstone_next
+    StrCmp $8 "8" valid_tombstone_next
+    StrCmp $8 "9" valid_tombstone_next valid_tombstone_done
+  valid_tombstone_hyphen:
+    StrCmp $6 0 valid_tombstone_done
+    IntOp $9 $5 - 1
+    StrCmp $6 $9 valid_tombstone_done
+    IntOp $7 $7 + 1
+    Goto valid_tombstone_next
+  valid_tombstone_next:
+    IntOp $6 $6 + 1
+    Goto valid_tombstone_char_loop
+  valid_tombstone_chars_done:
+    StrCmp $7 1 0 valid_tombstone_done
+    StrCpy $1 1
+  valid_tombstone_done:
+FunctionEnd
+
 Function LoadTransactionState
   ReadRegStr $TxnPhase HKLM "${AIVEROLLBACKKEY}" "Phase"
   StrCmp $TxnPhase "" load_transaction_done
@@ -474,6 +545,9 @@ Function LoadTransactionState
   StrCmp $7 "${AIVESTAGINGDIR}" 0 load_transaction_invalid
   StrCmp $8 "${AIVEBACKUPDIR}" 0 load_transaction_invalid
   ReadRegStr $UninstallTombstone HKLM "${AIVEROLLBACKKEY}" "UninstallTombstone"
+  ReadRegDWORD $FullWipeCheckboxState HKLM "${AIVEROLLBACKKEY}" "FullWipeRequested"
+  ReadRegStr $UninstallLocalRoot HKLM "${AIVEROLLBACKKEY}" "UninstallLocalRoot"
+  ReadRegStr $UninstallDocumentsRoot HKLM "${AIVEROLLBACKKEY}" "UninstallDocumentsRoot"
   StrCpy $InstallStarted 1
   ReadRegDWORD $TxnHadArp HKLM "${AIVEROLLBACKKEY}" "HadArp"
   ReadRegDWORD $TxnHadProductRegistration HKLM "${AIVEROLLBACKKEY}" "HadTauriProduct"
@@ -549,6 +623,161 @@ Function ClassifyInstallState
   classify_done:
 FunctionEnd
 
+; Installer-side equivalent of the uninstall walker, used only to resume an
+; already durable interrupted uninstall. It never traverses reparse points.
+Function RemoveTreeNoReparse
+  Exch $0
+  Push $1
+  Push $2
+  Push $3
+  System::Call 'kernel32::GetFileAttributesW(w r0) i .r1'
+  IntCmp $1 -1 recovery_tree_done
+  IntOp $1 $1 & 0x400
+  StrCmp $1 0 recovery_tree_scan
+    DetailPrint "Preserving reparse-point recovery cleanup target: $0"
+    Goto recovery_tree_done
+  recovery_tree_scan:
+  FindFirst $1 $2 "$0\*"
+  IfErrors recovery_tree_remove_root
+  recovery_tree_loop:
+    StrCmp $2 "." recovery_tree_next
+    StrCmp $2 ".." recovery_tree_next
+    IfFileExists "$0\$2\." recovery_tree_directory recovery_tree_file
+  recovery_tree_directory:
+    Push "$0\$2"
+    Call RemoveTreeNoReparse
+    Goto recovery_tree_next
+  recovery_tree_file:
+    Delete /REBOOTOK "$0\$2"
+  recovery_tree_next:
+    ClearErrors
+    FindNext $1 $2
+    IfErrors recovery_tree_close recovery_tree_loop
+  recovery_tree_close:
+    FindClose $1
+  recovery_tree_remove_root:
+    RMDir /REBOOTOK "$0"
+  recovery_tree_done:
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
+FunctionEnd
+
+Function ResumeInterruptedUninstallCleanup
+  ; User roots and wipe intent were committed before the live rename. Refuse
+  ; to apply them under a different user context or to an unexpected path.
+  StrCmp $UninstallLocalRoot "" resume_uninstall_policy_invalid
+  StrCmp $UninstallDocumentsRoot "" resume_uninstall_policy_invalid
+  StrCmp $FullWipeCheckboxState 0 resume_uninstall_policy_valid
+  StrCmp $FullWipeCheckboxState 1 resume_uninstall_policy_valid resume_uninstall_policy_invalid
+  resume_uninstall_policy_valid:
+  SetShellVarContext current
+  StrCpy $0 "$LOCALAPPDATA\AI Video Editor"
+  StrCpy $1 "$DOCUMENTS\AI Video Editor"
+  StrCmp $UninstallLocalRoot $0 0 resume_uninstall_policy_invalid_current
+  StrCmp $UninstallDocumentsRoot $1 0 resume_uninstall_policy_invalid_current
+  SetShellVarContext all
+  ReadEnvStr $3 "ProgramData"
+  StrCmp $3 "" resume_uninstall_policy_invalid
+  StrCpy $2 "$APPDATA\AI Video Editor"
+  StrCpy $4 "$3\AI Video Editor"
+  StrCmp $2 $4 0 resume_uninstall_policy_invalid
+
+  !insertmacro AIVE_REPARSE_RESULT "$2" $7
+  StrCmp $7 1 resume_uninstall_machine_done
+    Delete /REBOOTOK "$2\Installer\handoff-root.json"
+    Delete /REBOOTOK "$2\Installer\handoff-root.json.part"
+    Delete /REBOOTOK "$2\Installer\handoff-root.json.rc6-rollback"
+    Push "$2\Components"
+    Call RemoveTreeNoReparse
+    Push "$2\Activation"
+    Call RemoveTreeNoReparse
+    Push "$2\Downloads\Staging"
+    Call RemoveTreeNoReparse
+    Push "$2\Catalog"
+    Call RemoveTreeNoReparse
+    Push "$2\Broker\Requests"
+    Call RemoveTreeNoReparse
+    Push "$2\Provisioning"
+    Call RemoveTreeNoReparse
+    Delete /REBOOTOK "$2\Installer\transaction-rc6.json"
+    Delete /REBOOTOK "$2\Installer\transaction-rc6.json.part"
+    RMDir "$2\Installer"
+    RMDir "$2\Broker"
+    RMDir "$2\Downloads"
+    RMDir "$2"
+  resume_uninstall_machine_done:
+  !insertmacro AIVE_REPARSE_RESULT "$UninstallLocalRoot" $7
+  StrCmp $7 1 resume_uninstall_local_done
+    Push "$UninstallLocalRoot\Cache"
+    Call RemoveTreeNoReparse
+    Push "$UninstallLocalRoot\Temp"
+    Call RemoveTreeNoReparse
+    Push "$UninstallLocalRoot\Logs"
+    Call RemoveTreeNoReparse
+    Push "$UninstallLocalRoot\State"
+    Call RemoveTreeNoReparse
+    RMDir "$UninstallLocalRoot"
+  resume_uninstall_local_done:
+
+  StrCmp $FullWipeCheckboxState 1 0 resume_uninstall_done
+    !insertmacro AIVE_REPARSE_RESULT "$UninstallLocalRoot" $7
+    StrCmp $7 1 resume_uninstall_documents
+    Push "$UninstallLocalRoot\Config"
+    Call RemoveTreeNoReparse
+    Push "$UninstallLocalRoot\uploads"
+    Call RemoveTreeNoReparse
+    Push "$UninstallLocalRoot\models"
+    Call RemoveTreeNoReparse
+    Push "$UninstallLocalRoot\database"
+    Call RemoveTreeNoReparse
+    Push "$UninstallLocalRoot\postgresql"
+    Call RemoveTreeNoReparse
+    Push "$UninstallLocalRoot\qdrant"
+    Call RemoveTreeNoReparse
+  resume_uninstall_documents:
+    !insertmacro AIVE_REPARSE_RESULT "$UninstallDocumentsRoot" $7
+    StrCmp $7 1 resume_uninstall_credentials
+    Push "$UninstallDocumentsRoot\Projects"
+    Call RemoveTreeNoReparse
+    Push "$UninstallDocumentsRoot\Exports"
+    Call RemoveTreeNoReparse
+    Push "$UninstallDocumentsRoot\Models"
+    Call RemoveTreeNoReparse
+    RMDir "$UninstallDocumentsRoot"
+  resume_uninstall_credentials:
+    !insertmacro AIVE_DELETE_KNOWN_CREDENTIAL mistral api_key
+    !insertmacro AIVE_DELETE_KNOWN_CREDENTIAL mistral access_token
+    !insertmacro AIVE_DELETE_KNOWN_CREDENTIAL mistral password
+    !insertmacro AIVE_DELETE_KNOWN_CREDENTIAL mistral hf_token
+    !insertmacro AIVE_DELETE_KNOWN_CREDENTIAL mistral custom_endpoint_key
+    !insertmacro AIVE_DELETE_KNOWN_CREDENTIAL openai api_key
+    !insertmacro AIVE_DELETE_KNOWN_CREDENTIAL openai access_token
+    !insertmacro AIVE_DELETE_KNOWN_CREDENTIAL openai password
+    !insertmacro AIVE_DELETE_KNOWN_CREDENTIAL openai hf_token
+    !insertmacro AIVE_DELETE_KNOWN_CREDENTIAL openai custom_endpoint_key
+    !insertmacro AIVE_DELETE_KNOWN_CREDENTIAL deepseek api_key
+    !insertmacro AIVE_DELETE_KNOWN_CREDENTIAL deepseek access_token
+    !insertmacro AIVE_DELETE_KNOWN_CREDENTIAL deepseek password
+    !insertmacro AIVE_DELETE_KNOWN_CREDENTIAL deepseek hf_token
+    !insertmacro AIVE_DELETE_KNOWN_CREDENTIAL deepseek custom_endpoint_key
+    !insertmacro AIVE_DELETE_KNOWN_CREDENTIAL alibaba api_key
+    !insertmacro AIVE_DELETE_KNOWN_CREDENTIAL alibaba access_token
+    !insertmacro AIVE_DELETE_KNOWN_CREDENTIAL alibaba password
+    !insertmacro AIVE_DELETE_KNOWN_CREDENTIAL alibaba hf_token
+    !insertmacro AIVE_DELETE_KNOWN_CREDENTIAL alibaba custom_endpoint_key
+  resume_uninstall_done:
+  Return
+  resume_uninstall_policy_invalid_current:
+    SetShellVarContext all
+  resume_uninstall_policy_invalid:
+    StrCpy $FailureCode ${AIVE_E_CONFLICT}
+    StrCpy $FailureStage "uninstall-policy-conflict"
+    StrCpy $FailureMessage "Interrupted uninstall cleanup policy does not match the current user or machine perimeter. Recovery state was preserved."
+    Call FailInstall
+FunctionEnd
+
 Function .onInit
   StrCpy $InstallStarted 0
   StrCpy $InstallCommitted 0
@@ -573,6 +802,9 @@ Function .onInit
   StrCpy $TxnCreatedProvisioning 0
   StrCpy $TxnCreatedInstaller 0
   StrCpy $FullWipeCheckboxState 0
+  StrCpy $UninstallLocalRoot ""
+  StrCpy $UninstallDocumentsRoot ""
+  StrCpy $RecoveryActive 0
   StrCpy $RollbackIncomplete 0
   StrCpy $DeferredCleanup 0
   StrCpy $FailureCode 0
@@ -604,6 +836,7 @@ FunctionEnd
 
 Function RecoverInterruptedInstall
   Call LoadTransactionState
+  StrCpy $RecoveryActive 1
   StrCmp $TxnPhase "invalid" recovery_invalid_record
   StrCmp $TxnPhase "uninstall-rename-intent" recovery_uninstall
   StrCmp $TxnPhase "uninstall-cleanup" recovery_uninstall
@@ -636,9 +869,8 @@ Function RecoverInterruptedInstall
     StrCpy $InstallStarted 0
     Goto recovery_done
   recovery_uninstall:
-    StrLen $0 "${AIVEINSTALLERPARENT}\Shell.rc6-uninstall-"
-    StrCpy $1 "$UninstallTombstone" $0
-    StrCmp $1 "${AIVEINSTALLERPARENT}\Shell.rc6-uninstall-" 0 recovery_invalid_record
+    Call IsValidUninstallTombstone
+    StrCmp $1 1 0 recovery_invalid_record
     IfFileExists "${AIVEINSTALLDIR}\." 0 recovery_uninstall_no_live
       IfFileExists "$UninstallTombstone\." recovery_uninstall_conflict 0
       ; The intent was durable but the atomic rename never occurred.
@@ -655,6 +887,7 @@ Function RecoverInterruptedInstall
       Call RemoveCurrentShellPayload
       IfFileExists "$UninstallTombstone\." recovery_cleanup_locked 0
   recovery_uninstall_external:
+    Call ResumeInterruptedUninstallCleanup
     !insertmacro IsShortcutTarget "${AIVESTARTMENULINK}" "${AIVEINSTALLDIR}\${MAINBINARYNAME}.exe"
     Pop $0
     StrCmp $0 1 0 +2
@@ -677,6 +910,13 @@ Function RecoverInterruptedInstall
     StrCpy $FailureMessage "Interrupted uninstall state is ambiguous or reparse-backed. Both paths were preserved."
     Call FailInstall
   recovery_committed:
+    IfFileExists "${AIVEINSTALLDIR}\." 0 recovery_committed_invalid
+      StrCpy $0 "${AIVEINSTALLDIR}"
+      Call IsReparsePoint
+      StrCmp $1 1 recovery_committed_invalid
+      StrCpy $0 "${AIVEINSTALLDIR}"
+      Call HasCurrentPayload
+      StrCmp $1 1 0 recovery_committed_invalid
     IfFileExists "${AIVEBACKUPDIR}\." 0 recovery_committed_external
       StrCpy $0 "${AIVEBACKUPDIR}"
       Call IsReparsePoint
@@ -842,7 +1082,13 @@ Function RecoverInterruptedInstall
     StrCpy $FailureStage "journal-conflict"
     StrCpy $FailureMessage "An invalid or foreign installer transaction record was preserved. Setup will not trust it for recovery."
     Call FailInstall
+  recovery_committed_invalid:
+    StrCpy $FailureCode ${AIVE_E_CONFLICT}
+    StrCpy $FailureStage "committed-live-conflict"
+    StrCpy $FailureMessage "Committed recovery found a missing, partial, legacy, or reparse-backed live payload. The rollback copy was preserved."
+    Call FailInstall
   recovery_done:
+  StrCpy $RecoveryActive 0
   Call SetCanonicalInstallDir
 FunctionEnd
 
@@ -1655,16 +1901,27 @@ Function un.WriteUninstallJournal
   WriteRegStr HKLM "${AIVEROLLBACKKEY}" "StagingPath" "${AIVESTAGINGDIR}"
   WriteRegStr HKLM "${AIVEROLLBACKKEY}" "BackupPath" "${AIVEBACKUPDIR}"
   WriteRegStr HKLM "${AIVEROLLBACKKEY}" "UninstallTombstone" "$UninstallTombstone"
+  WriteRegDWORD HKLM "${AIVEROLLBACKKEY}" "FullWipeRequested" $FullWipeCheckboxState
+  WriteRegStr HKLM "${AIVEROLLBACKKEY}" "UninstallLocalRoot" "$UninstallLocalRoot"
+  WriteRegStr HKLM "${AIVEROLLBACKKEY}" "UninstallDocumentsRoot" "$UninstallDocumentsRoot"
   WriteRegStr HKLM "${AIVEROLLBACKKEY}" "Phase" "$FailureStage"
   IfErrors un_journal_failed
   ReadRegStr $4 HKLM "${AIVEROLLBACKKEY}" "Phase"
   ReadRegStr $5 HKLM "${AIVEROLLBACKKEY}" "UninstallTombstone"
+  ReadRegDWORD $6 HKLM "${AIVEROLLBACKKEY}" "FullWipeRequested"
+  ReadRegStr $7 HKLM "${AIVEROLLBACKKEY}" "UninstallLocalRoot"
+  ReadRegStr $8 HKLM "${AIVEROLLBACKKEY}" "UninstallDocumentsRoot"
   StrCmp $4 "$FailureStage" 0 un_journal_failed
   StrCmp $5 "$UninstallTombstone" 0 un_journal_failed
+  StrCmp $6 "$FullWipeCheckboxState" 0 un_journal_failed
+  StrCmp $7 "$UninstallLocalRoot" 0 un_journal_failed
+  StrCmp $8 "$UninstallDocumentsRoot" 0 un_journal_failed
   Delete "${AIVEUNINSTALLJOURNAL}.part"
   FileOpen $9 "${AIVEUNINSTALLJOURNAL}.part" w
   IfErrors un_journal_failed
-  FileWrite $9 '{$\"schemaVersion$\":$\"desktop.uninstall-transaction.v1$\",$\"transactionId$\":$\"$TxnId$\",$\"phase$\":$\"$FailureStage$\",$\"packageIdentity$\":$\"${AIVEPACKAGEID}$\",$\"canonicalPath$\":$\"%ProgramFiles%/AI Video Editor Desktop V2/Shell$\",$\"tombstone$\":$\"$UninstallTombstone$\"}'
+  ${WordReplace} "$UninstallLocalRoot" "\" "/" "+*" $6
+  ${WordReplace} "$UninstallDocumentsRoot" "\" "/" "+*" $7
+  FileWrite $9 '{$\"schemaVersion$\":$\"desktop.uninstall-transaction.v1$\",$\"transactionId$\":$\"$TxnId$\",$\"phase$\":$\"$FailureStage$\",$\"packageIdentity$\":$\"${AIVEPACKAGEID}$\",$\"canonicalPath$\":$\"%ProgramFiles%/AI Video Editor Desktop V2/Shell$\",$\"tombstone$\":$\"$UninstallTombstone$\",$\"fullWipeRequested$\":$FullWipeCheckboxState,$\"localRoot$\":$\"$6$\",$\"documentsRoot$\":$\"$7$\"}'
   FileClose $9
   IfErrors un_journal_failed
   System::Call 'kernel32::MoveFileExW(w "${AIVEUNINSTALLJOURNAL}.part", w "${AIVEUNINSTALLJOURNAL}", i 0x1) i .r8'
@@ -1816,12 +2073,18 @@ Function un.onInit
     StrCpy $FailureMessage "Production uninstall rejects test-root overrides."
     Call un.Fail
   ${EndIf}
+  SetShellVarContext current
+  StrCpy $UninstallLocalRoot "$LOCALAPPDATA\AI Video Editor"
+  StrCpy $UninstallDocumentsRoot "$DOCUMENTS\AI Video Editor"
+  SetShellVarContext all
   Call un.SetSafeWorkingDir
   Call un.ValidateInstallerPerimeter
   Call un.AcquireInstallerMutex
   Call un.ValidateInstalledIdentity
   System::Call 'kernel32::GetCurrentProcessId() i .r0'
   System::Call 'kernel32::GetTickCount() i .r1'
+  IntFmt $0 "%u" $0
+  IntFmt $1 "%u" $1
   StrCpy $TxnId "$0-$1"
   StrCpy $UninstallTombstone "${AIVEINSTALLERPARENT}\Shell.rc6-uninstall-$0-$1"
   StrCpy $FailureStage "uninstall-validated"
@@ -1841,6 +2104,7 @@ Section Uninstall
   StrCpy $FailureStage "uninstall-rename-intent"
   StrCpy $FailureMessage "about to move verified live shell to unique uninstall cleanup path"
   Call un.WriteUninstallJournal
+  Call un.SetSafeWorkingDir
   ClearErrors
   Rename "${AIVEINSTALLDIR}" "$UninstallTombstone"
   IfErrors uninstall_live_rename_failed

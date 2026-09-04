@@ -60,10 +60,18 @@ assert.ok(journal.indexOf('"TransactionId"') < journal.indexOf('"Phase" "$TxnPha
 assert.match(journal, /ReadRegStr[\s\S]*?TransactionId[\s\S]*?ExpectedVersion[\s\S]*?PackageIdentity[\s\S]*?CanonicalPath[\s\S]*?journal_write_failed/);
 assert.match(functionBody(template, "LoadTransactionState"), /ExpectedVersion[\s\S]*?PackageIdentity[\s\S]*?CanonicalPath[\s\S]*?StagingPath[\s\S]*?BackupPath[\s\S]*?load_transaction_invalid/);
 assert.match(functionBody(template, "RecoverInterruptedInstall"), /uninstall-rename-intent[\s\S]*?recovery_uninstall[\s\S]*?committed[\s\S]*?recovery_committed/);
+assert.match(functionBody(template, "FailInstall"), /RecoveryActive != 1[\s\S]*?Call WriteTransactionJournal/, "recovery failures must preserve the semantic retry phase");
+assert.match(functionBody(template, "IsValidUninstallTombstone"), /GetParent[\s\S]*?GetFileName[\s\S]*?Shell\.rc6-uninstall-\$TxnId[\s\S]*?GetFullPathNameW[\s\S]*?valid_tombstone_char_loop/, "tombstones must be canonical numeric PID-tick sibling leaves");
+assert.match(functionBody(template, "RecoverInterruptedInstall"), /recovery_committed:[\s\S]*?HasCurrentPayload[\s\S]*?recovery_committed_invalid[\s\S]*?AIVEBACKUPDIR/, "committed cleanup must validate the exact current live payload before deleting backup");
+assert.match(functionBody(template, "un.WriteUninstallJournal"), /FullWipeRequested[\s\S]*?UninstallLocalRoot[\s\S]*?UninstallDocumentsRoot[\s\S]*?fullWipeRequested/, "uninstall policy and roots must be durable before rename");
+assert.match(functionBody(template, "RecoverInterruptedInstall"), /recovery_uninstall_external:[\s\S]*?Call ResumeInterruptedUninstallCleanup[\s\S]*?DeleteRegKey HKLM "\$\{UNINSTKEY\}"/, "interrupted uninstall must resume policy cleanup before clearing registration");
+assert.match(functionBody(template, "ResumeInterruptedUninstallCleanup"), /UninstallLocalRoot[\s\S]*?UninstallDocumentsRoot[\s\S]*?FullWipeCheckboxState[\s\S]*?AIVE_DELETE_KNOWN_CREDENTIAL/, "recovery cleanup must preserve default/full-wipe semantics");
 assert.match(template, /Section Uninstall[\s\S]*?DeleteRegKey HKLM "\$\{AIVEPRODUCTKEY\}"/);
 assert.match(functionBody(template, "un.ValidateInstalledIdentity"), /InstallCommitted[\s\S]*?AIVEPACKAGEID/);
 assert.doesNotMatch(functionBody(templateCode, "un.ValidateInstalledIdentity"), /StrCmp\s+\$EXEPATH/, "normal NSIS TEMP self-copy uninstall must remain supported");
 assert.match(template, /Shell\.rc6-uninstall-\$0-\$1[\s\S]*?uninstall-rename-intent[\s\S]*?Rename "\$\{AIVEINSTALLDIR\}" "\$UninstallTombstone"/);
+assert.match(functionBody(template, "un.onInit"), /GetCurrentProcessId[\s\S]*?GetTickCount[\s\S]*?IntFmt \$0 "%u" \$0[\s\S]*?IntFmt \$1 "%u" \$1[\s\S]*?StrCpy \$TxnId "\$0-\$1"/, "PID and high-bit tick values must produce one numeric tombstone separator");
+assert.match(template, /Call un\.WriteUninstallJournal\s+Call un\.SetSafeWorkingDir\s+ClearErrors\s+Rename "\$\{AIVEINSTALLDIR\}" "\$UninstallTombstone"/, "uninstall live rename must re-pin CWD immediately after journaling");
 assert.match(template, /Function un\.RemoveTreeNoReparse[\s\S]*?0x400[\s\S]*?Call un\.RemoveTreeNoReparse/);
 assert.doesNotMatch(hookCode, /RMDir \/r/, "hook cleanup must refuse nested reparse traversal");
 assert.doesNotMatch(`${templateCode}\n${hookCode}`, /\bStrCmp\s+\/I\b/);
