@@ -1,189 +1,105 @@
-# AI-Agent Assisted Video Editing Framework
+# AI Video Editor Desktop V2
 
-Final Year Project implementation for producing reviewable educational-video edits from lecture recordings and uploaded course material.
+A Windows desktop application for lecturer-supervised editing of educational videos. The interface uses React and TypeScript inside a Tauri shell; a separately managed FastAPI engine handles project workflows, media processing, and exports.
 
-The system is a teacher-supervised AI video editor. It transcribes lecture recordings, grounds editing decisions in uploaded course material, plans visual layouts against real slide/page assets, lets the teacher review and override the proposed edit plan, then renders the approved result with FFmpeg/Revideo-based export paths.
+**Current source checkpoint:** `2.0.0-rc.6` (installer recovery work, September 2026). This is a development release candidate, not a production-ready release. The current source still needs clean-machine validation and production release signing evidence. See [RC6 release provenance and gates](docs/desktop-v2/RC6_RELEASE_PROVENANCE.md).
 
-## Current project state
+## What it does
 
-This repository contains the final thesis source snapshot of the project, including the full desktop/backend implementation, verification assets, synthetic evaluation fixtures, reproducibility notes, and the thesis evidence/context pack.
+- Creates video projects and imports lecture media and course materials.
+- Guides a lecturer through source checks, processing, transcript review, edit decisions, and export.
+- Uses a local engine process with authenticated loopback communication between the Tauri shell and backend.
+- Manages separately packaged engine and FFmpeg components, including integrity checks, staging, activation, repair, and rollback state.
+- Preserves user projects and exports during ordinary uninstall; full data removal is a separate explicit operation.
 
-| Item | Status |
+## Project status
+
+| Area | Current state |
 |---|---|
-| Main workflow | Implemented end to end from upload through reviewable edit planning and export |
-| Desktop application | React 19, TypeScript, Tailwind CSS, Tauri 2 |
-| Backend API | FastAPI, Pydantic, SQLAlchemy, Alembic |
-| AI routing | Hosted, local, and hybrid provider paths for speech/LLM workflows |
-| Course material support | PDF, PPTX, DOCX extraction plus renderable slide/page assets |
-| Rendering | Native FFmpeg compositor, semantic render plans, Revideo integration, export artifacts |
-| Evidence package | Static audit, test results, evaluation templates, source-package reproduction guide |
-| Verification date | 21 June 2026 |
+| Source version | `2.0.0-rc.6` |
+| Latest recorded work | Installer interruption and recovery hardening |
+| Automated checks | Windows CI is being established; no CI result is claimed yet |
+| Clean-machine install proof | Still required for the current RC6 source |
+| Production signing | Release signing material was not present in the source environment |
+| Production release | Not ready |
 
-## Implemented workflow
+RC6 is documented as a source checkpoint with release gates. The presence of installer, component-signing, and recovery code does not mean a production installer has passed those gates. See [RC6 release provenance](docs/desktop-v2/RC6_RELEASE_PROVENANCE.md), [historical RC3 clean Windows validation notes](docs/desktop-v2/CLEAN_WINDOWS_VALIDATION_RC3.md), and [architecture and operations](docs/desktop-v2/FINAL_ARCHITECTURE_AND_OPERATIONS.md).
 
-```text
-Project and asset upload
-        |
-        v
-Agent 1: transcription
-        |
-        v
-Transcript embedding and course-material retrieval
-        |
-        v
-Agent 2: curriculum-grounded content analysis
-        |
-        +-------------------------+
-        |                         |
-        v                         v
-Agent 3: fluency analysis   Agent 4: semantic visual planning
-        |                         |
-        +------------+------------+
-                     |
-                     v
-             Agent 5: edit planning
-                     |
-                     v
-          Teacher review and overrides
-                     |
-                     v
-       Semantic render plan and final export
+## Architecture
+
+```mermaid
+flowchart LR
+    UI[React and TypeScript UI] --> Shell[Tauri Windows shell]
+    Shell --> Supervisor[Engine supervisor]
+    Supervisor -->|authenticated loopback| Engine[FastAPI engine]
+    Engine --> Projects[User projects and exports]
+    Components[Verified engine and FFmpeg components] --> Engine
 ```
 
-The processing pipeline pauses after edit planning. Rendering is started only after teacher approval, so AI-generated transcript evidence, curriculum labels, slide/page decisions, layout choices, and cut recommendations remain reviewable.
+The shell is installed under `%ProgramFiles%\AI Video Editor Desktop V2`. Machine-managed components and activation state live under `%ProgramData%\AI Video Editor`. Per-user settings live under `%LocalAppData%\AI Video Editor`; projects and exports live under `%USERPROFILE%\Documents\AI Video Editor`. The exact RC6 data and uninstall behavior is described in the [operations guide](docs/desktop-v2/FINAL_ARCHITECTURE_AND_OPERATIONS.md).
 
-## Main capabilities
+## Repository contents
 
-- Guided desktop workflow for project creation, media upload, processing, review, layout inspection, and export.
-- Configurable AI providers with hosted API, local transcription, and hybrid processing modes.
-- Transcript timeline, word-level decisions, sectioning, clean-step suggestions, and manual teacher overrides.
-- Course-material grounding through extracted text, RAG metadata, and exact PDF/PPTX page rendering.
-- Semantic visual planner that aligns lecture windows with slide/page candidates and layout cues.
-- Export presets, progress tracking, cancellation support, audio-only export, evaluation reports, and artifact bundles.
-- Privacy-safe synthetic media fixtures and evaluation templates for thesis/demo evidence.
+| Path | Contents |
+|---|---|
+| `desktop/` | React application, Tauri shell, installer configuration, and frontend build |
+| `backend/` | FastAPI engine and backend tests |
+| `contracts/` | Versioned contracts and release provenance fixtures |
+| `scripts/desktop-v2/` | Installer, packaging, validation, and release support scripts |
+| `docs/desktop-v2/` | Phase, architecture, operations, security, and release evidence |
+| `fixtures/` | Synthetic fixtures used by selected checks |
 
-## Repository structure
+The Git history preserves the earlier FYP code lineage and the Desktop V2 development stages. Existing Phase and RC refs are intended as historical milestones; use pull requests for new changes.
 
-```text
-backend/
-  app/
-    agents/                 Five processing agents and orchestrator
-    api/routes/             Project, media, review, model and debug endpoints
-    db/                     SQLAlchemy database configuration and models
-    models/                 Pydantic request and response schemas
-    providers/              Speech/LLM provider adapters and defaults
-    rag/                    Qdrant vector-store integration
-    services/               Rendering, planning, export and support services
-    alembic/versions/       Database migrations
-  tests/                    Canonical automated test suite
-  revideo/                  Backend Revideo render support
-desktop/
-  src/                      React teacher-facing desktop interface
-  src-tauri/                Tauri desktop shell and backend bootstrap
-  revideo/                  Desktop-side Revideo scene and render entry points
-docs/
-  fyp_context_pack/         Thesis/report evidence, inventories, results and audit notes
-  reproducibility/          Source-package and thesis reproduction guidance
-fixtures/
-  synthetic_media/          Privacy-safe synthetic evaluation source fixtures
-scripts/                    Verification, setup and source-package utilities
-```
+## Build and development
 
-## Evidence and thesis documents
-
-Start here when reviewing or writing about the project:
-
-- [FYP context pack overview](docs/fyp_context_pack/00_README.md)
-- [Executive project snapshot](docs/fyp_context_pack/01_EXECUTIVE_PROJECT_SNAPSHOT.md)
-- [System architecture](docs/fyp_context_pack/03_SYSTEM_ARCHITECTURE.md)
-- [Rendering/export evidence](docs/fyp_context_pack/09_RENDERING_EXPORT_AND_MEDIA_PROCESSING.md)
-- [Testing, build and quality status](docs/fyp_context_pack/15_TESTING_BUILD_AND_QUALITY_STATUS.md)
-- [Evaluation readiness and measurement](docs/fyp_context_pack/16_EVALUATION_READINESS_AND_MEASUREMENT.md)
-- [Final audit verdict](docs/fyp_context_pack/25_FINAL_AUDIT_VERDICT.md)
-- [Render regression fix update](docs/fyp_context_pack/27_RENDER_FIX_UPDATE_2026-06-16.md)
-- [Reproducibility guide](docs/reproducibility/REPRODUCIBILITY_GUIDE.md)
-- [Verification results](docs/reproducibility/VERIFICATION_RESULTS.md)
-
-The context pack is code-grounded and intended to support Chapters 1-5, technical-paper compression, figure recreation, and evaluation planning. It should not be treated as human-study results unless the corresponding evaluation has actually been run.
-
-## Development setup
-
-### Requirements
-
-- Docker Desktop with Docker Compose
-- FFmpeg and FFprobe
-- Node.js compatible with the lockfiles
-- Rust toolchain for Tauri builds
-- Python virtual environment with the backend requirements installed
-- Provider credentials for selected hosted AI routes
-
-Copy the configuration template and provide local values:
+The native application targets Windows. A development machine needs Node.js, Rust, the Windows C++ build tools required by Tauri, and Python dependencies for backend work. Provider-backed features may also need locally configured credentials.
 
 ```powershell
 Copy-Item .env.example .env
+npm ci --prefix desktop
+npm run build --prefix desktop
 ```
 
-Never commit `.env`; it is intentionally ignored.
-
-### Backend services
+To run the frontend during development:
 
 ```powershell
-docker compose up -d --build
+npm run dev --prefix desktop
 ```
 
-The API is available at `http://localhost:8000`, with interactive documentation at `/docs`.
-
-### Desktop development
-
-```powershell
-Set-Location desktop
-npm install
-npm run dev
-```
-
-For the native desktop application:
+To start the Tauri shell from the `desktop` directory:
 
 ```powershell
 npx tauri dev
 ```
 
-## Verification
+The shell's backend supervisor and the desktop Compose configuration have launcher-managed environment requirements. For service topology and data paths, read [architecture and operations](docs/desktop-v2/FINAL_ARCHITECTURE_AND_OPERATIONS.md) and the checked-in Compose files before starting the full desktop stack.
 
-The final thesis source snapshot was checked with:
+## Checks
+
+The repository CI workflow targets Windows and runs the desktop contract/installer checks, the React/TypeScript build, Rust formatting and checks, and the backend unit suite.
+
+Run the desktop checks locally from PowerShell:
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"
+npm ci --prefix desktop
+npm test --prefix desktop
 npm run build --prefix desktop
-cargo check --manifest-path desktop\src-tauri\Cargo.toml
-docker compose config --quiet
+cargo fmt --all --check --manifest-path desktop/src-tauri/Cargo.toml
+cargo check --locked --manifest-path desktop/src-tauri/Cargo.toml
+cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml
 ```
 
-The recorded result is in [docs/reproducibility/VERIFICATION_RESULTS.md](docs/reproducibility/VERIFICATION_RESULTS.md): 193 backend tests passed, the React/TypeScript production build completed, Tauri/Rust integration passed, and Docker Compose configuration validated.
-
-## Reproducible source package
-
-The thesis source package is generated with:
+Run backend tests after installing `backend/requirements.txt`:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\generate_thesis_source_package.py
+python -m unittest discover -s backend/tests -p "test_*.py"
 ```
 
-The generator creates a sanitised archive, source manifest, summary and SHA-256 checksum under `output/thesis_source_package/`. Dependencies, credentials, media, caches, generated outputs and local analysis folders are excluded.
+CI checks do not replace the documented clean-machine installer, signed-component, recovery, or release handoff gates.
 
-See [docs/reproducibility/REPRODUCIBILITY_GUIDE.md](docs/reproducibility/REPRODUCIBILITY_GUIDE.md) for the final-freeze and appendix workflow.
+## Release and data safety
 
-## Security and privacy
+Production installer publishing remains gated. Do not place `.env` values, signing seeds, certificates, lecturer recordings, course materials, local databases, generated media, installers, or release handoffs in Git. Generated outputs and upload folders are ignored by `.gitignore`.
 
-Do not include the following in a source release or thesis submission:
-
-- `.env` or API keys
-- uploaded recordings or course material without permission
-- database dumps containing personal data
-- provider logs containing credentials
-- generated media unless explicitly required as evaluation evidence
-
-Use `.env.example` to document configuration fields safely.
-
-## Project status
-
-This repository is an academic prototype developed for a Final Year Project. Reported evaluation findings must be tied to a specific Git commit, source-package checksum, provider/model configuration, and evaluation date.
+See [RC6 lecturer use](docs/desktop-v2/RC6_LECTURER_USE.md), [troubleshooting](docs/desktop-v2/RC6_LECTURER_TROUBLESHOOTING.md), and [release provenance](docs/desktop-v2/RC6_RELEASE_PROVENANCE.md).
