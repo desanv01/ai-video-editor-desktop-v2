@@ -18,10 +18,11 @@ A Windows desktop application for lecturer-supervised editing of educational vid
 |---|---|
 | Source version | `2.0.0-rc.6` |
 | Latest recorded work | Installer interruption and recovery hardening |
-| Automated checks | Windows CI is being established; no CI result is claimed yet |
+| Automated checks | Windows CI is configured; see the Actions tab for current run status |
 | Clean-machine install proof | Still required for the current RC6 source |
 | Production signing | Release signing material was not present in the source environment |
 | Production release | Not ready |
+| Legacy line | The separate 1.0.x standalone release-work copy is not part of this V2 history |
 
 RC6 is documented as a source checkpoint with release gates. The presence of installer, component-signing, and recovery code does not mean a production installer has passed those gates. See [RC6 release provenance](docs/desktop-v2/RC6_RELEASE_PROVENANCE.md), [historical RC3 clean Windows validation notes](docs/desktop-v2/CLEAN_WINDOWS_VALIDATION_RC3.md), and [architecture and operations](docs/desktop-v2/FINAL_ARCHITECTURE_AND_OPERATIONS.md).
 
@@ -70,7 +71,7 @@ The shell is installed under `%ProgramFiles%\AI Video Editor Desktop V2`. Machin
 | `docs/desktop-v2/` | Phase, architecture, operations, security, and release evidence |
 | `fixtures/` | Synthetic fixtures used by selected checks |
 
-The Git history preserves the earlier FYP code lineage and the Desktop V2 development stages. Existing Phase and RC refs are intended as historical milestones; use pull requests for new changes.
+The Git history preserves the earlier FYP code lineage and the Desktop V2 development stages. The separate 1.0.x standalone release-work copy is a legacy line and is not represented by these V2 milestone refs. Existing Phase and RC refs are historical checkpoints; use pull requests for new changes.
 
 ## Build and development
 
