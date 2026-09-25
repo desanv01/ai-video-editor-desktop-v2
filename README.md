@@ -25,6 +25,27 @@ A Windows desktop application for lecturer-supervised editing of educational vid
 
 RC6 is documented as a source checkpoint with release gates. The presence of installer, component-signing, and recovery code does not mean a production installer has passed those gates. See [RC6 release provenance](docs/desktop-v2/RC6_RELEASE_PROVENANCE.md), [historical RC3 clean Windows validation notes](docs/desktop-v2/CLEAN_WINDOWS_VALIDATION_RC3.md), and [architecture and operations](docs/desktop-v2/FINAL_ARCHITECTURE_AND_OPERATIONS.md).
 
+## Development timeline
+
+The stage refs preserve the work in chronological order. The last Desktop V2 product commit is September 4, 2026; the later repository setup work adds documentation and CI without claiming that the RC6 release gates have passed.
+
+| Date | Milestone | Historical ref or checkpoint |
+|---|---|---|
+| 2026-08-20 | Phase 0: protected baseline | `codex/desktop-v2-phase-0` |
+| 2026-08-20 | Phase 1: runtime contracts | `codex/desktop-v2-phase-1` |
+| 2026-08-20 | Phase 2: thin Tauri shell | `codex/desktop-v2-phase-2` |
+| 2026-08-20 | Phase 3: component manager | `codex/desktop-v2-phase-3` |
+| 2026-08-20 | Phase 4: native engine and FFmpeg components | `codex/desktop-v2-phase-4` |
+| 2026-08-20 | Phase 5: engine supervisor | `codex/desktop-v2-phase-5` |
+| 2026-08-20 | Phase 6: Setup Center | `codex/desktop-v2-phase-6` |
+| 2026-08-20 | Phase 7: migration and uninstall safety | `codex/desktop-v2-phase-7` |
+| 2026-08-21 | Phase 8: desktop product workflow | `codex/desktop-v2-phase-8` |
+| 2026-08-21 | Phase 9 and RC1 (`2.0.0-rc.1`): release handoff | `codex/desktop-v2-phase-9`; commit `2ccea79` |
+| 2026-08-22 | RC2 (`2.0.0-rc.2`): installer ACL hotfix | `codex/desktop-v2-installer-acl-hotfix`; commit `a7da1b4` |
+| 2026-08-24 | RC3: lecturer handoff evidence hardening | `codex/desktop-v2-rc3-lecturer-handoff-hardening` |
+| 2026-08-28 | RC4: first-run recovery hardening | `codex/desktop-v2-rc4-first-run-recovery` |
+| 2026-09-02 | RC5: native runtime lifecycle hardening | `codex/desktop-v2-rc5-commercial-overhaul` |
+| 2026-09-03–04 | RC6: transactional installer and interrupted-uninstall recovery | `codex/desktop-v2-rc6-commercial-overhaul` → `codex/desktop-v2-rc6-installer-recovery-sep4` |
 ## Architecture
 
 ```mermaid
