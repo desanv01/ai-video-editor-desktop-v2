@@ -11,6 +11,7 @@ Var Root
 Var Case
 Var RunId
 Var Result
+Var Boundary
 Var Shell
 Var Stage
 Var Backup
@@ -45,10 +46,11 @@ Function SafeCwd
 FunctionEnd
 
 Function ValidateRoot
+  StrCmp $Boundary "" root_invalid_empty
   StrCmp $Root "" root_invalid_empty
+  GetFullPathName $Boundary "$Boundary"
   GetFullPathName $Root "$Root"
-  StrCpy $0 "$TEMP\AIVE-Installer-StateMatrix\"
-  GetFullPathName $0 "$0"
+  StrCpy $0 "$Boundary\"
   StrLen $1 $0
   StrCpy $2 $Root $1
   StrCmp $2 $0 0 root_invalid_prefix
@@ -291,6 +293,7 @@ FunctionEnd
 
 Section
   ${GetOptions} $CMDLINE "/AIVE_TEST_ROOT=" $Root
+  ${GetOptions} $CMDLINE "/AIVE_TEST_BOUNDARY=" $Boundary
   ${GetOptions} $CMDLINE "/CASE=" $Case
   ${GetOptions} $CMDLINE "/RUNID=" $RunId
   ${GetOptions} $CMDLINE "/RESULT=" $Result
