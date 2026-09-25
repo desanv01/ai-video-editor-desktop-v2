@@ -4,17 +4,20 @@ on:
   push:
     branches:
       - main
-      - "codex/desktop-v2-*"
+    paths-ignore:
+      - '**.md'
   pull_request:
     branches:
       - main
+    paths-ignore:
+      - '**.md'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: desktop-v2-ci-${{ github.event.pull_request.number || github.ref }}
+  group: desktop-v2-ci-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:

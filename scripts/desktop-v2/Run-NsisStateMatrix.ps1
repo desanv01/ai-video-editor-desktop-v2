@@ -90,7 +90,7 @@ function Read-Result([string]$Path) {
 }
 
 function Start-Harness([string]$Root, [string]$Case, [string]$Id, [string]$Result) {
-  $process = Start-Process -FilePath $script:harnessExe -ArgumentList @("/AIVE_TEST_ROOT=$Root", "/CASE=$Case", "/RUNID=$Id", "/RESULT=$Result") -Wait -PassThru -WindowStyle Hidden
+  $process = Start-Process -FilePath $script:harnessExe -ArgumentList @("/AIVE_TEST_ROOT=$Root", "/AIVE_TEST_BOUNDARY=$script:tempBoundary", "/CASE=$Case", "/RUNID=$Id", "/RESULT=$Result") -Wait -PassThru -WindowStyle Hidden
   try { return $process.ExitCode }
   finally { $process.Dispose() }
 }
@@ -112,7 +112,10 @@ function Invoke-Harness(
   if ($Seed) { & $Seed $root $paths $id }
   $resultPath = Join-Path $root 'result.txt'
   $exitCode = Start-Harness $root $Case $id $resultPath
-  Assert-Equal $exitCode $ExpectedExit "$Name returned the wrong exit code"
+  if ($exitCode -ne $ExpectedExit) {
+    throw ('{0} returned exit {1} (expected {2}); root={3}; expected boundary={4}; PowerShell TEMP={5}; result={6}' -f
+      $Name, $exitCode, $ExpectedExit, $root, $script:tempBoundary, [IO.Path]::GetTempPath(), $resultPath)
+  }
   Assert-True (Test-Path -LiteralPath $resultPath -PathType Leaf) "$Name did not write a result."
   $result = Read-Result $resultPath
   if ($ExpectedState) { Assert-Equal $result.state $ExpectedState "$Name returned the wrong state" }
@@ -192,7 +195,7 @@ try {
   $concurrentId = [Guid]::NewGuid().ToString('N'); $createdRegistryIds.Add($concurrentId)
   $concurrentRoot = Get-FullPath (Join-Path $runRoot 'concurrent'); New-Item -ItemType Directory -Path $concurrentRoot | Out-Null
   $firstResult = Join-Path $concurrentRoot 'first.txt'; $secondResult = Join-Path $concurrentRoot 'second.txt'
-  $first = Start-Process -FilePath $script:harnessExe -ArgumentList @("/AIVE_TEST_ROOT=$concurrentRoot",'/CASE=hold-mutex',"/RUNID=$concurrentId","/RESULT=$firstResult") -PassThru -WindowStyle Hidden
+  $first = Start-Process -FilePath $script:harnessExe -ArgumentList @("/AIVE_TEST_ROOT=$concurrentRoot","/AIVE_TEST_BOUNDARY=$script:tempBoundary",'/CASE=hold-mutex',"/RUNID=$concurrentId","/RESULT=$firstResult") -PassThru -WindowStyle Hidden
   try {
     Start-Sleep -Milliseconds 400
     $secondExit = Start-Harness $concurrentRoot classify-only $concurrentId $secondResult
