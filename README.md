@@ -8,11 +8,13 @@ A Windows desktop application for lecturer-supervised editing of educational vid
 ![Release status](https://img.shields.io/badge/status-RC6%20developer%2Ftest-orange)
 [![Desktop V2 CI](https://github.com/desanv01/ai-video-editor-desktop-v2/actions/workflows/ci.yml/badge.svg)](https://github.com/desanv01/ai-video-editor-desktop-v2/actions/workflows/ci.yml)
 
+[Status](#current-status) · [Architecture](#architecture) · [Development](#build-and-development) · [Checks](#checks) · [Data paths](#installation-and-data-boundaries) · [History](#development-history)
+
 ## Current status
 
 The current source checkpoint is **2.0.0-rc.6**, with installer recovery work recorded on 4 September 2026. RC6 is a developer/test release candidate, not a production-ready release. Its installer is not Authenticode-signed, and the current source still needs clean-machine release validation and production signing evidence.
 
-The repository contains source code and development checks, not a production installer or a lecturer handoff. Release handoffs require a matched catalog and engine/FFmpeg component archives. Do not treat the test Ed25519 key or component signatures as a commercial publisher identity.
+The current source checkpoint makes no claim to a production installer or a cleanly validated lecturer handoff. A test handoff requires a matched catalog and engine/FFmpeg component archives. Do not treat the test Ed25519 key or component signatures as a commercial publisher identity.
 
 | Area | State |
 |---|---|
@@ -59,6 +61,17 @@ The native engine profile uses local application storage rather than requiring D
 | Shell-to-engine security | Dynamic loopback binding, generated bearer token, and authenticated readiness/control calls |
 | Component integrity | Signed catalog and manifests, SHA-256 inventory checks, staging, activation, and recovery metadata |
 
+## Repository structure
+
+| Path | Contents |
+|---|---|
+| desktop/ | React application, Tauri shell, and installer configuration |
+| backend/ | FastAPI engine and backend tests |
+| contracts/ | Versioned runtime contracts and release provenance fixtures |
+| scripts/desktop-v2/ | Packaging, installer, and validation tools |
+| docs/desktop-v2/ | Architecture, setup, operations, and release evidence |
+| fixtures/ | Synthetic inputs for selected checks |
+
 ## Build and development
 
 ### Requirements for source development
@@ -103,7 +116,7 @@ A source-built shell does not include the generated release catalog or component
 
 ## Checks
 
-The Windows CI workflow runs frontend build, Rust formatting/checks/tests, unsigned NSIS source generation, desktop contract and installer checks, and the backend unit suite. The rendered-NSIS tests need generated installer source, so build the NSIS source before running npm test.
+The [Windows CI workflow](.github/workflows/ci.yml) runs frontend build, Rust formatting/checks/tests, unsigned NSIS source generation, desktop contract and installer checks, and the backend unit suite. The rendered-NSIS tests need generated installer source, so build the NSIS source before running npm test.
 
 ~~~powershell
 npm ci --prefix desktop
