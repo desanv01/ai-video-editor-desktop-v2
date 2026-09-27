@@ -1,127 +1,180 @@
 # AI Video Editor Desktop V2
 
-A Windows desktop application for lecturer-supervised editing of educational videos. The interface uses React and TypeScript inside a Tauri shell; a separately managed FastAPI engine handles project workflows, media processing, and exports.
+A Windows desktop application for lecturer-supervised editing of educational videos. The native UI is built with React and Tauri; a managed FastAPI engine handles projects, media processing, and exports.
 
-**Current source checkpoint:** `2.0.0-rc.6` (installer recovery work, September 2026). This is a development release candidate, not a production-ready release. The current source still needs clean-machine validation and production release signing evidence. See [RC6 release provenance and gates](docs/desktop-v2/RC6_RELEASE_PROVENANCE.md).
+![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4)
+![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB)
+![React](https://img.shields.io/badge/React-19-149ECA)
+![Release status](https://img.shields.io/badge/status-RC6%20developer%2Ftest-orange)
+[![Desktop V2 CI](https://github.com/desanv01/ai-video-editor-desktop-v2/actions/workflows/ci.yml/badge.svg)](https://github.com/desanv01/ai-video-editor-desktop-v2/actions/workflows/ci.yml)
 
-## What it does
+## Current status
 
-- Creates video projects and imports lecture media and course materials.
-- Guides a lecturer through source checks, processing, transcript review, edit decisions, and export.
-- Uses a local engine process with authenticated loopback communication between the Tauri shell and backend.
-- Manages separately packaged engine and FFmpeg components, including integrity checks, staging, activation, repair, and rollback state.
-- Preserves user projects and exports during ordinary uninstall; full data removal is a separate explicit operation.
+The current source checkpoint is **2.0.0-rc.6**, with installer recovery work recorded on 4 September 2026. RC6 is a developer/test release candidate, not a production-ready release. Its installer is not Authenticode-signed, and the current source still needs clean-machine release validation and production signing evidence.
 
-## Project status
+The repository contains source code and development checks, not a production installer or a lecturer handoff. Release handoffs require a matched catalog and engine/FFmpeg component archives. Do not treat the test Ed25519 key or component signatures as a commercial publisher identity.
 
-| Area | Current state |
+| Area | State |
 |---|---|
-| Source version | `2.0.0-rc.6` |
-| Latest recorded work | Installer interruption and recovery hardening |
-| Automated checks | Windows CI is configured; see the Actions tab for current run status |
-| Clean-machine install proof | Still required for the current RC6 source |
-| Production signing | Release signing material was not present in the source environment |
+| Native Windows shell and managed engine architecture | Implemented in source |
+| Windows CI | Configured; check the [Actions page](https://github.com/desanv01/ai-video-editor-desktop-v2/actions) for the latest run |
+| RC6 clean-machine installation evidence | Still required |
+| Authenticode signing | Not present |
 | Production release | Not ready |
-| Legacy line | The separate 1.0.x standalone release-work copy is not part of this V2 history |
 
-RC6 is documented as a source checkpoint with release gates. The presence of installer, component-signing, and recovery code does not mean a production installer has passed those gates. See [RC6 release provenance](docs/desktop-v2/RC6_RELEASE_PROVENANCE.md), [historical RC3 clean Windows validation notes](docs/desktop-v2/CLEAN_WINDOWS_VALIDATION_RC3.md), and [architecture and operations](docs/desktop-v2/FINAL_ARCHITECTURE_AND_OPERATIONS.md).
+## Product workflow
 
-## Development timeline
+- Creates projects and imports lecture recordings and course materials.
+- Guides a lecturer through source checks, processing, transcript review, edit decisions, and export.
+- Runs a separately managed native engine and communicates with it over authenticated loopback HTTP.
+- Installs engine and FFmpeg components through a manager that checks signed manifests, hashes, archive contents, and component self-tests before activation.
+- Stages component updates and records activation state to support repair and recovery.
+- Keeps projects and exports outside the installer directory; ordinary uninstall preserves user data.
 
-The stage refs preserve the work in chronological order. The last Desktop V2 product commit is September 4, 2026; the later repository setup work adds documentation and CI without claiming that the RC6 release gates have passed.
-
-| Date | Milestone | Historical ref or checkpoint |
-|---|---|---|
-| 2026-08-20 | Phase 0: protected baseline | `codex/desktop-v2-phase-0` |
-| 2026-08-20 | Phase 1: runtime contracts | `codex/desktop-v2-phase-1` |
-| 2026-08-20 | Phase 2: thin Tauri shell | `codex/desktop-v2-phase-2` |
-| 2026-08-20 | Phase 3: component manager | `codex/desktop-v2-phase-3` |
-| 2026-08-20 | Phase 4: native engine and FFmpeg components | `codex/desktop-v2-phase-4` |
-| 2026-08-20 | Phase 5: engine supervisor | `codex/desktop-v2-phase-5` |
-| 2026-08-20 | Phase 6: Setup Center | `codex/desktop-v2-phase-6` |
-| 2026-08-20 | Phase 7: migration and uninstall safety | `codex/desktop-v2-phase-7` |
-| 2026-08-21 | Phase 8: desktop product workflow | `codex/desktop-v2-phase-8` |
-| 2026-08-21 | Phase 9 and RC1 (`2.0.0-rc.1`): release handoff | `codex/desktop-v2-phase-9`; commit `2ccea79` |
-| 2026-08-22 | RC2 (`2.0.0-rc.2`): installer ACL hotfix | `codex/desktop-v2-installer-acl-hotfix`; commit `a7da1b4` |
-| 2026-08-24 | RC3: lecturer handoff evidence hardening | `codex/desktop-v2-rc3-lecturer-handoff-hardening` |
-| 2026-08-28 | RC4: first-run recovery hardening | `codex/desktop-v2-rc4-first-run-recovery` |
-| 2026-09-02 | RC5: native runtime lifecycle hardening | `codex/desktop-v2-rc5-commercial-overhaul` |
-| 2026-09-03–04 | RC6: transactional installer and interrupted-uninstall recovery | `codex/desktop-v2-rc6-commercial-overhaul` → `codex/desktop-v2-rc6-installer-recovery-sep4` |
 ## Architecture
 
-```mermaid
+~~~mermaid
 flowchart LR
     UI[React and TypeScript UI] --> Shell[Tauri Windows shell]
     Shell --> Supervisor[Engine supervisor]
-    Supervisor -->|authenticated loopback| Engine[FastAPI engine]
-    Engine --> Projects[User projects and exports]
+    Supervisor -->|dynamic loopback port plus bearer token| Engine[Managed FastAPI engine]
     Components[Verified engine and FFmpeg components] --> Engine
-```
+    Engine --> DB[(Native relational storage)]
+    Engine --> Media[User projects, uploads, and exports]
+~~~
 
-The shell is installed under `%ProgramFiles%\AI Video Editor Desktop V2`. Machine-managed components and activation state live under `%ProgramData%\AI Video Editor`. Per-user settings live under `%LocalAppData%\AI Video Editor`; projects and exports live under `%USERPROFILE%\Documents\AI Video Editor`. The exact RC6 data and uninstall behavior is described in the [operations guide](docs/desktop-v2/FINAL_ARCHITECTURE_AND_OPERATIONS.md).
+The shell is a small per-machine application. The component manager verifies and activates the larger engine and FFmpeg runtime separately. The supervisor starts only the activated engine, selects a loopback port dynamically, supplies a generated bearer token, waits for the authenticated readiness handshake, and supports graceful shutdown.
 
-## Repository contents
+The native engine profile uses local application storage rather than requiring Docker for the installed application. The source repository also retains a browser-development route from the earlier FYP line; running Vite in a browser is not the same as launching or validating the native Desktop V2 shell.
 
-| Path | Contents |
+## Technical stack
+
+| Area | Implementation |
 |---|---|
-| `desktop/` | React application, Tauri shell, installer configuration, and frontend build |
-| `backend/` | FastAPI engine and backend tests |
-| `contracts/` | Versioned contracts and release provenance fixtures |
-| `scripts/desktop-v2/` | Installer, packaging, validation, and release support scripts |
-| `docs/desktop-v2/` | Phase, architecture, operations, security, and release evidence |
-| `fixtures/` | Synthetic fixtures used by selected checks |
-
-The Git history preserves the earlier FYP code lineage and the Desktop V2 development stages. The separate 1.0.x standalone release-work copy is a legacy line and is not represented by these V2 milestone refs. Existing Phase and RC refs are historical checkpoints; use pull requests for new changes.
+| Desktop shell | Tauri 2.11.2, Rust, and the Windows NSIS/MSI packaging configuration |
+| Frontend | React 19, TypeScript 5.7, Vite 6, and Tailwind CSS |
+| Engine | FastAPI/Python 3.12, launched and supervised as a separate native process |
+| Native data profile | SQLite and per-user filesystem storage; vector capability can be degraded when optional local vector services are unavailable |
+| Media runtime | Managed FFmpeg 8.1.1 component |
+| Shell-to-engine security | Dynamic loopback binding, generated bearer token, and authenticated readiness/control calls |
+| Component integrity | Signed catalog and manifests, SHA-256 inventory checks, staging, activation, and recovery metadata |
 
 ## Build and development
 
-The native application targets Windows. A development machine needs Node.js, Rust, the Windows C++ build tools required by Tauri, and Python dependencies for backend work. Provider-backed features may also need locally configured credentials.
+### Requirements for source development
 
-```powershell
-Copy-Item .env.example .env
+| Tool | Use |
+|---|---|
+| Windows 10 or 11 x64 | Target native shell and installer |
+| Node.js 22 and npm | Frontend dependencies and build; Node 22 is used by CI |
+| Stable Rust toolchain | Tauri shell |
+| Visual Studio C++ Build Tools | Native Windows dependencies for Tauri |
+| WebView2 Runtime | Windows web content inside the native shell |
+| Python 3.12 | Backend unit tests and engine development |
+
+The installed lecturer application is intended to use its managed engine and FFmpeg components; it does not depend on system Python, Node.js, Docker, or a system FFmpeg installation. The current RC6 handoff remains a developer/test build and has not passed the production release gates.
+
+### Clone and build the frontend
+
+~~~powershell
+git clone https://github.com/desanv01/ai-video-editor-desktop-v2.git
+Set-Location ai-video-editor-desktop-v2
+
 npm ci --prefix desktop
 npm run build --prefix desktop
-```
+~~~
 
-To run the frontend during development:
+### Browser development mode
 
-```powershell
+~~~powershell
 npm run dev --prefix desktop
-```
+~~~
 
-To start the Tauri shell from the `desktop` directory:
+Vite serves on port 1420. Browser mode follows the retained web/FYP path and may use the API on port 8000. It does not start the native V2 engine or prove that an installed component handoff works.
 
-```powershell
+### Native Tauri development mode
+
+~~~powershell
+Set-Location desktop
 npx tauri dev
-```
+~~~
 
-The shell's backend supervisor and the desktop Compose configuration have launcher-managed environment requirements. For service topology and data paths, read [architecture and operations](docs/desktop-v2/FINAL_ARCHITECTURE_AND_OPERATIONS.md) and the checked-in Compose files before starting the full desktop stack.
+A source-built shell does not include the generated release catalog or component archives. To exercise component installation, use a complete, matching developer/test handoff with its Catalog and Components folders kept together.
 
 ## Checks
 
-The repository CI workflow targets Windows and runs the desktop contract/installer checks, the React/TypeScript build, Rust formatting and checks, and the backend unit suite.
+The Windows CI workflow runs frontend build, Rust formatting/checks/tests, unsigned NSIS source generation, desktop contract and installer checks, and the backend unit suite. The rendered-NSIS tests need generated installer source, so build the NSIS source before running npm test.
 
-Run the desktop checks locally from PowerShell:
-
-```powershell
+~~~powershell
 npm ci --prefix desktop
-npm test --prefix desktop
 npm run build --prefix desktop
+
+Push-Location desktop
+npx tauri build --bundles nsis --no-sign
+Pop-Location
+
+npm test --prefix desktop
 cargo fmt --all --check --manifest-path desktop/src-tauri/Cargo.toml
 cargo check --locked --manifest-path desktop/src-tauri/Cargo.toml
 cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml
-```
 
-Run backend tests after installing `backend/requirements.txt`:
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+.\.venv\Scripts\python.exe -m unittest discover -s backend/tests -p "test_*.py"
+~~~
 
-```powershell
-python -m unittest discover -s backend/tests -p "test_*.py"
-```
+A passing CI or source test run does not replace a clean-machine installer test, release handoff verification, or Authenticode signing.
 
-CI checks do not replace the documented clean-machine installer, signed-component, recovery, or release handoff gates.
+## Installation and data boundaries
 
-## Release and data safety
+A complete test handoff starts with an empty shell. Setup Center imports the release catalog, validates its component references, and installs the engine and FFmpeg components before the application can run the full native workflow. Keep Catalog and Components as sibling folders; if the handoff is moved, import the catalog again from its new location.
 
-Production installer publishing remains gated. Do not place `.env` values, signing seeds, certificates, lecturer recordings, course materials, local databases, generated media, installers, or release handoffs in Git. Generated outputs and upload folders are ignored by `.gitignore`.
+| Data | Default location |
+|---|---|
+| Per-machine shell | %ProgramFiles%\AI Video Editor Desktop V2\Shell |
+| Components, catalog, and activation state | %ProgramData%\AI Video Editor |
+| Per-user settings and disposable runtime state | %LocalAppData%\AI Video Editor |
+| Projects, uploads, models, and exports | %USERPROFILE%\Documents\AI Video Editor |
+| Provider credentials | Windows Credential Manager |
 
-See [RC6 lecturer use](docs/desktop-v2/RC6_LECTURER_USE.md), [troubleshooting](docs/desktop-v2/RC6_LECTURER_TROUBLESHOOTING.md), and [release provenance](docs/desktop-v2/RC6_RELEASE_PROVENANCE.md).
+The default uninstall preserves user projects, uploads, models, databases, exports, settings, and stored credentials. A separate full-wipe operation is destructive and requires its own explicit confirmation. Never commit provider credentials, signing seeds, certificates, user databases, recordings, course materials, generated media, or release binaries.
+
+Provider-backed AI features need the relevant lecturer-owned credentials. Local and manual workflows can run without provider keys where the selected workflow supports them.
+
+## Development history
+
+The milestone refs preserve the Desktop V2 work in chronological order. The product history ends with the September 4, 2026 RC6 work; later repository setup adds documentation and CI without claiming the RC6 release gates have passed.
+
+| Date | Milestone | Historical ref or checkpoint |
+|---|---|---|
+| 2026-08-20 | Phase 0: protected baseline | codex/desktop-v2-phase-0 |
+| 2026-08-20 | Phase 1: runtime contracts | codex/desktop-v2-phase-1 |
+| 2026-08-20 | Phase 2: thin Tauri shell | codex/desktop-v2-phase-2 |
+| 2026-08-20 | Phase 3: component manager | codex/desktop-v2-phase-3 |
+| 2026-08-20 | Phase 4: native engine and FFmpeg components | codex/desktop-v2-phase-4 |
+| 2026-08-20 | Phase 5: engine supervisor | codex/desktop-v2-phase-5 |
+| 2026-08-20 | Phase 6: Setup Center | codex/desktop-v2-phase-6 |
+| 2026-08-20 | Phase 7: migration and uninstall safety | codex/desktop-v2-phase-7 |
+| 2026-08-21 | Phase 8: desktop product workflow | codex/desktop-v2-phase-8 |
+| 2026-08-21 | Phase 9 and RC1 (2.0.0-rc.1): release handoff | codex/desktop-v2-phase-9; commit 2ccea79 |
+| 2026-08-22 | RC2 (2.0.0-rc.2): installer ACL hotfix | codex/desktop-v2-installer-acl-hotfix; commit a7da1b4 |
+| 2026-08-24 | RC3: lecturer handoff evidence hardening | codex/desktop-v2-rc3-lecturer-handoff-hardening |
+| 2026-08-28 | RC4: first-run recovery hardening | codex/desktop-v2-rc4-first-run-recovery |
+| 2026-09-02 | RC5: native runtime lifecycle hardening | codex/desktop-v2-rc5-commercial-overhaul |
+| 2026-09-03–04 | RC6: transactional installer and interrupted-uninstall recovery | codex/desktop-v2-rc6-commercial-overhaul → codex/desktop-v2-rc6-installer-recovery-sep4 |
+
+The Git history retains ancestry from the FYP repository. The separate 1.0.x standalone release-work copy is a legacy line and is not represented by these V2 milestone refs.
+
+## Technical documentation
+
+- [Architecture and operations](docs/desktop-v2/FINAL_ARCHITECTURE_AND_OPERATIONS.md)
+- [RC6 lecturer setup](docs/desktop-v2/RC6_LECTURER_SETUP.md)
+- [RC6 installation](docs/desktop-v2/RC6_LECTURER_INSTALL.md)
+- [RC6 configuration](docs/desktop-v2/RC6_LECTURER_CONFIGURATION.md)
+- [RC6 troubleshooting](docs/desktop-v2/RC6_LECTURER_TROUBLESHOOTING.md)
+- [RC6 release provenance and gates](docs/desktop-v2/RC6_RELEASE_PROVENANCE.md)
+- [RC3 clean Windows validation notes](docs/desktop-v2/CLEAN_WINDOWS_VALIDATION_RC3.md)
+
+## Related project
+
+The academic source and thesis evidence remain in the [AI Video Editor FYP repository](https://github.com/desanv01/ai-video-editor). This repository documents the separate Desktop V2 application line.
