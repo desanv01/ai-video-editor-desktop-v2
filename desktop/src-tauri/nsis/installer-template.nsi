@@ -270,9 +270,12 @@ Function ValidateInstallerPerimeter
   Pop $1
   StrCmp $0 "0" installer_perimeter_valid
   installer_perimeter_failed:
-    SetErrorLevel ${AIVE_E_CONFLICT}
+    StrCpy $FailureCode ${AIVE_E_CONFLICT}
+    StrCpy $FailureStage "machine-perimeter"
+    StrCpy $FailureMessage "Setup could not validate the ProgramData installer perimeter. The path was missing, reparse-backed, or the ACL operation failed."
+    SetErrorLevel $FailureCode
     ${IfNot} ${Silent}
-      MessageBox MB_ICONSTOP|MB_OK "Setup refused an unsafe or unavailable ProgramData installer perimeter. Reparse points were preserved."
+      MessageBox MB_ICONSTOP|MB_OK "$FailureMessage$\r$\n$\r$\nSetup code: $FailureCode ($FailureStage). Reparse points were preserved."
     ${EndIf}
     Abort
   installer_perimeter_valid:
@@ -426,10 +429,12 @@ FunctionEnd
 ; $0=input path, $1=1 when it is a reparse point.
 Function IsReparsePoint
   StrCpy $1 0
-  System::Call 'kernel32::GetFileAttributesW(w r0) i .r2'
-  IntCmp $2 -1 reparse_done
-  IntOp $2 $2 & 0x400
-  StrCmp $2 0 reparse_done
+  ; $0 is the input path and $1 is the result. Keep $2/$3 and $9 intact
+  ; because callers hold paths and file handles across this call.
+  System::Call 'kernel32::GetFileAttributesW(w r0) i .R9'
+  IntCmp $R9 -1 reparse_done
+  IntOp $R9 $R9 & 0x400
+  StrCmp $R9 0 reparse_done
   StrCpy $1 1
   reparse_done:
 FunctionEnd

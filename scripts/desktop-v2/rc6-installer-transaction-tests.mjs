@@ -27,6 +27,18 @@ const functionBody = (source, name) => {
   assert.ok(start >= 0 && end > start, name + " must exist");
   return source.slice(start, end);
 };
+const perimeter = functionBody(templateCode, "ValidateInstallerPerimeter");
+const reparse = functionBody(templateCode, "IsReparsePoint");
+assert.match(reparse, /GetFileAttributesW\(w r0\) i \.R9\b/, "reparse helper must store attributes in $R9");
+assert.doesNotMatch(reparse, /\.r(?:2|3|9)\b|(?:^|\n)\s*(?:StrCpy|IntOp|Pop)\s+\$(?:2|3|9)\b/, "reparse helper must preserve caller path and file-handle registers");
+assert.match(reparse, /IntCmp \$R9 -1[\s\S]*?IntOp \$R9 \$R9 & 0x400[\s\S]*?StrCmp \$R9 0/, "reparse check must read the same scratch register that received the attributes");
+const installerPath = 'StrCpy $2 "$1\\Installer"';
+assert.ok(perimeter.includes(installerPath), "perimeter must build the Installer path in $2");
+const perimeterCheck = perimeter.indexOf("Call IsReparsePoint", perimeter.indexOf(installerPath));
+assert.ok(perimeterCheck >= 0, "perimeter must check a path after saving the Installer path");
+assert.ok(perimeter.indexOf('CreateDirectory "$2"', perimeterCheck) > perimeterCheck, "CreateDirectory must retain the Installer path across the helper call");
+assert.ok(perimeter.indexOf('icacls.exe" "$2', perimeterCheck) > perimeterCheck, "icacls must retain the Installer path across the helper call");
+assert.match(perimeter, /StrCpy \$FailureStage "machine-perimeter"/, "perimeter failure must identify its stage");
 assert.doesNotMatch(functionBody(templateCode, "SetCanonicalInstallDir"), /\bSetOutPath\b/i);
 assert.doesNotMatch(hookCode, /\bSetOutPath\b/i);
 assert.doesNotMatch(templateCode + "\n" + hookCode, /\bSetOutPath\s+"?\$\{AIVEINSTALLDIR\}"?|\bSetOutPath\s+"?\$PROGRAMFILES64/i);
