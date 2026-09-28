@@ -55,8 +55,7 @@ jobs:
         run: npm run build --prefix desktop
 
       - name: Build unsigned RC6 NSIS source for installer checks
-        working-directory: desktop
-        run: npx tauri build --bundles nsis --no-sign
+        run: npm run build:nsis:checked --prefix desktop
 
       - name: Run desktop contract and installer checks
         run: npm test --prefix desktop
