@@ -12,6 +12,13 @@ const config = JSON.parse(configText);
 const executable = source => source.split(/\r?\n/).filter(line => !/^\s*;/.test(line)).join("\n");
 const templateCode = executable(template);
 const hookCode = executable(hook);
+for (const [name, source] of [["template", templateCode], ["hook", hookCode]]) {
+  assert.doesNotMatch(source, /\$\{?PROGRAMDATA\b/i, `${name} must not use the undefined NSIS $PROGRAMDATA token`);
+}
+assert.match(templateCode, /!define AIVEINSTALLERDIR "\$COMMONPROGRAMDATA\\AI Video Editor\\Installer"/);
+assert.match(templateCode, /ValidateInstallerPerimeter[\s\S]*?StrCmp \$0 "\$COMMONPROGRAMDATA" 0 installer_perimeter_failed/);
+assert.match(templateCode, /un\.ValidateInstallerPerimeter[\s\S]*?StrCmp \$0 "\$COMMONPROGRAMDATA" 0 un_installer_perimeter_failed/);
+assert.match(hookCode, /handoff-root\.json\.part[\s\S]*?\$COMMONPROGRAMDATA\\AI Video Editor\\Installer/);
 
 assert.equal(config.bundle.windows.nsis.template, "nsis/installer-template.nsi");
 assert.match(template, /tauri-v2\.11\.2 installer\.nsi/i);
@@ -70,6 +77,16 @@ assert.match(template, /CreateMutexW[\s\S]*?183/);
 const journal = functionBody(template, "WriteTransactionJournal");
 assert.ok(journal.indexOf('"TransactionId"') < journal.indexOf('"Phase" "$TxnPhase"'), "phase must be the last authoritative registry commit field");
 assert.match(journal, /ReadRegStr[\s\S]*?TransactionId[\s\S]*?ExpectedVersion[\s\S]*?PackageIdentity[\s\S]*?CanonicalPath[\s\S]*?journal_write_failed/);
+for (const step of ["directory", "registry-write", "registry-readback", "part-open", "part-write", "part-close", "atomic-publish", "final-existence", "final-readback"]) {
+  assert.ok(journal.includes(`StrCpy $JournalStep "${step}"`), `install journal must identify ${step} failures`);
+}
+assert.match(journal, /IfFileExists "\$\{AIVEJOURNAL\}" 0 journal_write_failed[\s\S]*?FileRead \$9 \$R3[\s\S]*?StrCmp \$R3 \$R2/);
+assert.match(journal, /StrCpy \$FailureCode \$\{AIVE_E_SNAPSHOT\}[\s\S]*?StrCpy \$FailureStage "journal-\$JournalStep"[\s\S]*?Call AppendSetupLog/);
+assert.match(functionBody(template, ".onInstFailed"), /InstallStarted = 1[\s\S]*?InstallCommitted = 0[\s\S]*?JournalOk = 1[\s\S]*?Call RollbackInstallTransaction/, "journal failure must not trigger rollback mutation");
+assert.match(functionBody(template, ".onInstFailed"), /JournalOk = 1[\s\S]*?Delete "\$TEMP\\MicrosoftEdgeWebview2Setup\.exe"[\s\S]*?\$\{EndIf\}/, "journal failure must not trigger temp-file cleanup");
+const uninstallJournal = functionBody(template, "un.WriteUninstallJournal");
+assert.match(uninstallJournal, /StrCpy \$JournalStep "registry-write"[\s\S]*?StrCpy \$JournalStep "atomic-publish"[\s\S]*?StrCpy \$JournalStep "final-readback"/);
+assert.match(uninstallJournal, /FileRead \$9 \$R3[\s\S]*?StrCmp \$R3 \$R2/);
 assert.match(functionBody(template, "LoadTransactionState"), /ExpectedVersion[\s\S]*?PackageIdentity[\s\S]*?CanonicalPath[\s\S]*?StagingPath[\s\S]*?BackupPath[\s\S]*?load_transaction_invalid/);
 assert.match(functionBody(template, "RecoverInterruptedInstall"), /uninstall-rename-intent[\s\S]*?recovery_uninstall[\s\S]*?committed[\s\S]*?recovery_committed/);
 assert.match(functionBody(template, "FailInstall"), /RecoveryActive != 1[\s\S]*?Call WriteTransactionJournal/, "recovery failures must preserve the semantic retry phase");

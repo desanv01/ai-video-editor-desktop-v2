@@ -12,6 +12,7 @@ Start with **Diagnostics > Redacted recovery details**. Record the visible error
 
 - **Installer cannot write Program Files or ProgramData:** rerun the installer as an administrator. Do not grant broad write access to Program Files and do not manually take ownership of system folders.
 - **Installer state/rollback issue:** retain `%ProgramData%\AI Video Editor\Installer\setup-rc6.log`, `transaction-rc6.json`, `uninstall-transaction-rc6.json`, `Shell.rc6-staging`, `Shell.rc6-rollback`, and any uniquely named `Shell.rc6-uninstall-*` tombstone. Rerun the same Setup after closing the app or restarting Windows. Do not delete recovery material when rollback is pending.
+- **Journal error 2101:** record the exact `journal-*` or `uninstall-journal-*` step shown in the dialog, then check the corresponding redacted setup or uninstall log under `%ProgramData%\AI Video Editor\Installer`. If the directory or log could not be created, record that absence too. Keep the recovery files and retry the same verified installer; do not delete a `.part` file or grant broad folder permissions to make setup proceed.
 - **WebView2 unavailable:** install or repair the Microsoft Edge WebView2 Runtime, then relaunch.
 - **Shortcut is missing or wrong:** launch the installed executable only from `%ProgramFiles%\AI Video Editor Desktop V2\Shell`; record the shortcut target and repair/reinstall the same RC.6 shell. Do not point a shortcut at a repository development build.
 

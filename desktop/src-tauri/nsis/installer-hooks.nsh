@@ -55,6 +55,7 @@
   StrCpy $2 "$APPDATA\AI Video Editor"
   ReadEnvStr $3 "ProgramData"
   StrCmp $3 "" machine_data_resolution_failed
+  StrCmp $3 "$COMMONPROGRAMDATA" 0 machine_data_resolution_failed
   StrCpy $4 "$3\AI Video Editor"
   StrCmp $2 $4 machine_data_resolved
   DetailPrint "Unexpected machine data root. Expected: $4"
@@ -139,22 +140,22 @@
   ; A .part file and MoveFileEx(REPLACE_EXISTING) make publication atomic.
   IfFileExists "$EXEDIR\Catalog\offline-catalog.json" 0 handoff_origin_done
   IfFileExists "$EXEDIR\Components\." 0 handoff_origin_done
-  IfFileExists "$PROGRAMDATA\AI Video Editor\Installer\handoff-root.json" 0 handoff_origin_no_prior
+  IfFileExists "$COMMONPROGRAMDATA\AI Video Editor\Installer\handoff-root.json" 0 handoff_origin_no_prior
     ClearErrors
-    CopyFiles /SILENT "$PROGRAMDATA\AI Video Editor\Installer\handoff-root.json" "$PROGRAMDATA\AI Video Editor\Installer\handoff-root.json.rc6-rollback"
+    CopyFiles /SILENT "$COMMONPROGRAMDATA\AI Video Editor\Installer\handoff-root.json" "$COMMONPROGRAMDATA\AI Video Editor\Installer\handoff-root.json.rc6-rollback"
     IfErrors handoff_origin_failed
     StrCpy $TxnHadInstallerOrigin 1
     Call WriteTransactionJournal
   handoff_origin_no_prior:
   ${WordReplace} "$EXEDIR" "\" "/" "+*" $7
-  Delete "$PROGRAMDATA\AI Video Editor\Installer\handoff-root.json.part"
-  FileOpen $0 "$PROGRAMDATA\AI Video Editor\Installer\handoff-root.json.part" w
+  Delete "$COMMONPROGRAMDATA\AI Video Editor\Installer\handoff-root.json.part"
+  FileOpen $0 "$COMMONPROGRAMDATA\AI Video Editor\Installer\handoff-root.json.part" w
   IfErrors handoff_origin_failed
   FileWrite $0 '{"schemaVersion":"desktop.installer-handoff-origin.v1","handoffRoot":"$7","catalogRelativePath":"Catalog/offline-catalog.json","componentsRelativePath":"Components"}'
   FileClose $0
   StrCpy $TxnWroteInstallerOrigin 1
   Call WriteTransactionJournal
-  System::Call 'kernel32::MoveFileExW(w "$PROGRAMDATA\AI Video Editor\Installer\handoff-root.json.part", w "$PROGRAMDATA\AI Video Editor\Installer\handoff-root.json", i 0x1) i .r0'
+  System::Call 'kernel32::MoveFileExW(w "$COMMONPROGRAMDATA\AI Video Editor\Installer\handoff-root.json.part", w "$COMMONPROGRAMDATA\AI Video Editor\Installer\handoff-root.json", i 0x1) i .r0'
   StrCmp $0 0 handoff_origin_failed handoff_origin_done
   handoff_origin_failed:
     StrCpy $FailureCode ${AIVE_E_HANDOFF}

@@ -25,6 +25,14 @@ $makensisCandidates = @(
 $makensis = $makensisCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
 if (-not $makensis) { throw 'Tauri makensis.exe is unavailable under %LOCALAPPDATA%\tauri\NSIS.' }
 
+function Invoke-CheckedNsisCompile([string]$Source) {
+  $compilerOutput = & $script:makensis /V4 $Source 2>&1 | Out-String
+  if ($LASTEXITCODE -ne 0) { throw "Tauri makensis failed with exit $LASTEXITCODE for $Source`n$compilerOutput" }
+  if ($compilerOutput -match '(?im)warning\s+6000\b|unknown\s+variable\s*/\s*constant') {
+    throw "Tauri makensis accepted an unknown NSIS variable in $Source`n$compilerOutput"
+  }
+}
+
 $tempBoundary = Get-FullPath (Join-Path ([IO.Path]::GetTempPath()) 'AIVE-Installer-StateMatrix')
 $runToken = [Guid]::NewGuid().ToString('N')
 $runRoot = Get-FullPath (Join-Path $tempBoundary $runToken)
@@ -130,8 +138,32 @@ try {
   Copy-Item -LiteralPath $harnessSource -Destination (Join-Path $runRoot 'harness.nsi')
   Push-Location $runRoot
   try {
-    & $makensis /V2 (Join-Path $runRoot 'harness.nsi')
-    if ($LASTEXITCODE -ne 0) { throw "Tauri makensis failed with exit $LASTEXITCODE." }
+    # Exercise the actual compiler and runtime constant; static checks alone
+    # cannot distinguish a valid shell constant from a literal $PROGRAMDATA.
+    $probeSource = Join-Path $runRoot 'common-programdata-probe.nsi'
+    Set-Content -LiteralPath $probeSource -Encoding ascii -Value @'
+Unicode true
+OutFile "common-programdata-probe.exe"
+SilentInstall silent
+RequestExecutionLevel user
+Section
+  FileOpen $0 "$EXEDIR\common-programdata-result.txt" w
+  FileWrite $0 "$COMMONPROGRAMDATA"
+  FileClose $0
+SectionEnd
+'@
+    Invoke-CheckedNsisCompile $probeSource
+    $probeExe = Join-Path $runRoot 'common-programdata-probe.exe'
+    Assert-True (Test-Path -LiteralPath $probeExe -PathType Leaf) 'Compiled COMMONPROGRAMDATA probe is missing.'
+    $probeProcess = Start-Process -FilePath $probeExe -Wait -PassThru -WindowStyle Hidden
+    try { Assert-Equal $probeProcess.ExitCode 0 'COMMONPROGRAMDATA probe failed' }
+    finally { $probeProcess.Dispose() }
+    $probeResult = Get-Content -LiteralPath (Join-Path $runRoot 'common-programdata-result.txt') -Raw
+    $machineProgramData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+    Assert-True (-not [string]::IsNullOrWhiteSpace($machineProgramData)) 'Windows CommonApplicationData path is missing.'
+    Assert-Equal (Get-FullPath $probeResult) (Get-FullPath $machineProgramData) 'NSIS COMMONPROGRAMDATA did not resolve to machine ProgramData'
+    Assert-Equal (Get-FullPath $probeResult) (Get-FullPath $env:ProgramData) 'NSIS COMMONPROGRAMDATA did not match the ProgramData environment path'
+    Invoke-CheckedNsisCompile (Join-Path $runRoot 'harness.nsi')
   } finally { Pop-Location }
   $script:harnessExe = Join-Path $runRoot 'nsis-state-matrix-harness.exe'
   Assert-True (Test-Path -LiteralPath $script:harnessExe -PathType Leaf) 'Compiled NSIS harness is missing.'
