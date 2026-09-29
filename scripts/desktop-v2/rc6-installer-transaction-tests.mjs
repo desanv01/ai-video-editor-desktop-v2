@@ -74,6 +74,16 @@ assert.match(template, /Function PublishCommittedIdentity[\s\S]*?MoveFileExW[\s\
 assert.match(template, /AIVESETUPLOG[\s\S]*?AIVEJOURNAL[\s\S]*?AIVE_E_SNAPSHOT[\s\S]*?AIVE_E_INVARIANT/);
 assert.match(template, /RejectProductionTestOverrides[\s\S]*?AIVE_TEST_ROOT[\s\S]*?AIVE_FAULT_PHASE/);
 assert.match(template, /CreateMutexW[\s\S]*?183/);
+for (const name of ["AcquireInstallerMutex", "un.AcquireInstallerMutex"]) {
+  const acquire = functionBody(templateCode, name);
+  assert.match(acquire, /StrCpy \$MutexHandle 0[\s\S]*?CreateMutexW\([^\r\n]*\) p \.r0 \?e[\s\S]*?StrCpy \$MutexHandle \$0[\s\S]*?Pop \$0/);
+  assert.match(acquire, /\$MutexHandle = 0[\s\S]*?AIVE_E_MUTEX_CREATE[\s\S]*?mutex-create[\s\S]*?Windows error \$0/);
+  assert.match(acquire, /\$0 = 183[\s\S]*?ReleaseInstallerMutex[\s\S]*?AIVE_E_CONCURRENT/);
+}
+assert.doesNotMatch(templateCode, /(?:\.[rR]|\bp\s+r)(?:MutexHandle|Mutex)\b/, "System::Call cannot use named variable destinations or inputs");
+assert.match(functionBody(templateCode, "ReleaseInstallerMutex"), /StrCpy \$0 \$MutexHandle[\s\S]*?CloseHandle\(p r0\) i \.r1[\s\S]*?StrCpy \$MutexHandle 0/);
+assert.match(functionBody(templateCode, "un.ReleaseInstallerMutex"), /StrCpy \$0 \$MutexHandle[\s\S]*?CloseHandle\(p r0\) i \.r1[\s\S]*?StrCpy \$MutexHandle 0/);
+assert.match(functionBody(templateCode, "FailInstall"), /RecoveryActive != 1[\s\S]*?FailureCode != \$\{AIVE_E_CONCURRENT\}[\s\S]*?FailureCode != \$\{AIVE_E_MUTEX_CREATE\}[\s\S]*?Call WriteTransactionJournal/, "mutex errors must not write an install transaction journal");
 const journal = functionBody(template, "WriteTransactionJournal");
 assert.ok(journal.indexOf('"TransactionId"') < journal.indexOf('"Phase" "$TxnPhase"'), "phase must be the last authoritative registry commit field");
 assert.match(journal, /ReadRegStr[\s\S]*?TransactionId[\s\S]*?ExpectedVersion[\s\S]*?PackageIdentity[\s\S]*?CanonicalPath[\s\S]*?journal_write_failed/);

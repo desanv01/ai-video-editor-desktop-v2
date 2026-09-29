@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--private-key-file", type=Path)
     parser.add_argument("--key-id")
     parser.add_argument("--test-fixture", action="store_true", help="Use the deterministic non-production fixture key.")
-    parser.add_argument("--catalog-id", default="aive-desktop-v2-rc6-developer-test")
+    parser.add_argument("--catalog-id", default="aive-desktop-v2-rc7-developer-test")
     parser.add_argument("--channel", choices=("stable", "beta", "nightly"), default="beta")
     parser.add_argument("--generated-at")
     parser.add_argument("--expires-at")

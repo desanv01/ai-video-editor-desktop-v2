@@ -1,0 +1,23 @@
+# Desktop V2 RC.7 release provenance
+
+RC.7 is `2.0.0-rc.7` on the beta channel. Its release directory and archive must be newly named with `rc7`; the provenance generator rejects RC.4/RC.5 paths and refuses to overwrite an existing manifest, SBOM, license/source record, or checksum catalog.
+
+The Windows layout is fixed: the per-machine shell is under `%ProgramFiles%\AI Video Editor Desktop V2\Shell`, machine components and activation state are under `%ProgramData%\AI Video Editor`, disposable/user settings are under `%LocalAppData%\AI Video Editor`, and projects/exports/models are under `%USERPROFILE%\Documents\AI Video Editor`. The generated Tauri NSIS section owns one Desktop shortcut and one Start Menu shortcut. The hook creates no second shortcut or shortcut checkbox.
+
+The default uninstall removes the shell, machine runtime, signed catalog cache, staging, and disposable per-user state. It preserves settings, uploads, models, databases, projects, exports, and Windows Credential Manager entries. Full wipe is a separate Rust command requiring the exact phrase `REMOVE ALL AI VIDEO EDITOR USER DATA`; it is limited to resolved allowlisted paths and the compiled product-owned Credential Manager target list. It never enumerates the credential vault. After exact committed-identity validation, the live shell is atomically renamed to a unique journaled sibling tombstone; `/REBOOTOK` is allowed only against that never-reused tombstone, never the canonical install path.
+
+RC.7 repairs the NSIS `System::Call` mutex output mapping. The setup/uninstall mutex keeps its RC.6 global name so versions coordinate during upgrades. A real second owner reports 2113; a failed `CreateMutexW` reports 2114 with its Windows error. Neither case changes an installer journal. RC.7 keeps RC.6 transaction filenames and rollback directories so a partially completed RC.6 transaction remains discoverable. The installer continues to validate the canonical path, reparse boundaries, journal, and ProgramData ACL before mutation.
+
+FFmpeg is pinned to 8.1.1. The reviewed Gyan asset URL, archive SHA-256, FFmpeg source commit, and GPL-3.0-only status are frozen in `contracts/desktop-v2/ffmpeg-8.1.1.provenance.json`. Production packaging requires the caller-supplied local archive, exact hash, reviewed metadata, real probes, component inventory, and a caller-supplied external Ed25519 seed. Test-fixture signatures remain test-only.
+
+Release order:
+
+1. Retain the byte-identical signed RC.6 engine and FFmpeg 8.1.1 component packages; their manifest minimum shell version is RC.6 and permits RC.7. Verify their signatures and archive hashes before reuse. Do not claim these components were rebuilt.
+2. Generate a fresh RC.7 catalog with `generate_signed_catalog.py`, using the same developer-test Ed25519 key ID as the unchanged manifests. This key is not a production publisher identity.
+3. Run `npm test --prefix desktop`, `npm run build --prefix desktop`, Rust format/check/tests, and backend tests. Build a fresh NSIS shell with `npm run build:nsis:checked --prefix desktop`. Never copy an RC.6 installer forward.
+4. Run the generated-source and compiled disposable-root gates: `npm run verify:nsis:rendered --prefix desktop` and `npm run test:nsis-state-matrix --prefix desktop`. The latter uses a strict `%TEMP%` child plus HKCU and never overrides production Program Files/HKLM policy.
+5. Let `assemble_rc7_handoff.py` stage the installer, signed manifests, detached signatures, archives, catalog, public trust record, evidence, and read-only verifiers into a new timestamped direct child of the ignored `output` directory. The assembler itself generates provenance and runs both included verifiers before atomic publication and never overwrites an existing handoff/ZIP.
+6. Compute the final ZIP SHA-256, write the adjacent `.zip.sha256` file, extract the ZIP into a new directory, and rerun `Verify-RC7Release.ps1` and `verify-handoff-signatures.py` against the extracted root.
+7. Authenticode signing, when available, must occur before final SBOM/checksum/provenance freeze. Verify it with `Sign-DesktopV2Release.ps1 -VerifyOnly -RequireSigning`. Any post-freeze signing invalidates hashes and requires complete reassembly. Until external certificate/timestamp evidence exists, Authenticode remains `not-claimed`; Ed25519 component/catalog signatures are not Authenticode.
+
+This handoff uses the existing developer-test Ed25519 trust root. Large binaries, installer outputs, seeds, certificates, user data, Docker state, and project media remain outside Git. Clean Windows installation and the lecturer's laptop remain separate field validation gates.

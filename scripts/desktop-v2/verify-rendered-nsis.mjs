@@ -60,6 +60,12 @@ assert.doesNotMatch(code, /\bSetOutPath\s+"?(?:\$INSTDIR|\$\{AIVEINSTALLDIR\}|\$
 
 const init = functionBody(".onInit");
 assert.match(init, /Call SetCanonicalInstallDir[\s\S]*?Call SetSafeWorkingDir[\s\S]*?Call RejectProductionTestOverrides[\s\S]*?Call AcquireInstallerMutex[\s\S]*?Call RecoverInterruptedInstall/);
+assert.doesNotMatch(code, /(?:\.[rR]|\bp\s+r)(?:MutexHandle|Mutex)\b/, "rendered System::Call cannot use named mutex variables");
+for (const name of ["AcquireInstallerMutex", "un.AcquireInstallerMutex"]) {
+  const acquire = functionBody(name);
+  assert.match(acquire, /CreateMutexW\([^\r\n]*\) p \.r0 \?e[\s\S]*?StrCpy \$MutexHandle \$0[\s\S]*?Pop \$0/);
+  assert.match(acquire, /\$MutexHandle = 0[\s\S]*?AIVE_E_MUTEX_CREATE[\s\S]*?\$0 = 183[\s\S]*?ReleaseInstallerMutex/);
+}
 
 const protect = functionBody("ProtectAndActivateStaging");
 assert.match(protect, /Call SetSafeWorkingDir[\s\S]*?Rename "\$\{AIVEINSTALLDIR\}" "\$\{AIVEBACKUPDIR\}"/);
