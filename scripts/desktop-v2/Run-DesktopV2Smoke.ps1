@@ -62,7 +62,7 @@ try {
   if ($evidenceParent) { New-Item -ItemType Directory -Path $evidenceParent -Force | Out-Null }
   $payload = [ordered]@{
     schemaVersion = 'desktop.smoke-evidence.v1'
-    releaseVersion = '2.0.0-rc.7'
+    releaseVersion = '2.0.0-rc.8'
     artifactKind = 'actual-component-archives-extracted-to-disposable-temp'
     source = if ($SourcePath) { 'caller-supplied-valid-media' } else { 'generated-valid-mp4-in-redirected-root' }
     packagedArchivesInspected = @($archives | ForEach-Object { $_.Name })

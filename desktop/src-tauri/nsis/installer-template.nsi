@@ -1,4 +1,4 @@
-; AI Video Editor Desktop V2 RC.7 pinned NSIS template.
+; AI Video Editor Desktop V2 RC.8 pinned NSIS template.
 ; Derived from @tauri-apps/cli 2.11.2 / tauri-v2.11.2 installer.nsi.
 ; Intentional policy changes: fixed per-machine path, no directory/start-menu
 ; chooser, one shortcut owner, verified shortcuts before ARP commit, and a
@@ -302,9 +302,12 @@ Function WriteTransactionJournal
   IfErrors journal_write_failed
   StrCpy $TxnPhase "$FailureStage"
   ${If} $InstallStarted = 1
+    StrCpy $JournalStep "registry-invalidate"
+    ClearErrors
+    WriteRegStr HKLM "${AIVEROLLBACKKEY}" "Phase" ""
+    IfErrors journal_write_failed
     StrCpy $JournalStep "registry-write"
     ClearErrors
-    DeleteRegValue HKLM "${AIVEROLLBACKKEY}" "Phase"
     WriteRegStr HKLM "${AIVEROLLBACKKEY}" "TransactionId" "$TxnId"
     WriteRegStr HKLM "${AIVEROLLBACKKEY}" "ExpectedVersion" "${VERSION}"
     WriteRegStr HKLM "${AIVEROLLBACKKEY}" "PackageIdentity" "${AIVEPACKAGEID}"
@@ -329,6 +332,9 @@ Function WriteTransactionJournal
     WriteRegDWORD HKLM "${AIVEROLLBACKKEY}" "CreatedRequests" $TxnCreatedRequests
     WriteRegDWORD HKLM "${AIVEROLLBACKKEY}" "CreatedProvisioning" $TxnCreatedProvisioning
     WriteRegDWORD HKLM "${AIVEROLLBACKKEY}" "CreatedInstaller" $TxnCreatedInstaller
+    IfErrors journal_write_failed
+    StrCpy $JournalStep "registry-publish"
+    ClearErrors
     WriteRegStr HKLM "${AIVEROLLBACKKEY}" "Phase" "$TxnPhase"
     IfErrors journal_write_failed
     StrCpy $JournalStep "registry-readback"
@@ -515,8 +521,10 @@ Function HasCoherentPayload
   FileRead $2 $3
   FileClose $2
   StrCmp $3 '{"schemaVersion":"desktop.install-identity.v1","productName":"AI Video Editor Desktop V2","identifier":"${AIVEIDENTIFIER}","packageIdentity":"${AIVEPACKAGEID}","version":"${VERSION}","channel":"beta","canonicalPath":"%ProgramFiles%/AI Video Editor Desktop V2/Shell","installCommitted":true}' coherent_payload_valid
+  ; RC.7 shares this exact package identity and canonical payload contract.
+  StrCmp $3 '{"schemaVersion":"desktop.install-identity.v1","productName":"AI Video Editor Desktop V2","identifier":"${AIVEIDENTIFIER}","packageIdentity":"${AIVEPACKAGEID}","version":"2.0.0-rc.7","channel":"beta","canonicalPath":"%ProgramFiles%/AI Video Editor Desktop V2/Shell","installCommitted":true}' coherent_payload_valid
   ; RC.6 used the same transaction namespace and package identity. Accept its
-  ; exact committed identity so RC.7 can upgrade or recover it safely.
+  ; exact committed identity so RC.8 can upgrade or recover it safely.
   StrCmp $3 '{"schemaVersion":"desktop.install-identity.v1","productName":"AI Video Editor Desktop V2","identifier":"${AIVEIDENTIFIER}","packageIdentity":"${AIVEPACKAGEID}","version":"2.0.0-rc.6","channel":"beta","canonicalPath":"%ProgramFiles%/AI Video Editor Desktop V2/Shell","installCommitted":true}' coherent_payload_valid
   ; Exact legacy RC.6 identity emitted by the predecessor this recovery build
   ; upgrades. No other filename-only or arbitrary JSON identity is accepted.
@@ -599,7 +607,17 @@ Function LoadTransactionState
   ReadRegStr $7 HKLM "${AIVEROLLBACKKEY}" "StagingPath"
   ReadRegStr $8 HKLM "${AIVEROLLBACKKEY}" "BackupPath"
   StrCmp $TxnId "" load_transaction_invalid
-  StrCmp $4 "${VERSION}" 0 load_transaction_invalid
+  StrCmp $4 "${VERSION}" load_transaction_version_valid
+  ; RC.7's interrupted snapshot has not mutated the live shell. Accept only
+  ; that exact pre-mutation phase so the existing cleanup path can retry.
+  StrCmp $4 "2.0.0-rc.7" 0 load_transaction_invalid
+  StrCmp $TxnPhase "snapshotting" 0 load_transaction_invalid
+  ; The predecessor issued only numeric PID-tick identifiers. Reject a
+  ; foreign record before trusting its snapshot cleanup targets.
+  StrCpy $0 "$TxnId"
+  Call IsValidTransactionId
+  StrCmp $1 1 0 load_transaction_invalid
+  load_transaction_version_valid:
   StrCmp $5 "${AIVEPACKAGEID}" 0 load_transaction_invalid
   StrCmp $6 "${AIVEINSTALLDIR}" 0 load_transaction_invalid
   StrCmp $7 "${AIVESTAGINGDIR}" 0 load_transaction_invalid
@@ -631,6 +649,54 @@ Function LoadTransactionState
   load_transaction_invalid:
     StrCpy $TxnPhase "invalid"
   load_transaction_done:
+FunctionEnd
+
+; $0=input PID-tick, $1=1 only for two nonempty decimal components.
+Function IsValidTransactionId
+  Push $2
+  Push $3
+  Push $4
+  Push $5
+  StrCpy $1 0
+  StrLen $2 "$0"
+  StrCpy $3 0
+  StrCpy $4 0
+  StrCpy $5 0
+  ${If} $2 < 3
+    Goto valid_transaction_done
+  ${EndIf}
+  valid_transaction_char_loop:
+    ${If} $3 >= $2
+      StrCmp $4 1 0 valid_transaction_done
+      StrCpy $1 1
+      Goto valid_transaction_done
+    ${EndIf}
+    StrCpy $5 "$0" 1 $3
+    StrCmp $5 "-" valid_transaction_hyphen
+    StrCmp $5 "0" valid_transaction_next
+    StrCmp $5 "1" valid_transaction_next
+    StrCmp $5 "2" valid_transaction_next
+    StrCmp $5 "3" valid_transaction_next
+    StrCmp $5 "4" valid_transaction_next
+    StrCmp $5 "5" valid_transaction_next
+    StrCmp $5 "6" valid_transaction_next
+    StrCmp $5 "7" valid_transaction_next
+    StrCmp $5 "8" valid_transaction_next
+    StrCmp $5 "9" valid_transaction_next valid_transaction_done
+  valid_transaction_hyphen:
+    StrCmp $4 0 0 valid_transaction_done
+    StrCmp $3 0 valid_transaction_done
+    IntOp $5 $2 - 1
+    StrCmp $3 $5 valid_transaction_done
+    StrCpy $4 1
+  valid_transaction_next:
+    IntOp $3 $3 + 1
+    Goto valid_transaction_char_loop
+  valid_transaction_done:
+  Pop $5
+  Pop $4
+  Pop $3
+  Pop $2
 FunctionEnd
 
 Function ClassifyInstallState
@@ -1951,9 +2017,12 @@ Function un.ValidateInstallerPerimeter
 FunctionEnd
 
 Function un.WriteUninstallJournal
+  StrCpy $JournalStep "registry-invalidate"
+  ClearErrors
+  WriteRegStr HKLM "${AIVEROLLBACKKEY}" "Phase" ""
+  IfErrors un_journal_failed
   StrCpy $JournalStep "registry-write"
   ClearErrors
-  DeleteRegValue HKLM "${AIVEROLLBACKKEY}" "Phase"
   WriteRegStr HKLM "${AIVEROLLBACKKEY}" "TransactionId" "$TxnId"
   WriteRegStr HKLM "${AIVEROLLBACKKEY}" "ExpectedVersion" "${VERSION}"
   WriteRegStr HKLM "${AIVEROLLBACKKEY}" "PackageIdentity" "${AIVEPACKAGEID}"
@@ -1964,6 +2033,9 @@ Function un.WriteUninstallJournal
   WriteRegDWORD HKLM "${AIVEROLLBACKKEY}" "FullWipeRequested" $FullWipeCheckboxState
   WriteRegStr HKLM "${AIVEROLLBACKKEY}" "UninstallLocalRoot" "$UninstallLocalRoot"
   WriteRegStr HKLM "${AIVEROLLBACKKEY}" "UninstallDocumentsRoot" "$UninstallDocumentsRoot"
+  IfErrors un_journal_failed
+  StrCpy $JournalStep "registry-publish"
+  ClearErrors
   WriteRegStr HKLM "${AIVEROLLBACKKEY}" "Phase" "$FailureStage"
   IfErrors un_journal_failed
   StrCpy $JournalStep "registry-readback"

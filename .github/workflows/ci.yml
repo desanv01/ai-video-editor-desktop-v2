@@ -54,11 +54,29 @@ jobs:
       - name: Build React and TypeScript frontend
         run: npm run build --prefix desktop
 
-      - name: Build unsigned RC7 NSIS source for installer checks
+      - name: Build unsigned RC8 NSIS installer for production checks
         run: npm run build:nsis:checked --prefix desktop
 
       - name: Run desktop contract and installer checks
         run: npm test --prefix desktop
+
+      - name: Execute built installer lifecycle on disposable runner
+        shell: powershell
+        run: |
+          $installer = Get-ChildItem desktop/src-tauri/target/release/bundle/nsis -Filter '*setup.exe' -File | Select-Object -First 1
+          if (-not $installer) { throw 'Built NSIS installer missing.' }
+          & ./scripts/desktop-v2/Test-ActualInstallerLifecycle.ps1 -Installer $installer.FullName -EvidenceDir "$env:RUNNER_TEMP/rc8-lifecycle"
+
+      - name: Preserve exact tested installer and lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rc8-tested-installer-${{ github.run_id }}
+          path: |
+            desktop/src-tauri/target/release/bundle/nsis/*setup.exe
+            ${{ runner.temp }}/rc8-lifecycle/*
+          if-no-files-found: warn
+          retention-days: 14
 
   windows-backend:
     name: Windows backend unit tests
