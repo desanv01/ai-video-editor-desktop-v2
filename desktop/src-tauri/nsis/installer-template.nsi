@@ -1538,10 +1538,9 @@ Function ProtectAndActivateStaging
   StrCpy $R9 0
   protect_prior_retry:
     Call SetSafeWorkingDir
-    ClearErrors
-    Rename "${AIVEINSTALLDIR}" "${AIVEBACKUPDIR}"
-    IfErrors 0 protect_prior_done
-    System::Call 'kernel32::GetLastError() i .r8'
+    System::Call 'kernel32::MoveFileExW(w "${AIVEINSTALLDIR}", w "${AIVEBACKUPDIR}", i 0) i .r8 ?e'
+    Pop $R7
+    StrCmp $8 0 0 protect_prior_done
     IntOp $R9 $R9 + 1
     ${If} $R9 < 10
       Sleep 500
@@ -1550,9 +1549,15 @@ Function ProtectAndActivateStaging
     ${IfNot} ${Silent}
       MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "The existing shell is locked. Close AI Video Editor and retry, or cancel without replacing it." IDRETRY protect_prior_retry
     ${EndIf}
+    StrCpy $R6 0
+    IfFileExists "${AIVEINSTALLDIR}\." 0 +2
+      StrCpy $R6 1
+    StrCpy $R5 0
+    IfFileExists "${AIVEBACKUPDIR}\." 0 +2
+      StrCpy $R5 1
     StrCpy $FailureCode ${AIVE_E_LOCK}
     StrCpy $FailureStage "shell-rename-lock"
-    StrCpy $FailureMessage "The prior shell could not be moved to rollback protection (Win32 error $8)."
+    StrCpy $FailureMessage "The prior shell could not be moved to rollback protection (Win32 error $R7; source=$R6 backup=$R5)."
     Call FailInstall
   protect_prior_done:
     StrCpy $FailureCode 0

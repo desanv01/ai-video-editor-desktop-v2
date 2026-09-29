@@ -68,7 +68,7 @@ for (const name of ["AcquireInstallerMutex", "un.AcquireInstallerMutex"]) {
 }
 
 const protect = functionBody("ProtectAndActivateStaging");
-assert.match(protect, /Call SetSafeWorkingDir[\s\S]*?Rename "\$\{AIVEINSTALLDIR\}" "\$\{AIVEBACKUPDIR\}"/);
+assert.match(protect, /Call SetSafeWorkingDir[\s\S]*?MoveFileExW\(w "\$\{AIVEINSTALLDIR\}", w "\$\{AIVEBACKUPDIR\}", i 0\) i \.r8 \?e/);
 assert.match(protect, /activate_retry:[\s\S]*?Call SetSafeWorkingDir[\s\S]*?Rename "\$\{AIVESTAGINGDIR\}" "\$\{AIVEINSTALLDIR\}"/);
 
 const removal = functionBody("RemoveCurrentShellPayload");
