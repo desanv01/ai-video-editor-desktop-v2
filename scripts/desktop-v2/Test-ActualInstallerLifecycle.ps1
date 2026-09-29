@@ -4,6 +4,7 @@ param([Parameter(Mandatory=$true)][string]$Installer, [Parameter(Mandatory=$true
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
+$evidenceRoot = (Resolve-Path -LiteralPath $EvidenceDir).Path
 $installerPath = (Resolve-Path -LiteralPath $Installer).Path
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -18,14 +19,25 @@ function Assert-True($Condition, [string]$Message) {
   }
   if (-not $values[0]) { throw $Message }
 }
-function Invoke-Bounded([string]$Path, [string]$Arguments, [string]$Stage) {
-  $process = Start-Process -FilePath $Path -ArgumentList $Arguments -PassThru
+function Invoke-Bounded([string]$Path, [string]$Arguments, [string]$Stage,
+                        [string]$WorkingDirectory = (Split-Path -Parent $Path),
+                        [string]$ExitEvidencePath = '') {
+  $process = Start-Process -FilePath $Path -ArgumentList $Arguments -WorkingDirectory $WorkingDirectory -WindowStyle Hidden -PassThru
   if (-not $process.WaitForExit(180000)) {
     $process.Kill()
+    if ($ExitEvidencePath) {
+      [pscustomobject]@{ status='timed-out'; stage=$Stage; timeoutSeconds=180 } |
+        ConvertTo-Json | Set-Content -LiteralPath $ExitEvidencePath
+    }
     throw "$Stage timed out after 180 seconds."
   }
   $process.Refresh()
+  if ($ExitEvidencePath) {
+    [pscustomobject]@{ status='completed'; stage=$Stage; exitCode=$process.ExitCode } |
+      ConvertTo-Json | Set-Content -LiteralPath $ExitEvidencePath
+  }
   if ($process.ExitCode -ne 0) { throw "$Stage exited $($process.ExitCode)." }
+  return $process.ExitCode
 }
 
 $registry = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
@@ -34,6 +46,9 @@ $rollbackPath = 'Software\AI Video Editor Desktop V2 RC6 Installer Rollback'
 $productPath = 'Software\AI Video Editor Desktop V2'
 $arpPath = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Video Editor Desktop V2'
 $parent = Join-Path $env:ProgramFiles 'AI Video Editor Desktop V2'
+$parentPrefix = $parent.TrimEnd('\') + '\'
+Assert-True (-not ($evidenceRoot.Equals($parent, [StringComparison]::OrdinalIgnoreCase) -or
+  $evidenceRoot.StartsWith($parentPrefix, [StringComparison]::OrdinalIgnoreCase))) 'Evidence directory must be outside the product tree.'
 $shell = Join-Path $parent 'Shell'
 $stage = Join-Path $parent 'Shell.rc6-staging'
 $backup = Join-Path $parent 'Shell.rc6-rollback'
@@ -58,7 +73,7 @@ try {
   $deniedKey.SetAccessControl($acl)
   try {
     Write-Output 'lifecycle-stage=denied-registry-write'
-    $failed = Start-Process -FilePath $installerPath -ArgumentList '/S' -PassThru
+    $failed = Start-Process -FilePath $installerPath -ArgumentList '/S' -WorkingDirectory (Split-Path -Parent $installerPath) -WindowStyle Hidden -PassThru
     if (-not $failed.WaitForExit(180000)) { $failed.Kill(); throw 'Denied-write install timed out.' }
     $failed.Refresh()
     Write-Output "denied-registry-write-exit=$($failed.ExitCode)"
@@ -97,7 +112,7 @@ try {
   } finally { $key.Dispose() }
 
   Write-Output 'lifecycle-stage=rc7-snapshot-recovery-install'
-  Invoke-Bounded $installerPath '/S' 'RC.7 residue recovery and first install'
+  $null = Invoke-Bounded $installerPath '/S' 'RC.7 residue recovery and first install'
   Assert-True (Test-Path -LiteralPath (Join-Path $shell 'ai-video-editor.exe') -PathType Leaf) 'Canonical executable missing.'
   $product = $registry.OpenSubKey($productPath)
   Assert-True ($null -ne $product) 'Product registration missing.'
@@ -125,19 +140,46 @@ try {
   [IO.Directory]::Move($shell, $probe)
   try { Write-Output 'pre-reinstall-directory-move=passed' }
   finally { [IO.Directory]::Move($probe, $shell) }
-  Invoke-Bounded $installerPath '/S' 'RC.8 reinstall'
+  $null = Invoke-Bounded $installerPath '/S' 'RC.8 reinstall'
   Assert-True (Test-Path -LiteralPath (Join-Path $shell 'ai-video-editor.exe') -PathType Leaf) 'Reinstalled executable missing.'
   Write-Output 'lifecycle-stage=default-uninstall'
-  Invoke-Bounded (Join-Path $shell 'uninstall.exe') '/S' 'Default uninstall'
+  $installedUninstaller = Join-Path $shell 'uninstall.exe'
+  Assert-True (Test-Path -LiteralPath $installedUninstaller -PathType Leaf) 'Installed uninstaller missing.'
+  $uninstallCopyDir = Join-Path $evidenceRoot ('uninstall-copy-' + [Guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $uninstallCopyDir | Out-Null
+  $copiedUninstaller = Join-Path $uninstallCopyDir 'uninstall.exe'
+  Copy-Item -LiteralPath $installedUninstaller -Destination $copiedUninstaller
+  $installedUninstallerSha = (Get-FileHash -LiteralPath $installedUninstaller -Algorithm SHA256).Hash.ToLowerInvariant()
+  $copiedUninstallerSha = (Get-FileHash -LiteralPath $copiedUninstaller -Algorithm SHA256).Hash.ToLowerInvariant()
+  Assert-True ($copiedUninstallerSha -eq $installedUninstallerSha) 'Temporary uninstaller copy hash mismatch.'
+  [pscustomobject]@{ sourceSha256=$installedUninstallerSha; copySha256=$copiedUninstallerSha; hashesMatch=$true } |
+    ConvertTo-Json | Set-Content -LiteralPath (Join-Path $EvidenceDir 'copied-uninstaller-verification.json')
+  # NSIS's _?= path is the final argument and is deliberately unquoted.
+  $uninstallExit = Invoke-Bounded $copiedUninstaller ('/S _?=' + $shell) 'Default uninstall' $uninstallCopyDir (Join-Path $EvidenceDir 'copied-uninstaller-result.json')
+  Write-Output "default-uninstall-exit=$uninstallExit"
   Assert-True (-not (Test-Path -LiteralPath $shell)) 'Canonical shell remains after uninstall.'
   Assert-True ($null -eq $registry.OpenSubKey($arpPath)) 'ARP entry remains after uninstall.'
+  Assert-True ($null -eq $registry.OpenSubKey($productPath)) 'Product key remains after uninstall.'
   Assert-True ($null -eq $registry.OpenSubKey($rollbackPath)) 'Uninstall transaction remains.'
+  Assert-True (-not (Test-Path -LiteralPath (Join-Path $env:Public 'Desktop\AI Video Editor Desktop V2.lnk'))) 'All-users Desktop shortcut remains after uninstall.'
+  Assert-True (-not (Test-Path -LiteralPath (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\AI Video Editor Desktop V2\AI Video Editor Desktop V2.lnk'))) 'Start Menu shortcut remains after uninstall.'
   Assert-True (Test-Path -LiteralPath $sentinel -PathType Leaf) 'Default uninstall removed user data.'
   Assert-True (-not (Test-Path -LiteralPath $handoffOrigin)) 'Handoff origin remains after uninstall.'
   [pscustomobject]@{
     status='passed'; installerSha256=(Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    registryWriteFailure=$true; rc7SnapshotRecovery=$true; firstInstall=$true; reinstall=$true; defaultUninstall=$true; userDataPreserved=$true
+    registryWriteFailure=$true; rc7SnapshotRecovery=$true; firstInstall=$true; reinstall=$true; defaultUninstall=$true; copiedUninstallerExitCode=$uninstallExit; userDataPreserved=$true
   } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $EvidenceDir 'actual-installer-lifecycle.json')
+} catch {
+  try {
+    if (Test-Path -LiteralPath $parent -PathType Container) {
+      $entries = @(Get-ChildItem -LiteralPath $parent -Force -Recurse -Depth 2 -ErrorAction SilentlyContinue |
+        Select-Object -First 100 |
+        ForEach-Object { [pscustomobject]@{ path=$_.FullName.Substring($parent.Length).TrimStart('\'); directory=$_.PSIsContainer; bytes=$(if ($_.PSIsContainer) { $null } else { $_.Length }) } })
+      [pscustomobject]@{ shellExists=(Test-Path -LiteralPath $shell); entries=$entries; entryLimit=100; depthLimit=2 } |
+        ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $EvidenceDir 'product-directory-on-failure.json')
+    }
+  } catch { Write-Warning "Could not save bounded product listing: $($_.Exception.Message)" }
+  throw
 } finally {
   foreach ($name in @('setup-rc6.log','uninstall-rc6.log','transaction-rc6.json','uninstall-transaction-rc6.json')) {
     $source = Join-Path $machineInstaller $name
