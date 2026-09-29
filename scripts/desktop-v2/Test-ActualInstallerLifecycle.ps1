@@ -121,6 +121,10 @@ try {
 
   Write-Output 'lifecycle-stage=rc8-reinstall'
   Write-Output "pre-reinstall-shell-process-count=$(@(Get-Process -Name 'ai-video-editor' -ErrorAction SilentlyContinue).Count)"
+  $probe = "$shell.rc8-ci-rename-probe"
+  [IO.Directory]::Move($shell, $probe)
+  try { Write-Output 'pre-reinstall-directory-move=passed' }
+  finally { [IO.Directory]::Move($probe, $shell) }
   Invoke-Bounded $installerPath '/S' 'RC.8 reinstall'
   Assert-True (Test-Path -LiteralPath (Join-Path $shell 'ai-video-editor.exe') -PathType Leaf) 'Reinstalled executable missing.'
   Write-Output 'lifecycle-stage=default-uninstall'

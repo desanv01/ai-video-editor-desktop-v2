@@ -1541,6 +1541,7 @@ Function ProtectAndActivateStaging
     ClearErrors
     Rename "${AIVEINSTALLDIR}" "${AIVEBACKUPDIR}"
     IfErrors 0 protect_prior_done
+    System::Call 'kernel32::GetLastError() i .r8'
     IntOp $R9 $R9 + 1
     ${If} $R9 < 10
       Sleep 500
@@ -1551,7 +1552,7 @@ Function ProtectAndActivateStaging
     ${EndIf}
     StrCpy $FailureCode ${AIVE_E_LOCK}
     StrCpy $FailureStage "shell-rename-lock"
-    StrCpy $FailureMessage "The prior shell could not be moved to rollback protection."
+    StrCpy $FailureMessage "The prior shell could not be moved to rollback protection (Win32 error $8)."
     Call FailInstall
   protect_prior_done:
     StrCpy $FailureCode 0
