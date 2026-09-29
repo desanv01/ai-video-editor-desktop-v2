@@ -470,6 +470,7 @@ FunctionEnd
 ; $0=input path, $1=1 only when the directory is exactly empty.
 Function IsDirectoryEmpty
   StrCpy $1 1
+  ClearErrors
   FindFirst $2 $3 "$0\*"
   IfErrors directory_empty_done
   directory_empty_loop:
@@ -518,6 +519,7 @@ Function HasCoherentPayload
   IfFileExists "$0\${AIVEIDENTITY}" 0 coherent_payload_done
   IfFileExists "$0\${MAINBINARYNAME}.exe" 0 coherent_payload_done
   IfFileExists "$0\uninstall.exe" 0 coherent_payload_done
+  ClearErrors
   FileOpen $2 "$0\${AIVEIDENTITY}" r
   IfErrors coherent_payload_done
   FileRead $2 $3
@@ -542,6 +544,7 @@ Function HasCurrentPayload
   IfFileExists "$0\${AIVEIDENTITY}" 0 current_payload_done
   IfFileExists "$0\${MAINBINARYNAME}.exe" 0 current_payload_done
   IfFileExists "$0\uninstall.exe" 0 current_payload_done
+  ClearErrors
   FileOpen $2 "$0\${AIVEIDENTITY}" r
   IfErrors current_payload_done
   FileRead $2 $3
@@ -765,6 +768,7 @@ Function RemoveTreeNoReparse
     DetailPrint "Preserving reparse-point recovery cleanup target: $0"
     Goto recovery_tree_done
   recovery_tree_scan:
+  ClearErrors
   FindFirst $1 $2 "$0\*"
   IfErrors recovery_tree_remove_root
   recovery_tree_loop:
@@ -1464,6 +1468,7 @@ Function BeginInstallTransaction
   ClearErrors
   CreateDirectory "${AIVESTAGINGDIR}"
   IfErrors begin_staging_failed
+  ClearErrors
   FileOpen $0 "${AIVESTAGINGDIR}\.installing" w
   IfErrors begin_staging_failed
   FileWrite $0 "desktop-v2-rc6-installing$\r$\n"
@@ -1761,6 +1766,7 @@ Function PublishCommittedIdentity
   ; Publish the identity atomically, then flip InstallCommitted as the final
   ; externally visible commit operation.
   Delete "$INSTDIR\${AIVEIDENTITY}.part"
+  ClearErrors
   FileOpen $0 "$INSTDIR\${AIVEIDENTITY}.part" w
   IfErrors identity_write_failed
   FileWrite $0 '{"schemaVersion":"desktop.install-identity.v1","productName":"AI Video Editor Desktop V2","identifier":"${AIVEIDENTIFIER}","packageIdentity":"${AIVEPACKAGEID}","version":"${VERSION}","channel":"beta","canonicalPath":"%ProgramFiles%/AI Video Editor Desktop V2/Shell","installCommitted":true}'
@@ -2122,6 +2128,7 @@ Function un.RemoveTreeNoReparse
     DetailPrint "Preserving reparse-point cleanup target: $0"
     Goto un_tree_done
   un_tree_scan:
+  ClearErrors
   FindFirst $1 $2 "$0\*"
   IfErrors un_tree_remove_root
   un_tree_loop:
@@ -2209,6 +2216,7 @@ Function un.ValidateInstalledIdentity
   IfFileExists "${AIVEINSTALLDIR}\${AIVEIDENTITY}" 0 un_identity_failed
   IfFileExists "${AIVEINSTALLDIR}\${MAINBINARYNAME}.exe" 0 un_identity_failed
   IfFileExists "${AIVEINSTALLDIR}\uninstall.exe" 0 un_identity_failed
+  ClearErrors
   FileOpen $5 "${AIVEINSTALLDIR}\${AIVEIDENTITY}" r
   IfErrors un_identity_failed
   FileRead $5 $6
