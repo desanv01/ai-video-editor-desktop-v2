@@ -65,7 +65,7 @@ try {
     Assert-True ($failed.ExitCode -ne 0) 'Denied registry write unexpectedly installed the product.'
     $setupLog = Join-Path $machineInstaller 'setup-rc6.log'
     Assert-True (Test-Path -LiteralPath $setupLog -PathType Leaf) 'Denied-write setup log missing.'
-    Assert-True ((Get-Content -LiteralPath $setupLog -Raw) -match 'journal-registry-invalidate') 'Denied-write error did not name registry-invalidate.'
+    Assert-True (([IO.File]::ReadAllText($setupLog)) -match 'journal-registry-invalidate') 'Denied-write error did not name registry-invalidate.'
     Copy-Item -LiteralPath $setupLog -Destination (Join-Path $EvidenceDir 'denied-write-setup.log')
   } finally {
     $acl.RemoveAccessRuleSpecific($deny)

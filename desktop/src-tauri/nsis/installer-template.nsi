@@ -287,6 +287,7 @@ FunctionEnd
 
 Function AppendSetupLog
   CreateDirectory "${AIVEINSTALLERDIR}"
+  ClearErrors
   FileOpen $9 "${AIVESETUPLOG}" a
   IfErrors setup_log_done
   FileWrite $9 "stage=$FailureStage code=$FailureCode message=$FailureMessage$\r$\n"
