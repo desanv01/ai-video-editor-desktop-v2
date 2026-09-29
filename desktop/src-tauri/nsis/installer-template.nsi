@@ -1538,6 +1538,7 @@ Function ProtectAndActivateStaging
   StrCpy $R9 0
   protect_prior_retry:
     Call SetSafeWorkingDir
+    SetOutPath "$TEMP"
     System::Call 'kernel32::MoveFileExW(w "${AIVEINSTALLDIR}", w "${AIVEBACKUPDIR}", i 0) i .r8 ?e'
     Pop $R7
     StrCmp $8 0 0 protect_prior_done
@@ -1555,9 +1556,10 @@ Function ProtectAndActivateStaging
     StrCpy $R5 0
     IfFileExists "${AIVEBACKUPDIR}\." 0 +2
       StrCpy $R5 1
+    GetFullPathName $R4 "."
     StrCpy $FailureCode ${AIVE_E_LOCK}
     StrCpy $FailureStage "shell-rename-lock"
-    StrCpy $FailureMessage "The prior shell could not be moved to rollback protection (Win32 error $R7; source=$R6 backup=$R5)."
+    StrCpy $FailureMessage "The prior shell could not be moved to rollback protection (Win32 error $R7; source=$R6 backup=$R5 cwd=$R4)."
     Call FailInstall
   protect_prior_done:
     StrCpy $FailureCode 0

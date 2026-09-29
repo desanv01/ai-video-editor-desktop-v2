@@ -54,7 +54,7 @@ assert.match(safe, /InitPluginsDir[\s\S]*?SetOutPath "\$PLUGINSDIR"/);
 const outputTargets = [...code.matchAll(/\bSetOutPath\s+([^\r\n]+)/gi)].map(match => match[1].trim());
 assert.ok(outputTargets.length >= 2, "rendered NSIS must explicitly select safe and staging output paths");
 for (const target of outputTargets) {
-  assert.match(target, /^(?:"\$PLUGINSDIR"|"\$\{AIVESTAGINGDIR\}")$/, `unsafe rendered SetOutPath target: ${target}`);
+  assert.match(target, /^(?:"\$PLUGINSDIR"|"\$TEMP"|"\$\{AIVESTAGINGDIR\}")$/, `unsafe rendered SetOutPath target: ${target}`);
 }
 assert.doesNotMatch(code, /\bSetOutPath\s+"?(?:\$INSTDIR|\$\{AIVEINSTALLDIR\}|\$\{AIVEBACKUPDIR\})"?/i);
 
