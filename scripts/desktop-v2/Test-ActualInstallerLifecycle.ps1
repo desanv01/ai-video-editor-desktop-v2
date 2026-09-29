@@ -11,8 +11,12 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
   throw 'Actual installer lifecycle requires an elevated disposable Windows runner.'
 }
 
-function Assert-True([bool]$Condition, [string]$Message) {
-  if (-not $Condition) { throw $Message }
+function Assert-True($Condition, [string]$Message) {
+  $values = @($Condition)
+  if ($values.Count -ne 1 -or $values[0] -isnot [bool]) {
+    throw "$Message Assertion returned $($values.Count) values instead of one Boolean: $($values -join ', ')."
+  }
+  if (-not $values[0]) { throw $Message }
 }
 function Invoke-Bounded([string]$Path, [string]$Arguments, [string]$Stage) {
   $process = Start-Process -FilePath $Path -ArgumentList $Arguments -PassThru
@@ -53,9 +57,11 @@ try {
   $acl.AddAccessRule($deny)
   $deniedKey.SetAccessControl($acl)
   try {
+    Write-Output 'lifecycle-stage=denied-registry-write'
     $failed = Start-Process -FilePath $installerPath -ArgumentList '/S' -PassThru
     if (-not $failed.WaitForExit(180000)) { $failed.Kill(); throw 'Denied-write install timed out.' }
     $failed.Refresh()
+    Write-Output "denied-registry-write-exit=$($failed.ExitCode)"
     Assert-True ($failed.ExitCode -ne 0) 'Denied registry write unexpectedly installed the product.'
     $setupLog = Join-Path $machineInstaller 'setup-rc6.log'
     Assert-True (Test-Path -LiteralPath $setupLog -PathType Leaf) 'Denied-write setup log missing.'
@@ -90,6 +96,7 @@ try {
     $key.SetValue('Phase', 'snapshotting')
   } finally { $key.Dispose() }
 
+  Write-Output 'lifecycle-stage=rc7-snapshot-recovery-install'
   Invoke-Bounded $installerPath '/S' 'RC.7 residue recovery and first install'
   Assert-True (Test-Path -LiteralPath (Join-Path $shell 'ai-video-editor.exe') -PathType Leaf) 'Canonical executable missing.'
   $product = $registry.OpenSubKey($productPath)
@@ -112,8 +119,10 @@ try {
   $origin = Get-Content -LiteralPath $handoffOrigin -Raw | ConvertFrom-Json
   Assert-True ($origin.handoffRoot -eq $fixtureRoot.Replace('\','/')) 'Handoff origin path mismatch.'
 
+  Write-Output 'lifecycle-stage=rc8-reinstall'
   Invoke-Bounded $installerPath '/S' 'RC.8 reinstall'
   Assert-True (Test-Path -LiteralPath (Join-Path $shell 'ai-video-editor.exe') -PathType Leaf) 'Reinstalled executable missing.'
+  Write-Output 'lifecycle-stage=default-uninstall'
   Invoke-Bounded (Join-Path $shell 'uninstall.exe') '/S' 'Default uninstall'
   Assert-True (-not (Test-Path -LiteralPath $shell)) 'Canonical shell remains after uninstall.'
   Assert-True ($null -eq $registry.OpenSubKey($arpPath)) 'ARP entry remains after uninstall.'
