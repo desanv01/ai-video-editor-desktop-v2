@@ -290,6 +290,7 @@ Function AppendSetupLog
   ClearErrors
   FileOpen $9 "${AIVESETUPLOG}" a
   IfErrors setup_log_done
+  FileSeek $9 0 END
   FileWrite $9 "stage=$FailureStage code=$FailureCode message=$FailureMessage$\r$\n"
   FileClose $9
   setup_log_done:
@@ -1534,11 +1535,17 @@ Function ProtectAndActivateStaging
     StrCpy $FailureStage "prior-move-intent"
     StrCpy $FailureMessage "about to protect prior shell"
     Call WriteTransactionJournal
+  StrCpy $R9 0
   protect_prior_retry:
     Call SetSafeWorkingDir
     ClearErrors
     Rename "${AIVEINSTALLDIR}" "${AIVEBACKUPDIR}"
     IfErrors 0 protect_prior_done
+    IntOp $R9 $R9 + 1
+    ${If} $R9 < 10
+      Sleep 500
+      Goto protect_prior_retry
+    ${EndIf}
     ${IfNot} ${Silent}
       MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "The existing shell is locked. Close AI Video Editor and retry, or cancel without replacing it." IDRETRY protect_prior_retry
     ${EndIf}
@@ -2136,8 +2143,10 @@ FunctionEnd
 
 Function un.AppendSetupLog
   CreateDirectory "${AIVEINSTALLERDIR}"
+  ClearErrors
   FileOpen $9 "${AIVEINSTALLERDIR}\uninstall-rc6.log" a
   IfErrors un_setup_log_done
+  FileSeek $9 0 END
   FileWrite $9 "stage=$FailureStage code=$FailureCode message=$FailureMessage$\r$\n"
   FileClose $9
   un_setup_log_done:

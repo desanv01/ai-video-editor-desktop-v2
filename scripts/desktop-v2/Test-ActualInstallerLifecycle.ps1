@@ -120,6 +120,7 @@ try {
   Assert-True ($origin.handoffRoot -eq $fixtureRoot.Replace('\','/')) 'Handoff origin path mismatch.'
 
   Write-Output 'lifecycle-stage=rc8-reinstall'
+  Write-Output "pre-reinstall-shell-process-count=$(@(Get-Process -Name 'ai-video-editor' -ErrorAction SilentlyContinue).Count)"
   Invoke-Bounded $installerPath '/S' 'RC.8 reinstall'
   Assert-True (Test-Path -LiteralPath (Join-Path $shell 'ai-video-editor.exe') -PathType Leaf) 'Reinstalled executable missing.'
   Write-Output 'lifecycle-stage=default-uninstall'
