@@ -8,7 +8,7 @@ const read = relativePath => readFileSync(path.join(repoRoot, relativePath), "ut
 const readJson = relativePath => JSON.parse(read(relativePath));
 // Kept as an RC5 regression suite, but release identity follows the current
 // candidate and is additionally frozen by rc6-release-installer-tests.mjs.
-const releaseVersion = "2.0.0-rc.6";
+const releaseVersion = "2.0.0-rc.8";
 
 const packageJson = readJson("desktop/package.json");
 const packageLock = readJson("desktop/package-lock.json");
@@ -134,7 +134,7 @@ const generatedInstaller = path.join(repoRoot, "desktop", "src-tauri", "target",
 if (existsSync(generatedInstaller)) {
   const generated = readFileSync(generatedInstaller, "utf8");
   assert.match(generated, /installer-hooks\.nsh/);
-  assert.match(generated, /VERSION \"2\.0\.0-rc\.6\"/);
+  assert.match(generated, /VERSION \"2\.0\.0-rc\.8\"/);
   console.log(`Generated NSIS inspection PASS: ${generatedInstaller}`);
 } else {
   console.log("Generated NSIS inspection deferred: release bundle has not been built in this checkout.");

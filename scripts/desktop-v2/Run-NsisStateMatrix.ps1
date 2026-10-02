@@ -25,6 +25,14 @@ $makensisCandidates = @(
 $makensis = $makensisCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
 if (-not $makensis) { throw 'Tauri makensis.exe is unavailable under %LOCALAPPDATA%\tauri\NSIS.' }
 
+function Invoke-CheckedNsisCompile([string]$Source) {
+  $compilerOutput = & $script:makensis /V4 $Source 2>&1 | Out-String
+  if ($LASTEXITCODE -ne 0) { throw "Tauri makensis failed with exit $LASTEXITCODE for $Source`n$compilerOutput" }
+  if ($compilerOutput -match '(?im)warning\s+6000\b|unknown\s+variable\s*/\s*constant') {
+    throw "Tauri makensis accepted an unknown NSIS variable in $Source`n$compilerOutput"
+  }
+}
+
 $tempBoundary = Get-FullPath (Join-Path ([IO.Path]::GetTempPath()) 'AIVE-Installer-StateMatrix')
 $runToken = [Guid]::NewGuid().ToString('N')
 $runRoot = Get-FullPath (Join-Path $tempBoundary $runToken)
@@ -130,8 +138,32 @@ try {
   Copy-Item -LiteralPath $harnessSource -Destination (Join-Path $runRoot 'harness.nsi')
   Push-Location $runRoot
   try {
-    & $makensis /V2 (Join-Path $runRoot 'harness.nsi')
-    if ($LASTEXITCODE -ne 0) { throw "Tauri makensis failed with exit $LASTEXITCODE." }
+    # Exercise the actual compiler and runtime constant; static checks alone
+    # cannot distinguish a valid shell constant from a literal $PROGRAMDATA.
+    $probeSource = Join-Path $runRoot 'common-programdata-probe.nsi'
+    Set-Content -LiteralPath $probeSource -Encoding ascii -Value @'
+Unicode true
+OutFile "common-programdata-probe.exe"
+SilentInstall silent
+RequestExecutionLevel user
+Section
+  FileOpen $0 "$EXEDIR\common-programdata-result.txt" w
+  FileWrite $0 "$COMMONPROGRAMDATA"
+  FileClose $0
+SectionEnd
+'@
+    Invoke-CheckedNsisCompile $probeSource
+    $probeExe = Join-Path $runRoot 'common-programdata-probe.exe'
+    Assert-True (Test-Path -LiteralPath $probeExe -PathType Leaf) 'Compiled COMMONPROGRAMDATA probe is missing.'
+    $probeProcess = Start-Process -FilePath $probeExe -Wait -PassThru -WindowStyle Hidden
+    try { Assert-Equal $probeProcess.ExitCode 0 'COMMONPROGRAMDATA probe failed' }
+    finally { $probeProcess.Dispose() }
+    $probeResult = Get-Content -LiteralPath (Join-Path $runRoot 'common-programdata-result.txt') -Raw
+    $machineProgramData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+    Assert-True (-not [string]::IsNullOrWhiteSpace($machineProgramData)) 'Windows CommonApplicationData path is missing.'
+    Assert-Equal (Get-FullPath $probeResult) (Get-FullPath $machineProgramData) 'NSIS COMMONPROGRAMDATA did not resolve to machine ProgramData'
+    Assert-Equal (Get-FullPath $probeResult) (Get-FullPath $env:ProgramData) 'NSIS COMMONPROGRAMDATA did not match the ProgramData environment path'
+    Invoke-CheckedNsisCompile (Join-Path $runRoot 'harness.nsi')
   } finally { Pop-Location }
   $script:harnessExe = Join-Path $runRoot 'nsis-state-matrix-harness.exe'
   Assert-True (Test-Path -LiteralPath $script:harnessExe -PathType Leaf) 'Compiled NSIS harness is missing.'
@@ -197,13 +229,28 @@ try {
   $firstResult = Join-Path $concurrentRoot 'first.txt'; $secondResult = Join-Path $concurrentRoot 'second.txt'
   $first = Start-Process -FilePath $script:harnessExe -ArgumentList @("/AIVE_TEST_ROOT=$concurrentRoot","/AIVE_TEST_BOUNDARY=$script:tempBoundary",'/CASE=hold-mutex',"/RUNID=$concurrentId","/RESULT=$firstResult") -PassThru -WindowStyle Hidden
   try {
-    Start-Sleep -Milliseconds 400
+    $readyUntil = [DateTime]::UtcNow.AddSeconds(10)
+    while (-not (Test-Path -LiteralPath $firstResult -PathType Leaf) -and -not $first.HasExited -and [DateTime]::UtcNow -lt $readyUntil) {
+      Start-Sleep -Milliseconds 50
+    }
+    Assert-True (Test-Path -LiteralPath $firstResult -PathType Leaf) 'Mutex holder did not signal readiness.'
+    Assert-Equal (Read-Result $firstResult).state mutex-held 'Mutex holder did not confirm a live handle.'
+    Assert-True (-not $first.HasExited) 'Mutex holder exited before the contender started.'
     $secondExit = Start-Harness $concurrentRoot classify-only $concurrentId $secondResult
     Assert-Equal $secondExit 2113 'Concurrent invocation was not refused'
     Assert-Equal (Read-Result $secondResult).state concurrent-refused 'Concurrent state mismatch'
+    Assert-Equal (Read-Result $secondResult).win32error 183 'Concurrent invocation did not report ERROR_ALREADY_EXISTS'
+    Set-Content -LiteralPath (Join-Path $concurrentRoot 'release-mutex') -Value release -NoNewline
     $first.WaitForExit(); Assert-Equal $first.ExitCode 0 'Mutex holder failed'
     $caseResults.Add([pscustomobject]@{name='concurrent';case='mutex';exitCode=2113;state='concurrent-refused'})
   } finally { if (-not $first.HasExited) { $first.Kill(); $first.WaitForExit() }; $first.Dispose() }
+  $thirdResult = Join-Path $concurrentRoot 'third.txt'
+  Assert-Equal (Start-Harness $concurrentRoot classify-only $concurrentId $thirdResult) 0 'Mutex was not released after holder exit'
+  Assert-Equal (Read-Result $thirdResult).state pristine 'Post-release acquisition did not proceed'
+  $caseResults.Add([pscustomobject]@{name='mutex-after-release';case='mutex';exitCode=0;state='pristine'})
+  Invoke-Harness mutex-create-failure mutex-create-fail {} 2114 mutex-create-failed {
+    param($r,$p,$id,$result) Assert-True ([int]$result.win32error -ne 0 -and [int]$result.win32error -ne 183) 'Null-handle path did not retain the Windows error.'
+  }
 
   $seedUninstall = {
     param($r,$p,$id)

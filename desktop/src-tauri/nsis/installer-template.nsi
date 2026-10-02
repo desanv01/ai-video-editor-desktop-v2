@@ -1,4 +1,4 @@
-; AI Video Editor Desktop V2 RC.6 pinned NSIS template.
+; AI Video Editor Desktop V2 RC.8 pinned NSIS template.
 ; Derived from @tauri-apps/cli 2.11.2 / tauri-v2.11.2 installer.nsi.
 ; Intentional policy changes: fixed per-machine path, no directory/start-menu
 ; chooser, one shortcut owner, verified shortcuts before ARP commit, and a
@@ -66,7 +66,7 @@ ManifestDPIAwareness PerMonitorV2
 !define AIVEBACKUPDIR "${AIVEINSTALLERPARENT}\Shell.rc6-rollback"
 !define AIVESTAGINGDIR "${AIVEINSTALLERPARENT}\Shell.rc6-staging"
 !define AIVETXNBACKUPDIR "${AIVEINSTALLERPARENT}\.rc6-installer-rollback"
-!define AIVEINSTALLERDIR "$PROGRAMDATA\AI Video Editor\Installer"
+!define AIVEINSTALLERDIR "$COMMONPROGRAMDATA\AI Video Editor\Installer"
 !define AIVESETUPLOG "${AIVEINSTALLERDIR}\setup-rc6.log"
 !define AIVEJOURNAL "${AIVEINSTALLERDIR}\transaction-rc6.json"
 !define AIVEUNINSTALLJOURNAL "${AIVEINSTALLERDIR}\uninstall-transaction-rc6.json"
@@ -90,6 +90,7 @@ ManifestDPIAwareness PerMonitorV2
 !define AIVE_E_INVARIANT 2111
 !define AIVE_E_CONFLICT 2112
 !define AIVE_E_CONCURRENT 2113
+!define AIVE_E_MUTEX_CREATE 2114
 
 Var PassiveMode
 Var UpdateMode
@@ -105,6 +106,7 @@ Var DeferredCleanup
 Var TxnId
 Var TxnPhase
 Var JournalOk
+Var JournalStep
 Var TxnHadPriorShell
 Var TxnHadDesktopShortcut
 Var TxnHadStartMenuShortcut
@@ -227,7 +229,7 @@ FunctionEnd
 Function SetCanonicalInstallDir
   ${IfNot} ${RunningX64}
     SetErrorLevel ${AIVE_E_INVARIANT}
-    MessageBox MB_ICONSTOP|MB_OK "AI Video Editor Desktop V2 RC.6 requires 64-bit Windows."
+    MessageBox MB_ICONSTOP|MB_OK "AI Video Editor Desktop V2 RC.7 requires 64-bit Windows."
     Abort
   ${EndIf}
   StrCpy $INSTDIR "${AIVEINSTALLDIR}"
@@ -243,7 +245,9 @@ FunctionEnd
 Function ValidateInstallerPerimeter
   ReadEnvStr $0 "ProgramData"
   StrCmp $0 "" installer_perimeter_failed
-  StrCpy $3 "$0"
+  ; File operations use this NSIS shell constant, so validate that exact root.
+  StrCmp $0 "$COMMONPROGRAMDATA" 0 installer_perimeter_failed
+  StrCpy $3 "$COMMONPROGRAMDATA"
   Call IsReparsePoint
   StrCmp $1 1 installer_perimeter_failed
   StrCpy $0 "$3"
@@ -270,9 +274,12 @@ Function ValidateInstallerPerimeter
   Pop $1
   StrCmp $0 "0" installer_perimeter_valid
   installer_perimeter_failed:
-    SetErrorLevel ${AIVE_E_CONFLICT}
+    StrCpy $FailureCode ${AIVE_E_CONFLICT}
+    StrCpy $FailureStage "machine-perimeter"
+    StrCpy $FailureMessage "Setup could not validate the ProgramData installer perimeter. The path was missing, reparse-backed, or the ACL operation failed."
+    SetErrorLevel $FailureCode
     ${IfNot} ${Silent}
-      MessageBox MB_ICONSTOP|MB_OK "Setup refused an unsafe or unavailable ProgramData installer perimeter. Reparse points were preserved."
+      MessageBox MB_ICONSTOP|MB_OK "$FailureMessage$\r$\n$\r$\nSetup code: $FailureCode ($FailureStage). Reparse points were preserved."
     ${EndIf}
     Abort
   installer_perimeter_valid:
@@ -280,8 +287,10 @@ FunctionEnd
 
 Function AppendSetupLog
   CreateDirectory "${AIVEINSTALLERDIR}"
+  ClearErrors
   FileOpen $9 "${AIVESETUPLOG}" a
   IfErrors setup_log_done
+  FileSeek $9 0 END
   FileWrite $9 "stage=$FailureStage code=$FailureCode message=$FailureMessage$\r$\n"
   FileClose $9
   setup_log_done:
@@ -289,11 +298,18 @@ FunctionEnd
 
 Function WriteTransactionJournal
   StrCpy $JournalOk 0
+  StrCpy $JournalStep "directory"
+  ClearErrors
   CreateDirectory "${AIVEINSTALLERDIR}"
+  IfErrors journal_write_failed
   StrCpy $TxnPhase "$FailureStage"
   ${If} $InstallStarted = 1
+    StrCpy $JournalStep "registry-invalidate"
     ClearErrors
-    DeleteRegValue HKLM "${AIVEROLLBACKKEY}" "Phase"
+    WriteRegStr HKLM "${AIVEROLLBACKKEY}" "Phase" ""
+    IfErrors journal_write_failed
+    StrCpy $JournalStep "registry-write"
+    ClearErrors
     WriteRegStr HKLM "${AIVEROLLBACKKEY}" "TransactionId" "$TxnId"
     WriteRegStr HKLM "${AIVEROLLBACKKEY}" "ExpectedVersion" "${VERSION}"
     WriteRegStr HKLM "${AIVEROLLBACKKEY}" "PackageIdentity" "${AIVEPACKAGEID}"
@@ -318,8 +334,12 @@ Function WriteTransactionJournal
     WriteRegDWORD HKLM "${AIVEROLLBACKKEY}" "CreatedRequests" $TxnCreatedRequests
     WriteRegDWORD HKLM "${AIVEROLLBACKKEY}" "CreatedProvisioning" $TxnCreatedProvisioning
     WriteRegDWORD HKLM "${AIVEROLLBACKKEY}" "CreatedInstaller" $TxnCreatedInstaller
+    IfErrors journal_write_failed
+    StrCpy $JournalStep "registry-publish"
+    ClearErrors
     WriteRegStr HKLM "${AIVEROLLBACKKEY}" "Phase" "$TxnPhase"
     IfErrors journal_write_failed
+    StrCpy $JournalStep "registry-readback"
     ReadRegStr $4 HKLM "${AIVEROLLBACKKEY}" "TransactionId"
     ReadRegStr $5 HKLM "${AIVEROLLBACKKEY}" "ExpectedVersion"
     ReadRegStr $6 HKLM "${AIVEROLLBACKKEY}" "PackageIdentity"
@@ -335,32 +355,62 @@ Function WriteTransactionJournal
     StrCmp $R0 "${AIVEBACKUPDIR}" 0 journal_write_failed
     StrCmp $R1 "$TxnPhase" 0 journal_write_failed
   ${EndIf}
+  StrCpy $JournalStep "part-open"
   Delete "${AIVEJOURNAL}.part"
   ClearErrors
   FileOpen $9 "${AIVEJOURNAL}.part" w
   IfErrors journal_write_failed
-  FileWrite $9 '{$\"schemaVersion$\":$\"desktop.installer-transaction.v1$\",$\"transactionId$\":$\"$TxnId$\",$\"phase$\":$\"$TxnPhase$\",$\"state$\":$\"$InstallState$\",$\"expectedVersion$\":$\"${VERSION}$\",$\"packageIdentity$\":$\"${AIVEPACKAGEID}$\",$\"canonicalPath$\":$\"%ProgramFiles%/AI Video Editor Desktop V2/Shell$\",$\"stagingPath$\":$\"%ProgramFiles%/AI Video Editor Desktop V2/Shell.rc6-staging$\",$\"backupPath$\":$\"%ProgramFiles%/AI Video Editor Desktop V2/Shell.rc6-rollback$\",$\"hadPriorShell$\":$TxnHadPriorShell,$\"hadDesktopShortcut$\":$TxnHadDesktopShortcut,$\"hadStartMenuShortcut$\":$TxnHadStartMenuShortcut,$\"hadInstallerOrigin$\":$TxnHadInstallerOrigin,$\"wroteInstallerOrigin$\":$TxnWroteInstallerOrigin,$\"code$\":$FailureCode}'
+  StrCpy $R2 '{$\"schemaVersion$\":$\"desktop.installer-transaction.v1$\",$\"transactionId$\":$\"$TxnId$\",$\"phase$\":$\"$TxnPhase$\",$\"state$\":$\"$InstallState$\",$\"expectedVersion$\":$\"${VERSION}$\",$\"packageIdentity$\":$\"${AIVEPACKAGEID}$\",$\"canonicalPath$\":$\"%ProgramFiles%/AI Video Editor Desktop V2/Shell$\",$\"stagingPath$\":$\"%ProgramFiles%/AI Video Editor Desktop V2/Shell.rc6-staging$\",$\"backupPath$\":$\"%ProgramFiles%/AI Video Editor Desktop V2/Shell.rc6-rollback$\",$\"hadPriorShell$\":$TxnHadPriorShell,$\"hadDesktopShortcut$\":$TxnHadDesktopShortcut,$\"hadStartMenuShortcut$\":$TxnHadStartMenuShortcut,$\"hadInstallerOrigin$\":$TxnHadInstallerOrigin,$\"wroteInstallerOrigin$\":$TxnWroteInstallerOrigin,$\"code$\":$FailureCode}'
+  StrCpy $JournalStep "part-write"
+  ClearErrors
+  FileWrite $9 "$R2"
+  IfErrors journal_part_write_failed
+  StrCpy $JournalStep "part-close"
+  ClearErrors
   FileClose $9
   IfErrors journal_write_failed
+  StrCpy $JournalStep "atomic-publish"
   System::Call 'kernel32::MoveFileExW(w "${AIVEJOURNAL}.part", w "${AIVEJOURNAL}", i 0x1) i .r8'
   StrCmp $8 0 journal_write_failed
+  StrCpy $JournalStep "final-existence"
+  IfFileExists "${AIVEJOURNAL}" 0 journal_write_failed
+  StrCpy $JournalStep "final-readback"
+  ClearErrors
+  FileOpen $9 "${AIVEJOURNAL}" r
+  IfErrors journal_write_failed
+  FileRead $9 $R3
+  StrCmp $R3 $R2 0 journal_final_readback_failed
+  ClearErrors
+  FileClose $9
+  IfErrors journal_write_failed
   StrCpy $JournalOk 1
   Return
+  journal_part_write_failed:
+    FileClose $9
+    Goto journal_write_failed
+  journal_final_readback_failed:
+    FileClose $9
   journal_write_failed:
-  SetErrorLevel ${AIVE_E_SNAPSHOT}
+  StrCpy $FailureCode ${AIVE_E_SNAPSHOT}
+  StrCpy $FailureStage "journal-$JournalStep"
+  StrCpy $FailureMessage "Setup could not verify its durable transaction journal at $JournalStep. Recovery material was preserved for retry."
+  Call AppendSetupLog
+  SetErrorLevel $FailureCode
   ${IfNot} ${Silent}
-    MessageBox MB_ICONSTOP|MB_OK "Setup stopped because its durable transaction journal could not be published and verified. No further mutation is allowed."
+    MessageBox MB_ICONSTOP|MB_OK "$FailureMessage$\r$\n$\r$\nSetup code: $FailureCode ($FailureStage)$\r$\nLog: ${AIVESETUPLOG}"
   ${EndIf}
   Abort
-  journal_write_done:
 FunctionEnd
 
 Function FailInstall
   Call AppendSetupLog
   ; Recovery must retain the durable semantic phase that selected its retry
   ; path. FailureStage is diagnostic and must not replace uninstall/commit
-  ; phases when a recovery attempt aborts.
+  ; phases when a recovery attempt aborts. Mutex failures occur before the
+  ; transaction begins, so they must not write a journal either.
   ${If} $RecoveryActive != 1
+  ${AndIf} $FailureCode != ${AIVE_E_CONCURRENT}
+  ${AndIf} $FailureCode != ${AIVE_E_MUTEX_CREATE}
     Call WriteTransactionJournal
   ${EndIf}
   SetErrorLevel $FailureCode
@@ -371,19 +421,32 @@ Function FailInstall
 FunctionEnd
 
 Function AcquireInstallerMutex
-  System::Call 'kernel32::CreateMutexW(p0, i0, w "Global\AI-Video-Editor-Desktop-V2-RC6-Setup") p .rMutexHandle ?e'
+  StrCpy $MutexHandle 0
+  ; System outputs must use numeric registers. Preserve the returned handle
+  ; before another call can overwrite $0.
+  System::Call 'kernel32::CreateMutexW(p0, i0, w "Global\AI-Video-Editor-Desktop-V2-RC6-Setup") p .r0 ?e'
+  StrCpy $MutexHandle $0
   Pop $0
   ${If} $MutexHandle = 0
-    StrCpy $FailureCode ${AIVE_E_CONCURRENT}
-    StrCpy $FailureStage "mutex"
-    StrCpy $FailureMessage "Setup could not acquire its installation mutex."
+    StrCpy $FailureCode ${AIVE_E_MUTEX_CREATE}
+    StrCpy $FailureStage "mutex-create"
+    StrCpy $FailureMessage "Setup could not create its installation mutex (Windows error $0)."
     Call FailInstall
   ${EndIf}
   ${If} $0 = 183
+    Call ReleaseInstallerMutex
     StrCpy $FailureCode ${AIVE_E_CONCURRENT}
     StrCpy $FailureStage "mutex"
     StrCpy $FailureMessage "Another setup or uninstall is already running. Wait for it to finish, then retry."
     Call FailInstall
+  ${EndIf}
+FunctionEnd
+
+Function ReleaseInstallerMutex
+  ${If} $MutexHandle <> 0
+    StrCpy $0 $MutexHandle
+    System::Call 'kernel32::CloseHandle(p r0) i .r1'
+    StrCpy $MutexHandle 0
   ${EndIf}
 FunctionEnd
 
@@ -407,6 +470,7 @@ FunctionEnd
 ; $0=input path, $1=1 only when the directory is exactly empty.
 Function IsDirectoryEmpty
   StrCpy $1 1
+  ClearErrors
   FindFirst $2 $3 "$0\*"
   IfErrors directory_empty_done
   directory_empty_loop:
@@ -426,10 +490,12 @@ FunctionEnd
 ; $0=input path, $1=1 when it is a reparse point.
 Function IsReparsePoint
   StrCpy $1 0
-  System::Call 'kernel32::GetFileAttributesW(w r0) i .r2'
-  IntCmp $2 -1 reparse_done
-  IntOp $2 $2 & 0x400
-  StrCmp $2 0 reparse_done
+  ; $0 is the input path and $1 is the result. Keep $2/$3 and $9 intact
+  ; because callers hold paths and file handles across this call.
+  System::Call 'kernel32::GetFileAttributesW(w r0) i .R9'
+  IntCmp $R9 -1 reparse_done
+  IntOp $R9 $R9 & 0x400
+  StrCmp $R9 0 reparse_done
   StrCpy $1 1
   reparse_done:
 FunctionEnd
@@ -453,11 +519,17 @@ Function HasCoherentPayload
   IfFileExists "$0\${AIVEIDENTITY}" 0 coherent_payload_done
   IfFileExists "$0\${MAINBINARYNAME}.exe" 0 coherent_payload_done
   IfFileExists "$0\uninstall.exe" 0 coherent_payload_done
+  ClearErrors
   FileOpen $2 "$0\${AIVEIDENTITY}" r
   IfErrors coherent_payload_done
   FileRead $2 $3
   FileClose $2
   StrCmp $3 '{"schemaVersion":"desktop.install-identity.v1","productName":"AI Video Editor Desktop V2","identifier":"${AIVEIDENTIFIER}","packageIdentity":"${AIVEPACKAGEID}","version":"${VERSION}","channel":"beta","canonicalPath":"%ProgramFiles%/AI Video Editor Desktop V2/Shell","installCommitted":true}' coherent_payload_valid
+  ; RC.7 shares this exact package identity and canonical payload contract.
+  StrCmp $3 '{"schemaVersion":"desktop.install-identity.v1","productName":"AI Video Editor Desktop V2","identifier":"${AIVEIDENTIFIER}","packageIdentity":"${AIVEPACKAGEID}","version":"2.0.0-rc.7","channel":"beta","canonicalPath":"%ProgramFiles%/AI Video Editor Desktop V2/Shell","installCommitted":true}' coherent_payload_valid
+  ; RC.6 used the same transaction namespace and package identity. Accept its
+  ; exact committed identity so RC.8 can upgrade or recover it safely.
+  StrCmp $3 '{"schemaVersion":"desktop.install-identity.v1","productName":"AI Video Editor Desktop V2","identifier":"${AIVEIDENTIFIER}","packageIdentity":"${AIVEPACKAGEID}","version":"2.0.0-rc.6","channel":"beta","canonicalPath":"%ProgramFiles%/AI Video Editor Desktop V2/Shell","installCommitted":true}' coherent_payload_valid
   ; Exact legacy RC.6 identity emitted by the predecessor this recovery build
   ; upgrades. No other filename-only or arbitrary JSON identity is accepted.
   StrCmp $3 '{"productName":"AI Video Editor Desktop V2","identifier":"com.fyp.ai-video-editor.desktop-v2","version":"2.0.0-rc.6","channel":"beta","installCommitted":true}' 0 coherent_payload_done
@@ -472,6 +544,7 @@ Function HasCurrentPayload
   IfFileExists "$0\${AIVEIDENTITY}" 0 current_payload_done
   IfFileExists "$0\${MAINBINARYNAME}.exe" 0 current_payload_done
   IfFileExists "$0\uninstall.exe" 0 current_payload_done
+  ClearErrors
   FileOpen $2 "$0\${AIVEIDENTITY}" r
   IfErrors current_payload_done
   FileRead $2 $3
@@ -539,7 +612,17 @@ Function LoadTransactionState
   ReadRegStr $7 HKLM "${AIVEROLLBACKKEY}" "StagingPath"
   ReadRegStr $8 HKLM "${AIVEROLLBACKKEY}" "BackupPath"
   StrCmp $TxnId "" load_transaction_invalid
-  StrCmp $4 "${VERSION}" 0 load_transaction_invalid
+  StrCmp $4 "${VERSION}" load_transaction_version_valid
+  ; RC.7's interrupted snapshot has not mutated the live shell. Accept only
+  ; that exact pre-mutation phase so the existing cleanup path can retry.
+  StrCmp $4 "2.0.0-rc.7" 0 load_transaction_invalid
+  StrCmp $TxnPhase "snapshotting" 0 load_transaction_invalid
+  ; The predecessor issued only numeric PID-tick identifiers. Reject a
+  ; foreign record before trusting its snapshot cleanup targets.
+  StrCpy $0 "$TxnId"
+  Call IsValidTransactionId
+  StrCmp $1 1 0 load_transaction_invalid
+  load_transaction_version_valid:
   StrCmp $5 "${AIVEPACKAGEID}" 0 load_transaction_invalid
   StrCmp $6 "${AIVEINSTALLDIR}" 0 load_transaction_invalid
   StrCmp $7 "${AIVESTAGINGDIR}" 0 load_transaction_invalid
@@ -571,6 +654,54 @@ Function LoadTransactionState
   load_transaction_invalid:
     StrCpy $TxnPhase "invalid"
   load_transaction_done:
+FunctionEnd
+
+; $0=input PID-tick, $1=1 only for two nonempty decimal components.
+Function IsValidTransactionId
+  Push $2
+  Push $3
+  Push $4
+  Push $5
+  StrCpy $1 0
+  StrLen $2 "$0"
+  StrCpy $3 0
+  StrCpy $4 0
+  StrCpy $5 0
+  ${If} $2 < 3
+    Goto valid_transaction_done
+  ${EndIf}
+  valid_transaction_char_loop:
+    ${If} $3 >= $2
+      StrCmp $4 1 0 valid_transaction_done
+      StrCpy $1 1
+      Goto valid_transaction_done
+    ${EndIf}
+    StrCpy $5 "$0" 1 $3
+    StrCmp $5 "-" valid_transaction_hyphen
+    StrCmp $5 "0" valid_transaction_next
+    StrCmp $5 "1" valid_transaction_next
+    StrCmp $5 "2" valid_transaction_next
+    StrCmp $5 "3" valid_transaction_next
+    StrCmp $5 "4" valid_transaction_next
+    StrCmp $5 "5" valid_transaction_next
+    StrCmp $5 "6" valid_transaction_next
+    StrCmp $5 "7" valid_transaction_next
+    StrCmp $5 "8" valid_transaction_next
+    StrCmp $5 "9" valid_transaction_next valid_transaction_done
+  valid_transaction_hyphen:
+    StrCmp $4 0 0 valid_transaction_done
+    StrCmp $3 0 valid_transaction_done
+    IntOp $5 $2 - 1
+    StrCmp $3 $5 valid_transaction_done
+    StrCpy $4 1
+  valid_transaction_next:
+    IntOp $3 $3 + 1
+    Goto valid_transaction_char_loop
+  valid_transaction_done:
+  Pop $5
+  Pop $4
+  Pop $3
+  Pop $2
 FunctionEnd
 
 Function ClassifyInstallState
@@ -637,6 +768,7 @@ Function RemoveTreeNoReparse
     DetailPrint "Preserving reparse-point recovery cleanup target: $0"
     Goto recovery_tree_done
   recovery_tree_scan:
+  ClearErrors
   FindFirst $1 $2 "$0\*"
   IfErrors recovery_tree_remove_root
   recovery_tree_loop:
@@ -925,7 +1057,7 @@ Function RecoverInterruptedInstall
       Call RemoveCurrentShellPayload
       IfFileExists "${AIVEBACKUPDIR}\." recovery_cleanup_locked 0
   recovery_committed_external:
-    Delete "$PROGRAMDATA\AI Video Editor\Installer\handoff-root.json.rc6-rollback"
+    Delete "$COMMONPROGRAMDATA\AI Video Editor\Installer\handoff-root.json.rc6-rollback"
     Delete "${AIVETXNBACKUPDIR}\Desktop.lnk"
     Delete "${AIVETXNBACKUPDIR}\StartMenu.lnk"
     Call SetSafeWorkingDir
@@ -1021,28 +1153,28 @@ Function RecoverInterruptedInstall
       ${EndIf}
     recovery_external_done:
     ${If} $TxnCreatedRequests = 1
-      RMDir "$PROGRAMDATA\AI Video Editor\Broker\Requests"
+      RMDir "$COMMONPROGRAMDATA\AI Video Editor\Broker\Requests"
     ${EndIf}
     ${If} $TxnCreatedBroker = 1
-      RMDir "$PROGRAMDATA\AI Video Editor\Broker"
+      RMDir "$COMMONPROGRAMDATA\AI Video Editor\Broker"
     ${EndIf}
     ${If} $TxnCreatedStaging = 1
-      RMDir "$PROGRAMDATA\AI Video Editor\Downloads\Staging"
+      RMDir "$COMMONPROGRAMDATA\AI Video Editor\Downloads\Staging"
     ${EndIf}
     ${If} $TxnCreatedDownloads = 1
-      RMDir "$PROGRAMDATA\AI Video Editor\Downloads"
+      RMDir "$COMMONPROGRAMDATA\AI Video Editor\Downloads"
     ${EndIf}
     ${If} $TxnCreatedCatalog = 1
-      RMDir "$PROGRAMDATA\AI Video Editor\Catalog"
+      RMDir "$COMMONPROGRAMDATA\AI Video Editor\Catalog"
     ${EndIf}
     ${If} $TxnCreatedComponents = 1
-      RMDir "$PROGRAMDATA\AI Video Editor\Components"
+      RMDir "$COMMONPROGRAMDATA\AI Video Editor\Components"
     ${EndIf}
     ${If} $TxnCreatedActivation = 1
-      RMDir "$PROGRAMDATA\AI Video Editor\Activation"
+      RMDir "$COMMONPROGRAMDATA\AI Video Editor\Activation"
     ${EndIf}
     ${If} $TxnCreatedProvisioning = 1
-      RMDir "$PROGRAMDATA\AI Video Editor\Provisioning"
+      RMDir "$COMMONPROGRAMDATA\AI Video Editor\Provisioning"
     ${EndIf}
     DeleteRegKey HKLM "${AIVEROLLBACKKEY}"
     Delete "${AIVEJOURNAL}"
@@ -1095,22 +1227,22 @@ FunctionEnd
 Function RecoverInterruptedInstallerOrigin
   StrCmp $TxnWroteInstallerOrigin 1 0 interrupted_origin_recovered
   StrCmp $TxnHadInstallerOrigin 1 0 interrupted_origin_was_new
-  IfFileExists "$PROGRAMDATA\AI Video Editor\Installer\handoff-root.json.rc6-rollback" 0 interrupted_origin_already_restored
+  IfFileExists "$COMMONPROGRAMDATA\AI Video Editor\Installer\handoff-root.json.rc6-rollback" 0 interrupted_origin_already_restored
     ClearErrors
-    Delete "$PROGRAMDATA\AI Video Editor\Installer\handoff-root.json"
+    Delete "$COMMONPROGRAMDATA\AI Video Editor\Installer\handoff-root.json"
     IfErrors interrupted_origin_failed
     ClearErrors
-    Rename "$PROGRAMDATA\AI Video Editor\Installer\handoff-root.json.rc6-rollback" "$PROGRAMDATA\AI Video Editor\Installer\handoff-root.json"
+    Rename "$COMMONPROGRAMDATA\AI Video Editor\Installer\handoff-root.json.rc6-rollback" "$COMMONPROGRAMDATA\AI Video Editor\Installer\handoff-root.json"
     IfErrors interrupted_origin_failed
     Goto interrupted_origin_recovered
   interrupted_origin_already_restored:
-    IfFileExists "$PROGRAMDATA\AI Video Editor\Installer\handoff-root.json" interrupted_origin_recovered interrupted_origin_failed
+    IfFileExists "$COMMONPROGRAMDATA\AI Video Editor\Installer\handoff-root.json" interrupted_origin_recovered interrupted_origin_failed
   interrupted_origin_was_new:
     ClearErrors
-    Delete "$PROGRAMDATA\AI Video Editor\Installer\handoff-root.json"
+    Delete "$COMMONPROGRAMDATA\AI Video Editor\Installer\handoff-root.json"
     IfErrors interrupted_origin_failed
   interrupted_origin_recovered:
-  Delete "$PROGRAMDATA\AI Video Editor\Installer\handoff-root.json.part"
+  Delete "$COMMONPROGRAMDATA\AI Video Editor\Installer\handoff-root.json.part"
   Return
   interrupted_origin_failed:
     StrCpy $RollbackIncomplete 1
@@ -1242,7 +1374,7 @@ Section WebView2
     webview2_failed:
       Delete "$TEMP\MicrosoftEdgeWebview2Setup.exe"
       Delete "$TEMP\MicrosoftEdgeWebView2RuntimeInstaller.exe"
-      Abort "WebView2 installation failed before the RC.6 application transaction began."
+      Abort "WebView2 installation failed before the RC.7 application transaction began."
     webview2_done:
   ${EndIf}
 SectionEnd
@@ -1336,6 +1468,7 @@ Function BeginInstallTransaction
   ClearErrors
   CreateDirectory "${AIVESTAGINGDIR}"
   IfErrors begin_staging_failed
+  ClearErrors
   FileOpen $0 "${AIVESTAGINGDIR}\.installing" w
   IfErrors begin_staging_failed
   FileWrite $0 "desktop-v2-rc6-installing$\r$\n"
@@ -1407,17 +1540,31 @@ Function ProtectAndActivateStaging
     StrCpy $FailureStage "prior-move-intent"
     StrCpy $FailureMessage "about to protect prior shell"
     Call WriteTransactionJournal
+  StrCpy $R9 0
   protect_prior_retry:
     Call SetSafeWorkingDir
-    ClearErrors
-    Rename "${AIVEINSTALLDIR}" "${AIVEBACKUPDIR}"
-    IfErrors 0 protect_prior_done
+    SetOutPath "$TEMP"
+    System::Call 'kernel32::MoveFileExW(w "${AIVEINSTALLDIR}", w "${AIVEBACKUPDIR}", i 0) i .r8 ?e'
+    Pop $R7
+    StrCmp $8 0 0 protect_prior_done
+    IntOp $R9 $R9 + 1
+    ${If} $R9 < 10
+      Sleep 500
+      Goto protect_prior_retry
+    ${EndIf}
     ${IfNot} ${Silent}
       MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "The existing shell is locked. Close AI Video Editor and retry, or cancel without replacing it." IDRETRY protect_prior_retry
     ${EndIf}
+    StrCpy $R6 0
+    IfFileExists "${AIVEINSTALLDIR}\." 0 +2
+      StrCpy $R6 1
+    StrCpy $R5 0
+    IfFileExists "${AIVEBACKUPDIR}\." 0 +2
+      StrCpy $R5 1
+    GetFullPathName $R4 "."
     StrCpy $FailureCode ${AIVE_E_LOCK}
     StrCpy $FailureStage "shell-rename-lock"
-    StrCpy $FailureMessage "The prior shell could not be moved to rollback protection."
+    StrCpy $FailureMessage "The prior shell could not be moved to rollback protection (Win32 error $R7; source=$R6 backup=$R5 cwd=$R4)."
     Call FailInstall
   protect_prior_done:
     StrCpy $FailureCode 0
@@ -1520,7 +1667,7 @@ Section Install
     backup_cleanup_done:
     Call SetCanonicalInstallDir
   ${EndIf}
-  Delete "$PROGRAMDATA\AI Video Editor\Installer\handoff-root.json.rc6-rollback"
+  Delete "$COMMONPROGRAMDATA\AI Video Editor\Installer\handoff-root.json.rc6-rollback"
   Delete "${AIVETXNBACKUPDIR}\Desktop.lnk"
   Delete "${AIVETXNBACKUPDIR}\StartMenu.lnk"
   Call SetSafeWorkingDir
@@ -1539,7 +1686,7 @@ Section Install
   payload_copy_failed:
     StrCpy $FailureCode ${AIVE_E_INVARIANT}
     StrCpy $FailureStage "payload"
-    StrCpy $FailureMessage "Failed to extract a required RC.6 payload file into staging."
+    StrCpy $FailureMessage "Failed to extract a required RC.7 payload file into staging."
     Call FailInstall
   uninstaller_failed:
     StrCpy $FailureCode ${AIVE_E_IDENTITY}
@@ -1619,6 +1766,7 @@ Function PublishCommittedIdentity
   ; Publish the identity atomically, then flip InstallCommitted as the final
   ; externally visible commit operation.
   Delete "$INSTDIR\${AIVEIDENTITY}.part"
+  ClearErrors
   FileOpen $0 "$INSTDIR\${AIVEIDENTITY}.part" w
   IfErrors identity_write_failed
   FileWrite $0 '{"schemaVersion":"desktop.install-identity.v1","productName":"AI Video Editor Desktop V2","identifier":"${AIVEIDENTIFIER}","packageIdentity":"${AIVEPACKAGEID}","version":"${VERSION}","channel":"beta","canonicalPath":"%ProgramFiles%/AI Video Editor Desktop V2/Shell","installCommitted":true}'
@@ -1714,7 +1862,7 @@ Function RestoreRegistrySnapshot
 FunctionEnd
 
 Function RollbackInstallTransaction
-  DetailPrint "Rolling back the bounded RC.6 install transaction."
+  DetailPrint "Rolling back the bounded RC.7 install transaction."
   StrCpy $FailureCode 0
   StrCpy $FailureStage "rollback-in-progress"
   StrCpy $FailureMessage "transaction rollback in progress"
@@ -1765,38 +1913,38 @@ Function RollbackInstallTransaction
     Call SetCanonicalInstallDir
     Return
   ${EndIf}
-  Delete "$PROGRAMDATA\AI Video Editor\Installer\handoff-root.json.part"
-  Delete "$PROGRAMDATA\AI Video Editor\Installer\handoff-root.json.rc6-rollback"
+  Delete "$COMMONPROGRAMDATA\AI Video Editor\Installer\handoff-root.json.part"
+  Delete "$COMMONPROGRAMDATA\AI Video Editor\Installer\handoff-root.json.rc6-rollback"
 
   ${If} $TxnCreatedRequests = 1
-    RMDir "$PROGRAMDATA\AI Video Editor\Broker\Requests"
+    RMDir "$COMMONPROGRAMDATA\AI Video Editor\Broker\Requests"
   ${EndIf}
   ${If} $TxnCreatedBroker = 1
-    RMDir "$PROGRAMDATA\AI Video Editor\Broker"
+    RMDir "$COMMONPROGRAMDATA\AI Video Editor\Broker"
   ${EndIf}
   ${If} $TxnCreatedCatalog = 1
-    RMDir "$PROGRAMDATA\AI Video Editor\Catalog"
+    RMDir "$COMMONPROGRAMDATA\AI Video Editor\Catalog"
   ${EndIf}
   ${If} $TxnCreatedStaging = 1
-    RMDir "$PROGRAMDATA\AI Video Editor\Downloads\Staging"
+    RMDir "$COMMONPROGRAMDATA\AI Video Editor\Downloads\Staging"
   ${EndIf}
   ${If} $TxnCreatedDownloads = 1
-    RMDir "$PROGRAMDATA\AI Video Editor\Downloads"
+    RMDir "$COMMONPROGRAMDATA\AI Video Editor\Downloads"
   ${EndIf}
   ${If} $TxnCreatedComponents = 1
-    RMDir "$PROGRAMDATA\AI Video Editor\Components"
+    RMDir "$COMMONPROGRAMDATA\AI Video Editor\Components"
   ${EndIf}
   ${If} $TxnCreatedActivation = 1
-    RMDir "$PROGRAMDATA\AI Video Editor\Activation"
+    RMDir "$COMMONPROGRAMDATA\AI Video Editor\Activation"
   ${EndIf}
   ${If} $TxnCreatedProvisioning = 1
-    RMDir "$PROGRAMDATA\AI Video Editor\Provisioning"
+    RMDir "$COMMONPROGRAMDATA\AI Video Editor\Provisioning"
   ${EndIf}
   ${If} $TxnCreatedInstaller = 1
     ; Persistent setup log/journal deliberately keep this directory nonempty.
   ${EndIf}
   ${If} $TxnCreatedMachineRoot = 1
-    RMDir "$PROGRAMDATA\AI Video Editor"
+    RMDir "$COMMONPROGRAMDATA\AI Video Editor"
   ${EndIf}
   Call SetCanonicalInstallDir
   StrCpy $FailureCode 0
@@ -1809,24 +1957,23 @@ Function RollbackInstallTransaction
 FunctionEnd
 
 Function .onInstFailed
-  Delete "$TEMP\MicrosoftEdgeWebview2Setup.exe"
-  Delete "$TEMP\MicrosoftEdgeWebView2RuntimeInstaller.exe"
+  ${If} $JournalOk = 1
+    Delete "$TEMP\MicrosoftEdgeWebview2Setup.exe"
+    Delete "$TEMP\MicrosoftEdgeWebView2RuntimeInstaller.exe"
+  ${EndIf}
   ${If} $InstallStarted = 1
   ${AndIf} $InstallCommitted = 0
+  ${AndIf} $JournalOk = 1
     Call RollbackInstallTransaction
   ${EndIf}
-  ${If} $MutexHandle <> 0
-    System::Call 'kernel32::CloseHandle(p rMutexHandle)'
-  ${EndIf}
+  Call ReleaseInstallerMutex
 FunctionEnd
 
 Function .onInstSuccess
   ${If} $InstallCommitted <> 1
-    MessageBox MB_ICONSTOP|MB_OK "RC.6 Setup ended without a committed identity marker. Run Setup again to repair."
+    MessageBox MB_ICONSTOP|MB_OK "RC.7 Setup ended without a committed identity marker. Run Setup again to repair."
     SetErrorLevel ${AIVE_E_INVARIANT}
-    ${If} $MutexHandle <> 0
-      System::Call 'kernel32::CloseHandle(p rMutexHandle)'
-    ${EndIf}
+    Call ReleaseInstallerMutex
     Return
   ${EndIf}
   ${If} $DeferredCleanup = 1
@@ -1840,9 +1987,7 @@ Function .onInstSuccess
       nsis_tauri_utils::RunAsUser "$INSTDIR\${MAINBINARYNAME}.exe" ""
     ${EndIf}
   ${EndIf}
-  ${If} $MutexHandle <> 0
-    System::Call 'kernel32::CloseHandle(p rMutexHandle)'
-  ${EndIf}
+  Call ReleaseInstallerMutex
 FunctionEnd
 
 Function RunMainBinary
@@ -1857,6 +2002,8 @@ FunctionEnd
 Function un.ValidateInstallerPerimeter
   ReadEnvStr $0 "ProgramData"
   StrCmp $0 "" un_installer_perimeter_failed
+  StrCmp $0 "$COMMONPROGRAMDATA" 0 un_installer_perimeter_failed
+  StrCpy $0 "$COMMONPROGRAMDATA"
   System::Call 'kernel32::GetFileAttributesW(w r0) i .r3'
   IntOp $3 $3 & 0x400
   StrCmp $3 0 0 un_installer_perimeter_failed
@@ -1892,8 +2039,12 @@ Function un.ValidateInstallerPerimeter
 FunctionEnd
 
 Function un.WriteUninstallJournal
+  StrCpy $JournalStep "registry-invalidate"
   ClearErrors
-  DeleteRegValue HKLM "${AIVEROLLBACKKEY}" "Phase"
+  WriteRegStr HKLM "${AIVEROLLBACKKEY}" "Phase" ""
+  IfErrors un_journal_failed
+  StrCpy $JournalStep "registry-write"
+  ClearErrors
   WriteRegStr HKLM "${AIVEROLLBACKKEY}" "TransactionId" "$TxnId"
   WriteRegStr HKLM "${AIVEROLLBACKKEY}" "ExpectedVersion" "${VERSION}"
   WriteRegStr HKLM "${AIVEROLLBACKKEY}" "PackageIdentity" "${AIVEPACKAGEID}"
@@ -1904,8 +2055,12 @@ Function un.WriteUninstallJournal
   WriteRegDWORD HKLM "${AIVEROLLBACKKEY}" "FullWipeRequested" $FullWipeCheckboxState
   WriteRegStr HKLM "${AIVEROLLBACKKEY}" "UninstallLocalRoot" "$UninstallLocalRoot"
   WriteRegStr HKLM "${AIVEROLLBACKKEY}" "UninstallDocumentsRoot" "$UninstallDocumentsRoot"
+  IfErrors un_journal_failed
+  StrCpy $JournalStep "registry-publish"
+  ClearErrors
   WriteRegStr HKLM "${AIVEROLLBACKKEY}" "Phase" "$FailureStage"
   IfErrors un_journal_failed
+  StrCpy $JournalStep "registry-readback"
   ReadRegStr $4 HKLM "${AIVEROLLBACKKEY}" "Phase"
   ReadRegStr $5 HKLM "${AIVEROLLBACKKEY}" "UninstallTombstone"
   ReadRegDWORD $6 HKLM "${AIVEROLLBACKKEY}" "FullWipeRequested"
@@ -1916,21 +2071,46 @@ Function un.WriteUninstallJournal
   StrCmp $6 "$FullWipeCheckboxState" 0 un_journal_failed
   StrCmp $7 "$UninstallLocalRoot" 0 un_journal_failed
   StrCmp $8 "$UninstallDocumentsRoot" 0 un_journal_failed
+  StrCpy $JournalStep "part-open"
   Delete "${AIVEUNINSTALLJOURNAL}.part"
+  ClearErrors
   FileOpen $9 "${AIVEUNINSTALLJOURNAL}.part" w
   IfErrors un_journal_failed
   ${WordReplace} "$UninstallLocalRoot" "\" "/" "+*" $6
   ${WordReplace} "$UninstallDocumentsRoot" "\" "/" "+*" $7
-  FileWrite $9 '{$\"schemaVersion$\":$\"desktop.uninstall-transaction.v1$\",$\"transactionId$\":$\"$TxnId$\",$\"phase$\":$\"$FailureStage$\",$\"packageIdentity$\":$\"${AIVEPACKAGEID}$\",$\"canonicalPath$\":$\"%ProgramFiles%/AI Video Editor Desktop V2/Shell$\",$\"tombstone$\":$\"$UninstallTombstone$\",$\"fullWipeRequested$\":$FullWipeCheckboxState,$\"localRoot$\":$\"$6$\",$\"documentsRoot$\":$\"$7$\"}'
+  StrCpy $R2 '{$\"schemaVersion$\":$\"desktop.uninstall-transaction.v1$\",$\"transactionId$\":$\"$TxnId$\",$\"phase$\":$\"$FailureStage$\",$\"packageIdentity$\":$\"${AIVEPACKAGEID}$\",$\"canonicalPath$\":$\"%ProgramFiles%/AI Video Editor Desktop V2/Shell$\",$\"tombstone$\":$\"$UninstallTombstone$\",$\"fullWipeRequested$\":$FullWipeCheckboxState,$\"localRoot$\":$\"$6$\",$\"documentsRoot$\":$\"$7$\"}'
+  StrCpy $JournalStep "part-write"
+  ClearErrors
+  FileWrite $9 "$R2"
+  IfErrors un_journal_part_write_failed
+  StrCpy $JournalStep "part-close"
+  ClearErrors
   FileClose $9
   IfErrors un_journal_failed
+  StrCpy $JournalStep "atomic-publish"
   System::Call 'kernel32::MoveFileExW(w "${AIVEUNINSTALLJOURNAL}.part", w "${AIVEUNINSTALLJOURNAL}", i 0x1) i .r8'
   StrCmp $8 0 un_journal_failed
+  StrCpy $JournalStep "final-existence"
+  IfFileExists "${AIVEUNINSTALLJOURNAL}" 0 un_journal_failed
+  StrCpy $JournalStep "final-readback"
+  ClearErrors
+  FileOpen $9 "${AIVEUNINSTALLJOURNAL}" r
+  IfErrors un_journal_failed
+  FileRead $9 $R3
+  StrCmp $R3 $R2 0 un_journal_final_readback_failed
+  ClearErrors
+  FileClose $9
+  IfErrors un_journal_failed
   Return
+  un_journal_part_write_failed:
+    FileClose $9
+    Goto un_journal_failed
+  un_journal_final_readback_failed:
+    FileClose $9
   un_journal_failed:
     StrCpy $FailureCode ${AIVE_E_SNAPSHOT}
-    StrCpy $FailureStage "uninstall-journal"
-    StrCpy $FailureMessage "Uninstall stopped because its recovery journal could not be published and verified."
+    StrCpy $FailureStage "uninstall-journal-$JournalStep"
+    StrCpy $FailureMessage "Uninstall could not verify its recovery journal at $JournalStep. Recovery material was preserved for retry."
     Call un.Fail
 FunctionEnd
 
@@ -1948,6 +2128,7 @@ Function un.RemoveTreeNoReparse
     DetailPrint "Preserving reparse-point cleanup target: $0"
     Goto un_tree_done
   un_tree_scan:
+  ClearErrors
   FindFirst $1 $2 "$0\*"
   IfErrors un_tree_remove_root
   un_tree_loop:
@@ -1977,8 +2158,10 @@ FunctionEnd
 
 Function un.AppendSetupLog
   CreateDirectory "${AIVEINSTALLERDIR}"
+  ClearErrors
   FileOpen $9 "${AIVEINSTALLERDIR}\uninstall-rc6.log" a
   IfErrors un_setup_log_done
+  FileSeek $9 0 END
   FileWrite $9 "stage=$FailureStage code=$FailureCode message=$FailureMessage$\r$\n"
   FileClose $9
   un_setup_log_done:
@@ -1990,23 +2173,35 @@ Function un.Fail
   ${IfNot} ${Silent}
     MessageBox MB_ICONSTOP|MB_OK "$FailureMessage$\r$\n$\r$\nUninstall code: $FailureCode ($FailureStage)$\r$\nLog: ${AIVEINSTALLERDIR}\uninstall-rc6.log"
   ${EndIf}
+  Call un.ReleaseInstallerMutex
   Abort
 FunctionEnd
 
 Function un.AcquireInstallerMutex
-  System::Call 'kernel32::CreateMutexW(p0, i0, w "Global\AI-Video-Editor-Desktop-V2-RC6-Setup") p .rMutexHandle ?e'
+  StrCpy $MutexHandle 0
+  System::Call 'kernel32::CreateMutexW(p0, i0, w "Global\AI-Video-Editor-Desktop-V2-RC6-Setup") p .r0 ?e'
+  StrCpy $MutexHandle $0
   Pop $0
   ${If} $MutexHandle = 0
-    StrCpy $FailureCode ${AIVE_E_CONCURRENT}
-    StrCpy $FailureStage "mutex"
-    StrCpy $FailureMessage "Uninstall could not acquire the product mutex."
+    StrCpy $FailureCode ${AIVE_E_MUTEX_CREATE}
+    StrCpy $FailureStage "mutex-create"
+    StrCpy $FailureMessage "Uninstall could not create the product mutex (Windows error $0)."
     Call un.Fail
   ${EndIf}
   ${If} $0 = 183
+    Call un.ReleaseInstallerMutex
     StrCpy $FailureCode ${AIVE_E_CONCURRENT}
     StrCpy $FailureStage "mutex"
     StrCpy $FailureMessage "Another setup or uninstall is already running. Wait for it to finish, then retry."
     Call un.Fail
+  ${EndIf}
+FunctionEnd
+
+Function un.ReleaseInstallerMutex
+  ${If} $MutexHandle <> 0
+    StrCpy $0 $MutexHandle
+    System::Call 'kernel32::CloseHandle(p r0) i .r1'
+    StrCpy $MutexHandle 0
   ${EndIf}
 FunctionEnd
 
@@ -2021,6 +2216,7 @@ Function un.ValidateInstalledIdentity
   IfFileExists "${AIVEINSTALLDIR}\${AIVEIDENTITY}" 0 un_identity_failed
   IfFileExists "${AIVEINSTALLDIR}\${MAINBINARYNAME}.exe" 0 un_identity_failed
   IfFileExists "${AIVEINSTALLDIR}\uninstall.exe" 0 un_identity_failed
+  ClearErrors
   FileOpen $5 "${AIVEINSTALLDIR}\${AIVEIDENTITY}" r
   IfErrors un_identity_failed
   FileRead $5 $6
@@ -2147,7 +2343,7 @@ Section Uninstall
   ; Report locked Program Files leftovers and remove the parent only when empty.
   IfFileExists "$UninstallTombstone\*.*" program_files_leftover shell_empty
   program_files_leftover:
-    DetailPrint "RC.6 Program Files cleanup is deferred until restart: $UninstallTombstone"
+    DetailPrint "RC.7 Program Files cleanup is deferred until restart: $UninstallTombstone"
     SetRebootFlag true
     Goto program_files_report_done
   shell_empty:
@@ -2176,9 +2372,7 @@ Section Uninstall
     StrCpy $FailureMessage "Uninstall could not move the verified live shell to its unique cleanup path. Close the app, restart Windows if needed, and retry."
     Call un.Fail
   uninstall_done:
-  ${If} $MutexHandle <> 0
-    System::Call 'kernel32::CloseHandle(p rMutexHandle)'
-  ${EndIf}
+  Call un.ReleaseInstallerMutex
 SectionEnd
 
 Function SkipIfPassive

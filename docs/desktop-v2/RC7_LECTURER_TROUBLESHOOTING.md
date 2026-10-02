@@ -1,11 +1,11 @@
-# RC.6 Lecturer Troubleshooting Guide
+# RC.7 Lecturer Troubleshooting Guide
 
 Start with **Diagnostics > Redacted recovery details**. Record the visible error code, component/version, readiness and capabilities status, and remediation text. Do not send API keys, raw Credential Manager contents, full user paths, videos, or project databases unless the owner explicitly authorizes that disclosure.
 
 ## Verification or Windows reputation warning
 
-- **Checksum/signature verifier fails:** stop. Re-copy or re-download the complete RC.6 handoff from the expected channel. Never edit a manifest/catalog or combine it with RC.4/RC.5 files.
-- **Unknown publisher / SmartScreen:** this RC.6 handoff honestly declares `authenticode.status = not-claimed`. Continue only for supervised evaluation after both included verifiers pass. The warning is not proof that verification passed.
+- **Checksum/signature verifier fails:** stop. Re-copy or re-download the complete RC.7 handoff from the expected channel. Never edit a manifest/catalog or combine it with RC.4/RC.5 files.
+- **Unknown publisher / SmartScreen:** this RC.7 handoff honestly declares `authenticode.status = not-claimed`. Continue only for supervised evaluation after both included verifiers pass. The warning is not proof that verification passed.
 - **Python verifier cannot start:** install Python 3 and `cryptography` for the independent verifier, or have the release operator run it. Python is not required by the installed application.
 
 ## Installation and first launch
@@ -14,7 +14,7 @@ Start with **Diagnostics > Redacted recovery details**. Record the visible error
 - **Installer state/rollback issue:** retain `%ProgramData%\AI Video Editor\Installer\setup-rc6.log`, `transaction-rc6.json`, `uninstall-transaction-rc6.json`, `Shell.rc6-staging`, `Shell.rc6-rollback`, and any uniquely named `Shell.rc6-uninstall-*` tombstone. Rerun the same Setup after closing the app or restarting Windows. Do not delete recovery material when rollback is pending.
 - **Journal error 2101:** record the exact `journal-*` or `uninstall-journal-*` step shown in the dialog, then check the corresponding redacted setup or uninstall log under `%ProgramData%\AI Video Editor\Installer`. If the directory or log could not be created, record that absence too. Keep the recovery files and retry the same verified installer; do not delete a `.part` file or grant broad folder permissions to make setup proceed.
 - **WebView2 unavailable:** install or repair the Microsoft Edge WebView2 Runtime, then relaunch.
-- **Shortcut is missing or wrong:** launch the installed executable only from `%ProgramFiles%\AI Video Editor Desktop V2\Shell`; record the shortcut target and repair/reinstall the same RC.6 shell. Do not point a shortcut at a repository development build.
+- **Shortcut is missing or wrong:** launch the installed executable only from `%ProgramFiles%\AI Video Editor Desktop V2\Shell`; record the shortcut target and repair/reinstall the same RC.7 shell. Do not point a shortcut at a repository development build.
 
 ## Setup Center and components
 
@@ -30,7 +30,7 @@ Open Diagnostics and distinguish handshake, HTTP readiness, and capabilities fai
 - Use Setup Center **Repair** for the native core, then retry.
 - Check that endpoint security did not quarantine the verified engine or block loopback communication.
 - Do not create a firewall exception that exposes the engine to the LAN and do not bind it to `0.0.0.0`.
-- A component/version or protocol mismatch requires a coherent RC.6 catalog and shell, not a manual executable replacement.
+- A component/version or protocol mismatch requires a coherent RC.7 catalog and shell, not a manual executable replacement.
 
 ## Import, processing, or export
 
@@ -42,7 +42,7 @@ Open Diagnostics and distinguish handshake, HTTP readiness, and capabilities fai
 
 ## What to collect
 
-Collect the verifier output, Windows version, exact RC.6 installer filename/hash, the redacted Diagnostics snapshot, the user-visible step/error code, and whether repair/restart changed the result. Keep clean-PC installation, repair, and uninstall observations separate from source/unit/operator-smoke results.
+Collect the verifier output, Windows version, exact RC.7 installer filename/hash, the redacted Diagnostics snapshot, the user-visible step/error code, and whether repair/restart changed the result. Keep clean-PC installation, repair, and uninstall observations separate from source/unit/operator-smoke results.
 
 ## Stable Setup and uninstall codes
 
@@ -61,6 +61,7 @@ Collect the verifier output, Windows version, exact RC.6 installer filename/hash
 | 2111 | invariant | A canonical-path, test-override, or commit invariant was rejected. |
 | 2112 | conflict | Unknown nonempty/reparse data was preserved; identify its owner before acting. |
 | 2113 | mutex | Another Setup/uninstall instance owns the product mutex. |
+| 2114 | mutex-create | Windows could not create the setup mutex. Record the shown Win32 error and installer log; no install transaction began. |
 | 3010 | committed cleanup | Installation succeeded; restart is required only for deferred old-version cleanup. |
 
 Silent runs return these codes without an interactive retry dialog. A nonzero code is not success and must not be represented as a valid ARP installation.
