@@ -20,6 +20,8 @@ import logging
 import os
 from typing import Dict, List
 
+from config import settings
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -76,6 +78,13 @@ class PPTXSlideService:
             Slides that could not be rendered still appear with
             ``image_path`` set to ``None`` and an ``"error"`` key.
         """
+        if settings.is_native_desktop:
+            from desktop_native.document_conversion import extract_native_pptx_pages
+
+            return await extract_native_pptx_pages(
+                pptx_path, output_dir, dpi=dpi, presentation_factory=Presentation,
+            )
+
         # ------------------------------------------------------------------
         # Guards
         # ------------------------------------------------------------------

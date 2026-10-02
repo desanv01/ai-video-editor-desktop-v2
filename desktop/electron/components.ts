@@ -22,6 +22,7 @@ export function validateManifest(value: unknown): ReleaseManifest {
  }
  return m;
 }
+interface WhisperBindings { whisperRoot:string;whisperBinary:string;whisperModel:string }
 interface Active { schemaVersion: 'aive.activation.v1'; releaseVersion: string; current: Record<string,{version:string;sha256:string}>; previous: Record<string,{version:string;sha256:string}> }
 interface Journal { operationId:string; selected:string[]; totalBytes:number; phase:SetupPhase; acquiredBytes:number; completedWork:number }
 async function hash(file: string, signal: AbortSignal): Promise<string> { const result=createHash('sha256'); for await(const chunk of createReadStream(file,{signal})) result.update(chunk); return result.digest('hex'); }
@@ -47,8 +48,37 @@ export class Components {
   for(const entry of Object.values(c.entrypoints)) { try { const stat=await fs.lstat(confined(root,entry)); if(!stat.isFile()||stat.isSymbolicLink()) return false; } catch { return false; } } return true;
  }
  root(c:ComponentManifest):string { return confined(this.paths.components,c.id+'/'+c.version); }
- async engine():Promise<{engine:ComponentManifest;root:string;ffmpegRoot:string}> { const engine=this.manifest.components.find(c => c.id==='aive-engine'); const ffmpeg=this.manifest.components.find(c => c.id==='ffmpeg'); if(!engine||!ffmpeg||!await this.installed(engine)||!await this.installed(ffmpeg)) throw new Error('REQUIRED_COMPONENTS_MISSING'); return {engine,root:this.root(engine),ffmpegRoot:this.root(ffmpeg)}; }
- async localTranscriptionReady():Promise<boolean> { for(const c of this.manifest.components) if(c.probes.some(p=>p.kind==='whisper-model') && await this.installed(c)) return true; return false; }
+ async engine():Promise<{engine:ComponentManifest;root:string;ffmpegRoot:string;documentsRoot:string;libreofficeBinary:string;whisperRoot:string;whisperBinary:string;whisperModel:string}> {
+  const engine=this.manifest.components.find(c => c.id==='aive-engine'); const ffmpeg=this.manifest.components.find(c => c.id==='ffmpeg'); const documents=this.manifest.components.find(c => c.id==='documents');
+  if(!engine||!ffmpeg||!documents||!await this.installed(engine)||!await this.installed(ffmpeg)||!await this.installed(documents)) throw new Error('REQUIRED_COMPONENTS_MISSING');
+  if(documents.entrypoints.libreoffice!=='program/soffice.com') throw new Error('DOCUMENT_ENTRYPOINT_INVALID');
+  const documentsRoot=this.root(documents); const libreofficeBinary=confined(documentsRoot,documents.entrypoints.libreoffice);
+  return {engine,root:this.root(engine),ffmpegRoot:this.root(ffmpeg),documentsRoot,libreofficeBinary,...await this.whisperBindings()};
+ }
+ private async whisperBindings():Promise<WhisperBindings> {
+  const empty={whisperRoot:'',whisperBinary:'',whisperModel:''};
+  const candidates=this.manifest.components.filter(c => c.probes.some(p => p.kind==='whisper-model'));
+  if(candidates.length!==1) return empty;
+  const c=candidates[0];
+  if(c.id!=='whisper-small'||c.entrypoints.whisper!=='bin/whisper-cli.exe'||c.entrypoints.model!=='models/ggml-small.bin'||c.entrypoints.audio!=='probes/jfk.wav') return empty;
+  if(!c.probes.some(p => p.kind==='whisper-runtime'&&p.entrypoint==='whisper')||!c.probes.some(p => p.kind==='whisper-model'&&p.entrypoint==='model'&&p.runtimeEntrypoint==='whisper'&&p.audioEntrypoint==='audio'&&typeof p.expectedText==='string'&&p.expectedText.trim().length>=5)||!await this.installed(c)) return empty;
+  const whisperRoot=this.root(c);const whisperBinary=confined(whisperRoot,c.entrypoints.whisper);const whisperModel=confined(whisperRoot,c.entrypoints.model);
+  try {
+   for(const target of [whisperRoot,whisperBinary,whisperModel,confined(whisperRoot,c.entrypoints.audio)]) {
+    for(let current=target;;current=path.dirname(current)) {
+     const info=await fs.lstat(current);if(info.isSymbolicLink())return empty;
+     if(path.dirname(current)===current)break;
+    }
+    const actual=path.resolve(await fs.realpath(target));const expected=path.resolve(target);
+    if(process.platform==='win32'?actual.toLowerCase()!==expected.toLowerCase():actual!==expected)return empty;
+   }
+  } catch {return empty;}
+  return {whisperRoot,whisperBinary,whisperModel};
+ }
+ async localTranscriptionReady(bound?:WhisperBindings):Promise<boolean> {
+  const active=await this.whisperBindings();
+  return !!active.whisperRoot&&(!bound||(active.whisperRoot===bound.whisperRoot&&active.whisperBinary===bound.whisperBinary&&active.whisperModel===bound.whisperModel));
+ }
  async markReady():Promise<void> { const file=path.join(this.paths.state,'preparation.json'); const journal=await readJson<Journal|null>(file,null); if(journal) await atomic(file,{...journal,phase:'ready'}); }
  async allRequiredInstalled():Promise<boolean> { if(!this.configured()) return false; for(const c of this.manifest.components.filter(c => c.required)) if(!await this.installed(c)) return false; return true; }
  cancel():void { this.abort?.abort(); }
@@ -103,13 +133,40 @@ export function extract(archive:string,root:string,expandedBytes:number,signal:A
   zip.on('entry',entry => { void(async()=>{signal.throwIfAborted();if(++count>100000)throw new Error('ARCHIVE_ENTRY_LIMIT');const name=entry.fileName; const isDir=name.endsWith('/'); const safe=isDir?name.slice(0,-1):name; const mode=(entry.externalFileAttributes>>>16)&0xf000; if(!relative(safe)||mode===0xa000||(mode!==0&&mode!==0x8000&&mode!==0x4000)||safe==='.verified.json')throw new Error('ARCHIVE_UNSAFE_ENTRY');const file=confined(root,safe);expanded+=entry.uncompressedSize;if(expanded>expandedBytes)throw new Error('ARCHIVE_EXPANSION_LIMIT');if(isDir){await fs.mkdir(file,{recursive:true});zip.readEntry();return;}await fs.mkdir(path.dirname(file),{recursive:true});const stream=await new Promise<import('node:stream').Readable>((resolve,reject)=>zip.openReadStream(entry,(err,stream)=>err||!stream?reject(err):resolve(stream)));await pipeline(stream,createWriteStream(file,{flags:'wx'}),{signal});zip.readEntry();})().catch(fail); });zip.readEntry();
  }); });
 }
-async function command(executable:string,args:string[],signal:AbortSignal,stdoutOnly=false):Promise<string> {
- return new Promise((resolve,reject)=>{const child=spawn(executable,args,{cwd:path.dirname(executable),shell:false,windowsHide:true,stdio:['ignore','pipe','pipe'],signal});let output='';let received=0;const timer=setTimeout(()=>{child.kill();reject(new Error('PROBE_TIMEOUT'));},20000);const collect=(chunk:Buffer,include=true)=>{received+=chunk.length;if(include)output+=chunk.toString('utf8');if(received>1024*1024){child.kill();reject(new Error('PROBE_OUTPUT_LIMIT'));}};child.stdout.on('data',collect);child.stderr.on('data',(chunk:Buffer)=>collect(chunk,!stdoutOnly));child.once('error',error=>{clearTimeout(timer);reject(error);});child.once('exit',code=>{clearTimeout(timer);if(code!==0)reject(new Error('PROBE_FAILED'));else resolve(output);});});
+async function command(executable:string,args:string[],signal:AbortSignal,stdoutOnly=false,deadlineMs=20000):Promise<string> {
+ signal.throwIfAborted();
+ return new Promise((resolve,reject)=>{
+  const child=spawn(executable,args,{cwd:path.dirname(executable),shell:false,windowsHide:true,stdio:['ignore','pipe','pipe']});
+  let output='';let received=0;let failure:Error|null=null;let settled=false;
+  const cleanup=()=>{clearTimeout(timer);signal.removeEventListener('abort',abort);};
+  const stop=(error:Error)=>{if(settled||failure)return;failure=error;if(child.pid&&child.exitCode===null&&child.signalCode===null){try{child.kill('SIGKILL');}catch{/* Retain ownership until close even if termination fails. */}}};
+  const abort=()=>stop(new Error('PROBE_CANCELLED'));
+  const timer=setTimeout(()=>stop(new Error('PROBE_TIMEOUT')),deadlineMs);
+  signal.addEventListener('abort',abort,{once:true});
+  const collect=(chunk:Buffer,include=true)=>{
+   const remaining=Math.max(0,1024*1024-received);received+=chunk.length;
+   if(include&&remaining>0)output+=chunk.subarray(0,remaining).toString('utf8');
+   if(received>1024*1024)stop(new Error('PROBE_OUTPUT_LIMIT'));
+  };
+  child.stdout.on('data',collect);child.stderr.on('data',(chunk:Buffer)=>collect(chunk,!stdoutOnly));
+  child.stdout.once('error',error=>stop(error));child.stderr.once('error',error=>stop(error));
+  child.once('error',error=>{
+   if(settled)return;
+   if(!child.pid){settled=true;cleanup();reject(error);}else stop(error);
+  });
+  // close includes the owned process and both stdio streams. Never reject at
+  // timeout/abort/exit while a pipe or the child can still use staging files.
+  child.once('close',code=>{
+   if(settled)return;settled=true;cleanup();
+   if(failure)reject(failure);else if(signal.aborted)reject(new Error('PROBE_CANCELLED'));else if(code!==0)reject(new Error('PROBE_FAILED'));else resolve(output);
+  });
+  if(signal.aborted)abort();
+ });
 }
 async function probe(c:ComponentManifest,root:string,signal:AbortSignal):Promise<void> {
  for(const p of c.probes) {
   const executable=confined(root,c.entrypoints[p.entrypoint]);const stat=await fs.lstat(executable);if(!stat.isFile()||stat.isSymbolicLink())throw new Error('PROBE_ENTRY_INVALID');
-  if(p.kind==='whisper-model') { const runtime=confined(root,c.entrypoints[p.runtimeEntrypoint!]); const audio=confined(root,c.entrypoints[p.audioEntrypoint!]); for(const file of [runtime,audio]) { const item=await fs.lstat(file); if(!item.isFile()||item.isSymbolicLink()) throw new Error('WHISPER_PROBE_ENTRY_INVALID'); } const output=await command(runtime,['-m',executable,'-f',audio,'-nt','-np'],signal,true); const normalize=(text:string)=>text.toLowerCase().replace(/[^a-z0-9]+/g,' ').trim(); if(!normalize(output).includes(normalize(p.expectedText!))) throw new Error('WHISPER_TRANSCRIPTION_PROBE_FAILED'); continue; }
+  if(p.kind==='whisper-model') { const runtime=confined(root,c.entrypoints[p.runtimeEntrypoint!]); const audio=confined(root,c.entrypoints[p.audioEntrypoint!]); for(const file of [runtime,audio]) { const item=await fs.lstat(file); if(!item.isFile()||item.isSymbolicLink()) throw new Error('WHISPER_PROBE_ENTRY_INVALID'); } const output=await command(runtime,['-ng','-t','4','-l','en','-m',executable,'-f',audio,'-nt','-np'],signal,true,300000); const normalize=(text:string)=>text.toLowerCase().replace(/[^a-z0-9]+/g,' ').trim(); if(!normalize(output).includes(normalize(p.expectedText!))) throw new Error('WHISPER_TRANSCRIPTION_PROBE_FAILED'); continue; }
   if(p.kind==='engine-self-test'){const result=JSON.parse(await command(executable,['--self-test'],signal));if(result.schemaVersion!=='desktop.engine-self-test.v1'||result.status!=='ok'||result.component!==c.id||result.version!==c.version||result.frozen!==true)throw new Error('ENGINE_PROBE_IDENTITY');}
   else if(p.kind==='filter-codec-check'){const filters=await command(executable,['-hide_banner','-filters'],signal);const encoders=await command(executable,['-hide_banner','-encoders'],signal);if(!['ass','drawtext','scale','crop','overlay','concat','amix'].every(f=>new RegExp('\\b'+f+'\\b').test(filters))||!['libx264','aac'].every(f=>new RegExp('\\b'+f+'\\b').test(encoders)))throw new Error('FFMPEG_CAPABILITY_MISSING');}
   else {const args=p.kind==='whisper-runtime'?['--help']:p.kind==='document-tool-version'?['--version']:['-version'];const output=await command(executable,args,signal);const expected=p.kind==='ffmpeg-version'?'ffmpeg version':p.kind==='ffprobe-version'?'ffprobe version':p.kind==='document-tool-version'?'LibreOffice':'whisper';if(!output.toLowerCase().includes(expected.toLowerCase()))throw new Error('PROBE_UNEXPECTED_OUTPUT');}

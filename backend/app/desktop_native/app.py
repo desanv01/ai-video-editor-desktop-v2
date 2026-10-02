@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import json
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -25,6 +26,10 @@ def _bearer_token(request: Request) -> str | None:
 def create_native_app(runtime: NativeDesktopRuntime) -> FastAPI:
     """Create the native app without importing the Docker app/lifespan."""
 
+    from services.app_settings import apply_desktop_credentials
+
+    apply_desktop_credentials({})
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await runtime.startup()
@@ -35,8 +40,8 @@ def create_native_app(runtime: NativeDesktopRuntime) -> FastAPI:
 
     app = FastAPI(
         title="AI Video Editing Agent — Native Desktop",
-        description="Docker-free Desktop V2 Phase 4 native core engine.",
-        version="2.0.0-rc.6",
+        description="AIVE Desktop rebuild native core engine.",
+        version="2.1.0-rebuild.2",
         lifespan=lifespan,
     )
     app.state.native_runtime = runtime
@@ -82,6 +87,29 @@ def create_native_app(runtime: NativeDesktopRuntime) -> FastAPI:
     async def engine_control() -> dict[str, Any]:
         return runtime.engine_control_payload("ready")
 
+    @app.post("/engine-control/credentials", tags=["Engine"])
+    async def engine_control_credentials(request: Request) -> dict[str, Any]:
+        # Stream bound is enforced before JSON decoding, including chunked bodies.
+        try:
+            body = bytearray()
+            async for chunk in request.stream():
+                if len(body) + len(chunk) > 131072:
+                    raise ValueError("size")
+                body.extend(chunk)
+
+            def unique_object(pairs):
+                result = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError("duplicate")
+                    result[key] = value
+                return result
+
+            snapshot = json.loads(body.decode("utf-8"), object_pairs_hook=unique_object)
+            return apply_desktop_credentials(snapshot)
+        except (ValueError, TypeError, UnicodeError):
+            raise HTTPException(status_code=422, detail="Invalid desktop credentials.") from None
+
     @app.post("/engine-control/shutdown", tags=["Engine"])
     async def engine_control_shutdown(request: Request) -> dict[str, str]:
         callback = getattr(request.app.state, "request_shutdown", None)
@@ -95,7 +123,7 @@ def create_native_app(runtime: NativeDesktopRuntime) -> FastAPI:
         return {
             "service": "AI Video Editing Agent",
             "profile": "desktop-native",
-            "version": "2.0.0-rc.6",
+            "version": "2.1.0-rebuild.2",
             "readiness": "/readiness",
         }
 

@@ -16,6 +16,7 @@ import json
 import os
 import re
 import signal
+import stat
 import sys
 import time
 from pathlib import Path
@@ -25,7 +26,7 @@ BACKEND_ROOT = Path(__file__).resolve().parent
 APP_ROOT = BACKEND_ROOT / "app"
 STARTUP_HANDSHAKE_PROTOCOL = "desktop.engine-handshake.v2"
 ENGINE_ID = "aive-engine"
-ENGINE_VERSION = "2.0.0-rc.6"
+ENGINE_VERSION = "2.1.0-rebuild.2"
 SELF_TEST_DEADLINE_SECONDS = 15.0
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
@@ -56,6 +57,17 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ffmpeg-component-root",
         default=os.environ.get("AIVE_FFMPEG_COMPONENT_ROOT"),
+    )
+    parser.add_argument("--whisper-component-root", default=os.environ.get("AIVE_WHISPER_COMPONENT_ROOT"))
+    parser.add_argument("--whisper-binary-path", default=os.environ.get("AIVE_WHISPER_BINARY_PATH"))
+    parser.add_argument("--whisper-model-path", default=os.environ.get("AIVE_WHISPER_MODEL_PATH"))
+    parser.add_argument(
+        "--documents-component-root",
+        default=os.environ.get("AIVE_DOCUMENTS_COMPONENT_ROOT"),
+    )
+    parser.add_argument(
+        "--libreoffice-binary-path",
+        default=os.environ.get("AIVE_LIBREOFFICE_BINARY_PATH"),
     )
     parser.add_argument(
         "--component-root",
@@ -96,6 +108,9 @@ def _self_test() -> int:
         "uvicorn",
         "sqlalchemy",
         "aiosqlite",
+        "lancedb",
+        "pyarrow",
+        "desktop_native.index_journal",
         "desktop_native.app",
         "desktop_native.runtime",
         "services.native_imports",
@@ -204,7 +219,76 @@ def build_startup_handshake(
     }
 
 
+def _document_bindings(args: argparse.Namespace) -> tuple[str, str]:
+    """Validate activated document paths without importing runtime settings."""
+    root_value = str(args.documents_component_root or "").strip()
+    binary_value = str(args.libreoffice_binary_path or "").strip()
+    if bool(root_value) != bool(binary_value):
+        raise SystemExit("Managed documents require both an activated component root and LibreOffice binary path")
+    if not root_value:
+        return "", ""
+    root = Path(root_value)
+    binary = Path(binary_value)
+    if not root.is_absolute() or not binary.is_absolute():
+        raise SystemExit("Managed document component and binary paths must be absolute")
+    root = Path(os.path.abspath(root))
+    binary = Path(os.path.abspath(binary))
+    try:
+        binary.relative_to(root)
+        for target in (root, binary):
+            for part in reversed((target, *target.parents)):
+                info = part.lstat()
+                if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                    raise SystemExit("Managed document paths cannot contain symlinks or reparse points")
+        actual_root = root.resolve(strict=True)
+        actual_binary = binary.resolve(strict=True)
+        relative_binary = actual_binary.relative_to(actual_root)
+        if not actual_root.is_dir() or not stat.S_ISREG(actual_binary.stat().st_mode):
+            raise SystemExit("Managed LibreOffice must be a regular file within its activated installation")
+        if relative_binary.as_posix().lower() != "program/soffice.com":
+            raise SystemExit("Managed LibreOffice must use the activated program/soffice.com CLI")
+    except (OSError, ValueError) as exc:
+        raise SystemExit("Managed LibreOffice installation is missing or outside its activated root") from exc
+    return str(actual_root), str(actual_binary)
+
+
+def _whisper_bindings(args: argparse.Namespace) -> tuple[str, str, str]:
+    values = tuple(str(getattr(args, name, "") or "").strip() for name in (
+        "whisper_component_root", "whisper_binary_path", "whisper_model_path",
+    ))
+    if not any(values):
+        return "", "", ""
+    if not all(values):
+        raise SystemExit("Managed Whisper requires an activated root, binary and model together")
+    paths = tuple(Path(value) for value in values)
+    if not all(path.is_absolute() for path in paths):
+        raise SystemExit("Managed Whisper root, binary and model must be absolute paths")
+    root, binary, model = tuple(Path(os.path.abspath(path)) for path in paths)
+    try:
+        for target in (root, binary, model):
+            target.relative_to(root)
+            for part in reversed((target, *target.parents)):
+                info = part.lstat()
+                if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                    raise SystemExit("Managed Whisper paths cannot contain symlinks or reparse points")
+        actual_root = root.resolve(strict=True)
+        if not actual_root.is_dir():
+            raise SystemExit("Managed Whisper component root must be a directory")
+        actual_files = []
+        for target, expected in ((binary, "bin/whisper-cli.exe"), (model, "models/ggml-small.bin")):
+            actual = target.resolve(strict=True)
+            if actual.relative_to(actual_root).as_posix().lower() != expected or not stat.S_ISREG(actual.stat().st_mode):
+                raise SystemExit("Managed Whisper requires its confined bin/whisper-cli.exe and models/ggml-small.bin")
+            actual_files.append(str(actual))
+    except (OSError, ValueError) as exc:
+        raise SystemExit("Managed Whisper files are missing or outside the activated component; repair the Whisper small component") from exc
+    return str(actual_root), *actual_files
+
+
 def _configure_environment(args: argparse.Namespace) -> object:
+    # Native credentials arrive only through the authenticated controller bridge.
+    for name in ("MISTRAL_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "ALIBABA_API_KEY"):
+        os.environ.pop(name, None)
     if not args.data_root:
         raise SystemExit("--data-root or AIVE_DESKTOP_DATA_ROOT is required")
     if args.port < 0 or args.port > 65535:
@@ -225,6 +309,9 @@ def _configure_environment(args: argparse.Namespace) -> object:
     if parsed_control_port < 1 or parsed_control_port > 65535:
         raise SystemExit("--control-address port must be between 1 and 65535")
 
+    documents_root, libreoffice_binary = _document_bindings(args)
+    whisper_root, whisper_binary, whisper_model = _whisper_bindings(args)
+
     # Import only the isolated path module before selecting the profile.
     from desktop_native.paths import NativeDesktopPaths
 
@@ -236,6 +323,20 @@ def _configure_environment(args: argparse.Namespace) -> object:
     paths = NativeDesktopPaths.from_environment()
 
     os.environ.update(paths.settings_environment())
+    # Empty explicit bindings also override inherited/manual settings and dotenv
+    # values before any config import; native documents never fall back globally.
+    os.environ["LIBREOFFICE_COMPONENT_ROOT"] = documents_root
+    os.environ["LIBREOFFICE_BINARY_PATH"] = libreoffice_binary
+    os.environ.update({
+        "WHISPER_CPP_COMPONENT_ROOT": whisper_root,
+        "WHISPER_CPP_BINARY_PATH": whisper_binary,
+        "WHISPER_CPP_MODEL_PATH": whisper_model,
+        "LOCAL_TRANSCRIPTION_MODEL_PATH": whisper_model,
+        "WHISPER_CPP_MODEL_ID": "small",
+        "LOCAL_TRANSCRIPTION_MODEL_ID": "small",
+        "WHISPER_CPP_MODELS_DIR": "",
+        "LOCAL_TRANSCRIPTION_MODELS_DIR": "",
+    })
     os.environ.update(
         {
             "RUNTIME_PROFILE": "desktop-native",
