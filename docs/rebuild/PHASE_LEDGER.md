@@ -4,7 +4,7 @@ Main chat: `01a0fa11-0419-7fd2-aee1-9510fc8cf29e`. Client date: 2026-10-02, Asia
 
 ## Resume here
 
-Phase 1 is complete at the contracts level; Phase 2 assignment is ready for dispatch. Main owns architecture, reviews, tests, commits, push, PR/CI, acceptance. Workers implement and perform expressly assigned builds/packages only. User directly authorized worker creation and bidirectional coordination in this chat on 2026-10-02. Merge still requires separate human authorization.
+Phase 1 is complete at the contracts level; Phase 2 assignment is ready for dispatch. Main owns architecture, reviews, tests, commits, push, PR/CI, acceptance. Workers implement and perform expressly assigned builds/packages only. User directly authorized worker creation and bidirectional coordination in this chat on 2026-10-02. Human subsequently authorized rebuild phase/subtask GitHub commits, PRs, CI/CD, issues and merges. Main may merge reviewed rebuild PRs after relevant passing checks; this does not authorize merging old RC PRs.
 
 Main checkout: `C:/Users/Dv/Desktop/aive-desktop-rebuild`, dedicated remote `https://github.com/desanv01/ai-video-editor-desktop-v2.git`. Integration branch: `codex/aive-electron-rebuild-20261002`. Worker worktrees belong to this independent clone, never the FYP Git directory.
 
@@ -27,7 +27,7 @@ The original's latest commit adds original transcript downloads and evidence art
 | Phase | State | Worker / branch / worktree | Acceptance evidence / next action |
 |---|---|---|---|
 | 1 Baseline and contracts | Complete, main-authored | None | Both full handoffs read; fresh GitHub/local baseline; preservation matrix, API inventory, runtime/storage/retrieval contracts and focused acceptance written |
-| 2 Desktop foundation | Assignment ready | To be created just in time | Implement Electron controller/preload, provisioning, dynamic authenticated backend lifecycle, assisted per-user NSIS and setup gate; main reviews/builds/checks |
+| 2 Desktop foundation | Implementing | Worker `01a0fa1c-ee08-7f62-8962-b73ffd692906`; branch `codex/aive-rebuild-phase2-foundation`; worktree `C:/Users/Dv/Desktop/aive-desktop-rebuild-phase2`; base `28c1f333639409f655df6c6d3000138114d863b1` | Implement Electron controller/preload, provisioning, dynamic authenticated backend lifecycle, assisted per-user NSIS and setup gate; main reviews/builds/checks |
 | 3 Backend and storage | Planned | None | LanceDB adapter, migrations/durability, short transactions, packaged dependencies and capabilities |
 | 4 Original workflow | Planned | None | Preserve original feature patch, connect all intake/agents/stages/render/export through Electron; real workflow acceptance |
 | 5 UI overhaul | Planned | None | UI UX Pro Max plus relevant Taste, no 12ui; source-derived six-stage design |
@@ -45,3 +45,6 @@ The original's latest commit adds original transcript downloads and evidence art
 ## Update rules
 
 After every dispatch/report/review record worker ID, exact path/base, allowed ownership, result, focused checks, accepted commit and next action here. Check compact worker status before re-dispatch. Continue useful active work; the heartbeat supplements it. Never leave a worker report unreviewed merely because a scheduled check exists. Completion requires the installed original workflow through export/reopen/uninstall, not only successful compilation.
+
+Phase 1 contracts commit: 28c1f333639409f655df6c6d3000138114d863b1. Clone-local Git author matches the original repo identity; no global config changed. Worker dispatched and confirmed active. No product build accepted yet.
+
