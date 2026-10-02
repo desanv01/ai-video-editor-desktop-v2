@@ -26,7 +26,32 @@ SEMVER = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za
 RESERVED = {"notice.txt", "source-identity.json", "dependency-inventory.json", "sha256sums.txt"}
 
 
-def contained_input(path: Path, *, directory: bool = False, document_cache: bool = False) -> Path:
+DOCUMENT_STDLIB_VENV = ('program', 'python-core-3.12.14', 'lib', 'venv')
+
+
+def document_private_relative(relative: Path) -> Path:
+    # Preserve this exact upstream stdlib module, never an actual environment.
+    parts = relative.parts
+    if parts[:len(DOCUMENT_STDLIB_VENV)] == DOCUMENT_STDLIB_VENV:
+        tail = parts[len(DOCUMENT_STDLIB_VENV):]
+        allowed = (
+            not tail
+            or tail in (('__init__.py',), ('__main__.py',), ('__pycache__',))
+            or (len(tail) == 2 and tail[0] == '__pycache__' and re.fullmatch(
+                r'__(?:init|main)__\.cpython-[0-9]+(?:\.opt-[0-9]+)?\.pyc', tail[1]
+            ) is not None)
+        )
+        if not allowed:
+            raise ValueError(f"Unexpected entry in approved stock stdlib venv module: {relative}")
+        # Cache files still require the existing regular sibling-source check.
+        return Path(*parts[:3], *parts[4:])
+    return relative
+
+
+def contained_input(
+    path: Path, *, directory: bool = False, document_cache: bool = False,
+    documents_source_root: Path | None = None,
+) -> Path:
     selected = path.absolute()
     validate_output(selected)
     if directory:
@@ -42,6 +67,12 @@ def contained_input(path: Path, *, directory: bool = False, document_cache: bool
     if not resolved.is_relative_to(AUTHORIZED_ROOT):
         raise ValueError(f"Input outside authorized rebuild root: {selected}")
     relative = resolved.relative_to(AUTHORIZED_ROOT)
+    if documents_source_root is not None:
+        approved_source = contained_input(documents_source_root, directory=True)
+        if not resolved.is_relative_to(approved_source):
+            raise ValueError(f"Document payload escaped approved source root: {selected}")
+        runtime_relative = document_private_relative(resolved.relative_to(approved_source))
+        relative = Path(*approved_source.relative_to(AUTHORIZED_ROOT).parts, *runtime_relative.parts)
     if document_cache:
         # Only documents collection opts in; retain every other private guard.
         relative = Path(*(part for part in relative.parts if part.casefold() != '__pycache__'))
@@ -108,13 +139,14 @@ def collect_payload(component: str, source: Path) -> tuple[dict[str, Path], list
                 raise ValueError(f"Symlink/reparse tree entry rejected: {path}")
             if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
                 raise ValueError(f"Nonregular runtime entry rejected: {path}")
+            private_relative = document_private_relative(relative)
             cache_parts = [part for part in relative.parts if part.casefold() == '__pycache__']
             if cache_parts:
-                private_relative = Path(*(part for part in relative.parts if part.casefold() != '__pycache__'))
+                private_relative = Path(*(part for part in private_relative.parts if part.casefold() != '__pycache__'))
                 if private_relative.parts:
                     reject_private(private_relative)
             else:
-                reject_private(relative)
+                reject_private(private_relative)
             folded = archive_name.casefold()
             if folded in seen or folded in RESERVED:
                 raise ValueError(f"Case-colliding/reserved archive entry: {archive_name}")
@@ -133,13 +165,13 @@ def collect_payload(component: str, source: Path) -> tuple[dict[str, Path], list
                 if match is None:
                     raise ValueError(f"Unrecognized generated Python cache: {relative}")
                 sibling_source = path.parent.parent / (match.group(1) + '.py')
-                contained_input(sibling_source)
-                contained_input(path, document_cache=True)
+                contained_input(sibling_source, documents_source_root=source)
+                contained_input(path, document_cache=True, documents_source_root=source)
                 generated_caches.append(archive_name)
                 continue
             if stat.S_ISDIR(info.st_mode):
                 continue
-            contained_input(path)
+            contained_input(path, documents_source_root=source)
             if len(relative.parts) == 1 and path.suffix.casefold() == ".msi":
                 excluded.append(archive_name)
                 continue
@@ -225,7 +257,9 @@ def main() -> int:
                             destination.write(data[name])
                             expanded += len(data[name])
                         else:
-                            contained_input(files[name])
+                            contained_input(
+                                files[name], documents_source_root=source if args.component == "documents" else None
+                            )
                             with files[name].open("rb") as origin:
                                 for block in iter(lambda: origin.read(1024 * 1024), b""):
                                     destination.write(block)
