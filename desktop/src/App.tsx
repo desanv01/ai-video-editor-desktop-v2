@@ -1,3 +1,4 @@
+import { ElectronSetup } from "./electron/ElectronSetup";
 import { useCallback, useEffect, useState } from "react";
 import { UploadPanel } from "./components/UploadPanel";
 import { ProcessingView } from "./components/ProcessingView";
@@ -25,7 +26,8 @@ type AppRoute = {
   videoId: string | null;
 };
 
-export default function App() {
+export default function App() { return window.aiveDesktop ? <ElectronSetup><BrowserEditorApp /></ElectronSetup> : <LegacyApp />; }
+function LegacyApp() {
   const [isTauriRuntime, setIsTauriRuntime] = useState<boolean | null>(null);
   const [nativeEngineReady, setNativeEngineReady] = useState(false);
   const handleEngineReady = useCallback(() => setNativeEngineReady(true), []);
@@ -68,7 +70,7 @@ export function BrowserEditorApp({ nativeMode = false }: { nativeMode?: boolean 
     (async () => {
       try {
         api.setNativeBridgeEnabled(nativeMode);
-        if (!nativeMode) {
+        if (!nativeMode && !window.aiveDesktop) {
           const { invoke } = await import("@tauri-apps/api/core");
           const settings = await invoke<{ backend_url?: string }>("load_settings");
           if (settings?.backend_url) api.setBaseUrl(settings.backend_url);
@@ -267,3 +269,4 @@ function replaceRouteHash(view: View, projectId: string | null, videoId: string 
   const query = params.toString();
   window.history.replaceState(null, "", `#/${view}${query ? `?${query}` : ""}`);
 }
+

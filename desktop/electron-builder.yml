@@ -1,0 +1,31 @@
+appId: com.aive.desktop.rebuild
+productName: AIVE Desktop
+asar: true
+directories:
+  output: release-electron
+files:
+  - dist/**
+  - dist-electron/**
+  - package.json
+  - '!**/.env*'
+  - '!src-tauri/**'
+  - '!**/credentials.json'
+extraResources:
+  - from: ../contracts/rebuild/components.json
+    to: rebuild/components.json
+  - offline-components/**
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  artifactName: AIVE-Desktop-${version}-${arch}-Setup.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+
+

@@ -57,7 +57,8 @@ import type {
   SupervisorStatus,
 } from "../desktopV2";
 
-let BASE_URL = "http://localhost:8000/api/v1";
+const ELECTRON_RUNTIME = typeof window !== "undefined" && Boolean(window.aiveDesktop);
+let BASE_URL = ELECTRON_RUNTIME ? "aive://app/api/v1" : "http://localhost:8000/api/v1";
 let NATIVE_BRIDGE_ENABLED = false;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const APPROVAL_TIMEOUT_MS = 10 * 60_000;
@@ -98,6 +99,7 @@ export function friendlyErrorMessage(error: unknown): string {
 }
 
 export function setBaseUrl(url: string) {
+  if (ELECTRON_RUNTIME) return;
   BASE_URL = url.replace(/\/+$/, "") + "/api/v1";
 }
 
@@ -106,7 +108,7 @@ export function getBackendBaseUrl(): string {
 }
 
 export function setNativeBridgeEnabled(enabled: boolean): void {
-  NATIVE_BRIDGE_ENABLED = enabled;
+  NATIVE_BRIDGE_ENABLED = !ELECTRON_RUNTIME && enabled;
 }
 
 export function isNativeBridgeEnabled(): boolean {
@@ -1214,3 +1216,4 @@ export function getMetricsSummaryUrl(videoId: string): string {
 export function getVideoStreamUrl(videoId: string): string {
   return resourceUrl(`/videos/${videoId}/stream`);
 }
+
