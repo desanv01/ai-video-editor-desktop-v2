@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from config import settings
-from db.database import async_session, dispose_db, engine, init_db
+from db.database import dispose_db, init_db
 
 from .health import ENGINE_ID, ENGINE_VERSION, build_capabilities_payload, build_health_payload
 from .jobs import DurableJobStore
@@ -47,6 +47,9 @@ class NativeDesktopRuntime:
     jobs: DurableJobStore | None = None
     started_at: str | None = None
     shutting_down: bool = False
+    _rag_service: Any = field(default=None, init=False, repr=False)
+    _shutdown_complete: bool = field(default=False, init=False, repr=False)
+    _shutdown_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if len(self.bearer_token) < 32:
@@ -58,16 +61,6 @@ class NativeDesktopRuntime:
         if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", self.session_id):
             raise ValueError("Native desktop session id contains characters outside the Phase 1 contract")
         self.paths.ensure_directories()
-        self.jobs = DurableJobStore(self.paths.database)
-        self.ffmpeg_probe = discover_ffmpeg(
-            self.paths.ffmpeg_component,
-            temp_root=self.paths.temp,
-            allow_fixture=self.allow_tool_fixture,
-        )
-        if self.ffmpeg_probe.ffmpeg_path:
-            settings.FFMPEG_BINARY_PATH = self.ffmpeg_probe.ffmpeg_path
-        if self.ffmpeg_probe.ffprobe_path:
-            settings.FFPROBE_BINARY_PATH = self.ffmpeg_probe.ffprobe_path
 
     @classmethod
     def from_settings(cls, *, requested_port: int = 0) -> "NativeDesktopRuntime":
@@ -84,39 +77,64 @@ class NativeDesktopRuntime:
 
     async def startup(self) -> None:
         logger.info("native engine startup preflight begins")
+        self.jobs = None
+        self.database_ready = False
+        self.api_ready = False
+        self.startup_error = None
         try:
+            # Revision validation/upgrade must precede helpers that create tables.
             await init_db()
             self.database_ready = True
             self.database_detail = (
-                f"SQLite WAL database ready at {self.paths.database}; foreign keys and "
-                "30-second busy timeout are enabled."
+                f"SQLite WAL database ready at {self.paths.database}; synchronous FULL, "
+                "foreign keys and 30-second busy timeout are enabled."
             )
-            if self.jobs:
-                recovered = self.jobs.recover_inflight()
-                if recovered:
-                    logger.info("recovered %s interrupted native jobs", recovered)
+            self.jobs = await asyncio.to_thread(DurableJobStore, self.paths.database)
+            recovered = await asyncio.to_thread(self.jobs.recover_inflight)
+            if recovered:
+                logger.info("recovered %s interrupted native jobs", recovered)
             from services.native_imports import recover_native_import_sessions
 
-            recovered_imports = recover_native_import_sessions(settings)
+            recovered_imports = await asyncio.to_thread(recover_native_import_sessions, settings)
             if recovered_imports:
                 logger.info("recovered %s interrupted native import operations", recovered_imports)
 
-            # The existing RAG service is selected by the native profile at
-            # import time.  Reusing its client keeps project/video APIs and
-            # native vector capability reporting on the same store.
-            from rag.vector_store import rag_service
+            self.ffmpeg_probe = await asyncio.to_thread(
+                discover_ffmpeg,
+                self.paths.ffmpeg_component,
+                temp_root=self.paths.temp,
+                allow_fixture=self.allow_tool_fixture,
+            )
+            if self.ffmpeg_probe.ffmpeg_path:
+                settings.FFMPEG_BINARY_PATH = self.ffmpeg_probe.ffmpeg_path
+            if self.ffmpeg_probe.ffprobe_path:
+                settings.FFPROBE_BINARY_PATH = self.ffmpeg_probe.ffprobe_path
 
-            self.vector_capability = getattr(rag_service, "capability", None)
             try:
+                from rag.vector_store import rag_service
+
+                self._rag_service = rag_service
+                self.vector_capability = getattr(rag_service, "capability", None)
+                if self.vector_capability is None:
+                    raise RuntimeError("Native RAG service has no vector capability")
                 await rag_service.ensure_collection()
             except Exception as exc:
-                self.vector_capability = VectorCapability(
-                    backend="embedded-vector-error",
-                    state="degraded",
-                    detail=f"Embedded vector collection could not be initialized: {exc}",
-                    remediation_codes=("VECTOR_STORE_UNAVAILABLE",),
-                )
-                logger.warning("embedded vector store degraded: %s", exc)
+                # Retain the actual mutable capability so later operation errors
+                # and recovery remain visible to health/capabilities callers.
+                if self.vector_capability is None:
+                    self.vector_capability = VectorCapability(
+                        backend="lancedb",
+                        state="unavailable",
+                        detail=f"Native vector collection could not be initialized: {exc}",
+                        remediation_codes=("VECTOR_STORE_UNAVAILABLE",),
+                    )
+                elif self.vector_capability.state == "available":
+                    # A pre-adapter configuration failure must not leave an old
+                    # success visible; retain this same actual capability object.
+                    self.vector_capability.state = "unavailable"
+                    self.vector_capability.detail = f"Native vector initialization failed: {exc}"
+                    self.vector_capability.remediation_codes = ("VECTOR_STORE_UNAVAILABLE",)
+                logger.warning("native LanceDB vector store unavailable: %s", exc)
 
             self.api_ready = True
             self.started_at = _now()
@@ -126,20 +144,44 @@ class NativeDesktopRuntime:
                 getattr(self.vector_capability, "backend", "unavailable"),
                 bool(self.ffmpeg_probe and self.ffmpeg_probe.ready),
             )
+        except asyncio.CancelledError:
+            self.jobs = None
+            self.database_ready = False
+            self.api_ready = False
+            self.startup_error = "Native startup cancelled"
+            self.database_detail = "Native startup did not complete."
+            logger.info("native engine startup cancelled")
+            raise
         except Exception as exc:
+            self.jobs = None
+            self.database_ready = False
+            self.api_ready = False
             self.startup_error = f"Native startup failed: {exc}"
             self.database_detail = str(exc)
             logger.exception("native engine startup failed")
             raise
 
     async def shutdown(self) -> None:
-        if self.shutting_down:
-            return
-        self.shutting_down = True
-        self.api_ready = False
-        logger.info("native engine graceful shutdown begins")
-        await dispose_db()
-        logger.info("native engine graceful shutdown complete")
+        async with self._shutdown_lock:
+            if self._shutdown_complete:
+                return
+            self.shutting_down = True
+            self.api_ready = False
+            self.database_ready = False
+            self.jobs = None
+            logger.info("native engine graceful shutdown begins")
+            try:
+                try:
+                    # Do not import/create RAG merely to close an unstarted runtime.
+                    if self._rag_service is not None:
+                        await self._rag_service.close()
+                finally:
+                    await dispose_db()
+            except Exception:
+                logger.exception("native engine graceful shutdown failed")
+                raise
+            self._shutdown_complete = True
+            logger.info("native engine graceful shutdown complete")
 
     def health_payload(self) -> dict[str, Any]:
         return build_health_payload(
@@ -149,6 +191,7 @@ class NativeDesktopRuntime:
             vector_capability=self.vector_capability,
             ffmpeg_probe=self.ffmpeg_probe,
             startup_error=self.startup_error,
+            native_import_ready=self.database_ready and self.jobs is not None,
         )
 
     def capabilities_payload(self) -> dict[str, Any]:
@@ -157,6 +200,7 @@ class NativeDesktopRuntime:
             vector_capability=self.vector_capability,
             ffmpeg_probe=self.ffmpeg_probe,
             database_ready=self.database_ready,
+            native_import_ready=self.database_ready and self.jobs is not None,
         )
 
     def engine_control_payload(self, message_type: str = "ready") -> dict[str, Any]:
