@@ -109,6 +109,33 @@ class DeliverySafety(unittest.TestCase):
    with self.assertRaisesRegex(ValueError,'Input changed'):self.run_pack()
    self.assertEqual(list((self.root/'out').glob('*')),[])
   finally:delivery.identity=original
+ def test_descriptor_change_time_remains_enforced(self):
+  from types import SimpleNamespace
+  original=delivery.os.fstat;calls=0
+  def fstat(fd):
+   nonlocal calls
+   calls+=1;info=original(fd)
+   if calls!=2:return info
+   fields={k:getattr(info,k) for k in ('st_dev','st_ino','st_size','st_mtime_ns','st_ctime_ns')}
+   if hasattr(info,'st_birthtime_ns'):fields['st_birthtime_ns']=info.st_birthtime_ns
+   fields['st_ctime_ns']+=1
+   return SimpleNamespace(**fields)
+  delivery.os.fstat=fstat
+  try:
+   with self.assertRaisesRegex(ValueError,'Input changed while hashing'):delivery.identity(self.paths['guide'])
+  finally:delivery.os.fstat=original
+ def test_actual_replacement_between_stat_and_open_rejected(self):
+  original=delivery.regular;calls=0
+  def regular(path):
+   nonlocal calls
+   info=original(path);calls+=1
+   if calls==1:
+    replacement=path.with_name('replacement.txt');replacement.write_bytes(path.read_bytes());os.replace(replacement,path)
+   return info
+  delivery.regular=regular
+  try:
+   with self.assertRaisesRegex(ValueError,'Input replaced'):delivery.identity(self.paths['guide'])
+  finally:delivery.regular=original
  def test_duplicate_json_fields_rejected(self):
   with self.assertRaisesRegex(ValueError,'Duplicate JSON key'):delivery.parse_json(b'{"sourceCommit":"a","sourceCommit":"b"}','fixture')
 

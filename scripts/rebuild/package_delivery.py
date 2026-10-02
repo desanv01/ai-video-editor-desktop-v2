@@ -102,19 +102,30 @@ def input_path(path: Path, *, directory: bool = False) -> Path:
 
 
 def stamp(info: os.stat_result) -> tuple[int, ...]:
-    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    # Windows 3.12+ path and descriptor ctime have different meanings. Birth
+    # time is comparable across APIs; keep ctime on other OSes/older Windows.
+    comparable_time = getattr(info, "st_birthtime_ns", info.st_ctime_ns) if os.name == "nt" else info.st_ctime_ns
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, comparable_time)
+
+
+def handle_stamp(info: os.stat_result) -> tuple[int, ...]:
+    # A single open descriptor always compares its own change-time semantics.
+    return (*stamp(info), info.st_ctime_ns)
 
 
 def identity(path: Path) -> dict:
-    before = stamp(regular(path))
+    before_info = regular(path)
+    before = stamp(before_info)
     digest = hashlib.sha256()
     size = 0
     with path.open("rb") as stream:
-        require(stamp(os.fstat(stream.fileno())) == before, f"Input replaced: {path}")
+        opened_info = os.fstat(stream.fileno())
+        require(os.path.samestat(before_info, opened_info) and stamp(opened_info) == before, f'Input replaced: {path}')
+        opened_stamp = handle_stamp(opened_info)
         for block in iter(lambda: stream.read(CHUNK), b""):
             size += len(block)
             digest.update(block)
-        require(stamp(os.fstat(stream.fileno())) == before, f"Input changed while hashing: {path}")
+        require(handle_stamp(os.fstat(stream.fileno())) == opened_stamp, f"Input changed while hashing: {path}")
     require(stamp(regular(path)) == before and size == before[2], f"Input changed: {path}")
     return {"fileName": path.name, "sizeBytes": size, "sha256": digest.hexdigest(), "stamp": before}
 
@@ -391,16 +402,20 @@ def main() -> int:
                             continue
                         path = input_path(files[name])
                         expected = known[path]
-                        require(stamp(regular(path)) == expected["stamp"], f"Input changed before copy: {path}")
+                        before_info = regular(path)
+                        require(stamp(before_info) == expected['stamp'], f'Input changed before copy: {path}')
                         digest = hashlib.sha256()
                         size = 0
                         with path.open("rb") as source:
-                            require(stamp(os.fstat(source.fileno())) == expected["stamp"], f"Input replaced before copy: {path}")
+                            opened_info = os.fstat(source.fileno())
+                            require(os.path.samestat(before_info, opened_info) and stamp(opened_info) == expected['stamp'],
+                                f'Input replaced before copy: {path}')
+                            opened_stamp = handle_stamp(opened_info)
                             for block in iter(lambda: source.read(CHUNK), b""):
                                 destination.write(block)
                                 digest.update(block)
                                 size += len(block)
-                            require(stamp(os.fstat(source.fileno())) == expected["stamp"], f"Input changed during copy: {path}")
+                            require(handle_stamp(os.fstat(source.fileno())) == opened_stamp, f"Input changed during copy: {path}")
                         require(size == expected["sizeBytes"] and digest.hexdigest() == expected["sha256"], f"Input changed during copy: {path}")
             raw.flush()
             os.fsync(raw.fileno())
