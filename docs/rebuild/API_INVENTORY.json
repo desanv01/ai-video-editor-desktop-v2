@@ -1,0 +1,2730 @@
+{
+  "schemaVersion": "aive.rebuild-preservation.v1",
+  "originalCommit": "1e4a7d084d64e98646f495020f4b56b1649be298",
+  "desktopBaseCommit": "131606d8d9746378febb80a2403c271ed68f157a",
+  "original": {
+    "routes": [
+      {
+        "method": "POST",
+        "path": "/api/v1/debug/transcribe",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 24,
+        "function": "debug_transcribe",
+        "debugOnly": true
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/debug/extract-audio",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 149,
+        "function": "debug_extract_audio",
+        "debugOnly": true
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/debug/config",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 213,
+        "function": "debug_config",
+        "debugOnly": true
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/debug/rag/stats",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 253,
+        "function": "debug_rag_stats",
+        "debugOnly": true
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/debug/rag/search",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 263,
+        "function": "debug_rag_search",
+        "debugOnly": true
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/debug/rag/extract-text",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 299,
+        "function": "debug_extract_text",
+        "debugOnly": true
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/debug/rag/reset",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 368,
+        "function": "debug_rag_reset",
+        "debugOnly": true
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/debug/agents/run/{agent_name}",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 382,
+        "function": "debug_run_agent",
+        "debugOnly": true
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/debug/agents/segments/{video_id}",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 447,
+        "function": "debug_view_segments",
+        "debugOnly": true
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/debug/agents/scenes/{video_id}",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 498,
+        "function": "debug_view_scenes",
+        "debugOnly": true
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/debug/render/force-approve/{video_id}",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 536,
+        "function": "debug_force_approve",
+        "debugOnly": true
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/debug/render/run/{video_id}",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 561,
+        "function": "debug_render",
+        "debugOnly": true
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/debug/render/exports/{video_id}",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 592,
+        "function": "debug_view_exports",
+        "debugOnly": true
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/settings/models/local-transcription",
+        "file": "backend/app/api/routes/models.py",
+        "line": 31,
+        "function": "get_local_transcription_model_catalog",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/settings/models/local-transcription/{model_id}/download",
+        "file": "backend/app/api/routes/models.py",
+        "line": 80,
+        "function": "download_local_transcription_model",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/settings/models/local-transcription/{model_id}/download",
+        "file": "backend/app/api/routes/models.py",
+        "line": 97,
+        "function": "get_local_transcription_model_download",
+        "debugOnly": false
+      },
+      {
+        "method": "DELETE",
+        "path": "/api/v1/settings/models/local-transcription/{model_id}",
+        "file": "backend/app/api/routes/models.py",
+        "line": 112,
+        "function": "remove_local_transcription_model",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 635,
+        "function": "create_project",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/projects",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 669,
+        "function": "list_projects",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/projects/{project_id}",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 676,
+        "function": "get_project",
+        "debugOnly": false
+      },
+      {
+        "method": "PATCH",
+        "path": "/api/v1/projects/{project_id}",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 690,
+        "function": "update_project",
+        "debugOnly": false
+      },
+      {
+        "method": "DELETE",
+        "path": "/api/v1/projects/{project_id}",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 719,
+        "function": "delete_project",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/projects/{project_id}/assets",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 756,
+        "function": "list_project_assets",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/projects/{project_id}/source-sync",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 829,
+        "function": "get_project_source_sync_plan",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/source-sync/apply-metadata",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 836,
+        "function": "apply_project_source_sync_metadata",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/assets/upload",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 870,
+        "function": "upload_project_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/videos/upload",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 890,
+        "function": "upload_project_primary_video",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/imports/native/primary/init",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1007,
+        "function": "init_native_project_primary_import",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/imports/browser/primary/init",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1066,
+        "function": "init_browser_project_primary_import",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/imports/native/primary/{token}/finalize",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1125,
+        "function": "finalize_native_project_primary_import",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/imports/native/primary/{token}/cancel",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1161,
+        "function": "cancel_native_project_primary_import",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/projects/{project_id}/imports/browser/primary/{token}",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1191,
+        "function": "get_browser_project_primary_import_status",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/projects/{project_id}/imports/browser/primary/{token}/chunk",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1216,
+        "function": "append_browser_project_primary_import_chunk",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/imports/browser/primary/{token}/finalize",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1269,
+        "function": "finalize_browser_project_primary_import",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/imports/browser/primary/{token}/cancel",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1305,
+        "function": "cancel_browser_project_primary_import",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/projects/{project_id}/imports/native/orphans",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1335,
+        "function": "list_native_project_import_orphans",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/assets/video",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1360,
+        "function": "upload_project_video_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/assets/screen",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1372,
+        "function": "upload_project_screen_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/assets/camera",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1383,
+        "function": "upload_project_camera_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/assets/webcam",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1394,
+        "function": "upload_project_webcam_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/assets/phone-camera",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1405,
+        "function": "upload_project_phone_camera_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/assets/audio",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1416,
+        "function": "upload_project_audio_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/assets/slides",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1428,
+        "function": "upload_project_slide_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/assets/notes",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1439,
+        "function": "upload_project_notes_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/assets/materials",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1450,
+        "function": "upload_project_supporting_material_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/projects/{project_id}/assets/{asset_id}",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1461,
+        "function": "get_project_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/projects/{project_id}/assets/{asset_id}/sync",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1474,
+        "function": "update_project_asset_sync_offset",
+        "debugOnly": false
+      },
+      {
+        "method": "PATCH",
+        "path": "/api/v1/projects/{project_id}/assets/{asset_id}/metadata",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1524,
+        "function": "update_project_asset_metadata",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/projects/{project_id}/assets/{asset_id}/download",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1557,
+        "function": "download_project_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "DELETE",
+        "path": "/api/v1/projects/{project_id}/assets/{asset_id}",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1577,
+        "function": "delete_project_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/videos/upload",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 138,
+        "function": "upload_video",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/videos/{video_id}/process",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 282,
+        "function": "start_video_processing",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 332,
+        "function": "list_videos",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 341,
+        "function": "get_video",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/status",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 362,
+        "function": "get_processing_status",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/transcript/timeline",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 423,
+        "function": "get_transcript_timeline",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/transcript/cuts",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 449,
+        "function": "get_transcript_cut_decisions",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/videos/{video_id}/transcript/cuts",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 463,
+        "function": "create_transcript_cut",
+        "debugOnly": false
+      },
+      {
+        "method": "DELETE",
+        "path": "/api/v1/videos/{video_id}/transcript/cuts/{decision_id}",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 522,
+        "function": "delete_transcript_cut",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/videos/{video_id}/transcript/cuts/{decision_id}/trim",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 547,
+        "function": "update_transcript_cut_trim_settings",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/videos/{video_id}/transcript/cuts/{decision_id}/restore-word",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 586,
+        "function": "restore_transcript_cut_word",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/edit-decision-sync",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 636,
+        "function": "get_edit_decision_sync",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/clean/analyze",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 663,
+        "function": "analyze_clean_tools",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/videos/{video_id}/clean/apply",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 704,
+        "function": "apply_clean_tools",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/segments",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 762,
+        "function": "get_segments",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/videos/{video_id}/segments/{segment_id}",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 773,
+        "function": "update_segment",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/videos/{video_id}/segments/bulk",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 796,
+        "function": "bulk_update_segments",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/plan",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 820,
+        "function": "get_edit_plan",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/render-plan",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 832,
+        "function": "get_semantic_render_plan",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/videos/{video_id}/render-plan/regenerate",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 848,
+        "function": "regenerate_semantic_render_plan",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/render-plan/slides/{slide_id}",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 864,
+        "function": "get_semantic_render_slide",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/videos/{video_id}/plan/captions",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 881,
+        "function": "update_plan_captions",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/videos/{video_id}/plan/layout-cues",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 904,
+        "function": "update_plan_layout_cues",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/videos/{video_id}/plan/slide-cues",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 938,
+        "function": "update_plan_slide_cues",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/videos/{video_id}/plan/editorial-blocks",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 970,
+        "function": "update_plan_editorial_blocks",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/videos/{video_id}/plan/layout-cues/auto",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1002,
+        "function": "auto_generate_plan_layout_cues",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/videos/{video_id}/plan/annotations",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1069,
+        "function": "update_plan_annotations",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/videos/{video_id}/plan/educational-overlays",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1092,
+        "function": "update_plan_educational_overlays",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/videos/{video_id}/plan/end-cards",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1115,
+        "function": "update_plan_end_cards",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/export/presets",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1138,
+        "function": "get_export_presets",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/videos/{video_id}/plan/approve",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1144,
+        "function": "approve_edit_plan",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/videos/{video_id}/render/cancel",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1215,
+        "function": "cancel_render",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/videos/{video_id}/plan/revalidate",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1271,
+        "function": "revalidate_plan",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/chapters",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1290,
+        "function": "get_chapters",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/videos/{video_id}/section-clips/export",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1346,
+        "function": "export_section_clips",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/section-clips/manifest",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1409,
+        "function": "download_section_clip_manifest",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/section-clips/{clip_index}/download",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1420,
+        "function": "download_section_clip",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/report",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1510,
+        "function": "get_quality_report",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/mode-comparison",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1519,
+        "function": "get_mode_comparison_report",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/materials/upload",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1529,
+        "function": "upload_course_material",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/materials",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1602,
+        "function": "list_course_materials",
+        "debugOnly": false
+      },
+      {
+        "method": "DELETE",
+        "path": "/api/v1/materials/{material_id}",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1611,
+        "function": "delete_course_material",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/settings",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1634,
+        "function": "get_settings",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/settings/ai",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1641,
+        "function": "get_ai_settings",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/settings/ai",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1648,
+        "function": "update_settings",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/settings/domain-terms",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1657,
+        "function": "update_domain_terms",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/stream",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1683,
+        "function": "stream_original_video",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/download",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1701,
+        "function": "download_rendered_video",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/transcript/export",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1737,
+        "function": "download_original_transcript",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/subtitles",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1765,
+        "function": "download_subtitles",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/subtitles/vtt",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1781,
+        "function": "download_subtitles_vtt",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/chapters/download",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1797,
+        "function": "download_chapters",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/plan/export",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1813,
+        "function": "download_plan_export",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/report/export",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1829,
+        "function": "download_quality_report_export",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/mode-comparison/export",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1846,
+        "function": "download_mode_comparison_export",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/mode-comparison/summary",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1863,
+        "function": "download_mode_comparison_summary",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/evidence/export",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1880,
+        "function": "download_academic_evidence_export",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/evidence/summary",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1897,
+        "function": "download_academic_evidence_summary",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/evidence/before-after",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1914,
+        "function": "download_before_after_comparison",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/evidence/timeline-decisions",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1931,
+        "function": "download_timeline_decisions",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/evidence/provider-mode",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1948,
+        "function": "download_provider_mode_trace",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/evidence/metrics-summary",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1965,
+        "function": "download_metrics_summary",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/evidence/bundle",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1982,
+        "function": "download_academic_evidence_bundle",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/exports",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 2001,
+        "function": "list_exports",
+        "debugOnly": false
+      }
+    ],
+    "clientFunctions": [
+      {
+        "name": "setBaseUrl",
+        "line": 56
+      },
+      {
+        "name": "getBackendBaseUrl",
+        "line": 60
+      },
+      {
+        "name": "isNativeDesktop",
+        "line": 248
+      },
+      {
+        "name": "getAppStorageLayout",
+        "line": 258
+      },
+      {
+        "name": "bootstrapDesktopBackend",
+        "line": 263
+      },
+      {
+        "name": "pickNativePrimaryVideoPath",
+        "line": 268
+      },
+      {
+        "name": "listenToNativeImportProgress",
+        "line": 283
+      },
+      {
+        "name": "startNativePrimaryImport",
+        "line": 292
+      },
+      {
+        "name": "cancelNativeImport",
+        "line": 304
+      },
+      {
+        "name": "createProject",
+        "line": 309
+      },
+      {
+        "name": "listProjects",
+        "line": 316
+      },
+      {
+        "name": "getProject",
+        "line": 320
+      },
+      {
+        "name": "updateProject",
+        "line": 324
+      },
+      {
+        "name": "deleteProject",
+        "line": 331
+      },
+      {
+        "name": "listProjectAssets",
+        "line": 335
+      },
+      {
+        "name": "getProjectSourceSyncPlan",
+        "line": 339
+      },
+      {
+        "name": "applyProjectSourceSyncMetadata",
+        "line": 343
+      },
+      {
+        "name": "updateProjectAssetSyncOffset",
+        "line": 350
+      },
+      {
+        "name": "updateProjectAssetMetadata",
+        "line": 361
+      },
+      {
+        "name": "uploadProjectAsset",
+        "line": 372
+      },
+      {
+        "name": "uploadProjectPrimaryVideo",
+        "line": 396
+      },
+      {
+        "name": "deleteProjectAsset",
+        "line": 541
+      },
+      {
+        "name": "getProjectAssetDownloadUrl",
+        "line": 545
+      },
+      {
+        "name": "uploadVideo",
+        "line": 553
+      },
+      {
+        "name": "startVideoProcessing",
+        "line": 566
+      },
+      {
+        "name": "listVideos",
+        "line": 570
+      },
+      {
+        "name": "getVideo",
+        "line": 574
+      },
+      {
+        "name": "getProcessingStatus",
+        "line": 578
+      },
+      {
+        "name": "getTranscriptTimeline",
+        "line": 582
+      },
+      {
+        "name": "getTranscriptCutDecisions",
+        "line": 586
+      },
+      {
+        "name": "createTranscriptCutDecision",
+        "line": 590
+      },
+      {
+        "name": "deleteTranscriptCutDecision",
+        "line": 600
+      },
+      {
+        "name": "updateTranscriptCutTrim",
+        "line": 606
+      },
+      {
+        "name": "restoreTranscriptCutWord",
+        "line": 617
+      },
+      {
+        "name": "getEditDecisionSync",
+        "line": 628
+      },
+      {
+        "name": "analyzeCleanSuggestions",
+        "line": 636
+      },
+      {
+        "name": "applyCleanSuggestions",
+        "line": 643
+      },
+      {
+        "name": "getSegments",
+        "line": 659
+      },
+      {
+        "name": "updateSegment",
+        "line": 663
+      },
+      {
+        "name": "bulkUpdateSegments",
+        "line": 680
+      },
+      {
+        "name": "getEditPlan",
+        "line": 694
+      },
+      {
+        "name": "getSemanticRenderPlan",
+        "line": 698
+      },
+      {
+        "name": "regenerateSemanticRenderPlan",
+        "line": 702
+      },
+      {
+        "name": "updateCaptionPolicy",
+        "line": 706
+      },
+      {
+        "name": "updateLayoutCues",
+        "line": 713
+      },
+      {
+        "name": "updateSlideCues",
+        "line": 720
+      },
+      {
+        "name": "updateEditorialBlocks",
+        "line": 727
+      },
+      {
+        "name": "autoGenerateLayoutCues",
+        "line": 734
+      },
+      {
+        "name": "updateAnnotations",
+        "line": 741
+      },
+      {
+        "name": "updateEducationalOverlays",
+        "line": 748
+      },
+      {
+        "name": "updateEndCards",
+        "line": 758
+      },
+      {
+        "name": "getExportPresets",
+        "line": 768
+      },
+      {
+        "name": "approvePlan",
+        "line": 772
+      },
+      {
+        "name": "cancelRender",
+        "line": 786
+      },
+      {
+        "name": "revalidatePlan",
+        "line": 790
+      },
+      {
+        "name": "getChapters",
+        "line": 794
+      },
+      {
+        "name": "getQualityReport",
+        "line": 802
+      },
+      {
+        "name": "getModeComparisonReport",
+        "line": 806
+      },
+      {
+        "name": "uploadMaterial",
+        "line": 814
+      },
+      {
+        "name": "listMaterials",
+        "line": 827
+      },
+      {
+        "name": "deleteMaterial",
+        "line": 831
+      },
+      {
+        "name": "getSettings",
+        "line": 839
+      },
+      {
+        "name": "getAISettings",
+        "line": 843
+      },
+      {
+        "name": "updateAISettings",
+        "line": 847
+      },
+      {
+        "name": "updateDomainTerms",
+        "line": 854
+      },
+      {
+        "name": "getLocalTranscriptionModels",
+        "line": 860
+      },
+      {
+        "name": "downloadLocalTranscriptionModel",
+        "line": 864
+      },
+      {
+        "name": "getLocalTranscriptionModelDownload",
+        "line": 874
+      },
+      {
+        "name": "removeLocalTranscriptionModel",
+        "line": 880
+      },
+      {
+        "name": "getVideoExports",
+        "line": 892
+      },
+      {
+        "name": "getTranscriptExportUrl",
+        "line": 896
+      },
+      {
+        "name": "downloadOriginalTranscript",
+        "line": 900
+      },
+      {
+        "name": "getVideoDownloadUrl",
+        "line": 922
+      },
+      {
+        "name": "getSubtitleDownloadUrl",
+        "line": 926
+      },
+      {
+        "name": "getSubtitleVttUrl",
+        "line": 930
+      },
+      {
+        "name": "getChaptersDownloadUrl",
+        "line": 934
+      },
+      {
+        "name": "exportSectionClips",
+        "line": 938
+      },
+      {
+        "name": "getSectionClipsManifestUrl",
+        "line": 942
+      },
+      {
+        "name": "getPlanExportUrl",
+        "line": 946
+      },
+      {
+        "name": "getQualityReportExportUrl",
+        "line": 950
+      },
+      {
+        "name": "getModeComparisonExportUrl",
+        "line": 954
+      },
+      {
+        "name": "getModeComparisonSummaryUrl",
+        "line": 958
+      },
+      {
+        "name": "getAcademicEvidenceExportUrl",
+        "line": 962
+      },
+      {
+        "name": "getAcademicEvidenceSummaryUrl",
+        "line": 966
+      },
+      {
+        "name": "getAcademicEvidenceBundleUrl",
+        "line": 970
+      },
+      {
+        "name": "getBeforeAfterComparisonUrl",
+        "line": 974
+      },
+      {
+        "name": "getTimelineDecisionsUrl",
+        "line": 978
+      },
+      {
+        "name": "getProviderModeTraceUrl",
+        "line": 982
+      },
+      {
+        "name": "getMetricsSummaryUrl",
+        "line": 986
+      },
+      {
+        "name": "getVideoStreamUrl",
+        "line": 990
+      }
+    ],
+    "agentSourceHashes": {
+      "backend/app/agents/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "backend/app/agents/content_understanding.py": "85c54d6e24f8656e2eee8739e027ad5253dc994fe6801048bd3de578083415a2",
+      "backend/app/agents/edit_planner.py": "ccfae811b342891b02358f4bafb9cc89f338d6d490ebf6e183958b2ffeafd3dc",
+      "backend/app/agents/fluency.py": "dff05746a11f65e24f6d1168b15e1396b8f129296bfda02fd33e74b64315b643",
+      "backend/app/agents/orchestrator.py": "e62d1b938bc5b6235bdb5e8ed6e1b5e7212152815a969a0e8fd500268ba8a7c0",
+      "backend/app/agents/transcription.py": "43530dc141c32108c0d21d132dfeb11dcdae0900c18691f8fafa03efe3b62cca",
+      "backend/app/agents/visual_structure.py": "8b53150beea52d9bbb10403b50451dc181dbcac02fdb0b01f7edd1111fe26ed7"
+    }
+  },
+  "desktop": {
+    "routes": [
+      {
+        "method": "POST",
+        "path": "/api/v1/debug/transcribe",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 24,
+        "function": "debug_transcribe",
+        "debugOnly": true
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/debug/extract-audio",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 149,
+        "function": "debug_extract_audio",
+        "debugOnly": true
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/debug/config",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 213,
+        "function": "debug_config",
+        "debugOnly": true
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/debug/rag/stats",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 253,
+        "function": "debug_rag_stats",
+        "debugOnly": true
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/debug/rag/search",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 263,
+        "function": "debug_rag_search",
+        "debugOnly": true
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/debug/rag/extract-text",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 299,
+        "function": "debug_extract_text",
+        "debugOnly": true
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/debug/rag/reset",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 368,
+        "function": "debug_rag_reset",
+        "debugOnly": true
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/debug/agents/run/{agent_name}",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 382,
+        "function": "debug_run_agent",
+        "debugOnly": true
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/debug/agents/segments/{video_id}",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 447,
+        "function": "debug_view_segments",
+        "debugOnly": true
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/debug/agents/scenes/{video_id}",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 498,
+        "function": "debug_view_scenes",
+        "debugOnly": true
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/debug/render/force-approve/{video_id}",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 536,
+        "function": "debug_force_approve",
+        "debugOnly": true
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/debug/render/run/{video_id}",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 561,
+        "function": "debug_render",
+        "debugOnly": true
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/debug/render/exports/{video_id}",
+        "file": "backend/app/api/routes/debug.py",
+        "line": 592,
+        "function": "debug_view_exports",
+        "debugOnly": true
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/settings/models/local-transcription",
+        "file": "backend/app/api/routes/models.py",
+        "line": 31,
+        "function": "get_local_transcription_model_catalog",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/settings/models/local-transcription/{model_id}/download",
+        "file": "backend/app/api/routes/models.py",
+        "line": 80,
+        "function": "download_local_transcription_model",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/settings/models/local-transcription/{model_id}/download",
+        "file": "backend/app/api/routes/models.py",
+        "line": 97,
+        "function": "get_local_transcription_model_download",
+        "debugOnly": false
+      },
+      {
+        "method": "DELETE",
+        "path": "/api/v1/settings/models/local-transcription/{model_id}",
+        "file": "backend/app/api/routes/models.py",
+        "line": 112,
+        "function": "remove_local_transcription_model",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 650,
+        "function": "create_project",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/projects",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 684,
+        "function": "list_projects",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/projects/{project_id}/readiness",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 691,
+        "function": "get_project_readiness",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/projects/{project_id}",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 715,
+        "function": "get_project",
+        "debugOnly": false
+      },
+      {
+        "method": "PATCH",
+        "path": "/api/v1/projects/{project_id}",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 729,
+        "function": "update_project",
+        "debugOnly": false
+      },
+      {
+        "method": "DELETE",
+        "path": "/api/v1/projects/{project_id}",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 758,
+        "function": "delete_project",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/projects/{project_id}/assets",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 813,
+        "function": "list_project_assets",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/projects/{project_id}/source-sync",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 886,
+        "function": "get_project_source_sync_plan",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/source-sync/apply-metadata",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 893,
+        "function": "apply_project_source_sync_metadata",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/assets/upload",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 927,
+        "function": "upload_project_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/videos/upload",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 947,
+        "function": "upload_project_primary_video",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/imports/native/primary/init",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1065,
+        "function": "init_native_project_primary_import",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/imports/browser/primary/init",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1129,
+        "function": "init_browser_project_primary_import",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/imports/native/primary/{token}/finalize",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1193,
+        "function": "finalize_native_project_primary_import",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/projects/{project_id}/imports/native/primary/{token}",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1229,
+        "function": "get_native_project_primary_import_status",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/imports/native/primary/{token}/progress",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1251,
+        "function": "record_native_project_primary_import_progress",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/imports/native/primary/{token}/restart",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1276,
+        "function": "restart_native_project_primary_import",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/imports/native/primary/{token}/cancel",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1299,
+        "function": "cancel_native_project_primary_import",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/projects/{project_id}/imports/browser/primary/{token}",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1333,
+        "function": "get_browser_project_primary_import_status",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/projects/{project_id}/imports/browser/primary/{token}/chunk",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1358,
+        "function": "append_browser_project_primary_import_chunk",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/imports/browser/primary/{token}/finalize",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1411,
+        "function": "finalize_browser_project_primary_import",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/imports/browser/primary/{token}/cancel",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1447,
+        "function": "cancel_browser_project_primary_import",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/projects/{project_id}/imports/native/orphans",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1481,
+        "function": "list_native_project_import_orphans",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/assets/video",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1506,
+        "function": "upload_project_video_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/assets/screen",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1518,
+        "function": "upload_project_screen_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/assets/camera",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1529,
+        "function": "upload_project_camera_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/assets/webcam",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1540,
+        "function": "upload_project_webcam_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/assets/phone-camera",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1551,
+        "function": "upload_project_phone_camera_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/assets/audio",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1562,
+        "function": "upload_project_audio_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/assets/slides",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1574,
+        "function": "upload_project_slide_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/assets/notes",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1585,
+        "function": "upload_project_notes_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/projects/{project_id}/assets/materials",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1596,
+        "function": "upload_project_supporting_material_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/projects/{project_id}/assets/{asset_id}",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1607,
+        "function": "get_project_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/projects/{project_id}/assets/{asset_id}/sync",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1620,
+        "function": "update_project_asset_sync_offset",
+        "debugOnly": false
+      },
+      {
+        "method": "PATCH",
+        "path": "/api/v1/projects/{project_id}/assets/{asset_id}/metadata",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1670,
+        "function": "update_project_asset_metadata",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/projects/{project_id}/assets/{asset_id}/download",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1703,
+        "function": "download_project_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "DELETE",
+        "path": "/api/v1/projects/{project_id}/assets/{asset_id}",
+        "file": "backend/app/api/routes/projects.py",
+        "line": 1723,
+        "function": "delete_project_asset",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/videos/upload",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 136,
+        "function": "upload_video",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/videos/{video_id}/process",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 280,
+        "function": "start_video_processing",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/videos/{video_id}/process/retry",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 348,
+        "function": "retry_video_processing",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 358,
+        "function": "list_videos",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 367,
+        "function": "get_video",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/status",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 388,
+        "function": "get_processing_status",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/readiness",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 464,
+        "function": "get_video_readiness",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/transcript/timeline",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 495,
+        "function": "get_transcript_timeline",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/transcript/cuts",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 521,
+        "function": "get_transcript_cut_decisions",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/videos/{video_id}/transcript/cuts",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 535,
+        "function": "create_transcript_cut",
+        "debugOnly": false
+      },
+      {
+        "method": "DELETE",
+        "path": "/api/v1/videos/{video_id}/transcript/cuts/{decision_id}",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 594,
+        "function": "delete_transcript_cut",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/videos/{video_id}/transcript/cuts/{decision_id}/trim",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 619,
+        "function": "update_transcript_cut_trim_settings",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/videos/{video_id}/transcript/cuts/{decision_id}/restore-word",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 658,
+        "function": "restore_transcript_cut_word",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/edit-decision-sync",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 708,
+        "function": "get_edit_decision_sync",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/clean/analyze",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 735,
+        "function": "analyze_clean_tools",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/videos/{video_id}/clean/apply",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 776,
+        "function": "apply_clean_tools",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/segments",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 834,
+        "function": "get_segments",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/videos/{video_id}/segments/{segment_id}",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 845,
+        "function": "update_segment",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/videos/{video_id}/segments/bulk",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 868,
+        "function": "bulk_update_segments",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/plan",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 892,
+        "function": "get_edit_plan",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/render-plan",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 904,
+        "function": "get_semantic_render_plan",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/videos/{video_id}/render-plan/regenerate",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 920,
+        "function": "regenerate_semantic_render_plan",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/render-plan/slides/{slide_id}",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 936,
+        "function": "get_semantic_render_slide",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/videos/{video_id}/plan/captions",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 953,
+        "function": "update_plan_captions",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/videos/{video_id}/plan/layout-cues",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 976,
+        "function": "update_plan_layout_cues",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/videos/{video_id}/plan/slide-cues",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1010,
+        "function": "update_plan_slide_cues",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/videos/{video_id}/plan/editorial-blocks",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1042,
+        "function": "update_plan_editorial_blocks",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/videos/{video_id}/plan/layout-cues/auto",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1074,
+        "function": "auto_generate_plan_layout_cues",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/videos/{video_id}/plan/annotations",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1141,
+        "function": "update_plan_annotations",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/videos/{video_id}/plan/educational-overlays",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1164,
+        "function": "update_plan_educational_overlays",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/videos/{video_id}/plan/end-cards",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1187,
+        "function": "update_plan_end_cards",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/export/presets",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1210,
+        "function": "get_export_presets",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/videos/{video_id}/plan/approve",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1216,
+        "function": "approve_edit_plan",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/videos/{video_id}/render/cancel",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1287,
+        "function": "cancel_render",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/videos/{video_id}/plan/revalidate",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1343,
+        "function": "revalidate_plan",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/chapters",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1362,
+        "function": "get_chapters",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/videos/{video_id}/section-clips/export",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1418,
+        "function": "export_section_clips",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/section-clips/manifest",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1481,
+        "function": "download_section_clip_manifest",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/section-clips/{clip_index}/download",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1492,
+        "function": "download_section_clip",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/report",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1582,
+        "function": "get_quality_report",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/mode-comparison",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1591,
+        "function": "get_mode_comparison_report",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/materials/upload",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1601,
+        "function": "upload_course_material",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/materials",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1674,
+        "function": "list_course_materials",
+        "debugOnly": false
+      },
+      {
+        "method": "DELETE",
+        "path": "/api/v1/materials/{material_id}",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1683,
+        "function": "delete_course_material",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/settings",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1706,
+        "function": "get_settings",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/settings/ai",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1713,
+        "function": "get_ai_settings",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/settings/ai",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1720,
+        "function": "update_settings",
+        "debugOnly": false
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/settings/ai/test-provider",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1729,
+        "function": "test_provider_connection",
+        "debugOnly": false
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/settings/domain-terms",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1764,
+        "function": "update_domain_terms",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/stream",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1790,
+        "function": "stream_original_video",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/download",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1808,
+        "function": "download_rendered_video",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/subtitles",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1844,
+        "function": "download_subtitles",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/subtitles/vtt",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1860,
+        "function": "download_subtitles_vtt",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/chapters/download",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1876,
+        "function": "download_chapters",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/plan/export",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1892,
+        "function": "download_plan_export",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/report/export",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1908,
+        "function": "download_quality_report_export",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/mode-comparison/export",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1925,
+        "function": "download_mode_comparison_export",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/mode-comparison/summary",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1942,
+        "function": "download_mode_comparison_summary",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/evidence/export",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1959,
+        "function": "download_academic_evidence_export",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/evidence/summary",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1976,
+        "function": "download_academic_evidence_summary",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/evidence/before-after",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 1993,
+        "function": "download_before_after_comparison",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/evidence/timeline-decisions",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 2010,
+        "function": "download_timeline_decisions",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/evidence/provider-mode",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 2027,
+        "function": "download_provider_mode_trace",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/evidence/metrics-summary",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 2044,
+        "function": "download_metrics_summary",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/evidence/bundle",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 2061,
+        "function": "download_academic_evidence_bundle",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/videos/{video_id}/exports",
+        "file": "backend/app/api/routes/videos.py",
+        "line": 2080,
+        "function": "list_exports",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/product-readiness",
+        "file": "backend/app/api/routes/workflow.py",
+        "line": 13,
+        "function": "product_readiness",
+        "debugOnly": false
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/workflow/states",
+        "file": "backend/app/api/routes/workflow.py",
+        "line": 19,
+        "function": "workflow_states",
+        "debugOnly": false
+      }
+    ],
+    "clientFunctions": [
+      {
+        "name": "friendlyErrorMessage",
+        "line": 87
+      },
+      {
+        "name": "setBaseUrl",
+        "line": 100
+      },
+      {
+        "name": "getBackendBaseUrl",
+        "line": 104
+      },
+      {
+        "name": "setNativeBridgeEnabled",
+        "line": 108
+      },
+      {
+        "name": "isNativeBridgeEnabled",
+        "line": 112
+      },
+      {
+        "name": "isNativeDesktop",
+        "line": 398
+      },
+      {
+        "name": "isTauriDesktopRuntime",
+        "line": 402
+      },
+      {
+        "name": "fetchEngineResource",
+        "line": 413
+      },
+      {
+        "name": "downloadEngineResource",
+        "line": 419
+      },
+      {
+        "name": "getShellInfo",
+        "line": 433
+      },
+      {
+        "name": "getCanonicalDesktopPaths",
+        "line": 438
+      },
+      {
+        "name": "inspectDesktopActivationMetadata",
+        "line": 443
+      },
+      {
+        "name": "getSafeLogDirectory",
+        "line": 448
+      },
+      {
+        "name": "bootstrapDesktopV2Shell",
+        "line": 453
+      },
+      {
+        "name": "generateDesktopDiagnosticSnapshot",
+        "line": 458
+      },
+      {
+        "name": "getSupervisorStatus",
+        "line": 463
+      },
+      {
+        "name": "startSupervisor",
+        "line": 468
+      },
+      {
+        "name": "stopSupervisor",
+        "line": 473
+      },
+      {
+        "name": "restartSupervisor",
+        "line": 478
+      },
+      {
+        "name": "retrySupervisor",
+        "line": 483
+      },
+      {
+        "name": "getSupervisorDiagnostics",
+        "line": 488
+      },
+      {
+        "name": "getAppStorageLayout",
+        "line": 493
+      },
+      {
+        "name": "pickNativePrimaryVideoPath",
+        "line": 498
+      },
+      {
+        "name": "listenToNativeImportProgress",
+        "line": 513
+      },
+      {
+        "name": "startNativePrimaryImport",
+        "line": 522
+      },
+      {
+        "name": "cancelNativeImport",
+        "line": 533
+      },
+      {
+        "name": "createProject",
+        "line": 538
+      },
+      {
+        "name": "listProjects",
+        "line": 545
+      },
+      {
+        "name": "getProject",
+        "line": 549
+      },
+      {
+        "name": "updateProject",
+        "line": 553
+      },
+      {
+        "name": "deleteProject",
+        "line": 560
+      },
+      {
+        "name": "getProductReadiness",
+        "line": 564
+      },
+      {
+        "name": "getProjectReadiness",
+        "line": 568
+      },
+      {
+        "name": "getVideoReadiness",
+        "line": 572
+      },
+      {
+        "name": "listProjectAssets",
+        "line": 576
+      },
+      {
+        "name": "getProjectSourceSyncPlan",
+        "line": 580
+      },
+      {
+        "name": "applyProjectSourceSyncMetadata",
+        "line": 584
+      },
+      {
+        "name": "updateProjectAssetSyncOffset",
+        "line": 591
+      },
+      {
+        "name": "updateProjectAssetMetadata",
+        "line": 602
+      },
+      {
+        "name": "uploadProjectAsset",
+        "line": 613
+      },
+      {
+        "name": "uploadProjectPrimaryVideo",
+        "line": 637
+      },
+      {
+        "name": "deleteProjectAsset",
+        "line": 782
+      },
+      {
+        "name": "getProjectAssetDownloadUrl",
+        "line": 786
+      },
+      {
+        "name": "uploadVideo",
+        "line": 794
+      },
+      {
+        "name": "startVideoProcessing",
+        "line": 807
+      },
+      {
+        "name": "retryVideoProcessing",
+        "line": 811
+      },
+      {
+        "name": "listVideos",
+        "line": 815
+      },
+      {
+        "name": "getVideo",
+        "line": 819
+      },
+      {
+        "name": "getProcessingStatus",
+        "line": 823
+      },
+      {
+        "name": "getTranscriptTimeline",
+        "line": 827
+      },
+      {
+        "name": "getTranscriptCutDecisions",
+        "line": 831
+      },
+      {
+        "name": "createTranscriptCutDecision",
+        "line": 835
+      },
+      {
+        "name": "deleteTranscriptCutDecision",
+        "line": 845
+      },
+      {
+        "name": "updateTranscriptCutTrim",
+        "line": 851
+      },
+      {
+        "name": "restoreTranscriptCutWord",
+        "line": 862
+      },
+      {
+        "name": "getEditDecisionSync",
+        "line": 873
+      },
+      {
+        "name": "analyzeCleanSuggestions",
+        "line": 881
+      },
+      {
+        "name": "applyCleanSuggestions",
+        "line": 888
+      },
+      {
+        "name": "getSegments",
+        "line": 904
+      },
+      {
+        "name": "updateSegment",
+        "line": 908
+      },
+      {
+        "name": "bulkUpdateSegments",
+        "line": 925
+      },
+      {
+        "name": "getEditPlan",
+        "line": 939
+      },
+      {
+        "name": "getSemanticRenderPlan",
+        "line": 943
+      },
+      {
+        "name": "regenerateSemanticRenderPlan",
+        "line": 947
+      },
+      {
+        "name": "updateCaptionPolicy",
+        "line": 951
+      },
+      {
+        "name": "updateLayoutCues",
+        "line": 958
+      },
+      {
+        "name": "updateSlideCues",
+        "line": 965
+      },
+      {
+        "name": "updateEditorialBlocks",
+        "line": 972
+      },
+      {
+        "name": "autoGenerateLayoutCues",
+        "line": 979
+      },
+      {
+        "name": "updateAnnotations",
+        "line": 986
+      },
+      {
+        "name": "updateEducationalOverlays",
+        "line": 993
+      },
+      {
+        "name": "updateEndCards",
+        "line": 1003
+      },
+      {
+        "name": "getExportPresets",
+        "line": 1013
+      },
+      {
+        "name": "approvePlan",
+        "line": 1017
+      },
+      {
+        "name": "cancelRender",
+        "line": 1030
+      },
+      {
+        "name": "revalidatePlan",
+        "line": 1034
+      },
+      {
+        "name": "getChapters",
+        "line": 1038
+      },
+      {
+        "name": "getQualityReport",
+        "line": 1046
+      },
+      {
+        "name": "getModeComparisonReport",
+        "line": 1050
+      },
+      {
+        "name": "uploadMaterial",
+        "line": 1058
+      },
+      {
+        "name": "listMaterials",
+        "line": 1071
+      },
+      {
+        "name": "deleteMaterial",
+        "line": 1075
+      },
+      {
+        "name": "getSettings",
+        "line": 1083
+      },
+      {
+        "name": "getAISettings",
+        "line": 1087
+      },
+      {
+        "name": "updateAISettings",
+        "line": 1091
+      },
+      {
+        "name": "testProviderConnection",
+        "line": 1098
+      },
+      {
+        "name": "updateDomainTerms",
+        "line": 1108
+      },
+      {
+        "name": "getLocalTranscriptionModels",
+        "line": 1114
+      },
+      {
+        "name": "downloadLocalTranscriptionModel",
+        "line": 1118
+      },
+      {
+        "name": "getLocalTranscriptionModelDownload",
+        "line": 1128
+      },
+      {
+        "name": "removeLocalTranscriptionModel",
+        "line": 1134
+      },
+      {
+        "name": "getVideoDownloadUrl",
+        "line": 1146
+      },
+      {
+        "name": "getSubtitleDownloadUrl",
+        "line": 1150
+      },
+      {
+        "name": "getSubtitleVttUrl",
+        "line": 1154
+      },
+      {
+        "name": "getChaptersDownloadUrl",
+        "line": 1158
+      },
+      {
+        "name": "exportSectionClips",
+        "line": 1162
+      },
+      {
+        "name": "getSectionClipsManifestUrl",
+        "line": 1166
+      },
+      {
+        "name": "getPlanExportUrl",
+        "line": 1170
+      },
+      {
+        "name": "getQualityReportExportUrl",
+        "line": 1174
+      },
+      {
+        "name": "getModeComparisonExportUrl",
+        "line": 1178
+      },
+      {
+        "name": "getModeComparisonSummaryUrl",
+        "line": 1182
+      },
+      {
+        "name": "getAcademicEvidenceExportUrl",
+        "line": 1186
+      },
+      {
+        "name": "getAcademicEvidenceSummaryUrl",
+        "line": 1190
+      },
+      {
+        "name": "getAcademicEvidenceBundleUrl",
+        "line": 1194
+      },
+      {
+        "name": "getBeforeAfterComparisonUrl",
+        "line": 1198
+      },
+      {
+        "name": "getTimelineDecisionsUrl",
+        "line": 1202
+      },
+      {
+        "name": "getProviderModeTraceUrl",
+        "line": 1206
+      },
+      {
+        "name": "getMetricsSummaryUrl",
+        "line": 1210
+      },
+      {
+        "name": "getVideoStreamUrl",
+        "line": 1214
+      }
+    ],
+    "agentSourceHashes": {
+      "backend/app/agents/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "backend/app/agents/content_understanding.py": "85c54d6e24f8656e2eee8739e027ad5253dc994fe6801048bd3de578083415a2",
+      "backend/app/agents/edit_planner.py": "ccfae811b342891b02358f4bafb9cc89f338d6d490ebf6e183958b2ffeafd3dc",
+      "backend/app/agents/fluency.py": "dff05746a11f65e24f6d1168b15e1396b8f129296bfda02fd33e74b64315b643",
+      "backend/app/agents/orchestrator.py": "e62d1b938bc5b6235bdb5e8ed6e1b5e7212152815a969a0e8fd500268ba8a7c0",
+      "backend/app/agents/transcription.py": "43530dc141c32108c0d21d132dfeb11dcdae0900c18691f8fafa03efe3b62cca",
+      "backend/app/agents/visual_structure.py": "8b53150beea52d9bbb10403b50451dc181dbcac02fdb0b01f7edd1111fe26ed7"
+    }
+  },
+  "originalRoutesMissingInDesktop": [
+    {
+      "method": "GET",
+      "path": "/api/v1/videos/{video_id}/transcript/export",
+      "file": "backend/app/api/routes/videos.py",
+      "line": 1737,
+      "function": "download_original_transcript",
+      "debugOnly": false
+    }
+  ],
+  "protectedAgentFilesDifferent": []
+}
