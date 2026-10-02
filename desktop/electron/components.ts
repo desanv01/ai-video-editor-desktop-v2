@@ -59,7 +59,7 @@ export class Components {
   for(const entry of Object.values(c.entrypoints)) { try { const stat=await fs.lstat(confined(root,entry)); if(!stat.isFile()||stat.isSymbolicLink()) return false; } catch { return false; } } return true;
  }
  private identity(c:ComponentManifest):string { return c.id+'/'+c.version+'/'+c.sha256; }
- private canonicalRoot(c:ComponentManifest):string { return confined(this.paths.components,this.identity(c)); }
+ private canonicalRoot(c:ComponentManifest):string { return confined(this.paths.components,c.id+'/'+c.sha256.slice(0,16)); }
  private async normalRoot(root:string):Promise<boolean> {
   try {
    const info=await fs.lstat(root); if(!info.isDirectory()||info.isSymbolicLink()) return false;
@@ -133,7 +133,11 @@ export class Components {
     await update('probing',c); await probe(c,target,signal); await atomic(path.join(target,'.verified.json'),{sha256:c.sha256,version:c.version}); staged.set(c.id,target);
    }
    signal.throwIfAborted(); await update('activating');
-   const next:Active={schemaVersion:'aive.activation.v1',releaseVersion:RELEASE,current:{...this.active.current},previous:{...this.active.current}};
+   const identitiesUnchanged=selected.every(c => {
+    const current=Object.hasOwn(this.active.current,c.id)?this.active.current[c.id]:undefined;
+    return !!current&&current.version===c.version&&current.sha256===c.sha256;
+   });
+   const next:Active={schemaVersion:'aive.activation.v1',releaseVersion:RELEASE,current:{...this.active.current},previous:{...(identitiesUnchanged?this.active.previous:this.active.current)}};
    for(const c of selected) {
     const source=staged.get(c.id); if(source) {
      // Newly prepared bytes always use the canonical root, never an old binding.
@@ -141,7 +145,13 @@ export class Components {
      if(!await this.normalRoot(path.dirname(target))) throw new Error('IMMUTABLE_VERSION_CONFLICT');
      try { await fs.rename(source,target); }
      catch(error) {
-      if((error as NodeJS.ErrnoException).code!=='EEXIST' && (error as NodeJS.ErrnoException).code!=='ENOTEMPTY') throw error;
+      const code=(error as NodeJS.ErrnoException).code;
+      if(process.platform==='win32'&&code==='EPERM') {
+       // Windows also reports occupied-directory rename collisions as EPERM.
+       // Do not turn a permission failure at an absent target into a collision.
+       const occupied=await fs.lstat(target).then(()=>true,cause=>{if((cause as NodeJS.ErrnoException).code==='ENOENT') return false;throw cause;});
+       if(!occupied) throw error;
+      } else if(code!=='EEXIST'&&code!=='ENOTEMPTY') throw error;
       if(!await this.normalRoot(target)) throw new Error('IMMUTABLE_VERSION_CONFLICT');
       const marker=await readJson<{sha256?:string;version?:string}|null>(path.join(target,'.verified.json'),null);
       if(marker?.sha256!==c.sha256||marker.version!==c.version) throw new Error('IMMUTABLE_VERSION_CONFLICT');
