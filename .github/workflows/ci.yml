@@ -38,6 +38,8 @@ jobs:
         run: npm run build
       - name: Run focused controller boundary checks
         run: npm run test:rebuild
+      - name: Run immutable component update and legacy activation checks
+        run: node ../scripts/rebuild/test_component_updates.cjs ..
       - name: Run native and browser transcript download boundary checks
         run: node ../scripts/rebuild/test_phase4_downloads.cjs ..
       - name: Run vault, private credential synchronization and renderer boundaries

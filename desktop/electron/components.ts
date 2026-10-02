@@ -31,11 +31,22 @@ export class Components {
  private manifest: ReleaseManifest = {schemaVersion:'aive.components.v1',releaseVersion:RELEASE,platform:'win32',architecture:'x64',components:[]};
  private active:Active={schemaVersion:'aive.activation.v1',releaseVersion:RELEASE,current:{},previous:{}};
  private abort:AbortController|null=null; private busy=false;
+ private legacyRoots=new Map<string,string>();
  constructor(private paths:Paths,private manifestFile:string,private offline:string[],private publish:(patch:Partial<DesktopState>)=>void) {}
  async initialize():Promise<void> {
+  this.legacyRoots.clear();
   this.manifest=validateManifest(JSON.parse(await fs.readFile(this.manifestFile,'utf8')));
   this.active=await readJson(path.join(this.paths.state,'active.json'),this.active);
-  if(this.active.schemaVersion!=='aive.activation.v1'||!this.active.current||!this.active.previous) throw new Error('ACTIVATION_STATE_INVALID');
+  const validBindings=(value:unknown):boolean => !!value&&typeof value==='object'&&!Array.isArray(value)&&Object.entries(value).every(([id,binding]) => /^[a-z][a-z0-9-]{1,63}$/.test(id)&&!!binding&&typeof binding==='object'&&!Array.isArray(binding)&&typeof binding.version==='string'&&/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(binding.version)&&typeof binding.sha256==='string'&&/^[a-f0-9]{64}$/.test(binding.sha256));
+  if(!this.active||this.active.schemaVersion!=='aive.activation.v1'||!validBindings(this.active.current)||!validBindings(this.active.previous)) throw new Error('ACTIVATION_STATE_INVALID');
+  for(const c of this.manifest.components) {
+   const current=Object.hasOwn(this.active.current,c.id)?this.active.current[c.id]:undefined;
+   if(!current||current.version!==c.version||current.sha256!==c.sha256) continue;
+   const legacy=confined(this.paths.components,c.id+'/'+c.version);
+   if(!await this.normalRoot(legacy)) continue;
+   const marker=await readJson<{sha256?:string;version?:string}|null>(path.join(legacy,'.verified.json'),null);
+   if(marker?.sha256===c.sha256&&marker.version===c.version) this.legacyRoots.set(this.identity(c),legacy);
+  }
   const journal=await readJson<Journal|null>(path.join(this.paths.state,'preparation.json'),null);
   const states=await Promise.all(this.manifest.components.map(async c => ({id:c.id,version:c.version,phase:'checking' as SetupPhase,bytes:0,installed:await this.installed(c)})));
   this.publish({components:states,phase:'awaiting_confirmation',canRetry:true,error:journal && !['ready','cancelled'].includes(journal.phase)?{code:'PREPARATION_INTERRUPTED',message:'Preparation was interrupted. Retry will reuse verified downloads.',retryable:true}:null});
@@ -43,11 +54,34 @@ export class Components {
  }
  configured():boolean { return ['aive-engine','ffmpeg','documents'].every(id => this.manifest.components.some(c => c.id===id&&c.required)); }
  private async installed(c:ComponentManifest):Promise<boolean> {
-  const current=this.active.current[c.id]; if(!current||current.version!==c.version||current.sha256!==c.sha256) return false;
-  const root=this.root(c); const marker=await readJson<{sha256?:string;version?:string}|null>(path.join(root,'.verified.json'),null); if(marker?.sha256!==c.sha256||marker.version!==c.version) return false;
+  const current=Object.hasOwn(this.active.current,c.id)?this.active.current[c.id]:undefined; if(!current||current.version!==c.version||current.sha256!==c.sha256) return false;
+  const root=this.root(c); if(!await this.normalRoot(root)) return false; const marker=await readJson<{sha256?:string;version?:string}|null>(path.join(root,'.verified.json'),null); if(marker?.sha256!==c.sha256||marker.version!==c.version) return false;
   for(const entry of Object.values(c.entrypoints)) { try { const stat=await fs.lstat(confined(root,entry)); if(!stat.isFile()||stat.isSymbolicLink()) return false; } catch { return false; } } return true;
  }
- root(c:ComponentManifest):string { return confined(this.paths.components,c.id+'/'+c.version); }
+ private identity(c:ComponentManifest):string { return c.id+'/'+c.version+'/'+c.sha256; }
+ private canonicalRoot(c:ComponentManifest):string { return confined(this.paths.components,this.identity(c)); }
+ private async normalRoot(root:string):Promise<boolean> {
+  try {
+   const info=await fs.lstat(root); if(!info.isDirectory()||info.isSymbolicLink()) return false;
+   // Reject a directory reached through a junction or linked ancestor as well.
+   const actual=path.resolve(await fs.realpath(root)), expected=path.resolve(root);
+   return process.platform==='win32'?actual.toLowerCase()===expected.toLowerCase():actual===expected;
+  } catch(error) { if((error as NodeJS.ErrnoException).code==='ENOENT') return false; throw error; }
+ }
+ private async assertActivationRoot(root:string):Promise<void> {
+  const boundary=path.resolve(this.paths.components);
+  // Validate existing target and ancestors before mkdir can follow a link.
+  for(let current=root;;current=path.dirname(current)) {
+   try {
+    const info=await fs.lstat(current);
+    if(!info.isDirectory()||info.isSymbolicLink()) throw new Error('IMMUTABLE_VERSION_CONFLICT');
+    const actual=path.resolve(await fs.realpath(current)), expected=path.resolve(current);
+    if(process.platform==='win32'?actual.toLowerCase()!==expected.toLowerCase():actual!==expected) throw new Error('IMMUTABLE_VERSION_CONFLICT');
+   } catch(error) { if((error as NodeJS.ErrnoException).code!=='ENOENT'||current===boundary) throw error; }
+   if(current===boundary) break;
+  }
+ }
+ root(c:ComponentManifest):string { return this.legacyRoots.get(this.identity(c))??this.canonicalRoot(c); }
  async engine():Promise<{engine:ComponentManifest;root:string;ffmpegRoot:string;documentsRoot:string;libreofficeBinary:string;whisperRoot:string;whisperBinary:string;whisperModel:string}> {
   const engine=this.manifest.components.find(c => c.id==='aive-engine'); const ffmpeg=this.manifest.components.find(c => c.id==='ffmpeg'); const documents=this.manifest.components.find(c => c.id==='documents');
   if(!engine||!ffmpeg||!documents||!await this.installed(engine)||!await this.installed(ffmpeg)||!await this.installed(documents)) throw new Error('REQUIRED_COMPONENTS_MISSING');
@@ -101,7 +135,19 @@ export class Components {
    signal.throwIfAborted(); await update('activating');
    const next:Active={schemaVersion:'aive.activation.v1',releaseVersion:RELEASE,current:{...this.active.current},previous:{...this.active.current}};
    for(const c of selected) {
-    const source=staged.get(c.id); if(source) { const target=this.root(c); await fs.mkdir(path.dirname(target),{recursive:true}); try { await fs.rename(source,target); } catch(error) { if((error as NodeJS.ErrnoException).code!=='EEXIST' && (error as NodeJS.ErrnoException).code!=='ENOTEMPTY') throw error; const marker=await readJson<{sha256?:string}|null>(path.join(target,'.verified.json'),null); if(marker?.sha256!==c.sha256) throw new Error('IMMUTABLE_VERSION_CONFLICT'); } }
+    const source=staged.get(c.id); if(source) {
+     // Newly prepared bytes always use the canonical root, never an old binding.
+     const target=this.canonicalRoot(c); await this.assertActivationRoot(target); await fs.mkdir(path.dirname(target),{recursive:true});
+     if(!await this.normalRoot(path.dirname(target))) throw new Error('IMMUTABLE_VERSION_CONFLICT');
+     try { await fs.rename(source,target); }
+     catch(error) {
+      if((error as NodeJS.ErrnoException).code!=='EEXIST' && (error as NodeJS.ErrnoException).code!=='ENOTEMPTY') throw error;
+      if(!await this.normalRoot(target)) throw new Error('IMMUTABLE_VERSION_CONFLICT');
+      const marker=await readJson<{sha256?:string;version?:string}|null>(path.join(target,'.verified.json'),null);
+      if(marker?.sha256!==c.sha256||marker.version!==c.version) throw new Error('IMMUTABLE_VERSION_CONFLICT');
+     }
+     this.legacyRoots.delete(this.identity(c));
+    }
     next.current[c.id]={version:c.version,sha256:c.sha256}; const state=states.find(s=>s.id===c.id)!; state.installed=true; state.phase='ready';
    }
    await atomic(path.join(this.paths.state,'active.json'),next); this.active=next; journal.completedWork=totalWork; await update('starting'); this.publish({canCancel:false});
