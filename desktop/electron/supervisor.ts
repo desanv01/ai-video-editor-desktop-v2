@@ -9,7 +9,7 @@ export class Supervisor {
  private child: ChildProcess | null = null; private endpoint: Endpoint | null = null; private abort = new AbortController(); private stopping = false;
  constructor(private paths: Paths, private changed: (state: 'stopped'|'starting'|'ready'|'failed', code?: string) => void) {}
  getEndpoint(): Endpoint { if(!this.endpoint) throw new Error('ENGINE_NOT_READY'); return this.endpoint; }
- async start(engine: ComponentManifest, root: string, ffmpegRoot: string, documentsRoot: string, libreofficeBinary: string): Promise<void> {
+ async start(engine: ComponentManifest, root: string, ffmpegRoot: string, documentsRoot: string, libreofficeBinary: string, whisperRoot: string, whisperBinary: string, whisperModel: string): Promise<void> {
   if(this.child) throw new Error('ENGINE_ALREADY_RUNNING'); this.changed('starting'); this.stopping=false; this.abort=new AbortController();
   const token=randomBytes(32).toString('hex'), sessionId=randomUUID(), nonce=randomBytes(32).toString('hex');
   const server=createServer(); const sockets=new Set<Socket>();
@@ -32,7 +32,7 @@ export class Supervisor {
    await new Promise<void>((resolve,reject) => { server.once('error',reject); server.listen(0,'127.0.0.1',resolve); });
    const address=server.address(); if(!address || typeof address==='string') throw new Error('CONTROL_BIND_FAILED');
    const executable=confined(root,engine.entrypoints.engine);
-   this.child=spawn(executable,[],{cwd:root,windowsHide:true,shell:false,stdio:'ignore',env:{...process.env,AIVE_DESKTOP_DATA_ROOT:this.paths.data,AIVE_DESKTOP_COMPONENT_ROOT:this.paths.components,AIVE_FFMPEG_COMPONENT_ROOT:ffmpegRoot,AIVE_DOCUMENTS_COMPONENT_ROOT:documentsRoot,AIVE_LIBREOFFICE_BINARY_PATH:libreofficeBinary,LIBREOFFICE_COMPONENT_ROOT:documentsRoot,LIBREOFFICE_BINARY_PATH:libreofficeBinary,AIVE_ENGINE_PORT:'0',AIVE_ENGINE_BEARER_TOKEN:token,AIVE_ENGINE_SESSION_ID:sessionId,AIVE_ENGINE_CONTROL_ADDRESS:`127.0.0.1:${address.port}`,AIVE_ENGINE_CONTROL_NONCE:nonce}});
+   this.child=spawn(executable,[],{cwd:root,windowsHide:true,shell:false,stdio:'ignore',env:{...process.env,AIVE_DESKTOP_DATA_ROOT:this.paths.data,AIVE_DESKTOP_COMPONENT_ROOT:this.paths.components,AIVE_FFMPEG_COMPONENT_ROOT:ffmpegRoot,AIVE_DOCUMENTS_COMPONENT_ROOT:documentsRoot,AIVE_LIBREOFFICE_BINARY_PATH:libreofficeBinary,LIBREOFFICE_COMPONENT_ROOT:documentsRoot,LIBREOFFICE_BINARY_PATH:libreofficeBinary,AIVE_WHISPER_COMPONENT_ROOT:whisperRoot,AIVE_WHISPER_BINARY_PATH:whisperBinary,AIVE_WHISPER_MODEL_PATH:whisperModel,WHISPER_CPP_COMPONENT_ROOT:whisperRoot,WHISPER_CPP_BINARY_PATH:whisperBinary,WHISPER_CPP_MODEL_PATH:whisperModel,LOCAL_TRANSCRIPTION_MODEL_PATH:whisperModel,WHISPER_CPP_MODEL_ID:'small',LOCAL_TRANSCRIPTION_MODEL_ID:'small',WHISPER_CPP_MODELS_DIR:'',LOCAL_TRANSCRIPTION_MODELS_DIR:'',AIVE_ENGINE_PORT:'0',AIVE_ENGINE_BEARER_TOKEN:token,AIVE_ENGINE_SESSION_ID:sessionId,AIVE_ENGINE_CONTROL_ADDRESS:`127.0.0.1:${address.port}`,AIVE_ENGINE_CONTROL_NONCE:nonce}});
    const child=this.child;
    const exited=new Promise<never>((_resolve,reject) => { child.once('error',() => reject(new Error('ENGINE_SPAWN_FAILED'))); child.once('exit',() => reject(new Error('ENGINE_EXITED'))); }); void exited.catch(() => {});
    child.once('exit',() => { this.endpoint=null; this.abort.abort(); if(this.child===child) this.child=null; this.changed(this.stopping?'stopped':'failed',this.stopping?undefined:'ENGINE_EXITED'); });

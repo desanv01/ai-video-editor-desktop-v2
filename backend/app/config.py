@@ -92,6 +92,7 @@ class Settings(BaseSettings):
     LOCAL_EMBEDDING_MODEL_PATH: str = ""
     LOCAL_VISION_MODEL_PATH: str = ""
     LOCAL_RUNTIME_PATH: str = ""
+    WHISPER_CPP_COMPONENT_ROOT: str = ""
     WHISPER_CPP_BINARY_PATH: str = "whisper-cli"
     WHISPER_CPP_MODEL_PATH: str = ""
     WHISPER_CPP_MODEL_ID: str = "small"

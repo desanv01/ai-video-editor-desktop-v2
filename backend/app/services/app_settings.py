@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any, Optional
 
-from fastapi import HTTPException
+from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
@@ -304,16 +304,23 @@ def apply_settings_record(record: AppAISettings) -> None:
 
     local_paths = _stored_local_model_paths(record)
     local_model_ids = _stored_local_model_ids(record)
-    settings.LOCAL_TRANSCRIPTION_MODEL_PATH = local_paths.get(ProviderKind.TRANSCRIPTION.value) or ""
-    settings.WHISPER_CPP_MODEL_PATH = settings.LOCAL_TRANSCRIPTION_MODEL_PATH
-    selected_transcription_model_id = local_model_ids.get(ProviderKind.TRANSCRIPTION.value) or "small"
-    settings.LOCAL_TRANSCRIPTION_MODEL_ID = normalize_whisper_cpp_model_id(selected_transcription_model_id)
-    settings.WHISPER_CPP_MODEL_ID = settings.LOCAL_TRANSCRIPTION_MODEL_ID
+    if settings.is_native_desktop:
+        # Runtime/model/root paths belong to the activated Desktop component,
+        # including an explicitly absent binding; persisted manual paths cannot
+        # replace them when a catalogue or startup reloads AI preferences.
+        settings.LOCAL_TRANSCRIPTION_MODEL_ID = "small"
+        settings.WHISPER_CPP_MODEL_ID = "small"
+    else:
+        settings.LOCAL_TRANSCRIPTION_MODEL_PATH = local_paths.get(ProviderKind.TRANSCRIPTION.value) or ""
+        settings.WHISPER_CPP_MODEL_PATH = settings.LOCAL_TRANSCRIPTION_MODEL_PATH
+        selected_transcription_model_id = local_model_ids.get(ProviderKind.TRANSCRIPTION.value) or "small"
+        settings.LOCAL_TRANSCRIPTION_MODEL_ID = normalize_whisper_cpp_model_id(selected_transcription_model_id)
+        settings.WHISPER_CPP_MODEL_ID = settings.LOCAL_TRANSCRIPTION_MODEL_ID
     settings.LOCAL_CHAT_MODEL_PATH = local_paths.get(ProviderKind.CHAT.value) or ""
     settings.LOCAL_EMBEDDING_MODEL_PATH = local_paths.get(ProviderKind.EMBEDDING.value) or ""
     settings.LOCAL_VISION_MODEL_PATH = local_paths.get(ProviderKind.VISION.value) or ""
     settings.LOCAL_RUNTIME_PATH = local_paths.get(ProviderKind.LOCAL_RUNTIME.value) or ""
-    if settings.LOCAL_RUNTIME_PATH:
+    if not settings.is_native_desktop and settings.LOCAL_RUNTIME_PATH:
         settings.WHISPER_CPP_BINARY_PATH = settings.LOCAL_RUNTIME_PATH
 
     for provider, entry in (record.api_keys_json or {}).items():
@@ -358,6 +365,13 @@ def settings_response(record: AppAISettings) -> AppSettingsResponse:
         for provider, payload in (record.api_keys_json or {}).items()
     }
 
+    local_paths = dict(_stored_local_model_paths(record))
+    local_model_ids = dict(_stored_local_model_ids(record))
+    if settings.is_native_desktop:
+        # Present current activated bindings without mutating the persisted row.
+        local_paths[ProviderKind.TRANSCRIPTION.value] = settings.WHISPER_CPP_MODEL_PATH or None
+        local_model_ids[ProviderKind.TRANSCRIPTION.value] = "small"
+
     return AppSettingsResponse(
         asr_provider=settings.ASR_PROVIDER,
         agent2_model=settings.AGENT2_MODEL,
@@ -369,8 +383,8 @@ def settings_response(record: AppAISettings) -> AppSettingsResponse:
         fallback_enabled=record.fallback_enabled,
         capabilities=capabilities,
         api_keys=api_keys,
-        local_model_paths=_stored_local_model_paths(record),
-        local_model_ids=_stored_local_model_ids(record),
+        local_model_paths=local_paths,
+        local_model_ids=local_model_ids,
     )
 
 
@@ -400,6 +414,28 @@ async def update_ai_settings(
     db: AsyncSession,
     request: AppSettingsUpdateRequest,
 ) -> AppSettingsResponse:
+    if settings.is_native_desktop:
+        detail = (
+            "Local transcription runtime and models are managed by Desktop component preparation. "
+            "Prepare or repair the Whisper small component in Desktop setup."
+        )
+        requested_paths = request.local_model_paths or {}
+        transcription = ProviderKind.TRANSCRIPTION.value
+        local_runtime = ProviderKind.LOCAL_RUNTIME.value
+
+        def path_value(value: Optional[str]) -> str:
+            return value.strip() if isinstance(value, str) else ""
+
+        if transcription in requested_paths and path_value(requested_paths[transcription]) != path_value(settings.WHISPER_CPP_MODEL_PATH):
+            raise HTTPException(status.HTTP_409_CONFLICT, detail)
+        if local_runtime in requested_paths and path_value(requested_paths[local_runtime]) not in {
+            path_value(settings.LOCAL_RUNTIME_PATH), path_value(settings.WHISPER_CPP_BINARY_PATH),
+        }:
+            raise HTTPException(status.HTTP_409_CONFLICT, detail)
+        if transcription in (request.local_model_ids or {}) and request.local_model_ids[transcription] != "small":
+            raise HTTPException(status.HTTP_409_CONFLICT, detail)
+
+    # Reject native binding changes before even creating or mutating a row.
     record = await get_or_create_ai_settings(db)
 
     if request.preferred_processing_mode is not None:

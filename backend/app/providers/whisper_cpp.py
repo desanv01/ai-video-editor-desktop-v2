@@ -12,6 +12,8 @@ import json
 import os
 import re
 import shutil
+import stat
+from pathlib import Path
 import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
@@ -147,7 +149,51 @@ def get_whisper_cpp_model_option(model_id: str) -> WhisperCppModelOption:
     )
 
 
+def _managed_whisper_files(component_root: str, binary_path: str, model_path: str) -> tuple[str, str, list[str]]:
+    """Require the activated joint component, never PATH or manual model search."""
+    values = tuple(str(value or "").strip() for value in (component_root, binary_path, model_path))
+    issue = "Prepare or repair the activated Whisper small component; its confined runtime and model are required"
+    if not all(values):
+        return "", "", [issue]
+    paths = tuple(Path(value) for value in values)
+    if not all(path.is_absolute() for path in paths):
+        return "", "", [issue + " (paths must be absolute)"]
+    root, binary, model = tuple(Path(os.path.abspath(path)) for path in paths)
+    try:
+        for target in (root, binary, model):
+            target.relative_to(root)
+            for part in reversed((target, *target.parents)):
+                info = part.lstat()
+                if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                    return "", "", [issue + " (symlink or reparse path rejected)"]
+        actual_root = root.resolve(strict=True)
+        if not actual_root.is_dir():
+            return "", "", [issue + " (component root is not a directory)"]
+        actual_files = []
+        for target, expected in ((binary, "bin/whisper-cli.exe"), (model, "models/ggml-small.bin")):
+            actual = target.resolve(strict=True)
+            if actual.relative_to(actual_root).as_posix().lower() != expected or not stat.S_ISREG(actual.stat().st_mode):
+                return "", "", [issue + " (unexpected or nonregular component file)"]
+            actual_files.append(str(actual))
+        return actual_files[0], actual_files[1], []
+    except (OSError, ValueError):
+        return "", "", [issue + " (missing file or path outside the activated root)"]
+
+
 def resolve_whisper_cpp_model_selection(settings) -> WhisperCppModelSelection:
+    if getattr(settings, "is_native_desktop", False):
+        binary_path, model_path, _ = _managed_whisper_files(
+            getattr(settings, "WHISPER_CPP_COMPONENT_ROOT", ""),
+            getattr(settings, "WHISPER_CPP_BINARY_PATH", ""),
+            getattr(settings, "WHISPER_CPP_MODEL_PATH", ""),
+        )
+        alternate = str(getattr(settings, "LOCAL_TRANSCRIPTION_MODEL_PATH", "") or "")
+        if alternate and os.path.normcase(os.path.abspath(alternate)) != os.path.normcase(os.path.abspath(str(getattr(settings, "WHISPER_CPP_MODEL_PATH", "") or ""))):
+            binary_path, model_path = "", ""
+        return WhisperCppModelSelection(
+            model_id="small", tier=WHISPER_CPP_MODEL_OPTIONS[0].tier,
+            model_path=model_path, binary_path=binary_path,
+        )
     model_id = (
         getattr(settings, "WHISPER_CPP_MODEL_ID", "")
         or getattr(settings, "LOCAL_TRANSCRIPTION_MODEL_ID", "")
@@ -175,6 +221,19 @@ def resolve_whisper_cpp_model_selection(settings) -> WhisperCppModelSelection:
 
 def resolve_whisper_cpp_runtime_status(settings) -> WhisperCppRuntimeStatus:
     selection = resolve_whisper_cpp_model_selection(settings)
+    if getattr(settings, "is_native_desktop", False):
+        binary_path, model_path, issues = _managed_whisper_files(
+            getattr(settings, "WHISPER_CPP_COMPONENT_ROOT", ""),
+            getattr(settings, "WHISPER_CPP_BINARY_PATH", ""),
+            getattr(settings, "WHISPER_CPP_MODEL_PATH", ""),
+        )
+        alternate = str(getattr(settings, "LOCAL_TRANSCRIPTION_MODEL_PATH", "") or "")
+        if alternate and os.path.normcase(os.path.abspath(alternate)) != os.path.normcase(os.path.abspath(str(getattr(settings, "WHISPER_CPP_MODEL_PATH", "") or ""))):
+            issues.append("LOCAL_TRANSCRIPTION_MODEL_PATH must match the activated Whisper small model; repair the component binding")
+        return WhisperCppRuntimeStatus(
+            configured=not issues, binary_path=binary_path, model_path=model_path,
+            issues=tuple(issues), message="whisper.cpp runtime is ready." if not issues else "; ".join(issues),
+        )
     binary_path = resolve_whisper_cpp_binary_path(selection.binary_path)
     issues: list[str] = []
     if not binary_path:
@@ -202,6 +261,16 @@ def resolve_whisper_cpp_binary_path(binary_path: str) -> str:
 
 
 def build_whisper_cpp_model_catalog(settings) -> list[WhisperCppModelCatalogEntry]:
+    if getattr(settings, "is_native_desktop", False):
+        status = resolve_whisper_cpp_runtime_status(settings)
+        return [WhisperCppModelCatalogEntry(
+            model_id=option.model_id, tier=option.tier, label=option.label,
+            expected_filename=option.expected_filename, download_url=option.download_url,
+            description=option.description, size_label=option.size_label, size_mb=option.size_mb,
+            speed=option.speed, quality=option.quality, active=option.model_id == "small",
+            downloaded=option.model_id == "small" and status.configured,
+            file_path=status.model_path if option.model_id == "small" and status.configured else None,
+        ) for option in WHISPER_CPP_MODEL_OPTIONS]
     selection = resolve_whisper_cpp_model_selection(settings)
     configured_model_path = (
         getattr(settings, "WHISPER_CPP_MODEL_PATH", "")
@@ -326,9 +395,15 @@ class WhisperCppTranscriptionProvider(TranscriptionProvider):
         runner: Optional[WhisperCppRunner] = None,
         validate_runtime: bool = True,
     ):
-        self._binary_path = binary_path or "whisper-cli"
+        # The existing registry passes explicit paths; capture only native
+        # profile/root settings here so its public factory needs no expansion.
+        from config import settings as runtime_settings
+        self._native_desktop = bool(getattr(runtime_settings, "is_native_desktop", False))
+        self._component_root = str(getattr(runtime_settings, "WHISPER_CPP_COMPONENT_ROOT", "") or "")
+        self._binding_issues = list(resolve_whisper_cpp_runtime_status(runtime_settings).issues) if self._native_desktop else []
+        self._binary_path = (binary_path or "") if self._native_desktop else (binary_path or "whisper-cli")
         self._model_path = model_path or ""
-        self._model_id = normalize_whisper_cpp_model_id(model_id or "small")
+        self._model_id = "small" if self._native_desktop else normalize_whisper_cpp_model_id(model_id or "small")
         self._work_dir = work_dir
         self._runner = runner or self._run_command
         self._validate_runtime = validate_runtime
@@ -375,7 +450,7 @@ class WhisperCppTranscriptionProvider(TranscriptionProvider):
         )
 
     async def transcribe(self, request: TranscriptionRequest) -> TranscriptionResponse:
-        issues = self._runtime_issues() if self._validate_runtime else []
+        issues = self._runtime_issues() if self._native_desktop or self._validate_runtime else []
         if issues:
             raise RuntimeError(
                 "whisper.cpp local transcription is not configured: "
@@ -422,6 +497,8 @@ class WhisperCppTranscriptionProvider(TranscriptionProvider):
         )
 
     def _runtime_issues(self) -> list[str]:
+        if self._native_desktop:
+            return self._binding_issues + _managed_whisper_files(self._component_root, self._binary_path, self._model_path)[2]
         issues: list[str] = []
         if not self._resolved_binary_path():
             issues.append(
@@ -434,6 +511,11 @@ class WhisperCppTranscriptionProvider(TranscriptionProvider):
         return issues
 
     def _resolved_binary_path(self) -> str:
+        if self._native_desktop:
+            binary, _, issues = _managed_whisper_files(self._component_root, self._binary_path, self._model_path)
+            if issues:
+                raise RuntimeError("; ".join(issues))
+            return binary
         return resolve_whisper_cpp_binary_path(self._binary_path)
 
     @staticmethod

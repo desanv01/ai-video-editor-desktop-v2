@@ -82,6 +82,11 @@ async def download_local_transcription_model(
     request: LocalTranscriptionModelDownloadRequest | None = None,
 ):
     """Start or resume a managed local transcription model download."""
+    if settings.is_native_desktop:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Local transcription models are managed by Desktop component preparation. Prepare or repair the Whisper small component in Desktop setup.",
+        )
     download_request = request or LocalTranscriptionModelDownloadRequest()
     job = local_transcription_model_service.start_download(
         model_id,
@@ -111,6 +116,11 @@ async def get_local_transcription_model_download(model_id: str):
 )
 async def remove_local_transcription_model(model_id: str):
     """Remove a managed local transcription model file if it is present."""
+    if settings.is_native_desktop:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Local transcription models are managed by Desktop component preparation. Prepare or repair the Whisper small component in Desktop setup.",
+        )
     try:
         result = local_transcription_model_service.remove_model(model_id)
     except RuntimeError as exc:
@@ -129,6 +139,8 @@ async def remove_local_transcription_model(model_id: str):
 
 
 def _model_status(model_id: str, downloaded: bool) -> str:
+    if settings.is_native_desktop:
+        return "downloaded" if downloaded else "not_downloaded"
     job = local_transcription_model_service.get_job(model_id)
     if job and job.status in {"queued", "downloading", "failed"}:
         return job.status
@@ -136,6 +148,8 @@ def _model_status(model_id: str, downloaded: bool) -> str:
 
 
 def _can_download(model_id: str, downloaded: bool) -> bool:
+    if settings.is_native_desktop:
+        return False
     job = local_transcription_model_service.get_job(model_id)
     if job and job.status in {"queued", "downloading"}:
         return False
@@ -143,11 +157,15 @@ def _can_download(model_id: str, downloaded: bool) -> bool:
 
 
 def _can_remove(model_id: str, downloaded: bool) -> bool:
+    if settings.is_native_desktop:
+        return False
     job = local_transcription_model_service.get_job(model_id)
     return downloaded and not (job and job.status in {"queued", "downloading"})
 
 
 def _download_progress(model_id: str) -> float | None:
+    if settings.is_native_desktop:
+        return None
     job = local_transcription_model_service.get_job(model_id)
     if not job or job.status not in {"queued", "downloading"}:
         return None
@@ -155,6 +173,8 @@ def _download_progress(model_id: str) -> float | None:
 
 
 def _download_bytes(model_id: str) -> int:
+    if settings.is_native_desktop:
+        return 0
     job = local_transcription_model_service.get_job(model_id)
     if not job or job.status not in {"queued", "downloading"}:
         return 0
@@ -162,6 +182,8 @@ def _download_bytes(model_id: str) -> int:
 
 
 def _download_total_bytes(model_id: str) -> int | None:
+    if settings.is_native_desktop:
+        return None
     job = local_transcription_model_service.get_job(model_id)
     if not job or job.status not in {"queued", "downloading"}:
         return None
@@ -169,6 +191,8 @@ def _download_total_bytes(model_id: str) -> int | None:
 
 
 def _download_speed(model_id: str) -> float | None:
+    if settings.is_native_desktop:
+        return None
     job = local_transcription_model_service.get_job(model_id)
     if not job or job.status not in {"queued", "downloading"}:
         return None
@@ -176,6 +200,8 @@ def _download_speed(model_id: str) -> float | None:
 
 
 def _download_eta(model_id: str) -> float | None:
+    if settings.is_native_desktop:
+        return None
     job = local_transcription_model_service.get_job(model_id)
     if not job or job.status not in {"queued", "downloading"}:
         return None

@@ -58,6 +58,9 @@ def _parser() -> argparse.ArgumentParser:
         "--ffmpeg-component-root",
         default=os.environ.get("AIVE_FFMPEG_COMPONENT_ROOT"),
     )
+    parser.add_argument("--whisper-component-root", default=os.environ.get("AIVE_WHISPER_COMPONENT_ROOT"))
+    parser.add_argument("--whisper-binary-path", default=os.environ.get("AIVE_WHISPER_BINARY_PATH"))
+    parser.add_argument("--whisper-model-path", default=os.environ.get("AIVE_WHISPER_MODEL_PATH"))
     parser.add_argument(
         "--documents-component-root",
         default=os.environ.get("AIVE_DOCUMENTS_COMPONENT_ROOT"),
@@ -249,6 +252,39 @@ def _document_bindings(args: argparse.Namespace) -> tuple[str, str]:
     return str(actual_root), str(actual_binary)
 
 
+def _whisper_bindings(args: argparse.Namespace) -> tuple[str, str, str]:
+    values = tuple(str(getattr(args, name, "") or "").strip() for name in (
+        "whisper_component_root", "whisper_binary_path", "whisper_model_path",
+    ))
+    if not any(values):
+        return "", "", ""
+    if not all(values):
+        raise SystemExit("Managed Whisper requires an activated root, binary and model together")
+    paths = tuple(Path(value) for value in values)
+    if not all(path.is_absolute() for path in paths):
+        raise SystemExit("Managed Whisper root, binary and model must be absolute paths")
+    root, binary, model = tuple(Path(os.path.abspath(path)) for path in paths)
+    try:
+        for target in (root, binary, model):
+            target.relative_to(root)
+            for part in reversed((target, *target.parents)):
+                info = part.lstat()
+                if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                    raise SystemExit("Managed Whisper paths cannot contain symlinks or reparse points")
+        actual_root = root.resolve(strict=True)
+        if not actual_root.is_dir():
+            raise SystemExit("Managed Whisper component root must be a directory")
+        actual_files = []
+        for target, expected in ((binary, "bin/whisper-cli.exe"), (model, "models/ggml-small.bin")):
+            actual = target.resolve(strict=True)
+            if actual.relative_to(actual_root).as_posix().lower() != expected or not stat.S_ISREG(actual.stat().st_mode):
+                raise SystemExit("Managed Whisper requires its confined bin/whisper-cli.exe and models/ggml-small.bin")
+            actual_files.append(str(actual))
+    except (OSError, ValueError) as exc:
+        raise SystemExit("Managed Whisper files are missing or outside the activated component; repair the Whisper small component") from exc
+    return str(actual_root), *actual_files
+
+
 def _configure_environment(args: argparse.Namespace) -> object:
     if not args.data_root:
         raise SystemExit("--data-root or AIVE_DESKTOP_DATA_ROOT is required")
@@ -271,6 +307,7 @@ def _configure_environment(args: argparse.Namespace) -> object:
         raise SystemExit("--control-address port must be between 1 and 65535")
 
     documents_root, libreoffice_binary = _document_bindings(args)
+    whisper_root, whisper_binary, whisper_model = _whisper_bindings(args)
 
     # Import only the isolated path module before selecting the profile.
     from desktop_native.paths import NativeDesktopPaths
@@ -287,6 +324,16 @@ def _configure_environment(args: argparse.Namespace) -> object:
     # values before any config import; native documents never fall back globally.
     os.environ["LIBREOFFICE_COMPONENT_ROOT"] = documents_root
     os.environ["LIBREOFFICE_BINARY_PATH"] = libreoffice_binary
+    os.environ.update({
+        "WHISPER_CPP_COMPONENT_ROOT": whisper_root,
+        "WHISPER_CPP_BINARY_PATH": whisper_binary,
+        "WHISPER_CPP_MODEL_PATH": whisper_model,
+        "LOCAL_TRANSCRIPTION_MODEL_PATH": whisper_model,
+        "WHISPER_CPP_MODEL_ID": "small",
+        "LOCAL_TRANSCRIPTION_MODEL_ID": "small",
+        "WHISPER_CPP_MODELS_DIR": "",
+        "LOCAL_TRANSCRIPTION_MODELS_DIR": "",
+    })
     os.environ.update(
         {
             "RUNTIME_PROFILE": "desktop-native",
