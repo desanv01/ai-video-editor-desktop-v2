@@ -23,13 +23,20 @@ Key design decisions:
 import asyncio
 import traceback
 import logging
+from copy import deepcopy
+from config import settings
+from desktop_native.agent_transactions import commit_native, fresh_read, snapshot
 from typing import TypedDict, Optional
 
 from agents.transcription import run_transcription_agent
 from agents.content_understanding import run_content_understanding_agent
 from agents.fluency import run_fluency_agent
 from agents.visual_structure import run_visual_structure_agent
-from agents.edit_planner import run_edit_planner_agent
+from agents.edit_planner import (
+    run_edit_planner_agent, StaleEditPlanningError,
+    _capture_native_plan_guard, _store_native_plan_guard,
+    _clear_native_plan_guard, _read_guarded_native_plan,
+)
 from services.renderer import render_final_video
 from services.progress import (
     PipelineStep, init_progress, start_step, complete_step, fail_step,
@@ -110,6 +117,7 @@ async def run_processing_pipeline(video_id: str, db_session) -> dict:
     Returns:
         Final pipeline state dict with results from each phase.
     """
+    native = bool(getattr(settings, "is_native_desktop", False))
     init_progress(video_id)
 
     # Detect video type for pipeline routing
@@ -125,6 +133,9 @@ async def run_processing_pipeline(video_id: str, db_session) -> dict:
             logger.info(f"Pipeline: classified video {video_id} as '{video_type}'")
     except Exception:
         pass  # Non-fatal — just log
+    finally:
+        if native:
+            await commit_native(db_session)
 
     try:
         # ── Phase 1: Transcription ──
@@ -204,10 +215,13 @@ async def run_processing_pipeline(video_id: str, db_session) -> dict:
             from sqlalchemy import select
             from services.edit_plan_payload import normalize_plan_payload, update_editorial_blocks
 
-            visual_plan_result = await db_session.execute(
-                select(EditPlan).where(EditPlan.video_id == video_id)
-            )
-            visual_plan = visual_plan_result.scalar_one_or_none()
+            if native:
+                visual_plan, envelope_segments = await _read_guarded_native_plan(db_session, video_id)
+            else:
+                visual_plan_result = await db_session.execute(
+                    select(EditPlan).where(EditPlan.video_id == video_id)
+                )
+                visual_plan = visual_plan_result.scalar_one_or_none()
             if visual_plan:
                 visual_payload = normalize_plan_payload(visual_plan.plan_json)
                 editorial_blocks = list(result_visual.get("editorial_blocks") or [])
@@ -240,6 +254,10 @@ async def run_processing_pipeline(video_id: str, db_session) -> dict:
                 }
                 visual_plan.plan_json = visual_payload
                 await db_session.flush()
+                if native:
+                    envelope_guard = _capture_native_plan_guard(visual_plan, envelope_segments)
+                    await commit_native(db_session)
+                    _store_native_plan_guard(db_session, video_id, envelope_guard)
 
         # ── Phase 4.5: Auto-clean — apply moderate cleaning suggestions ──
         try:
@@ -247,39 +265,50 @@ async def run_processing_pipeline(video_id: str, db_session) -> dict:
             from db.models import EditPlan, Segment, Transcript
             from sqlalchemy import select
 
-            # Reload segments created/updated by Agents 2–4
-            seg_result = await db_session.execute(
-                select(Segment).where(Segment.video_id == video_id).order_by(Segment.segment_index)
-            )
-            segments = list(seg_result.scalars().all())
-
-            # Load the plan and transcript for clean suggestions
-            plan_result = await db_session.execute(
-                select(EditPlan).where(EditPlan.video_id == video_id)
-            )
-            plan = plan_result.scalar_one_or_none()
-
-            transcript_result = await db_session.execute(
-                select(Transcript).where(Transcript.video_id == video_id)
-            )
-            transcript = transcript_result.scalar_one_or_none()
-
-            if plan and segments:
-                timeline_words = (transcript.words_json or []) if transcript else None
-
-                # Run apply_clean_suggestions in a thread since it's synchronous
-                clean_result = await asyncio.to_thread(
-                    apply_clean_suggestions,
-                    plan=plan,
-                    segments=segments,
-                    timeline_words=timeline_words,
-                    profile_id="conservative",
-                    suggestion_ids=None,
-                    suggestion_types=None,
+            if native:
+                clean_result = await _run_native_auto_clean(video_id, db_session, apply_clean_suggestions)
+                if clean_result is not None:
+                    logger.info(f"Auto-clean applied: {clean_result.get('summary', {})}")
+            else:
+                # Reload segments created/updated by Agents 2–4
+                seg_result = await db_session.execute(
+                    select(Segment).where(Segment.video_id == video_id).order_by(Segment.segment_index)
                 )
-                logger.info(f"Auto-clean applied: {clean_result.get('summary', {})}")
-                await db_session.flush()
+                segments = list(seg_result.scalars().all())
+
+                # Load the plan and transcript for clean suggestions
+                plan_result = await db_session.execute(
+                    select(EditPlan).where(EditPlan.video_id == video_id)
+                )
+                plan = plan_result.scalar_one_or_none()
+
+                transcript_result = await db_session.execute(
+                    select(Transcript).where(Transcript.video_id == video_id)
+                )
+                transcript = transcript_result.scalar_one_or_none()
+
+                if plan and segments:
+                    timeline_words = (transcript.words_json or []) if transcript else None
+
+                    # Run apply_clean_suggestions in a thread since it's synchronous
+                    clean_result = await asyncio.to_thread(
+                        apply_clean_suggestions,
+                        plan=plan,
+                        segments=segments,
+                        timeline_words=timeline_words,
+                        profile_id="conservative",
+                        suggestion_ids=None,
+                        suggestion_types=None,
+                    )
+                    logger.info(f"Auto-clean applied: {clean_result.get('summary', {})}")
+                    await db_session.flush()
+
+        except StaleEditPlanningError:
+            raise
         except Exception as clean_err:
+            if native:
+                _clear_native_plan_guard(db_session, video_id)
+                await db_session.rollback()
             logger.warning(f"Auto-clean failed (non-fatal): {clean_err}")
 
         # ── Pipeline complete — awaiting teacher review ──
@@ -299,7 +328,30 @@ async def run_processing_pipeline(video_id: str, db_session) -> dict:
             "edit_plan": result_plan,
         }
 
+    except asyncio.CancelledError:
+        if native:
+            _clear_native_plan_guard(db_session, video_id)
+            await db_session.rollback()
+        raise
+    except StaleEditPlanningError as exc:
+        if native:
+            _clear_native_plan_guard(db_session, video_id)
+        await db_session.rollback()
+        start_step(video_id, PipelineStep.AWAITING_REVIEW)
+        logger.info("Planning requires review for %s: %s", video_id, exc)
+        return {
+            "status": "awaiting_review", "review_required": True,
+            "video_id": video_id, "reason": str(exc),
+            "transcription": result_transcribe, "embedding": result_embed,
+            "content_analysis": result_content, "fluency_analysis": result_fluency,
+            "visual_analysis": result_visual,
+            "edit_plan": {"status": "stale", "reason": str(exc)},
+        }
     except Exception as e:
+        if native:
+            await db_session.rollback()
+        if native:
+            _clear_native_plan_guard(db_session, video_id)
         error_msg = f"Pipeline failed: {str(e)}"
         logger.error(f"{error_msg}\n{traceback.format_exc()}")
         fail_step(video_id, "pipeline", str(e))
@@ -311,6 +363,8 @@ async def run_processing_pipeline(video_id: str, db_session) -> dict:
                 video.status = VideoStatus.FAILED
                 video.error_message = error_msg
                 await db_session.flush()
+                if native:
+                    await commit_native(db_session)
         except Exception:
             pass
 
@@ -397,10 +451,17 @@ async def _run_node(
     try:
         result = await agent_func(video_id=video_id, db=db_session)
         await db_session.flush()
+        if getattr(settings, "is_native_desktop", False):
+            await commit_native(db_session)
         complete_step(video_id, step_name, result)
         return result
 
+    except StaleEditPlanningError:
+        await db_session.rollback()
+        raise
     except Exception as e:
+        if getattr(settings, "is_native_desktop", False):
+            await db_session.rollback()
         error_msg = f"{step_name} failed: {str(e)}"
         logger.error(f"Node {step_name} failed:\n{traceback.format_exc()}")
         fail_step(video_id, step_name, str(e))
@@ -414,6 +475,8 @@ async def _run_node(
                 video.status = VideoStatus.FAILED
                 video.error_message = error_msg
                 await db_session.flush()
+                if getattr(settings, "is_native_desktop", False):
+                    await commit_native(db_session)
             raise
 
         return {"status": "failed", "error": error_msg, "step": step_name}
@@ -430,10 +493,15 @@ async def _run_embed_transcript(video_id: str, db_session) -> dict:
         )
         transcript = result.scalar_one_or_none()
 
-        if transcript and transcript.segments_json:
+        transcript_segments = (deepcopy(transcript.segments_json) if getattr(settings, "is_native_desktop", False)
+                               else transcript.segments_json) if transcript else None
+        if getattr(settings, "is_native_desktop", False):
+            await commit_native(db_session)
+
+        if transcript_segments:
             chunk_count = await rag_service.ingest_transcript(
                 source_id=str(video_id),
-                segments=transcript.segments_json,
+                segments=transcript_segments,
                 target_duration=60.0,
             )
             result = {"status": "success", "chunks_embedded": chunk_count}
@@ -444,6 +512,66 @@ async def _run_embed_transcript(video_id: str, db_session) -> dict:
             return {"status": "skipped", "reason": "No transcript segments"}
 
     except Exception as e:
+        if getattr(settings, "is_native_desktop", False):
+            await db_session.rollback()
         logger.warning(f"Transcript embedding failed (non-fatal): {e}")
         complete_step(video_id, PipelineStep.EMBEDDING_TRANSCRIPT)
         return {"status": "skipped", "reason": str(e)}
+
+async def _run_native_auto_clean(video_id, db_session, apply_clean_suggestions):
+    from sqlalchemy import select
+    from db.models import EditPlan, Segment, Transcript
+
+    try:
+        segment_fields = tuple(column.key for column in Segment.__table__.columns)
+        plan_fields = tuple(column.key for column in EditPlan.__table__.columns)
+        plan, segments = await _read_guarded_native_plan(db_session, video_id)
+        transcript = (await db_session.execute(select(Transcript).where(Transcript.video_id == video_id))).scalar_one_or_none()
+        original_segments = [snapshot(row, segment_fields) for row in segments]
+        original_plan = snapshot(plan, plan_fields) if plan else None
+        transcript_id = transcript.id if transcript else None
+        original_words = deepcopy(transcript.words_json) if transcript else None
+        await commit_native(db_session)
+        if not original_plan or not original_segments:
+            _clear_native_plan_guard(db_session, video_id)
+            return None
+        candidate_plan = deepcopy(original_plan)
+        candidate_segments = deepcopy(original_segments)
+        clean_result = await asyncio.to_thread(
+            apply_clean_suggestions,
+            plan=candidate_plan, segments=candidate_segments,
+            timeline_words=deepcopy(original_words or []) if transcript_id else None,
+            profile_id="conservative", suggestion_ids=None, suggestion_types=None,
+        )
+        # One fresh_read reserves the writer; all further checks share its transaction.
+        current = await fresh_read(db_session, select(EditPlan).where(EditPlan.video_id == video_id))
+        current_plan = current.scalar_one_or_none()
+        current_segments = list((await db_session.execute(
+            select(Segment).where(Segment.video_id == video_id).order_by(Segment.segment_index)
+        )).scalars().all())
+        current_transcript = (await db_session.execute(select(Transcript).where(Transcript.video_id == video_id))).scalar_one_or_none()
+        def matches(row, saved, fields):
+            return row is not None and all(getattr(row, key) == getattr(saved, key) for key in fields)
+        if (
+            not matches(current_plan, original_plan, plan_fields)
+            or len(current_segments) != len(original_segments)
+            or any(not matches(row, saved, segment_fields) for row, saved in zip(current_segments, original_segments))
+            or (current_transcript.id if current_transcript else None) != transcript_id
+            or (current_transcript.words_json if current_transcript else None) != original_words
+        ):
+            await db_session.rollback()
+            raise StaleEditPlanningError("Teacher review or clean inputs changed; computed auto-clean was not applied.")
+        for row, candidate in zip(current_segments, candidate_segments):
+            for key in ("teacher_action", "teacher_note", "is_teacher_modified"):
+                setattr(row, key, deepcopy(getattr(candidate, key)))
+        for key in ("plan_json", "estimated_duration", "segments_total", "segments_keep", "segments_cut",
+                    "segments_highlight", "filler_words_removed", "silence_removed_seconds"):
+            setattr(current_plan, key, deepcopy(getattr(candidate_plan, key)))
+        await db_session.flush()
+        await commit_native(db_session)
+        _clear_native_plan_guard(db_session, video_id)
+        return clean_result
+    except BaseException:
+        _clear_native_plan_guard(db_session, video_id)
+        await db_session.rollback()
+        raise
