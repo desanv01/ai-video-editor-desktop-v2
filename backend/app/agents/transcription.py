@@ -9,13 +9,25 @@ Voxtral provides diarization (speaker labels) for free.
 import os
 import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from db.models import Video, Transcript, VideoStatus
 from services.ffmpeg import ffmpeg_service
 from services.transcription import transcription_service
 from config import settings
+from desktop_native.agent_transactions import commit_native, fresh_read, snapshot
 
 
 async def run_transcription_agent(video_id: str, db: AsyncSession) -> dict:
+    if not settings.is_native_desktop:
+        return await _run_transcription_agent(video_id, db)
+    try:
+        return await _run_transcription_agent(video_id, db)
+    except BaseException:
+        await db.rollback()
+        raise
+
+
+async def _run_transcription_agent(video_id: str, db: AsyncSession) -> dict:
     """
     Execute the transcription pipeline for a video.
 
@@ -40,6 +52,9 @@ async def run_transcription_agent(video_id: str, db: AsyncSession) -> dict:
 
     video.status = VideoStatus.TRANSCRIBING
     await db.flush()
+    if settings.is_native_desktop:
+        video = snapshot(video, ("id", "file_path", "duration_seconds"))
+        await commit_native(db)
 
     try:
         # ── Step 1: Extract audio ──
@@ -62,6 +77,14 @@ async def run_transcription_agent(video_id: str, db: AsyncSession) -> dict:
         )
 
         # ── Step 3: Store transcript ──
+        if settings.is_native_desktop:
+            duration_seconds = result.get("duration", video.duration_seconds)
+            current = await fresh_read(db, select(Video).where(Video.id == video_id))
+            video = current.scalar_one_or_none()
+            if not video:
+                raise ValueError(f"Video {video_id} not found")
+            video.audio_path = audio_path
+            video.duration_seconds = duration_seconds
         transcript = Transcript(
             id=uuid.uuid4(),
             video_id=video.id,
@@ -75,8 +98,12 @@ async def run_transcription_agent(video_id: str, db: AsyncSession) -> dict:
         )
         db.add(transcript)
 
-        video.duration_seconds = result.get("duration", video.duration_seconds)
+        if not settings.is_native_desktop:
+            video.duration_seconds = result.get("duration", video.duration_seconds)
         await db.flush()
+        if settings.is_native_desktop:
+            transcript = snapshot(transcript, ("id", "word_count"))
+            await commit_native(db)
 
         return {
             "status": "success",
@@ -91,7 +118,16 @@ async def run_transcription_agent(video_id: str, db: AsyncSession) -> dict:
         }
 
     except Exception as e:
+        if settings.is_native_desktop:
+            await db.rollback()
+            current = await fresh_read(db, select(Video).where(Video.id == video_id))
+            video = current.scalar_one_or_none()
+            if not video:
+                await db.rollback()
+                raise
         video.status = VideoStatus.FAILED
         video.error_message = f"Transcription failed: {str(e)}"
         await db.flush()
+        if settings.is_native_desktop:
+            await commit_native(db)
         raise
