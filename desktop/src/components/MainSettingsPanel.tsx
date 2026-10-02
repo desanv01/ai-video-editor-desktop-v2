@@ -362,6 +362,7 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
   };
 
   const handleDownload = async (model: LocalTranscriptionModel) => {
+    if (window.aiveDesktop || !model.can_download) return;
     setBusyModelId(model.model_id);
     setError(null);
     setNotice(null);
@@ -378,6 +379,7 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
   };
 
   const handleRemove = async (model: LocalTranscriptionModel) => {
+    if (window.aiveDesktop || !model.can_remove) return;
     if (!window.confirm(`Remove ${model.label} from local storage?`)) return;
 
     setBusyModelId(model.model_id);
@@ -419,6 +421,7 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
   };
 
   const handleUseEnvKey = async (provider: string, status: APIKeyStatus) => {
+    if (window.aiveDesktop) return;
     setSaving(true);
     setError(null);
     setNotice(null);
@@ -444,7 +447,7 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
     try {
       const next = await api.updateAISettings({
         api_keys: {
-          [provider]: { clear: true, env_var: status.env_var },
+          [provider]: window.aiveDesktop ? { clear: true } : { clear: true, env_var: status.env_var },
         },
       });
       setBackendSettings(next);
@@ -487,11 +490,11 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
         const selected = catalog.models.find(model => model.model_id === selectedModelId);
         const localModelPaths = {
           ...localPaths,
-          transcription: selected?.file_path ?? localPaths.transcription,
+          transcription: window.aiveDesktop ? backendSettings.local_model_paths.transcription : selected?.file_path ?? localPaths.transcription,
         };
         const apiKeys = Object.fromEntries(
           Object.entries(apiKeyDrafts)
-            .map(([provider, value]) => [provider, value.trim()] as const)
+            .map(([provider, value]) => [provider, window.aiveDesktop ? value : value.trim()] as const)
             .filter(([, value]) => value.length > 0)
             .map(([provider, value]) => [provider, { api_key: value }]),
         );
@@ -501,7 +504,7 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
           capabilities,
           local_model_paths: localModelPaths,
           local_model_ids: {
-            transcription: selectedModelId,
+            transcription: window.aiveDesktop ? "small" : selectedModelId,
           },
           domain_terms: desktopSettings.domain_terms,
         };
@@ -791,6 +794,7 @@ function ProvidersTab({
   return (
     <PanelStack>
       <SectionHeader title="API Providers" icon={Cloud} />
+      {window.aiveDesktop && <p className="text-xs text-gray-400">Keys are stored in encrypted Windows Desktop storage. Environment keys are unavailable. Saved keys do not confirm a working provider connection.</p>}
       <div className="grid gap-3">
         {apiKeys.map(([provider, status]) => (
           <div key={provider} className="rounded-md border border-surface-border bg-surface p-4">
@@ -798,7 +802,7 @@ function ProvidersTab({
               <div>
                 <h3 className="text-sm font-semibold text-gray-100">{providerLabel(provider)}</h3>
                 <p className="mt-1 text-xs text-gray-500">
-                  {status.source === "env" ? status.env_var : "Encrypted desktop setting"}
+                  {window.aiveDesktop ? "Encrypted Windows Desktop storage" : status.source === "env" ? status.env_var : "Encrypted desktop setting"}
                 </p>
               </div>
               <span className={`rounded px-2 py-1 text-xs font-semibold ${
@@ -818,7 +822,9 @@ function ProvidersTab({
               <button
                 type="button"
                 onClick={() => onUseEnvKey(provider, status)}
-                className="inline-flex items-center justify-center gap-2 rounded-md bg-surface-overlay px-3 py-2 text-sm text-gray-200 transition-colors hover:bg-surface-border"
+                disabled={Boolean(window.aiveDesktop)}
+                title={window.aiveDesktop ? "Desktop uses encrypted Windows storage instead of environment keys." : undefined}
+                className="inline-flex items-center justify-center gap-2 rounded-md bg-surface-overlay px-3 py-2 text-sm text-gray-200 transition-colors hover:bg-surface-border disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Monitor className="h-4 w-4" />
                 Env
@@ -875,6 +881,7 @@ function LocalModelsTab({
   return (
     <PanelStack>
       <SectionHeader title="Local Whisper" icon={Cpu} />
+      {window.aiveDesktop && <p className="text-xs text-gray-400">Whisper small is managed by Desktop preparation. Prepare or repair the component in Desktop setup to change its availability. Current model: small; path: {catalog?.models.find(model => model.model_id === "small")?.file_path ?? "Not prepared"}.</p>}
       {catalog && (
         <div className={`rounded-md border px-3 py-2 text-xs ${
           catalog.runtime_configured
@@ -887,7 +894,7 @@ function LocalModelsTab({
           <div className="mt-1 leading-5 text-gray-300">
             {catalog.runtime_configured
               ? `Using ${catalog.runtime_binary_path ?? "configured whisper.cpp binary"}`
-              : catalog.runtime_message || "Set WHISPER_CPP_BINARY_PATH to whisper-cli.exe or put whisper-cli on PATH."}
+              : window.aiveDesktop ? "Prepare or repair the Whisper small component in Desktop setup." : catalog.runtime_message || "Set WHISPER_CPP_BINARY_PATH to whisper-cli.exe or put whisper-cli on PATH."}
           </div>
         </div>
       )}
@@ -906,8 +913,9 @@ function LocalModelsTab({
               <div className="flex items-start justify-between gap-3">
                 <button
                   type="button"
-                  onClick={() => onSelectedModelChange(model.model_id)}
-                  className="flex min-w-0 flex-1 items-start gap-3 text-left"
+                  onClick={() => { if (!window.aiveDesktop) onSelectedModelChange(model.model_id); }}
+                  disabled={Boolean(window.aiveDesktop)}
+                  className="flex min-w-0 flex-1 items-start gap-3 text-left disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <span className={`mt-1 h-3 w-3 rounded-full border ${
                     selected ? "border-accent bg-accent" : "border-gray-500"
@@ -940,7 +948,7 @@ function LocalModelsTab({
                     {formatModelState(model)}
                   </span>
                   <div className="flex items-center gap-1">
-                    {model.can_download && (
+                    {!window.aiveDesktop && model.can_download && (
                       <button
                         type="button"
                         onClick={() => onDownload(model)}
@@ -951,7 +959,7 @@ function LocalModelsTab({
                         Download
                       </button>
                     )}
-                    {model.can_remove && (
+                    {!window.aiveDesktop && model.can_remove && (
                       <button
                         type="button"
                         onClick={() => onRemove(model)}
@@ -999,9 +1007,11 @@ function LocalModelsTab({
             <span className="text-xs font-semibold text-gray-300">{CAPABILITY_LABELS[kind]}</span>
             <input
               value={localPaths[kind]}
+              disabled={Boolean(window.aiveDesktop) && kind === "local_runtime"}
+              title={window.aiveDesktop && kind === "local_runtime" ? "Runtime paths are managed by Desktop preparation." : undefined}
               onChange={event => onPathChange(kind, event.target.value)}
-              placeholder={kind === "local_runtime" ? "Path to whisper-cli.exe or local runtime" : "Model or runtime path"}
-              className="rounded-md border border-surface-border bg-surface px-3 py-2 text-sm text-gray-100 outline-none focus:border-accent"
+              placeholder={kind === "local_runtime" && window.aiveDesktop ? "Managed by Desktop preparation" : kind === "local_runtime" ? "Path to whisper-cli.exe or local runtime" : "Model or runtime path"}
+              className="rounded-md border border-surface-border bg-surface px-3 py-2 text-sm text-gray-100 outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
             />
           </label>
         ))}

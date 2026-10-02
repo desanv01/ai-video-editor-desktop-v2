@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import json
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -24,6 +25,10 @@ def _bearer_token(request: Request) -> str | None:
 
 def create_native_app(runtime: NativeDesktopRuntime) -> FastAPI:
     """Create the native app without importing the Docker app/lifespan."""
+
+    from services.app_settings import apply_desktop_credentials
+
+    apply_desktop_credentials({})
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -81,6 +86,29 @@ def create_native_app(runtime: NativeDesktopRuntime) -> FastAPI:
     @app.get("/engine-control", tags=["Engine"])
     async def engine_control() -> dict[str, Any]:
         return runtime.engine_control_payload("ready")
+
+    @app.post("/engine-control/credentials", tags=["Engine"])
+    async def engine_control_credentials(request: Request) -> dict[str, Any]:
+        # Stream bound is enforced before JSON decoding, including chunked bodies.
+        try:
+            body = bytearray()
+            async for chunk in request.stream():
+                if len(body) + len(chunk) > 131072:
+                    raise ValueError("size")
+                body.extend(chunk)
+
+            def unique_object(pairs):
+                result = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError("duplicate")
+                    result[key] = value
+                return result
+
+            snapshot = json.loads(body.decode("utf-8"), object_pairs_hook=unique_object)
+            return apply_desktop_credentials(snapshot)
+        except (ValueError, TypeError, UnicodeError):
+            raise HTTPException(status_code=422, detail="Invalid desktop credentials.") from None
 
     @app.post("/engine-control/shutdown", tags=["Engine"])
     async def engine_control_shutdown(request: Request) -> dict[str, str]:

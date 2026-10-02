@@ -1299,7 +1299,7 @@ export interface AICapabilitySettings {
 
 export interface APIKeyStatus {
   provider: string;
-  source: "env" | "encrypted_db";
+  source: "env" | "encrypted_db" | "desktop";
   env_var: string | null;
   has_key: boolean;
   display_value: string | null;

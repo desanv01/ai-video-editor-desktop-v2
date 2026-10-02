@@ -286,6 +286,9 @@ def _whisper_bindings(args: argparse.Namespace) -> tuple[str, str, str]:
 
 
 def _configure_environment(args: argparse.Namespace) -> object:
+    # Native credentials arrive only through the authenticated controller bridge.
+    for name in ("MISTRAL_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "ALIBABA_API_KEY"):
+        os.environ.pop(name, None)
     if not args.data_root:
         raise SystemExit("--data-root or AIVE_DESKTOP_DATA_ROOT is required")
     if args.port < 0 or args.port > 65535:

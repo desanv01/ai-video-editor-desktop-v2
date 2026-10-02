@@ -1149,9 +1149,38 @@ export async function getAISettings(): Promise<BackendAISettings> {
 }
 
 export async function updateAISettings(settings: BackendAISettingsUpdate): Promise<BackendAISettings> {
+  let payload = settings;
+  if (window.aiveDesktop) {
+    const allowed = new Set(["mistral", "openai", "deepseek", "alibaba"]);
+    const updates = settings.api_keys ?? {};
+    const invalid = () => new ApiClientError("Use secure Desktop storage for a valid provider key. Environment keys are unavailable in Desktop.", { code: "INVALID_CREDENTIAL" });
+    if (typeof updates !== "object" || Array.isArray(updates)) throw invalid();
+    // Validate the complete request before the first durable vault mutation.
+    const operations: { provider: string; key: string | null }[] = [];
+    for (const [provider, update] of Object.entries(updates)) {
+      if (!allowed.has(provider) || !update || typeof update !== "object" || Array.isArray(update)
+          || Object.keys(update).some(name => !["api_key", "clear", "use_env", "env_var"].includes(name))
+          || (update.clear !== undefined && typeof update.clear !== "boolean")
+          || (update.use_env !== undefined && typeof update.use_env !== "boolean")
+          || update.use_env || (update.env_var !== undefined && update.env_var !== null && update.env_var !== "")
+          || (update.api_key !== undefined && update.api_key !== null && (typeof update.api_key !== "string" || update.api_key.length > 8192 || /[\x00-\x1f\x7f-\x9f]/.test(update.api_key)))) throw invalid();
+      if (update.clear || update.api_key === null || (typeof update.api_key === "string" && !update.api_key.trim())) operations.push({provider,key:null});
+      else if (typeof update.api_key === "string") operations.push({provider,key:update.api_key.trim()});
+    }
+    try {
+      for (const {provider,key} of operations) {
+        if (key === null) await window.aiveDesktop.removeCredential(provider);
+        else await window.aiveDesktop.setCredential(provider,key);
+      }
+    } catch {
+      throw new ApiClientError("The Desktop credential update could not complete. Check secure storage and restart the engine, then try again.", { code: "CREDENTIAL_SYNC_FAILED" });
+    }
+    payload = { ...settings };
+    delete payload.api_keys;
+  }
   return request("/settings/ai", {
     method: "PUT",
-    body: JSON.stringify(settings),
+    body: JSON.stringify(payload),
   });
 }
 

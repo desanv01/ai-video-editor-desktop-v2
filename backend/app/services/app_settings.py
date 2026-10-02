@@ -50,6 +50,21 @@ API_KEY_SETTINGS_FIELDS = {
 }
 
 
+def apply_desktop_credentials(snapshot: Any) -> dict[str, Any]:
+    """Replace a native session's keys only after validating the whole snapshot."""
+    if not isinstance(snapshot, dict) or len(snapshot) > 4:
+        raise ValueError("Invalid desktop credentials.")
+    for provider, value in snapshot.items():
+        if provider not in API_KEY_SETTINGS_FIELDS or not isinstance(value, str) or not 1 <= len(value) <= 8192:
+            raise ValueError("Invalid desktop credentials.")
+        if any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in value):
+            raise ValueError("Invalid desktop credentials.")
+    for provider, field in API_KEY_SETTINGS_FIELDS.items():
+        setattr(settings, field, snapshot.get(provider, ""))
+    reset_provider_registry_cache()
+    return {"status": "applied", "configuredProviders": sorted(snapshot)}
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -323,6 +338,10 @@ def apply_settings_record(record: AppAISettings) -> None:
     if not settings.is_native_desktop and settings.LOCAL_RUNTIME_PATH:
         settings.WHISPER_CPP_BINARY_PATH = settings.LOCAL_RUNTIME_PATH
 
+    if settings.is_native_desktop:
+        # Persisted Docker/environment keys never replace controller-owned secrets.
+        return
+
     for provider, entry in (record.api_keys_json or {}).items():
         settings_field = API_KEY_SETTINGS_FIELDS.get(provider)
         if not settings_field:
@@ -360,10 +379,13 @@ def settings_response(record: AppAISettings) -> AppSettingsResponse:
         for kind, payload in (record.capabilities_json or {}).items()
     }
 
-    api_keys = {
-        provider: _api_key_status(provider, payload)
-        for provider, payload in (record.api_keys_json or {}).items()
-    }
+    if settings.is_native_desktop:
+        api_keys = {provider: _api_key_status(provider, {}) for provider in API_KEY_SETTINGS_FIELDS}
+    else:
+        api_keys = {
+            provider: _api_key_status(provider, payload)
+            for provider, payload in (record.api_keys_json or {}).items()
+        }
 
     local_paths = dict(_stored_local_model_paths(record))
     local_model_ids = dict(_stored_local_model_ids(record))
@@ -389,6 +411,11 @@ def settings_response(record: AppAISettings) -> AppSettingsResponse:
 
 
 def _api_key_status(provider: str, entry: dict[str, Any]) -> APIKeyStatus:
+    if settings.is_native_desktop:
+        has_key = bool(getattr(settings, API_KEY_SETTINGS_FIELDS[provider], ""))
+        return APIKeyStatus(provider=provider, source="desktop", env_var=None, has_key=has_key,
+                            display_value="********" if has_key else None, updated_at=None)
+
     source = entry.get("source", "env")
     env_var = entry.get("env_var") or API_KEY_ENV_VARS.get(provider)
     env_value = os.getenv(env_var or "")
@@ -415,6 +442,8 @@ async def update_ai_settings(
     request: AppSettingsUpdateRequest,
 ) -> AppSettingsResponse:
     if settings.is_native_desktop:
+        if request.api_keys:
+            raise HTTPException(status.HTTP_409_CONFLICT, "Desktop credentials are managed by secure Desktop storage.")
         detail = (
             "Local transcription runtime and models are managed by Desktop component preparation. "
             "Prepare or repair the Whisper small component in Desktop setup."
