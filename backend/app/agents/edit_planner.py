@@ -28,6 +28,8 @@ Supports:
 import uuid
 import json
 import logging
+from copy import deepcopy
+from desktop_native.agent_transactions import commit_native, fresh_read, snapshot
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -90,6 +92,67 @@ RESPOND WITH ONLY VALID JSON:
 }"""
 
 
+class StaleEditPlanningError(RuntimeError):
+    """Planning inputs or teacher review changed while decisions were computed."""
+
+
+_SEGMENT_FIELDS = tuple(column.key for column in Segment.__table__.columns)
+_PLAN_FIELDS = tuple(column.key for column in EditPlan.__table__.columns)
+_ASSET_FIELDS = tuple(column.key for column in ProjectAsset.__table__.columns)
+_VIDEO_INPUT_FIELDS = ("id", "duration_seconds", "project_id", "project_asset_id")
+
+
+def _matches_snapshot(row, saved, fields):
+    return (row is None and saved is None) or (
+        row is not None and saved is not None
+        and all(getattr(row, name) == getattr(saved, name) for name in fields)
+    )
+
+def _native_plan_guard_key(video_id):
+    return ("native_edit_planning_guard", str(video_id))
+
+
+def _clear_native_plan_guard(db, video_id):
+    db.info.pop(_native_plan_guard_key(video_id), None)
+
+
+def _capture_native_plan_guard(plan, segments):
+    return {
+        "plan": snapshot(plan, _PLAN_FIELDS),
+        "segments": [snapshot(row, _SEGMENT_FIELDS) for row in segments],
+    }
+
+
+def _store_native_plan_guard(db, video_id, guard):
+    # Caller captures after flush and stores only after its commit succeeds.
+    db.info[_native_plan_guard_key(video_id)] = deepcopy(guard)
+
+
+async def _read_guarded_native_plan(db, video_id):
+    """Reserve one writer and require the exact last automatic committed state."""
+    try:
+        current = await fresh_read(db, select(EditPlan).where(EditPlan.video_id == video_id))
+        plan = current.scalar_one_or_none()
+        segments = list((await db.execute(
+            select(Segment).where(Segment.video_id == video_id).order_by(Segment.segment_index)
+        )).scalars().all())
+        guard = db.info.get(_native_plan_guard_key(video_id))
+        if (
+            guard is None or plan is None
+            or not _matches_snapshot(plan, guard["plan"], _PLAN_FIELDS)
+            or len(segments) != len(guard["segments"])
+            or any(not _matches_snapshot(row, saved, _SEGMENT_FIELDS)
+                   for row, saved in zip(segments, guard["segments"]))
+        ):
+            raise StaleEditPlanningError(
+                "Teacher review or planning state changed after Agent 5; automatic mutations require review."
+            )
+        return plan, segments
+    except BaseException:
+        _clear_native_plan_guard(db, video_id)
+        await db.rollback()
+        raise
+
 async def run_edit_planner_agent(video_id: str, db: AsyncSession) -> dict:
     """
     Generate the edit plan by fusing all analysis signals.
@@ -110,245 +173,300 @@ async def run_edit_planner_agent(video_id: str, db: AsyncSession) -> dict:
             "chapters": [...], "warnings": [...]
         }
     """
-    video = await db.get(Video, video_id)
-    if not video:
-        raise ValueError(f"Video {video_id} not found")
+    native = bool(getattr(settings, "is_native_desktop", False))
+    if native:
+        _clear_native_plan_guard(db, video_id)
+    try:
+        video = await db.get(Video, video_id)
+        if not video:
+            raise ValueError(f"Video {video_id} not found")
 
-    video.status = VideoStatus.PLANNING
-    await db.flush()
+        video.status = VideoStatus.PLANNING
+        await db.flush()
 
-    # ── Step 1: Load all segments ──
-    result = await db.execute(
-        select(Segment)
-        .where(Segment.video_id == video_id)
-        .order_by(Segment.segment_index)
-    )
-    segments = list(result.scalars().all())
-    project_assets = await _load_layout_source_assets(video, db)
+        # ── Step 1: Load all segments ──
+        result = await db.execute(
+            select(Segment)
+            .where(Segment.video_id == video_id)
+            .order_by(Segment.segment_index)
+        )
+        segments = list(result.scalars().all())
+        project_assets = await _load_layout_source_assets(video, db)
+        if native:
+            existing = await db.execute(select(EditPlan).where(EditPlan.video_id == video_id))
+            original_plan = existing.scalar_one_or_none()
+            plan_input = snapshot(original_plan, _PLAN_FIELDS) if original_plan else None
+            video_input = snapshot(video, _VIDEO_INPUT_FIELDS)
+            segment_inputs = [snapshot(seg, _SEGMENT_FIELDS) for seg in segments]
+            asset_inputs = [snapshot(asset, _ASSET_FIELDS) for asset in project_assets]
+            video = deepcopy(video_input)
+            segments = deepcopy(segment_inputs)
+            project_assets = deepcopy(asset_inputs)
+            await commit_native(db)
 
-    if not segments:
-        return {"status": "error", "message": "No segments found. Run Agents 2-4 first."}
+        if not segments:
+            return {"status": "error", "message": "No segments found. Run Agents 2-4 first."}
 
-    logger.info(f"Agent 5: Planning edits for {len(segments)} segments, video {video_id}")
+        logger.info(f"Agent 5: Planning edits for {len(segments)} segments, video {video_id}")
 
-    # ── Step 2: Get LLM decisions (batched for long lectures) ──
-    all_decisions = []
-    all_warnings = []
+        # ── Step 2: Get LLM decisions (batched for long lectures) ──
+        all_decisions = []
+        all_warnings = []
 
-    batch_size = 15  # ~15 segments per LLM call to stay within token limits
-    for batch_start in range(0, len(segments), batch_size):
-        batch = segments[batch_start:batch_start + batch_size]
-        batch_end = min(batch_start + batch_size, len(segments))
+        batch_size = 15  # ~15 segments per LLM call to stay within token limits
+        for batch_start in range(0, len(segments), batch_size):
+            batch = segments[batch_start:batch_start + batch_size]
+            batch_end = min(batch_start + batch_size, len(segments))
 
-        # Build compact segment descriptions
-        segment_data = []
-        for seg in batch:
-            segment_data.append({
-                "index": seg.segment_index,
-                "slide_index": seg.slide_index,  # May be None if no PDF alignment done
-                "time": f"{seg.start_time:.1f}-{seg.end_time:.1f}s",
-                "duration": round(seg.duration or 0, 1),
-                "topic": seg.topic_label or "Unknown",
-                "summary": (seg.summary or "")[:120],
-                "type": seg.segment_type.value if seg.segment_type else "unknown",
-                "speaker": seg.speaker or "Instructor",
-                "importance": round(seg.importance_score or 0.5, 2),
-                "fluency": round(seg.fluency_score or 1.0, 2),
-                "fillers": seg.filler_count or 0,
-                "pause_sec": round(seg.pause_duration_total or 0, 1),
-                "has_slide_change": seg.has_slide_change or False,
-                "has_repetition": seg.has_repetition or False,
+            # Build compact segment descriptions
+            segment_data = []
+            for seg in batch:
+                segment_data.append({
+                    "index": seg.segment_index,
+                    "slide_index": seg.slide_index,  # May be None if no PDF alignment done
+                    "time": f"{seg.start_time:.1f}-{seg.end_time:.1f}s",
+                    "duration": round(seg.duration or 0, 1),
+                    "topic": seg.topic_label or "Unknown",
+                    "summary": (seg.summary or "")[:120],
+                    "type": seg.segment_type.value if seg.segment_type else "unknown",
+                    "speaker": seg.speaker or "Instructor",
+                    "importance": round(seg.importance_score or 0.5, 2),
+                    "fluency": round(seg.fluency_score or 1.0, 2),
+                    "fillers": seg.filler_count or 0,
+                    "pause_sec": round(seg.pause_duration_total or 0, 1),
+                    "has_slide_change": seg.has_slide_change or False,
+                    "has_repetition": seg.has_repetition or False,
+                })
+
+            user_msg = (
+                f"Video duration: {video.duration_seconds:.1f}s\n"
+                f"Segments {batch_start} to {batch_end - 1} of {len(segments)} total:\n\n"
+                f"{json.dumps(segment_data, indent=1)}\n\n"
+                f"Decide action for each segment. Return JSON only."
+            )
+
+            messages = [
+                {"role": "system", "content": EDIT_PLANNER_SYSTEM},
+                {"role": "user", "content": user_msg},
+            ]
+
+            try:
+                response = await llm_service.chat_json(
+                    messages,
+                    model=settings.AGENT5_MODEL,
+                    temperature=0.1,
+                    max_tokens=4096,
+                )
+                batch_decisions = response.get("decisions", [])
+                batch_warnings = response.get("warnings", [])
+                all_decisions.extend(batch_decisions)
+                all_warnings.extend(batch_warnings)
+                logger.info(
+                    f"  Batch {batch_start//batch_size + 1}: "
+                    f"{len(batch_decisions)} decisions, {len(batch_warnings)} warnings"
+                )
+            except Exception as e:
+                logger.warning(f"  Batch {batch_start//batch_size + 1} LLM failed: {e}, using fallback rules")
+                fallback = _fallback_decisions(batch)
+                all_decisions.extend(fallback)
+
+        # ── Step 3: Apply decisions to segments ──
+        action_map = {
+            "keep": SegmentAction.KEEP,
+            "cut": SegmentAction.CUT,
+            "shorten": SegmentAction.SHORTEN,
+            "highlight": SegmentAction.HIGHLIGHT,
+        }
+
+        counts = {"keep": 0, "cut": 0, "shorten": 0, "highlight": 0}
+        total_fillers_removed = 0
+        silence_removed = 0.0
+
+        for seg in segments:
+            decision = next(
+                (d for d in all_decisions if d.get("segment_index") == seg.segment_index),
+                None,
+            )
+
+            if decision:
+                action_str = decision.get("action", "keep").lower().strip()
+                seg.action = action_map.get(action_str, SegmentAction.KEEP)
+                seg.action_confidence = min(1.0, max(0.0, float(decision.get("confidence", 0.5))))
+                seg.action_reason = decision.get("reason", "")
+            else:
+                # Segment missing from LLM response — use fallback
+                fb = _fallback_single(seg)
+                seg.action = action_map.get(fb["action"], SegmentAction.KEEP)
+                seg.action_confidence = fb["confidence"]
+                seg.action_reason = fb["reason"]
+
+            counts[seg.action.value] += 1
+
+            if seg.action == SegmentAction.CUT:
+                total_fillers_removed += seg.filler_count or 0
+                silence_removed += seg.pause_duration_total or 0
+
+        # ── Step 4: Coherence post-check ──
+        counts, total_fillers_removed, silence_removed = _ensure_actionable_plan(segments, counts)
+
+        coherence_warnings = _check_coherence(segments)
+        all_warnings.extend(coherence_warnings)
+
+        # ── Step 5: Compute stats ──
+        original_duration = video.duration_seconds or 0
+        cut_duration = sum((seg.duration or 0) for seg in segments if seg.action == SegmentAction.CUT)
+        shorten_savings = sum(
+            (seg.pause_duration_total or 0) for seg in segments if seg.action == SegmentAction.SHORTEN
+        )
+        estimated_duration = max(0, original_duration - cut_duration - shorten_savings)
+
+        # ── Step 6: Build rich plan_json for the desktop app ──
+        plan_entries = []
+        for seg in segments:
+            decision = next(
+                (d for d in all_decisions if d.get("segment_index") == seg.segment_index),
+                None,
+            )
+            plan_entries.append({
+                "segment_id": str(seg.id),
+                "segment_index": seg.segment_index,
+                "start": seg.start_time,
+                "end": seg.end_time,
+                "duration": seg.duration,
+                "action": seg.action.value,
+                "confidence": seg.action_confidence,
+                "reason": seg.action_reason,
+                "layout_mode": decision.get("layout_mode", "pip_slide") if decision else "pip_slide",
+                # Rich data for desktop app display
+                "topic": seg.topic_label,
+                "summary": seg.summary,
+                "type": seg.segment_type.value if seg.segment_type else None,
+                "speaker": seg.speaker,
+                "importance": seg.importance_score,
+                "fluency": seg.fluency_score,
+                "fillers": seg.filler_count,
+                "pause_seconds": seg.pause_duration_total,
+                "has_slide_change": seg.has_slide_change,
             })
 
-        user_msg = (
-            f"Video duration: {video.duration_seconds:.1f}s\n"
-            f"Segments {batch_start} to {batch_end - 1} of {len(segments)} total:\n\n"
-            f"{json.dumps(segment_data, indent=1)}\n\n"
-            f"Decide action for each segment. Return JSON only."
-        )
-
-        messages = [
-            {"role": "system", "content": EDIT_PLANNER_SYSTEM},
-            {"role": "user", "content": user_msg},
-        ]
-
-        try:
-            response = await llm_service.chat_json(
-                messages,
-                model=settings.AGENT5_MODEL,
-                temperature=0.1,
-                max_tokens=4096,
-            )
-            batch_decisions = response.get("decisions", [])
-            batch_warnings = response.get("warnings", [])
-            all_decisions.extend(batch_decisions)
-            all_warnings.extend(batch_warnings)
-            logger.info(
-                f"  Batch {batch_start//batch_size + 1}: "
-                f"{len(batch_decisions)} decisions, {len(batch_warnings)} warnings"
-            )
-        except Exception as e:
-            logger.warning(f"  Batch {batch_start//batch_size + 1} LLM failed: {e}, using fallback rules")
-            fallback = _fallback_decisions(batch)
-            all_decisions.extend(fallback)
-
-    # ── Step 3: Apply decisions to segments ──
-    action_map = {
-        "keep": SegmentAction.KEEP,
-        "cut": SegmentAction.CUT,
-        "shorten": SegmentAction.SHORTEN,
-        "highlight": SegmentAction.HIGHLIGHT,
-    }
-
-    counts = {"keep": 0, "cut": 0, "shorten": 0, "highlight": 0}
-    total_fillers_removed = 0
-    silence_removed = 0.0
-
-    for seg in segments:
-        decision = next(
-            (d for d in all_decisions if d.get("segment_index") == seg.segment_index),
-            None,
-        )
-
-        if decision:
-            action_str = decision.get("action", "keep").lower().strip()
-            seg.action = action_map.get(action_str, SegmentAction.KEEP)
-            seg.action_confidence = min(1.0, max(0.0, float(decision.get("confidence", 0.5))))
-            seg.action_reason = decision.get("reason", "")
-        else:
-            # Segment missing from LLM response — use fallback
-            fb = _fallback_single(seg)
-            seg.action = action_map.get(fb["action"], SegmentAction.KEEP)
-            seg.action_confidence = fb["confidence"]
-            seg.action_reason = fb["reason"]
-
-        counts[seg.action.value] += 1
-
-        if seg.action == SegmentAction.CUT:
-            total_fillers_removed += seg.filler_count or 0
-            silence_removed += seg.pause_duration_total or 0
-
-    # ── Step 4: Coherence post-check ──
-    counts, total_fillers_removed, silence_removed = _ensure_actionable_plan(segments, counts)
-
-    coherence_warnings = _check_coherence(segments)
-    all_warnings.extend(coherence_warnings)
-
-    # ── Step 5: Compute stats ──
-    original_duration = video.duration_seconds or 0
-    cut_duration = sum((seg.duration or 0) for seg in segments if seg.action == SegmentAction.CUT)
-    shorten_savings = sum(
-        (seg.pause_duration_total or 0) for seg in segments if seg.action == SegmentAction.SHORTEN
-    )
-    estimated_duration = max(0, original_duration - cut_duration - shorten_savings)
-
-    # ── Step 6: Build rich plan_json for the desktop app ──
-    plan_entries = []
-    for seg in segments:
-        decision = next(
-            (d for d in all_decisions if d.get("segment_index") == seg.segment_index),
-            None,
-        )
-        plan_entries.append({
-            "segment_id": str(seg.id),
-            "segment_index": seg.segment_index,
-            "start": seg.start_time,
-            "end": seg.end_time,
-            "duration": seg.duration,
-            "action": seg.action.value,
-            "confidence": seg.action_confidence,
-            "reason": seg.action_reason,
-            "layout_mode": decision.get("layout_mode", "pip_slide") if decision else "pip_slide",
-            # Rich data for desktop app display
-            "topic": seg.topic_label,
-            "summary": seg.summary,
-            "type": seg.segment_type.value if seg.segment_type else None,
-            "speaker": seg.speaker,
-            "importance": seg.importance_score,
-            "fluency": seg.fluency_score,
-            "fillers": seg.filler_count,
-            "pause_seconds": seg.pause_duration_total,
-            "has_slide_change": seg.has_slide_change,
-        })
-
-    plan_payload = build_edit_plan_payload(
-        segments=plan_entries,
-        original_duration=original_duration,
-        estimated_duration=round(estimated_duration, 1),
-        warnings=all_warnings,
-        source_assets=project_assets or None,
-        layout_segments=segments,
-    )
-
-    # ── Step 7: Create or update EditPlan ──
-    existing_plan = await db.execute(
-        select(EditPlan).where(EditPlan.video_id == video_id)
-    )
-    plan = existing_plan.scalar_one_or_none()
-
-    if plan:
-        # Update existing plan (re-run scenario)
-        plan.plan_json = plan_payload
-        plan.original_duration = original_duration
-        plan.estimated_duration = round(estimated_duration, 1)
-        plan.segments_total = len(segments)
-        plan.segments_keep = counts["keep"]
-        plan.segments_cut = counts["cut"]
-        plan.segments_highlight = counts["highlight"]
-        plan.filler_words_removed = total_fillers_removed
-        plan.silence_removed_seconds = round(silence_removed, 2)
-        plan.is_approved = False  # Reset approval on re-plan
-        plan.approved_at = None
-    else:
-        plan = EditPlan(
-            id=uuid.uuid4(),
-            video_id=video.id,
-            plan_json=plan_payload,
+        plan_payload = build_edit_plan_payload(
+            segments=plan_entries,
             original_duration=original_duration,
             estimated_duration=round(estimated_duration, 1),
-            segments_total=len(segments),
-            segments_keep=counts["keep"],
-            segments_cut=counts["cut"],
-            segments_highlight=counts["highlight"],
-            filler_words_removed=total_fillers_removed,
-            silence_removed_seconds=round(silence_removed, 2),
+            warnings=all_warnings,
+            source_assets=project_assets or None,
+            layout_segments=segments,
         )
-        db.add(plan)
 
-    # ── Step 8: Generate chapter markers ──
-    chapters = _generate_chapters(segments)
+        # ── Step 7: Create or update EditPlan ──
+        if native:
+            chapters = _generate_chapters(segments)
+            current = await fresh_read(db, select(Video).where(Video.id == video_id))
+            current_video = current.scalar_one_or_none()
+            current_segments = list((await db.execute(
+                select(Segment).where(Segment.video_id == video_id).order_by(Segment.segment_index)
+            )).scalars().all())
+            current_plan = (await db.execute(
+                select(EditPlan).where(EditPlan.video_id == video_id)
+            )).scalar_one_or_none()
+            current_assets = await _load_layout_source_assets(current_video, db) if current_video else []
+            if (
+                not _matches_snapshot(current_video, video_input, _VIDEO_INPUT_FIELDS)
+                or len(current_segments) != len(segment_inputs)
+                or any(not _matches_snapshot(row, saved, _SEGMENT_FIELDS)
+                       for row, saved in zip(current_segments, segment_inputs))
+                or not _matches_snapshot(current_plan, plan_input, _PLAN_FIELDS)
+                or len(current_assets) != len(asset_inputs)
+                or any(not _matches_snapshot(row, saved, _ASSET_FIELDS)
+                       for row, saved in zip(current_assets, asset_inputs))
+            ):
+                await db.rollback()
+                raise StaleEditPlanningError(
+                    "Edit planning inputs or teacher review changed; current decisions and approval are preserved."
+                )
+            for current_segment, candidate in zip(current_segments, segments):
+                current_segment.action = candidate.action
+                current_segment.action_confidence = candidate.action_confidence
+                current_segment.action_reason = candidate.action_reason
+            video = current_video
+            plan = current_plan
+        else:
+            existing_plan = await db.execute(select(EditPlan).where(EditPlan.video_id == video_id))
+            plan = existing_plan.scalar_one_or_none()
+        if plan:
+            # Update existing plan (re-run scenario)
+            plan.plan_json = plan_payload
+            plan.original_duration = original_duration
+            plan.estimated_duration = round(estimated_duration, 1)
+            plan.segments_total = len(segments)
+            plan.segments_keep = counts["keep"]
+            plan.segments_cut = counts["cut"]
+            plan.segments_highlight = counts["highlight"]
+            plan.filler_words_removed = total_fillers_removed
+            plan.silence_removed_seconds = round(silence_removed, 2)
+            plan.is_approved = False  # Reset approval on re-plan
+            plan.approved_at = None
+        else:
+            plan = EditPlan(
+                id=uuid.uuid4(),
+                video_id=video.id,
+                plan_json=plan_payload,
+                original_duration=original_duration,
+                estimated_duration=round(estimated_duration, 1),
+                segments_total=len(segments),
+                segments_keep=counts["keep"],
+                segments_cut=counts["cut"],
+                segments_highlight=counts["highlight"],
+                filler_words_removed=total_fillers_removed,
+                silence_removed_seconds=round(silence_removed, 2),
+            )
+            db.add(plan)
 
-    video.status = VideoStatus.AWAITING_REVIEW
-    await db.flush()
+        # ── Step 8: Generate chapter markers ──
+        if not native:
+            chapters = _generate_chapters(segments)
 
-    reduction_pct = round((cut_duration + shorten_savings) / max(original_duration, 1) * 100, 1)
+        video.status = VideoStatus.AWAITING_REVIEW
+        await db.flush()
 
-    logger.info(
-        f"Agent 5 complete: {counts} | "
-        f"{original_duration:.0f}s → {estimated_duration:.0f}s ({reduction_pct}% reduction) | "
-        f"{len(all_warnings)} warnings | {len(chapters)} chapters"
-    )
+        plan_id = str(plan.id)
+        if native:
+            committed_guard = _capture_native_plan_guard(plan, current_segments)
+            await commit_native(db)
+            _store_native_plan_guard(db, video_id, committed_guard)
 
-    return {
-        "status": "success",
-        "plan_id": str(plan.id),
-        "segments_total": len(segments),
-        "segments_keep": counts["keep"],
-        "segments_cut": counts["cut"],
-        "segments_shorten": counts["shorten"],
-        "segments_highlight": counts["highlight"],
-        "original_duration": round(original_duration, 1),
-        "estimated_duration": round(estimated_duration, 1),
-        "time_saved_seconds": round(cut_duration + shorten_savings, 1),
-        "reduction_percent": reduction_pct,
-        "filler_words_removed": total_fillers_removed,
-        "silence_removed_seconds": round(silence_removed, 2),
-        "chapters": chapters,
-        "warnings": all_warnings,
-        "chat_provider": llm_service.provider_id_for_kind(ProviderKind.CHAT),
-        "model": settings.AGENT5_MODEL,
-    }
+        reduction_pct = round((cut_duration + shorten_savings) / max(original_duration, 1) * 100, 1)
 
+        logger.info(
+            f"Agent 5 complete: {counts} | "
+            f"{original_duration:.0f}s → {estimated_duration:.0f}s ({reduction_pct}% reduction) | "
+            f"{len(all_warnings)} warnings | {len(chapters)} chapters"
+        )
+
+        return {
+            "status": "success",
+            "plan_id": plan_id,
+            "segments_total": len(segments),
+            "segments_keep": counts["keep"],
+            "segments_cut": counts["cut"],
+            "segments_shorten": counts["shorten"],
+            "segments_highlight": counts["highlight"],
+            "original_duration": round(original_duration, 1),
+            "estimated_duration": round(estimated_duration, 1),
+            "time_saved_seconds": round(cut_duration + shorten_savings, 1),
+            "reduction_percent": reduction_pct,
+            "filler_words_removed": total_fillers_removed,
+            "silence_removed_seconds": round(silence_removed, 2),
+            "chapters": chapters,
+            "warnings": all_warnings,
+            "chat_provider": llm_service.provider_id_for_kind(ProviderKind.CHAT),
+            "model": settings.AGENT5_MODEL,
+        }
+    except BaseException:
+        if native:
+            _clear_native_plan_guard(db, video_id)
+            await db.rollback()
+        raise
 
 async def _load_layout_source_assets(video: Video, db: AsyncSession) -> list[ProjectAsset]:
     """Load project assets usable by the layout planner, preserving legacy fallback."""
