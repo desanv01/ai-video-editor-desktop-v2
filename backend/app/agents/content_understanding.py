@@ -26,6 +26,7 @@ from services.llm import llm_service
 from providers import ProviderKind
 from rag.vector_store import rag_service
 from config import settings
+from desktop_native.agent_transactions import commit_native, fresh_read, snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,16 @@ IMPORTANT: Return ONLY valid JSON. No markdown, no extra text.
 
 
 async def run_content_understanding_agent(video_id: str, db: AsyncSession) -> dict:
+    if not settings.is_native_desktop:
+        return await _run_content_understanding_agent(video_id, db)
+    try:
+        return await _run_content_understanding_agent(video_id, db)
+    except BaseException:
+        await db.rollback()
+        raise
+
+
+async def _run_content_understanding_agent(video_id: str, db: AsyncSession) -> dict:
     """
     Analyze transcript segments for educational content and importance.
 
@@ -85,6 +96,11 @@ async def run_content_understanding_agent(video_id: str, db: AsyncSession) -> di
     transcript = result.scalar_one_or_none()
     if not transcript or not transcript.segments_json:
         raise ValueError(f"No transcript found for video {video_id}")
+
+    if settings.is_native_desktop:
+        video = snapshot(video, ("id",))
+        transcript = snapshot(transcript, ("segments_json",))
+        await commit_native(db)
 
     # ── Step 1: Chunk transcript into ~60s segments ──
     raw_segments = transcript.segments_json
@@ -166,6 +182,11 @@ async def run_content_understanding_agent(video_id: str, db: AsyncSession) -> di
                 all_analyzed.append(_fallback_content_analysis(batch_start + i, chunk))
 
     # ── Step 3: Create Segment records in DB ──
+    if settings.is_native_desktop:
+        current = await fresh_read(db, select(Video).where(Video.id == video_id))
+        video = current.scalar_one_or_none()
+        if not video:
+            raise ValueError(f"Video {video_id} not found")
     type_map = {
         "core_content": SegmentType.CORE_CONTENT,
         "example": SegmentType.EXAMPLE,
@@ -212,6 +233,8 @@ async def run_content_understanding_agent(video_id: str, db: AsyncSession) -> di
 
     # ── Step 4: Generate auto chapter markers ──
     chapters = _generate_chapters(created_segments)
+    if settings.is_native_desktop:
+        await commit_native(db)
 
     logger.info(
         f"Agent 2 complete: {len(created_segments)} segments, "

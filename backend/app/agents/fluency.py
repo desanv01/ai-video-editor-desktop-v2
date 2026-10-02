@@ -25,6 +25,7 @@ from services.ffmpeg import ffmpeg_service
 from services.llm import llm_service
 from providers import ProviderKind
 from config import settings
+from desktop_native.agent_transactions import commit_native, fresh_read, snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,16 @@ IMPORTANT: Return ONLY valid JSON. No markdown.
 
 
 async def run_fluency_agent(video_id: str, db: AsyncSession) -> dict:
+    if not settings.is_native_desktop:
+        return await _run_fluency_agent(video_id, db)
+    try:
+        return await _run_fluency_agent(video_id, db)
+    except BaseException:
+        await db.rollback()
+        raise
+
+
+async def _run_fluency_agent(video_id: str, db: AsyncSession) -> dict:
     """
     Detect filler words, pauses, and disfluencies in the lecture.
 
@@ -143,6 +154,10 @@ async def run_fluency_agent(video_id: str, db: AsyncSession) -> dict:
     video = await db.get(Video, video_id)
     if not video:
         raise ValueError(f"Video {video_id} not found")
+
+    if settings.is_native_desktop:
+        video = snapshot(video, ("id", "audio_path"))
+        await commit_native(db)
 
     # ── Step 1: Acoustic pause detection ──
     pauses = []
@@ -166,6 +181,13 @@ async def run_fluency_agent(video_id: str, db: AsyncSession) -> dict:
         .order_by(Segment.segment_index)
     )
     segments = list(result.scalars().all())
+    if settings.is_native_desktop:
+        segments = [snapshot(seg, (
+            "id", "video_id", "segment_index", "text", "start_time", "end_time",
+            "filler_count", "filler_words", "has_repetition", "fluency_score",
+            "pause_duration_total",
+        )) for seg in segments]
+        await commit_native(db)
 
     if not segments:
         logger.warning(f"Agent 3: No segments found for video {video_id}")
@@ -246,7 +268,32 @@ async def run_fluency_agent(video_id: str, db: AsyncSession) -> dict:
 
             seg.pause_duration_total = round(seg_pause_total, 2)
 
-    await db.flush()
+    if settings.is_native_desktop:
+        current = await fresh_read(
+            db, select(Segment).where(Segment.id.in_([seg.id for seg in segments]))
+        )
+        current_by_id = {seg.id: seg for seg in current.scalars().all()}
+        # Validate every original input before mutating any result row.
+        for computed in segments:
+            current_segment = current_by_id.get(computed.id)
+            if current_segment is None or any(
+                getattr(current_segment, field) != getattr(computed, field)
+                for field in ("video_id", "text", "start_time", "end_time")
+            ):
+                raise ValueError(
+                    f"Stale fluency analysis for segment {computed.id}: "
+                    "the segment was removed or its input changed"
+                )
+        for computed in segments:
+            current_segment = current_by_id[computed.id]
+            for field in (
+                "filler_count", "filler_words", "has_repetition", "fluency_score",
+                "pause_duration_total",
+            ):
+                setattr(current_segment, field, getattr(computed, field))
+        await commit_native(db)
+    else:
+        await db.flush()
 
     logger.info(
         f"Agent 3 complete: {total_fillers} fillers, "
