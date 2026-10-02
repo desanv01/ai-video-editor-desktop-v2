@@ -47,7 +47,13 @@ export class Components {
   for(const entry of Object.values(c.entrypoints)) { try { const stat=await fs.lstat(confined(root,entry)); if(!stat.isFile()||stat.isSymbolicLink()) return false; } catch { return false; } } return true;
  }
  root(c:ComponentManifest):string { return confined(this.paths.components,c.id+'/'+c.version); }
- async engine():Promise<{engine:ComponentManifest;root:string;ffmpegRoot:string}> { const engine=this.manifest.components.find(c => c.id==='aive-engine'); const ffmpeg=this.manifest.components.find(c => c.id==='ffmpeg'); if(!engine||!ffmpeg||!await this.installed(engine)||!await this.installed(ffmpeg)) throw new Error('REQUIRED_COMPONENTS_MISSING'); return {engine,root:this.root(engine),ffmpegRoot:this.root(ffmpeg)}; }
+ async engine():Promise<{engine:ComponentManifest;root:string;ffmpegRoot:string;documentsRoot:string;libreofficeBinary:string}> {
+  const engine=this.manifest.components.find(c => c.id==='aive-engine'); const ffmpeg=this.manifest.components.find(c => c.id==='ffmpeg'); const documents=this.manifest.components.find(c => c.id==='documents');
+  if(!engine||!ffmpeg||!documents||!await this.installed(engine)||!await this.installed(ffmpeg)||!await this.installed(documents)) throw new Error('REQUIRED_COMPONENTS_MISSING');
+  if(documents.entrypoints.libreoffice!=='program/soffice.com') throw new Error('DOCUMENT_ENTRYPOINT_INVALID');
+  const documentsRoot=this.root(documents); const libreofficeBinary=confined(documentsRoot,documents.entrypoints.libreoffice);
+  return {engine,root:this.root(engine),ffmpegRoot:this.root(ffmpeg),documentsRoot,libreofficeBinary};
+ }
  async localTranscriptionReady():Promise<boolean> { for(const c of this.manifest.components) if(c.probes.some(p=>p.kind==='whisper-model') && await this.installed(c)) return true; return false; }
  async markReady():Promise<void> { const file=path.join(this.paths.state,'preparation.json'); const journal=await readJson<Journal|null>(file,null); if(journal) await atomic(file,{...journal,phase:'ready'}); }
  async allRequiredInstalled():Promise<boolean> { if(!this.configured()) return false; for(const c of this.manifest.components.filter(c => c.required)) if(!await this.installed(c)) return false; return true; }

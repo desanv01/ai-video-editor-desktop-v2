@@ -16,6 +16,7 @@ import json
 import os
 import re
 import signal
+import stat
 import sys
 import time
 from pathlib import Path
@@ -56,6 +57,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ffmpeg-component-root",
         default=os.environ.get("AIVE_FFMPEG_COMPONENT_ROOT"),
+    )
+    parser.add_argument(
+        "--documents-component-root",
+        default=os.environ.get("AIVE_DOCUMENTS_COMPONENT_ROOT"),
+    )
+    parser.add_argument(
+        "--libreoffice-binary-path",
+        default=os.environ.get("AIVE_LIBREOFFICE_BINARY_PATH"),
     )
     parser.add_argument(
         "--component-root",
@@ -207,6 +216,39 @@ def build_startup_handshake(
     }
 
 
+def _document_bindings(args: argparse.Namespace) -> tuple[str, str]:
+    """Validate activated document paths without importing runtime settings."""
+    root_value = str(args.documents_component_root or "").strip()
+    binary_value = str(args.libreoffice_binary_path or "").strip()
+    if bool(root_value) != bool(binary_value):
+        raise SystemExit("Managed documents require both an activated component root and LibreOffice binary path")
+    if not root_value:
+        return "", ""
+    root = Path(root_value)
+    binary = Path(binary_value)
+    if not root.is_absolute() or not binary.is_absolute():
+        raise SystemExit("Managed document component and binary paths must be absolute")
+    root = Path(os.path.abspath(root))
+    binary = Path(os.path.abspath(binary))
+    try:
+        binary.relative_to(root)
+        for target in (root, binary):
+            for part in reversed((target, *target.parents)):
+                info = part.lstat()
+                if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                    raise SystemExit("Managed document paths cannot contain symlinks or reparse points")
+        actual_root = root.resolve(strict=True)
+        actual_binary = binary.resolve(strict=True)
+        relative_binary = actual_binary.relative_to(actual_root)
+        if not actual_root.is_dir() or not stat.S_ISREG(actual_binary.stat().st_mode):
+            raise SystemExit("Managed LibreOffice must be a regular file within its activated installation")
+        if relative_binary.as_posix().lower() != "program/soffice.com":
+            raise SystemExit("Managed LibreOffice must use the activated program/soffice.com CLI")
+    except (OSError, ValueError) as exc:
+        raise SystemExit("Managed LibreOffice installation is missing or outside its activated root") from exc
+    return str(actual_root), str(actual_binary)
+
+
 def _configure_environment(args: argparse.Namespace) -> object:
     if not args.data_root:
         raise SystemExit("--data-root or AIVE_DESKTOP_DATA_ROOT is required")
@@ -228,6 +270,8 @@ def _configure_environment(args: argparse.Namespace) -> object:
     if parsed_control_port < 1 or parsed_control_port > 65535:
         raise SystemExit("--control-address port must be between 1 and 65535")
 
+    documents_root, libreoffice_binary = _document_bindings(args)
+
     # Import only the isolated path module before selecting the profile.
     from desktop_native.paths import NativeDesktopPaths
 
@@ -239,6 +283,10 @@ def _configure_environment(args: argparse.Namespace) -> object:
     paths = NativeDesktopPaths.from_environment()
 
     os.environ.update(paths.settings_environment())
+    # Empty explicit bindings also override inherited/manual settings and dotenv
+    # values before any config import; native documents never fall back globally.
+    os.environ["LIBREOFFICE_COMPONENT_ROOT"] = documents_root
+    os.environ["LIBREOFFICE_BINARY_PATH"] = libreoffice_binary
     os.environ.update(
         {
             "RUNTIME_PROFILE": "desktop-native",
