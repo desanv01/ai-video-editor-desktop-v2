@@ -62,5 +62,9 @@ tmp_*/
 # Generated thesis/source-package deliverables
 output/
 
+# Electron rebuild generated output
+desktop/dist-electron/
+desktop/release-electron/
+
 # Disposable main/CI acceptance artifacts
 .test-output/

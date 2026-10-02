@@ -1,20 +1,25 @@
 {
   "name": "ai-video-editor",
   "private": true,
-  "version": "2.0.0-rc.8",
+  "version": "2.1.0-rebuild.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "npm run contracts:check && tsc && vite build",
-    "test": "npm run contracts:check && npm run test:desktop-v2",
+    "build": "tsc && vite build && npm run build:electron",
+    "test": "npm run test:rebuild",
     "test:nsis-state-matrix": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/desktop-v2/Run-NsisStateMatrix.ps1",
-    "build:nsis:checked": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/desktop-v2/Build-CheckedNsis.ps1",
     "verify:nsis:rendered": "node --experimental-strip-types ../scripts/desktop-v2/verify-rendered-nsis.mjs",
     "test:desktop-v2": "node --experimental-strip-types ../scripts/desktop-v2/rc6-installer-transaction-tests.mjs && npm run verify:nsis:rendered && npm run test:nsis-state-matrix && node --experimental-strip-types ../scripts/desktop-v2/rc8-release-installer-tests.mjs && node --experimental-strip-types ../scripts/desktop-v2/rc6-boot-provisioning-tests.mjs && node --experimental-strip-types ../scripts/desktop-v2/rc5-native-runtime-tests.mjs && node --experimental-strip-types ../scripts/desktop-v2/rc5-installer-uninstall-tests.mjs && node --experimental-strip-types ../scripts/desktop-v2/rc3-hardening-tests.mjs && node --experimental-strip-types ../scripts/desktop-v2/webview2-policy-tests.mjs && node --experimental-strip-types ../scripts/desktop-v2/provider-credential-tests.mjs && node --experimental-strip-types ../scripts/desktop-v2/operation-log-tests.mjs && node --experimental-strip-types ../scripts/desktop-v2/av-hardening-tests.mjs && node --experimental-strip-types ../scripts/desktop-v2/clean-pc-tests.mjs && node --experimental-strip-types ../scripts/desktop-v2/lifecycle-release-tests.mjs && node --experimental-strip-types ../scripts/desktop-v2/signing-tests.mjs && node --experimental-strip-types ../scripts/desktop-v2/installer-acl-tests.mjs && node --experimental-strip-types ../scripts/desktop-v2/webview-user-data-tests.mjs && node --experimental-strip-types ../scripts/desktop-v2/phase2-tests.mjs && node --experimental-strip-types ../scripts/desktop-v2/phase5-tests.mjs && node --experimental-strip-types ../scripts/desktop-v2/phase6-tests.mjs && node --experimental-strip-types ../scripts/desktop-v2/phase7-tests.mjs && node --experimental-strip-types ../scripts/desktop-v2/phase8-tests.mjs",
     "contracts:check": "node --experimental-strip-types ../scripts/desktop-v2/contract-tests.mjs",
     "preview": "vite preview",
     "render:revideo": "node revideo/render.mjs",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:electron": "tsc -p tsconfig.electron.json && node electron/build.cjs",
+    "dev:electron": "npm run build:electron && electron .",
+    "package:win": "npm run build && electron-builder --win --x64 --config electron-builder.yml",
+    "test:rebuild": "node ../scripts/rebuild/phase2-main-tests.cjs ..",
+    "test:legacy-desktop-v2": "npm run contracts:check && npm run test:desktop-v2",
+    "build:nsis:checked": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/desktop-v2/Build-CheckedNsis.ps1"
   },
   "dependencies": {
     "@revideo/2d": "^0.10.4",
@@ -31,7 +36,9 @@
     "react-dom": "^19.0.0",
     "react-player": "^2.16.0",
     "recharts": "^2.15.0",
-    "wavesurfer.js": "^7.9.0"
+    "wavesurfer.js": "^7.9.0",
+    "electron-updater": "6.8.9",
+    "yauzl": "3.4.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.2",
@@ -42,10 +49,20 @@
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.0",
-    "vite": "^6.0.0"
+    "vite": "^6.0.0",
+    "electron": "44.5.1",
+    "electron-builder": "26.15.3",
+    "@types/node": "24.19.1",
+    "@types/yauzl": "3.4.0",
+    "playwright": "1.63.0"
   },
   "allowScripts": {
     "esbuild@0.18.20": true,
-    "esbuild@0.25.12": true
+    "esbuild@0.25.12": true,
+    "electron@44.5.1": true
+  },
+  "main": "dist-electron/desktop/electron/main.js",
+  "engines": {
+    "node": "24.14.1"
   }
 }

@@ -1,0 +1,22 @@
+import { useEffect, useState } from 'react';
+import { AlertCircle, CheckCircle2, Download, FolderOpen, RotateCcw, X } from 'lucide-react';
+import type { DesktopState } from '../../../contracts/rebuild/desktop';
+export function ElectronSetup({ children }: { children: React.ReactNode }) {
+ const [state,setState]=useState<DesktopState|null>(null);const [localError,setLocalError]=useState<string|null>(null);const [continued,setContinued]=useState(false);
+ useEffect(()=>{const bridge=window.aiveDesktop!;let alive=true;const unsubscribe=bridge.onState(value=>{if(alive)setState(value);});void bridge.getState().then(value=>{if(alive){setState(value);if(value.setupComplete&&value.engineState==='ready')setContinued(true);}}).catch(()=>{if(alive)setLocalError('The desktop controller could not be reached.');});return()=>{alive=false;unsubscribe();};},[]);
+ const run=(action:()=>Promise<unknown>)=>{setLocalError(null);void action().catch(()=>setLocalError('The operation could not complete. Open diagnostics for details.'));};
+ const ready=state?.setupComplete&&state.engineState==='ready'&&state.capabilities.requiredComponents?.state==='ready';
+ if(ready&&continued)return <>{children}</>;
+ const progress=state?.progress;const percent=progress&&progress.totalWork>0?Math.min(100,Math.floor(progress.completedWork/progress.totalWork*100)):0;
+ const button='inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-surface-border px-4 py-2 text-sm font-medium hover:bg-surface-overlay focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50';
+ return <main className="flex h-screen items-center justify-center overflow-auto bg-surface px-6 py-8 text-gray-100" style={{fontFamily:'Segoe UI, sans-serif'}}><section className="my-auto w-full max-w-2xl rounded-xl border border-surface-border bg-surface-raised p-6 sm:p-8" aria-labelledby="setup-title">
+  <p className="mb-2 text-sm text-gray-400">AIVE Desktop · {state?.releaseVersion??'Preparing'}</p><h1 id="setup-title" className="text-2xl font-semibold">Prepare your editing workspace</h1><p className="mt-3 text-base leading-relaxed text-gray-300">AIVE checks its private engine and required tools before opening your projects. Project data stays in your Windows user profile.</p>
+  <div className="mt-6 rounded-lg border border-surface-border p-4" aria-live="polite"><div className="flex items-center gap-2 text-base">{ready?<CheckCircle2 className="h-5 w-5 text-green-400" aria-hidden="true"/>:<Download className="h-5 w-5 text-gray-400" aria-hidden="true"/>}<span>{ready?'Workspace ready':state?state.phase.replace(/_/g,' '):'Checking desktop controller'}</span></div>
+   {progress&&progress.totalWork>0&&<><progress className="mt-4 h-2 w-full accent-purple-500" value={percent} max={100} aria-label="Component preparation"/><p className="mt-2 text-sm text-gray-400">{percent}% prepared · {Math.round(progress.acquiredBytes/1024/1024)} / {Math.round(progress.totalBytes/1024/1024)} MB acquired</p></>}
+   {state?.components.map(c=><div key={c.id} className="mt-3 flex justify-between gap-4 text-sm"><span>{c.id} · {c.version}</span><span className="text-gray-300">{c.installed?'Installed and verified':c.phase}</span></div>)}
+  </div>
+  {(state?.error||localError)&&<div role="alert" className="mt-4 flex gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm leading-relaxed text-amber-100"><AlertCircle className="mt-0.5 h-5 w-5 shrink-0" aria-hidden="true"/><div>{localError??state?.error?.message}{state?.error&&<p className="mt-2 text-xs text-amber-200">Reference: {state.error.code}</p>}</div></div>}
+  <div className="mt-6 flex flex-wrap gap-3">{ready?<button className={button+' bg-accent'} onClick={()=>setContinued(true)}>Continue to projects</button>:<button className={button} disabled={!state||(!state.canRetry&&state.phase!=='awaiting_confirmation')} onClick={()=>run(()=>state?.canRetry?window.aiveDesktop!.retry():window.aiveDesktop!.prepare())}><RotateCcw className="h-4 w-4" aria-hidden="true"/>{state?.canRetry?'Retry preparation':'Prepare automatically'}</button>}{state?.canCancel&&<button className={button} onClick={()=>run(()=>window.aiveDesktop!.cancel())}><X className="h-4 w-4" aria-hidden="true"/>Cancel</button>}<button className={button} onClick={()=>run(()=>window.aiveDesktop!.openDiagnostics())}><FolderOpen className="h-4 w-4" aria-hidden="true"/>Open diagnostics</button></div>
+ </section></main>;
+}
+
