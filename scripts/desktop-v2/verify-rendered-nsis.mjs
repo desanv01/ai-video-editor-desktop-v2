@@ -54,7 +54,7 @@ assert.match(safe, /InitPluginsDir[\s\S]*?SetOutPath "\$PLUGINSDIR"/);
 const outputTargets = [...code.matchAll(/\bSetOutPath\s+([^\r\n]+)/gi)].map(match => match[1].trim());
 assert.ok(outputTargets.length >= 2, "rendered NSIS must explicitly select safe and staging output paths");
 for (const target of outputTargets) {
-  assert.match(target, /^(?:"\$PLUGINSDIR"|"\$\{AIVESTAGINGDIR\}")$/, `unsafe rendered SetOutPath target: ${target}`);
+  assert.match(target, /^(?:"\$PLUGINSDIR"|"\$TEMP"|"\$\{AIVESTAGINGDIR\}")$/, `unsafe rendered SetOutPath target: ${target}`);
 }
 assert.doesNotMatch(code, /\bSetOutPath\s+"?(?:\$INSTDIR|\$\{AIVEINSTALLDIR\}|\$\{AIVEBACKUPDIR\})"?/i);
 
@@ -68,7 +68,7 @@ for (const name of ["AcquireInstallerMutex", "un.AcquireInstallerMutex"]) {
 }
 
 const protect = functionBody("ProtectAndActivateStaging");
-assert.match(protect, /Call SetSafeWorkingDir[\s\S]*?Rename "\$\{AIVEINSTALLDIR\}" "\$\{AIVEBACKUPDIR\}"/);
+assert.match(protect, /Call SetSafeWorkingDir[\s\S]*?MoveFileExW\(w "\$\{AIVEINSTALLDIR\}", w "\$\{AIVEBACKUPDIR\}", i 0\) i \.r8 \?e/);
 assert.match(protect, /activate_retry:[\s\S]*?Call SetSafeWorkingDir[\s\S]*?Rename "\$\{AIVESTAGINGDIR\}" "\$\{AIVEINSTALLDIR\}"/);
 
 const removal = functionBody("RemoveCurrentShellPayload");

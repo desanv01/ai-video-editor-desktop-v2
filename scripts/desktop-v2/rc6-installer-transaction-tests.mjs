@@ -50,7 +50,7 @@ assert.doesNotMatch(functionBody(templateCode, "SetCanonicalInstallDir"), /\bSet
 assert.doesNotMatch(hookCode, /\bSetOutPath\b/i);
 assert.doesNotMatch(templateCode + "\n" + hookCode, /\bSetOutPath\s+"?\$\{AIVEINSTALLDIR\}"?|\bSetOutPath\s+"?\$PROGRAMFILES64/i);
 assert.equal((templateCode.match(/\bSetOutPath\s+"?\$\{AIVESTAGINGDIR\}"?/gi) ?? []).length, 2);
-assert.match(functionBody(templateCode, "ProtectAndActivateStaging"), /Call SetSafeWorkingDir[\s\S]*?Rename "\$\{AIVEINSTALLDIR\}" "\$\{AIVEBACKUPDIR\}"[\s\S]*?Call SetSafeWorkingDir[\s\S]*?Rename "\$\{AIVESTAGINGDIR\}" "\$\{AIVEINSTALLDIR\}"/);
+assert.match(functionBody(templateCode, "ProtectAndActivateStaging"), /Call SetSafeWorkingDir[\s\S]*?MoveFileExW\(w "\$\{AIVEINSTALLDIR\}", w "\$\{AIVEBACKUPDIR\}", i 0\) i \.r8 \?e[\s\S]*?Call SetSafeWorkingDir[\s\S]*?Rename "\$\{AIVESTAGINGDIR\}" "\$\{AIVEINSTALLDIR\}"/);
 
 assert.equal((templateCode.match(/\bCreateShortcut\b/gi) ?? []).length, 2);
 assert.doesNotMatch(hookCode, /\bCreateShortcut\b/i);
