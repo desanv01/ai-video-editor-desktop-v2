@@ -40,6 +40,8 @@ jobs:
         run: npm run test:rebuild
       - name: Run native and browser transcript download boundary checks
         run: node ../scripts/rebuild/test_phase4_downloads.cjs ..
+      - name: Run vault, private credential synchronization and renderer boundaries
+        run: node ../scripts/rebuild/test_provider_credentials.cjs ..
       - name: Package assisted per-user installer
         run: npm run package:win
       - name: Verify actual unpacked window and preload
@@ -93,3 +95,6 @@ jobs:
 
       - name: Run native original transcript API acceptance checks
         run: python scripts/rebuild/test_transcript_api.py
+
+      - name: Run native credential ASGI and SQLite security acceptance
+        run: python scripts/rebuild/test_provider_credentials.py
