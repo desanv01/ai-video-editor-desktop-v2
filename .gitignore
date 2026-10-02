@@ -61,3 +61,6 @@ tmp_*/
 
 # Generated thesis/source-package deliverables
 output/
+
+# Disposable main/CI acceptance artifacts
+.test-output/
