@@ -83,7 +83,9 @@ jobs:
       - name: Verify final delivery assembly boundaries
         env:
           AIVE_REBUILD_ROOT: ${{ github.workspace }}
-        run: python scripts/rebuild/test_delivery.py
+        run: |
+          python scripts/rebuild/test_delivery.py
+          python scripts/rebuild/test_tool_packs.py
       - name: Acquire exact managed FFmpeg 8.1.1 for preserved export tests
         shell: pwsh
         run: |
