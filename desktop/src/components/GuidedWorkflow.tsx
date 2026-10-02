@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   ArrowLeft,
@@ -63,6 +63,8 @@ import type {
   EditorialBlock,
   ExportPreset,
   ExportPresetCatalog,
+  TranscriptExportFormat,
+  VideoExports,
   LayoutAspectRatio,
   LayoutCue,
   LayoutCueUpdate,
@@ -264,6 +266,7 @@ type StepperProps = {
 
 type PanelProps = StepperProps & {
   videoId: string;
+  transcriptId?: string | null;
   segments: Segment[];
   selectedSegment: Segment | null;
   selectedAnnotationId: string | null;
@@ -359,6 +362,7 @@ export function GuidedWorkflowPanel({
   activeStep,
   completedStepIds,
   videoId,
+  transcriptId = null,
   segments,
   selectedSegment,
   selectedAnnotationId,
@@ -844,6 +848,7 @@ export function GuidedWorkflowPanel({
       <div className="flex-1 overflow-y-auto p-4">
         {activeStep === "transcribe" && (
           <PanelStack>
+            <OriginalTranscriptDownloads key={`${videoId}:${transcriptId ?? ""}`} videoId={videoId} transcriptId={transcriptId} />
             <MetricGrid>
               <Metric label="Transcript segments" value={String(segments.length)} />
               <Metric label="Source duration" value={formatDuration(original)} />
@@ -2002,6 +2007,7 @@ export function GuidedWorkflowPanel({
 
         {activeStep === "export" && (
           <PanelStack>
+            <OriginalTranscriptDownloads key={`${videoId}:${transcriptId ?? ""}`} videoId={videoId} transcriptId={transcriptId} />
             <MetricGrid>
               <Metric label="Original" value={formatDuration(original)} />
               <Metric label="Estimated" value={formatDuration(estimated)} tone="good" />
@@ -2531,36 +2537,152 @@ function RenderProgressCard({
   );
 }
 
-function DownloadLink({ href, label, primary = false }: { href: string; label: string; primary?: boolean }) {
-  const [busy, setBusy] = useState(false);
-  const nativeBridgeResource = href.startsWith("bridge:");
-  const handleClick = async (event: React.MouseEvent<HTMLAnchorElement>) => {
-    if (!nativeBridgeResource) return;
-    event.preventDefault();
-    setBusy(true);
+const ORIGINAL_TRANSCRIPT_DOWNLOADS: { kind: string; format: TranscriptExportFormat; label: string }[] = [
+  { kind: "original_transcript_txt", format: "txt", label: "Plain text (TXT)" },
+  { kind: "original_transcript_timestamped_txt", format: "timestamped_txt", label: "Timestamped text (TXT)" },
+  { kind: "original_transcript_json", format: "json", label: "Structured transcript (JSON)" },
+  { kind: "original_transcript_segments_csv", format: "csv", label: "Transcript segments (CSV)" },
+];
+
+function OriginalTranscriptDownloads({ videoId, transcriptId }: { videoId: string; transcriptId: string | null }) {
+  const [catalog, setCatalog] = useState<VideoExports | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState<TranscriptExportFormat | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [retryVersion, setRetryVersion] = useState(0);
+  const locked = useRef(false);
+  const mounted = useRef(false);
+  const scope = `${videoId}:${transcriptId ?? ""}`;
+  const currentScope = useRef(scope);
+  currentScope.current = scope;
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    setCatalog(null);
+    setError(null);
+    setMessage(null);
+    api.getVideoExports(videoId)
+      .then(result => {
+        if (!active) return;
+        if (result.video_id !== videoId) throw new Error("Transcript availability changed. Refresh downloads and try again.");
+        setCatalog(result);
+      })
+      .catch(error => { if (active) setError(api.friendlyErrorMessage(error)); });
+    return () => { active = false; };
+  }, [videoId, transcriptId, retryVersion]);
+
+  const handleDownload = async (format: TranscriptExportFormat) => {
+    if (locked.current) return;
+    locked.current = true;
+    const requestScope = scope;
+    const native = Boolean(window.aiveDesktop);
+    setDownloading(format);
+    setError(null);
+    setMessage(null);
     try {
-      await api.downloadEngineResource(href, label);
-    } catch {
-      // The surrounding editor status remains the source of remediation;
-      // do not surface a raw bridge/localhost fetch error in the shell.
+      const saved = await api.downloadOriginalTranscript(videoId, format);
+      if (mounted.current && currentScope.current === requestScope) {
+        setMessage(!saved ? "Save cancelled." : native ? "Saved transcript." : "Transcript download started.");
+      }
+    } catch (error) {
+      if (mounted.current && currentScope.current === requestScope) setError(api.friendlyErrorMessage(error));
     } finally {
-      setBusy(false);
+      locked.current = false;
+      if (mounted.current && currentScope.current === requestScope) setDownloading(null);
     }
   };
+
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-      onClick={handleClick}
-      aria-disabled={busy}
-      className={`flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold transition-colors ${
-        primary ? "bg-green-600 text-white hover:bg-green-700" : "bg-surface-overlay text-gray-200 hover:bg-surface-border"
-      }`}
-    >
-      <Download className={`h-4 w-4 ${busy ? "animate-pulse" : ""}`} />
-      {busy ? "Preparing download…" : label}
-    </a>
+    <WorkflowCard title="Original Transcript" icon={<FileText className="h-4 w-4 text-sky-300" />}>
+      <p className="mb-3 text-xs leading-5 text-gray-400">
+        Full transcript of the uploaded recording, including speech removed from the edit.
+        Timestamps refer to the original recording. Available without rendering.
+      </p>
+      <div className="space-y-2" aria-busy={downloading !== null}>
+        {ORIGINAL_TRANSCRIPT_DOWNLOADS.map(({ kind, format, label }) => {
+          const artifact = catalog?.video_id === videoId ? catalog.exports[kind] : undefined;
+          return (
+            <div key={format}>
+              <button
+                type="button"
+                aria-label={label}
+                aria-busy={downloading === format}
+                onClick={() => void handleDownload(format)}
+                disabled={!artifact?.available || downloading !== null}
+                className="flex w-full items-center justify-center gap-2 rounded-md bg-surface-overlay px-3 py-2 text-sm font-semibold text-gray-200 transition-colors hover:bg-surface-border disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {downloading === format ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" /> : <Download aria-hidden="true" className="h-4 w-4" />}
+                {label}
+              </button>
+              {artifact?.reason && <p className="mt-1 text-xs leading-5 text-gray-400">{artifact.reason}</p>}
+            </div>
+          );
+        })}
+        {!catalog && !error && <p role="status" aria-live="polite" className="text-xs text-gray-400">Checking transcript availability...</p>}
+        {error && (
+          <div role="alert" className="text-xs leading-5 text-yellow-200">
+            <p>{error}</p>
+            <button type="button" disabled={downloading !== null} className="mt-1 underline" onClick={() => setRetryVersion(value => value + 1)}>Refresh downloads</button>
+          </div>
+        )}
+        {message && <p role="status" aria-live="polite" className="text-xs text-green-200">{message}</p>}
+      </div>
+    </WorkflowCard>
+  );
+}
+
+function DownloadLink(props: { href: string; label: string; primary?: boolean }) {
+  return <ResourceDownloadLink key={props.href} {...props} />;
+}
+
+function ResourceDownloadLink({ href, label, primary = false }: { href: string; label: string; primary?: boolean }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const locked = useRef(false);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  const native = Boolean(window.aiveDesktop);
+  const managedDownload = native || href.startsWith("bridge:");
+  const style = `flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold transition-colors ${
+    primary ? "bg-green-600 text-white hover:bg-green-700" : "bg-surface-overlay text-gray-200 hover:bg-surface-border"
+  }`;
+  const handleSave = async () => {
+    if (locked.current) return;
+    locked.current = true;
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const saved = await api.downloadEngineResource(href, label);
+      if (mounted.current) setMessage(!saved ? "Save cancelled." : native ? "Saved file." : "Download started.");
+    } catch (error) {
+      if (mounted.current) setError(api.friendlyErrorMessage(error));
+    } finally {
+      locked.current = false;
+      if (mounted.current) setBusy(false);
+    }
+  };
+  if (!managedDownload) {
+    return <a href={href} target="_blank" rel="noreferrer" className={style}><Download aria-hidden="true" className="h-4 w-4" />{label}</a>;
+  }
+  return (
+    <div>
+      <button type="button" onClick={() => void handleSave()} disabled={busy} aria-busy={busy} aria-label={label} className={`${style} w-full disabled:cursor-not-allowed disabled:opacity-50`}>
+        <Download aria-hidden="true" className={`h-4 w-4 ${busy ? "animate-pulse" : ""}`} />
+        {busy ? "Preparing download…" : label}
+      </button>
+      {message && <p role="status" aria-live="polite" className="mt-1 text-xs text-green-200">{message}</p>}
+      {error && <p role="alert" className="mt-1 text-xs leading-5 text-yellow-200">{error}</p>}
+    </div>
   );
 }
 

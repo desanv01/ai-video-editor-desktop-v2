@@ -6,7 +6,7 @@
  */
 
 import type {
-  Video, VideoUploadResponse, Segment, EditPlan,
+  Video, VideoUploadResponse, Segment, EditPlan, TranscriptExportFormat, VideoExports,
   ProcessingStatus, QualityReport,
   ModeComparisonReport,
   RevalidationResult, SegmentAction, BackendAISettings,
@@ -418,18 +418,76 @@ export async function fetchEngineResource(path: string, timeoutMs = VIDEO_UPLOAD
   return res.blob();
 }
 
-export async function downloadEngineResource(resource: string, filename: string): Promise<void> {
-  const parsed = new URL(resource, window.location.href);
-  const path = parsed.protocol === "bridge:" ? parsed.pathname + parsed.search : parsed.pathname + parsed.search;
-  const blob = await fetchEngineResource(path);
+function safeDownloadFilename(filename: string): string {
+  const clean = filename.replace(/[\\/:*?"<>|\x00-\x1f\x7f]/g, "_").trim().replace(/[. ]+$/, "");
+  let suggestion = "";
+  for (const character of clean) {
+    if (suggestion.length + character.length > 180) break;
+    suggestion += character;
+  }
+  return suggestion.replace(/[. ]+$/, "") || "export";
+}
+
+function nativeDownloadPath(resource: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(resource, "aive://app/");
+  } catch {
+    throw new ApiClientError("This download address is invalid. Refresh the project's downloads and try again.", { code: "DOWNLOAD_URL_REJECTED" });
+  }
+  if (parsed.protocol !== "aive:" || parsed.hostname !== "app" || parsed.port
+      || parsed.username || parsed.password || parsed.hash || !parsed.pathname.startsWith("/api/v1/")) {
+    throw new ApiClientError("This download is not an engine resource. Choose a file from the current project.", { code: "DOWNLOAD_URL_REJECTED" });
+  }
+  return parsed.pathname + parsed.search;
+}
+
+export async function downloadEngineResource(resource: string, filename: string): Promise<boolean> {
+  const suggestedName = safeDownloadFilename(filename);
+  if (window.aiveDesktop) {
+    const path = nativeDownloadPath(resource);
+    try {
+      const saved = await window.aiveDesktop.saveResource(path, suggestedName);
+      if (saved === true || saved === false) return saved;
+      throw new Error("Unexpected save result");
+    } catch {
+      throw new ApiClientError("The file could not be saved. Check that the engine is ready and choose a writable folder, then try again.", { code: "DOWNLOAD_SAVE_FAILED" });
+    }
+  }
+
+  const parsed = new URL(resource, `${BASE_URL}/`);
+  let url: string;
+  if (parsed.protocol === "bridge:") {
+    const path = parsed.pathname.startsWith("/api/v1/") ? parsed.pathname.slice(7) : parsed.pathname;
+    url = `${BASE_URL}${path}${parsed.search}`;
+  } else if (resource.startsWith("/api/v1/")) {
+    url = new URL(resource, BASE_URL).href;
+  } else {
+    url = parsed.href;
+  }
+  const response = await fetchWithTimeout(url, {}, VIDEO_UPLOAD_TIMEOUT_MS);
+  if (!response.ok) throw await errorFromResponse("Download could not start", response);
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  const plainName = disposition.match(/filename="([^"]+)"/i)?.[1];
+  let downloadName = suggestedName;
+  try {
+    if (encodedName) downloadName = safeDownloadFilename(decodeURIComponent(encodedName));
+    else if (plainName) downloadName = safeDownloadFilename(plainName);
+  } catch { /* A malformed attachment name uses the safe suggestion. */ }
+  const blob = await response.blob();
   const objectUrl = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = objectUrl;
-  anchor.download = filename.replace(/[^A-Za-z0-9._ -]/g, "_");
+  anchor.download = downloadName;
   document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  try {
+    anchor.click();
+  } finally {
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30_000);
+  }
+  return true;
 }
 
 export async function getShellInfo(): Promise<ShellInfo> {
@@ -1144,6 +1202,24 @@ export async function removeLocalTranscriptionModel(
 // ═══════════════════════════════════════════
 //  DOWNLOADS
 // ═══════════════════════════════════════════
+
+export async function getVideoExports(videoId: string): Promise<VideoExports> {
+  return request(`/videos/${videoId}/exports`);
+}
+
+export function getTranscriptExportUrl(videoId: string, format: TranscriptExportFormat = "txt"): string {
+  return resourceUrl(`/videos/${videoId}/transcript/export?format=${format}`);
+}
+
+export async function downloadOriginalTranscript(videoId: string, format: TranscriptExportFormat): Promise<boolean> {
+  const suffixes: Record<TranscriptExportFormat, string> = {
+    txt: "original_transcript.txt",
+    timestamped_txt: "original_transcript_timestamped.txt",
+    json: "original_transcript.json",
+    csv: "original_transcript_segments.csv",
+  };
+  return downloadEngineResource(getTranscriptExportUrl(videoId, format), suffixes[format]);
+}
 
 export function getVideoDownloadUrl(videoId: string): string {
   return resourceUrl(`/videos/${videoId}/download`);
