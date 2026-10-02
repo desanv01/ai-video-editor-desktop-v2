@@ -246,30 +246,30 @@ export function ProjectDashboard({ onContinue }: Props) {
   };
 
   return (
-    <div className="h-full overflow-hidden bg-surface text-gray-100">
-      <div className="grid h-full grid-cols-[minmax(0,1fr)_340px] overflow-hidden">
-        <section className="flex min-w-0 flex-col overflow-hidden border-r border-surface-border">
-          <div className="border-b border-surface-border px-6 py-5">
+    <div className="h-full min-w-0 overflow-auto bg-surface text-gray-100">
+      <div className="dashboard-layout grid min-h-full min-w-0">
+        <section className="dashboard-projects flex min-h-0 min-w-0 flex-col border-surface-border">
+          <div className="border-b border-surface-border px-4 py-4 lg:px-6">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
                 <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-gray-500">
                   <LayoutDashboard className="h-3.5 w-3.5" />
                   Project Dashboard
                 </div>
-                <h2 className="mt-2 text-2xl font-semibold tracking-normal text-white">Editing workspaces</h2>
+                <h2 className="mt-2 text-2xl font-semibold tracking-normal text-white">Your editing workspaces</h2>
               </div>
               <button
                 type="button"
                 onClick={() => void loadDashboard()}
                 disabled={loading}
-                className="inline-flex items-center gap-2 rounded-md border border-surface-border px-3 py-2 text-sm text-gray-300 transition-colors hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex min-h-11 items-center gap-2 rounded-md border border-surface-border px-3 py-2 text-sm text-gray-300 transition-colors hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
                 Refresh
               </button>
             </div>
 
-            <div className="mt-5 grid grid-cols-3 gap-3">
+            <div className="mt-4 grid grid-cols-3 gap-2">
               <MetricTile label="Active" value={activeProjectCount} accent="text-sky-200" />
               <MetricTile label="Ready to review" value={reviewProjectCount} accent="text-amber-200" />
               <MetricTile label="Multi-source" value={multiSourceCount} accent="text-emerald-200" />
@@ -278,14 +278,15 @@ export function ProjectDashboard({ onContinue }: Props) {
             <ReadinessSummary readiness={systemReadiness} />
           </div>
 
-          <div className="flex flex-wrap items-center gap-3 border-b border-surface-border px-6 py-3">
-            <div className="relative min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2 border-b border-surface-border px-4 py-3 lg:px-6">
+            <div className="relative min-w-[10rem] flex-1">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
+                aria-label="Search projects"
                 placeholder="Search projects"
-                className="h-10 w-full rounded-md border border-surface-border bg-surface-raised pl-9 pr-3 text-sm text-gray-100 outline-none transition-colors placeholder:text-gray-600 focus:border-accent"
+                className="min-h-11 w-full rounded-md border border-surface-border bg-surface-raised pl-9 pr-3 text-sm text-gray-100 outline-none transition-colors placeholder:text-gray-600 focus:border-accent"
               />
             </div>
             <label className="inline-flex h-10 items-center gap-2 rounded-md border border-surface-border bg-surface-raised px-2 text-xs text-gray-400">
@@ -326,7 +327,7 @@ export function ProjectDashboard({ onContinue }: Props) {
             ) : filteredProjects.length === 0 ? (
               <EmptyProjectState hasQuery={Boolean(query.trim())} />
             ) : (
-              <div className="divide-y divide-surface-border">
+              <div className="space-y-2 p-3 lg:p-4">
                 {filteredProjects.map((project) => {
                   const linkedVideo = videosByProject.get(project.id)?.[0] ?? null;
                   return (
@@ -348,7 +349,7 @@ export function ProjectDashboard({ onContinue }: Props) {
           </div>
         </section>
 
-        <aside className="min-h-0 overflow-auto bg-surface-raised">
+        <aside className="dashboard-create min-h-0 min-w-0 overflow-auto border-t border-surface-border bg-surface-raised" aria-label="Create a project">
           <form onSubmit={handleCreateProject} className="p-5">
             <div className="mb-4 flex items-center justify-between">
               <div>
@@ -365,7 +366,7 @@ export function ProjectDashboard({ onContinue }: Props) {
                   value={newProject.title}
                   onChange={(event) => setNewProject(prev => ({ ...prev, title: event.target.value }))}
                   placeholder="Week 4: Binary Trees"
-                  className="h-10 w-full rounded-md border border-surface-border bg-surface px-3 text-sm text-gray-100 outline-none transition-colors placeholder:text-gray-600 focus:border-accent"
+                  className="min-h-11 w-full rounded-md border border-surface-border bg-surface px-3 text-sm text-gray-100 outline-none transition-colors placeholder:text-gray-600 focus:border-accent"
                 />
               </label>
 
@@ -388,6 +389,7 @@ export function ProjectDashboard({ onContinue }: Props) {
                       key={type.value}
                       type="button"
                       onClick={() => setNewProject(prev => ({ ...prev, project_type: type.value }))}
+                      aria-pressed={newProject.project_type === type.value}
                       className={`rounded-md border p-3 text-left transition-colors ${
                         newProject.project_type === type.value
                           ? "border-accent bg-accent/10 text-white"
@@ -422,7 +424,7 @@ export function ProjectDashboard({ onContinue }: Props) {
               <button
                 type="submit"
                 disabled={!newProject.title.trim() || creating}
-                className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-accent px-3 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-accent px-3 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
                 Create and Open
@@ -438,7 +440,7 @@ export function ProjectDashboard({ onContinue }: Props) {
 
 function MetricTile({ label, value, accent }: { label: string; value: number; accent: string }) {
   return (
-    <div className="rounded-md border border-surface-border bg-surface-raised px-4 py-3">
+    <div className="min-w-0 border-l-2 border-surface-border bg-surface-raised px-3 py-2">
       <div className={`text-2xl font-semibold ${accent}`}>{value}</div>
       <div className="mt-1 text-xs text-gray-500">{label}</div>
     </div>
@@ -460,10 +462,10 @@ function ReadinessSummary({ readiness }: { readiness: ProductReadiness | null })
           <p className={`text-xs font-semibold ${hasBlockers ? "text-amber-100" : "text-emerald-100"}`}>
             {hasBlockers ? "Action needed before import" : "Workspace ready for local work"}
           </p>
-          <p className="mt-1 text-[11px] leading-4 text-gray-300">
+          <p className="mt-1 text-xs leading-4 text-gray-300">
             {readiness.mode === "native" ? "Native engine" : "Browser/Docker"} · {usableCapabilities}/{totalCapabilities} tools usable · {Math.round(readiness.storage.free_bytes / 1024 / 1024 / 1024)} GB free
           </p>
-          {hasBlockers ? <p className="mt-1 text-[11px] leading-4 text-amber-100">{readiness.blockers[0].remediation}</p> : readiness.warnings.length > 0 ? <p className="mt-1 text-[11px] leading-4 text-gray-300">AI warnings do not block manual transcript editing.</p> : null}
+          {hasBlockers ? <p className="mt-1 text-xs leading-4 text-amber-100">{readiness.blockers[0].remediation}</p> : readiness.warnings.length > 0 ? <p className="mt-1 text-xs leading-4 text-gray-300">AI warnings do not block manual transcript editing.</p> : null}
         </div>
       </div>
     </div>
@@ -496,21 +498,21 @@ function ProjectRow({
   const progressValue = workflowProgress(video, progress);
 
   return (
-    <div className="grid grid-cols-[minmax(220px,1fr)_130px_140px_190px] items-center gap-4 px-6 py-4 transition-colors hover:bg-surface-raised/70">
+    <div className="project-row grid min-w-0 items-center gap-3 rounded-lg border border-surface-border bg-surface-raised p-4 transition-colors hover:border-accent/70">
       <button
         type="button"
         onClick={onContinue}
-        className="min-w-0 text-left focus:outline-none focus:ring-2 focus:ring-accent/70"
+        className="min-w-0 rounded-md text-left focus:outline-none focus:ring-2 focus:ring-accent/70"
         aria-label={`Open project ${project.title}`}
       >
         <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-surface-raised text-gray-400">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md bg-surface-raised text-gray-400">
             <FolderOpen className="h-4 w-4" />
           </div>
           <div className="min-w-0">
-            <h3 className="truncate text-sm font-semibold text-white">{project.title}</h3>
-            <p className="mt-1 truncate text-xs text-gray-500">{project.description || detail}</p>
-            <p className="mt-1 text-[11px] text-accent/80">Next: {workflowNextAction(workflowState)}</p>
+            <h3 className="break-words text-sm font-semibold text-white">{project.title}</h3>
+            <p className="mt-1 break-words text-xs leading-5 text-gray-500">{project.description || detail}</p>
+            <p className="mt-1 text-xs text-accent-foreground">Next: {workflowNextAction(workflowState)}</p>
             {progressValue !== null && (workflowState === "analyzing" || workflowState === "exporting") ? (
               <div className="mt-2 flex items-center gap-2">
                 <div
@@ -523,7 +525,7 @@ function ProjectRow({
                 >
                   <div className="h-full rounded-full bg-accent" style={{ width: `${progressValue}%` }} />
                 </div>
-                <span className="text-[11px] text-gray-500">{Math.round(progressValue)}%</span>
+                <span className="text-xs text-gray-500">{Math.round(progressValue)}%</span>
               </div>
             ) : null}
           </div>
@@ -539,7 +541,7 @@ function ProjectRow({
         <div className="mt-1 text-gray-500">{formatSourceMode(project.source_mode)}</div>
       </div>
 
-      <div className="flex items-center justify-end gap-3">
+      <div className="project-actions flex min-w-0 flex-wrap items-center gap-2">
         <div className="hidden text-right text-xs text-gray-500 xl:block">
           <div>Updated</div>
           <div className="mt-1 text-gray-400">{formatRelativeDate(project.updated_at)}</div>
@@ -551,7 +553,7 @@ function ProjectRow({
             onRename();
           }}
           disabled={busy}
-          className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-surface-border text-gray-400 transition-colors hover:border-accent hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex h-11 w-11 items-center justify-center rounded-md border border-surface-border text-gray-400 transition-colors hover:border-accent hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
           aria-label={`Rename ${project.title}`}
           title="Rename project"
         >
@@ -564,7 +566,7 @@ function ProjectRow({
             onDelete();
           }}
           disabled={busy}
-          className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-surface-border text-gray-400 transition-colors hover:border-red-400/70 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex h-11 w-11 items-center justify-center rounded-md border border-surface-border text-gray-400 transition-colors hover:border-red-400/70 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-50"
           aria-label={`Delete ${project.title}`}
           title="Delete project"
         >
@@ -578,7 +580,7 @@ function ProjectRow({
               onRetry();
             }}
             disabled={busy}
-            className="inline-flex h-9 items-center gap-1.5 rounded-md border border-amber-400/30 px-2.5 text-xs text-amber-200 transition-colors hover:border-amber-300 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-md border border-amber-400/30 px-2.5 text-xs text-amber-200 transition-colors hover:border-amber-300 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
           >
             {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCcw className="h-3.5 w-3.5" />}
             Retry
@@ -590,7 +592,7 @@ function ProjectRow({
             event.stopPropagation();
             onContinue();
           }}
-          className="inline-flex h-9 items-center gap-2 rounded-md border border-surface-border px-3 text-sm text-gray-200 transition-colors hover:border-accent hover:text-white"
+          className="inline-flex min-h-11 items-center gap-2 rounded-md border border-surface-border px-3 text-sm text-gray-200 transition-colors hover:border-accent hover:text-white"
         >
           {actionLabel}
           <ArrowRight className="h-4 w-4" />
@@ -627,7 +629,8 @@ function SourceModeButton({
     <button
       type="button"
       onClick={onClick}
-      className={`inline-flex h-10 items-center justify-center gap-2 rounded-md border px-2 text-sm transition-colors ${
+      aria-pressed={active}
+      className={`inline-flex min-h-11 items-center justify-center gap-2 rounded-md border px-2 text-sm transition-colors ${
         active
           ? "border-accent bg-accent/10 text-white"
           : "border-surface-border bg-surface text-gray-400 hover:border-gray-500 hover:text-gray-200"
@@ -651,8 +654,8 @@ function EmptyProjectState({ hasQuery }: { hasQuery: boolean }) {
         </h3>
         <p className="mt-2 text-sm leading-6 text-gray-500">
           {hasQuery
-            ? "Adjust the search term to find a workspace."
-            : "Create a project or upload a legacy video to start building the editor workspace list."}
+            ? "Adjust your search or status filter to find a workspace."
+            : "Create a project using the project form, then add a video or multiple sources to begin."}
         </p>
       </div>
     </div>

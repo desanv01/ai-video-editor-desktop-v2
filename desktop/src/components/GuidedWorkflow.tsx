@@ -304,24 +304,24 @@ export function GuidedWorkflowStepper({ activeStep, completedStepIds, onStepChan
   const progressPercent = Math.round((completedCount / GUIDED_WORKFLOW_STEPS.length) * 100);
 
   return (
-    <div className="border-b border-surface-border bg-surface-raised px-4 py-2">
-      <div className="mb-2 flex items-center justify-between gap-4">
+    <nav className="workflow-stepper shrink-0 border-b border-surface-border bg-surface-raised px-3 py-3" aria-label="Six-stage editing workflow">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 className="text-sm font-semibold text-white">Guided Editor Workflow</h2>
+          <h2 className="text-sm font-semibold text-white">Editing workflow</h2>
           <p className="text-xs text-gray-400">{completedCount} of {GUIDED_WORKFLOW_STEPS.length} steps complete</p>
         </div>
-        <div className="w-44">
+        <div className="w-40 max-w-full">
           <div className="mb-1 flex items-center justify-between text-[11px] text-gray-400">
             <span>Progress</span>
             <span>{progressPercent}%</span>
           </div>
-          <div className="h-1.5 overflow-hidden rounded-full bg-surface-overlay">
-            <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${progressPercent}%` }} />
+          <div className="h-1.5 overflow-hidden rounded-full bg-surface-overlay" role="progressbar" aria-label="Workflow steps completed" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progressPercent}>
+            <div className="h-full rounded-full bg-accent transition-colors" style={{ width: `${progressPercent}%` }} />
           </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-6 gap-1.5">
+      <div className="grid grid-cols-3 gap-2 lg:grid-cols-6">
         {GUIDED_WORKFLOW_STEPS.map((step, index) => {
           const Icon = step.icon;
           const isActive = activeStep === step.id;
@@ -333,7 +333,7 @@ export function GuidedWorkflowStepper({ activeStep, completedStepIds, onStepChan
               type="button"
               onClick={() => onStepChange(step.id)}
               aria-current={isActive ? "step" : undefined}
-              className={`flex min-w-0 items-center gap-2 rounded-md border px-2.5 py-1.5 text-left transition-colors ${
+              className={`flex min-h-11 min-w-0 items-center gap-2 rounded-md border px-2.5 py-2 text-left transition-colors ${
                 isActive
                   ? "border-accent bg-accent/15 text-white"
                   : isComplete
@@ -347,14 +347,14 @@ export function GuidedWorkflowStepper({ activeStep, completedStepIds, onStepChan
                 {isComplete ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Icon className="h-3.5 w-3.5" />}
               </span>
               <span className="min-w-0">
-                <span className="block truncate text-xs font-semibold">{index + 1}. {step.label}</span>
-                <span className="block truncate text-[11px] text-gray-500">{step.eyebrow}</span>
+                <span className="block break-words text-xs font-semibold">{index + 1}. {step.label}</span>
+                <span className="block break-words text-xs leading-4 text-gray-400">{step.eyebrow}</span>
               </span>
             </button>
           );
         })}
       </div>
-    </div>
+    </nav>
   );
 }
 
@@ -2213,13 +2213,13 @@ function StepStatus({ complete }: { complete: boolean }) {
 }
 
 function PanelStack({ children }: { children: ReactNode }) {
-  return <div className="space-y-4">{children}</div>;
+  return <div className="min-w-0 space-y-4">{children}</div>;
 }
 
 function WorkflowCard({ title, icon, children }: { title: string; icon: ReactNode; children: ReactNode }) {
   return (
-    <section className="rounded-md border border-surface-border bg-surface-overlay p-3">
-      <h4 className="mb-2 flex items-center gap-2 text-sm font-semibold text-white">
+    <section className="workflow-card min-w-0 border-b border-surface-border pb-4">
+      <h4 className="mb-3 flex items-center gap-2 text-sm font-semibold text-white">
         {icon}
         {title}
       </h4>
@@ -2229,7 +2229,7 @@ function WorkflowCard({ title, icon, children }: { title: string; icon: ReactNod
 }
 
 function MetricGrid({ children }: { children: ReactNode }) {
-  return <div className="grid grid-cols-3 gap-2">{children}</div>;
+  return <div className="grid grid-cols-[repeat(auto-fit,minmax(5rem,1fr))] gap-2">{children}</div>;
 }
 
 function Metric({ label, value, tone = "muted" }: { label: string; value: string; tone?: "muted" | "good" | "warn" | "danger" }) {
@@ -2241,36 +2241,36 @@ function Metric({ label, value, tone = "muted" }: { label: string; value: string
   }[tone];
 
   return (
-    <div className="rounded-md border border-surface-border bg-surface-overlay px-3 py-2">
-      <div className={`text-sm font-semibold ${toneClass}`}>{value}</div>
-      <div className="mt-1 text-[11px] text-gray-500">{label}</div>
+    <div className="min-w-0 rounded-md border border-surface-border bg-surface px-3 py-2">
+      <div className={`break-words text-sm font-semibold tabular-nums ${toneClass}`}>{value}</div>
+      <div className="mt-1 break-words text-xs leading-5 text-gray-400">{label}</div>
     </div>
   );
 }
 
 function MiniMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-surface-border bg-surface-raised px-2 py-2">
-      <div className="text-sm font-semibold text-gray-100">{value}</div>
-      <div className="mt-0.5 truncate text-[11px] text-gray-500">{label}</div>
+    <div className="min-w-0 rounded-md border border-surface-border bg-surface px-3 py-2">
+      <div className="break-words text-sm font-semibold tabular-nums text-gray-100">{value}</div>
+      <div className="mt-1 break-words text-xs leading-5 text-gray-400">{label}</div>
     </div>
   );
 }
 
 function IconStat({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between gap-3">
+    <div className="flex flex-wrap items-center justify-between gap-2">
       <span className="flex items-center gap-2 text-gray-400">{icon}{label}</span>
-      <span className="font-semibold text-gray-100">{value}</span>
+      <span className="font-semibold tabular-nums text-gray-100">{value}</span>
     </div>
   );
 }
 
 function EmptyState({ title, detail }: { title: string; detail: string }) {
   return (
-    <div className="rounded-md border border-dashed border-surface-border bg-surface-overlay px-4 py-6 text-center">
+    <div className="rounded-md border border-dashed border-surface-border bg-surface px-4 py-5 text-center">
       <p className="text-sm font-semibold text-gray-300">{title}</p>
-      <p className="mt-1 text-xs leading-5 text-gray-500">{detail}</p>
+      <p className="mt-1 text-xs leading-5 text-gray-400">{detail}</p>
     </div>
   );
 }

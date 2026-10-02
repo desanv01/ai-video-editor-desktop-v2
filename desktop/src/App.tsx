@@ -53,7 +53,7 @@ function LegacyApp() {
 }
 function RuntimeDetectionScreen() {
   return (
-    <div className="flex h-screen items-center justify-center bg-surface text-gray-300">
+    <div className="flex h-dvh items-center justify-center bg-surface text-gray-300">
       <div className="rounded-xl border border-surface-border bg-surface-raised px-5 py-4 text-sm">Preparing AI Video Editor…</div>
     </div>
   );
@@ -142,35 +142,35 @@ export function BrowserEditorApp({ nativeMode = false }: { nativeMode?: boolean 
   };
 
   return (
-    <div className="h-screen flex flex-col bg-surface overflow-hidden">
-      <header className="flex items-center justify-between px-4 py-2 bg-surface-raised border-b border-surface-border shrink-0">
+    <div className="h-dvh min-w-0 flex flex-col bg-surface overflow-hidden text-gray-100">
+      <header className="workspace-header flex flex-wrap items-center gap-3 px-4 py-2 bg-surface-raised border-b border-surface-border shrink-0">
         <button
           type="button"
           onClick={handleBackToDashboard}
-          className="group inline-flex items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-1 focus:ring-accent"
+          className="group inline-flex min-h-11 shrink-0 items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-1 focus:ring-accent"
           aria-label="Go to project dashboard"
         >
           <span className="flex h-7 w-7 items-center justify-center rounded-md bg-accent/15 text-accent ring-1 ring-accent/30 transition-colors group-hover:bg-accent/20">
             <Clapperboard className="h-4 w-4" />
           </span>
-          <span className="text-sm font-semibold tracking-wide text-white">AI Video Editor</span>
+          <span className="text-sm font-semibold text-white">AI Video Editor</span>
         </button>
-        <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1">
           {selectedProject && (
-            <span className="ml-2 hidden items-center gap-1.5 rounded bg-surface-overlay px-2 py-1 text-xs text-gray-400 sm:inline-flex">
+            <span className="inline-flex max-w-full items-center gap-2 rounded border border-surface-border bg-surface px-2 py-1 text-xs text-gray-300">
               <FolderOpen className="h-3.5 w-3.5" />
-              {selectedProject.title}
+              <span className="truncate" title={selectedProject.title}>{selectedProject.title}</span>
             </span>
           )}
         </div>
-        <div className="flex items-center gap-3 text-xs text-gray-400">
+        <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-gray-400">
           {videoFilename && (
-            <span className="bg-surface-overlay px-2 py-1 rounded">{videoFilename}</span>
+            <span className="workspace-filename max-w-48 truncate rounded bg-surface px-2 py-1" title={videoFilename}>{videoFilename}</span>
           )}
           <button
             type="button"
             onClick={() => setSettingsOpen(true)}
-            className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 transition-colors hover:bg-surface-overlay hover:text-gray-200"
+            className="inline-flex min-h-11 items-center gap-2 rounded-md border border-surface-border px-3 py-2 transition-colors hover:bg-surface-overlay hover:text-gray-200"
           >
             <Settings className="w-3.5 h-3.5" />
             Settings
@@ -179,7 +179,7 @@ export function BrowserEditorApp({ nativeMode = false }: { nativeMode?: boolean 
             <button
               type="button"
               onClick={() => setDesktopManagementOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-gray-400 transition-colors hover:bg-surface-overlay hover:text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent"
+              className="inline-flex min-h-11 items-center gap-2 rounded-md border border-surface-border px-3 py-2 text-gray-400 transition-colors hover:bg-surface-overlay hover:text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent"
             >
               Desktop components
             </button>
@@ -187,7 +187,7 @@ export function BrowserEditorApp({ nativeMode = false }: { nativeMode?: boolean 
           {view !== "dashboard" && (
             <button
               onClick={handleBackToDashboard}
-              className="hover:text-gray-200 transition-colors"
+              className="inline-flex min-h-11 items-center gap-2 rounded-md border border-surface-border px-3 py-2 hover:bg-surface-overlay hover:text-gray-200 transition-colors"
             >
               Projects
             </button>
@@ -195,7 +195,7 @@ export function BrowserEditorApp({ nativeMode = false }: { nativeMode?: boolean 
         </div>
       </header>
 
-      <main className="min-h-0 flex-1 overflow-hidden">
+      <main id="workspace-content" className="min-h-0 min-w-0 flex-1 overflow-hidden">
         {view === "dashboard" && (
           <ProjectDashboard onContinue={handleDashboardContinue} />
         )}
