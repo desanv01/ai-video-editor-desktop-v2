@@ -145,6 +145,8 @@ class Settings(BaseSettings):
     FFMPEG_COMPONENT_ROOT: str = ""
     FFMPEG_BINARY_PATH: str = ""
     FFPROBE_BINARY_PATH: str = ""
+    LIBREOFFICE_COMPONENT_ROOT: str = ""
+    LIBREOFFICE_BINARY_PATH: str = ""
     DESKTOP_COMPONENT_ROOT: str = ""
     DESKTOP_ENGINE_COMPONENT_ROOT: str = ""
     DESKTOP_SESSION_ID: str = ""
