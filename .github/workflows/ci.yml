@@ -123,6 +123,8 @@ jobs:
       - name: Run native planning, teacher race and caller acceptance checks
         run: python scripts/rebuild/test_plan_transactions.py
 
+      - name: Verify actual native video status polling and export job compatibility
+        run: python scripts/rebuild/test_video_status_api.py
       - name: Run native original transcript API acceptance checks
         run: python scripts/rebuild/test_transcript_api.py
 

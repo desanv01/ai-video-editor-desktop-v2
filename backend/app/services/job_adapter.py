@@ -111,5 +111,5 @@ def native_job(job: dict[str, Any] | None) -> dict[str, Any] | None:
     return normalize_job(job, job_type=(job or {}).get("kind"))
 
 
-def render_job(job: dict[str, Any] | None) -> dict[str, Any] | None:
-    return normalize_job(job, job_type="export")
+def render_job(job: dict[str, Any] | None, *, video_id: str | None = None) -> dict[str, Any] | None:
+    return normalize_job(job, job_type="export", video_id=video_id)
