@@ -642,8 +642,8 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
   };
 
   return (
-    <div className="h-full overflow-auto bg-surface p-8 text-gray-100">
-      <div className="mx-auto max-w-5xl space-y-6">
+    <div className="intake-workspace h-full min-w-0 overflow-auto bg-surface p-4 text-gray-100 lg:p-6">
+      <div className="mx-auto min-w-0 max-w-5xl space-y-4">
         {isMultiSource ? (
           <MultiSourceIntake
             uploadingLabel={uploadingLabel}
@@ -705,7 +705,7 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
         {ingestValidation ? <IngestFeedback validation={ingestValidation} /> : null}
         {readiness ? <ProjectPreflight readiness={readiness} /> : null}
 
-        <div className="flex items-center justify-between gap-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-surface-border pt-4">
           <p className="text-xs text-gray-500">
             {materials.length > 0
               ? `${embeddedMaterials}/${materials.length} material${materials.length === 1 ? "" : "s"} embedded for RAG.`
@@ -715,7 +715,7 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
           <button
             onClick={handleStartProcessing}
             disabled={!uploadedVideo || uploading || materialUploading || recording !== null || starting || Boolean(nativeImportActive)}
-            className="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex min-h-11 shrink-0 items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
           >
             {starting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
             Start Processing
@@ -792,8 +792,10 @@ function SingleVideoIntake({
   isNativeDesktopApp: boolean;
 }) {
   return (
-    <div
-      className={`cursor-pointer rounded-lg border-2 border-dashed p-12 text-center transition-all ${
+    <button
+      type="button"
+      aria-label="Choose or replace the primary video"
+      className={`w-full cursor-pointer rounded-lg border-2 border-dashed bg-surface-raised p-6 text-center transition-colors sm:p-8 ${
         dragOver ? "border-accent bg-accent/10" : "border-surface-border hover:border-gray-500"
       }`}
       onDragOver={(event) => {
@@ -812,7 +814,7 @@ function SingleVideoIntake({
       ) : uploadedVideo ? (
         <div className="flex flex-col items-center gap-3">
           <FileVideo className="h-12 w-12 text-accent" />
-          <p className="text-lg font-medium">{uploadedVideo.filename}</p>
+          <p className="break-words text-lg font-medium">{uploadedVideo.filename}</p>
           <p className="text-sm text-gray-400">Video uploaded. Add notes below, or click here to replace it.</p>
         </div>
       ) : (
@@ -826,7 +828,7 @@ function SingleVideoIntake({
           </p>
         </div>
       )}
-    </div>
+    </button>
   );
 }
 
@@ -919,7 +921,7 @@ function MultiSourceIntake({
               Choose how screen, webcam, and microphone are composed before or during a studio recording.
             </p>
           </div>
-          <div className="grid grid-cols-2 gap-2 sm:min-w-[360px]">
+          <div className="grid grid-cols-2 gap-2 sm:min-w-0">
             {studioLayoutOptions.map(option => (
               <button
                 key={option.value}
@@ -1007,7 +1009,7 @@ function MultiSourceIntake({
           <div className="mt-3 grid gap-2">
             {sourceAssets.map((asset, index) => (
               <div key={asset.id} className="flex items-start gap-3">
-                <span className="mt-2 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/15 text-[10px] font-semibold text-accent" aria-label={`Source ${index + 1}`}>
+                <span className="mt-2 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/15 text-xs font-semibold text-accent" aria-label={`Source ${index + 1}`}>
                   {index + 1}
                 </span>
                 <div className="min-w-0 flex-1"><AssetRow asset={asset} onDelete={onDeleteAsset} /></div>
@@ -1271,7 +1273,7 @@ function PreviewVideo({ stream, label }: { stream: MediaStream; label: string })
   return (
     <div className="relative h-full w-full">
       <video ref={videoRef} muted playsInline autoPlay className="h-full w-full object-contain" />
-      <div className="absolute left-2 top-2 rounded bg-black/65 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-gray-200">
+      <div className="absolute left-2 top-2 rounded bg-black/65 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-gray-200">
         {label}
       </div>
     </div>
@@ -1318,7 +1320,7 @@ function StudioRole({ label, active, detail }: { label: string; active: boolean;
     <div className={`rounded-md border px-3 py-2 ${active ? "border-green-400/30 bg-green-500/10" : "border-surface-border bg-surface-overlay"}`}>
       <div className="flex items-center justify-between gap-2">
         <span className="font-semibold text-gray-100">{label}</span>
-        <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${active ? "bg-green-500/20 text-green-300" : "bg-surface-raised text-gray-500"}`}>
+        <span className={`rounded px-1.5 py-0.5 text-xs font-semibold uppercase ${active ? "bg-green-500/20 text-green-300" : "bg-surface-raised text-gray-500"}`}>
           {active ? "live" : "idle"}
         </span>
       </div>
@@ -1398,9 +1400,9 @@ function StructureAssetsPanel({
       <div className="mt-4 flex flex-wrap items-end gap-3 border-t border-surface-border pt-4">
         <div>
           <p className="text-xs font-medium text-gray-300">Pages covered by this video</p>
-          <p className="mt-1 text-[11px] text-gray-500">Strongly recommended when one PDF or deck is shared by multiple recordings. Overlapping ranges are allowed.</p>
+          <p className="mt-1 text-xs text-gray-500">Strongly recommended when one PDF or deck is shared by multiple recordings. Overlapping ranges are allowed.</p>
         </div>
-        <label className="text-[11px] text-gray-500">
+        <label className="text-xs text-gray-500">
           Start page
           <input
             type="number"
@@ -1410,7 +1412,7 @@ function StructureAssetsPanel({
             className="mt-1 block w-24 rounded-md border border-surface-border bg-surface-overlay px-2 py-1.5 text-xs text-gray-200"
           />
         </label>
-        <label className="text-[11px] text-gray-500">
+        <label className="text-xs text-gray-500">
           End page
           <input
             type="number"
@@ -1479,8 +1481,8 @@ function StructureAssetRow({
         </button>
       </div>
       <div className="mt-2 flex items-end gap-2">
-        <label className="text-[10px] text-gray-500">Start<input type="number" min={1} value={start} onChange={event => setStart(event.target.value)} className="mt-1 block w-20 rounded border border-surface-border bg-surface-raised px-2 py-1 text-xs text-gray-200" /></label>
-        <label className="text-[10px] text-gray-500">End<input type="number" min={1} value={end} onChange={event => setEnd(event.target.value)} className="mt-1 block w-20 rounded border border-surface-border bg-surface-raised px-2 py-1 text-xs text-gray-200" /></label>
+        <label className="text-xs text-gray-500">Start<input type="number" min={1} value={start} onChange={event => setStart(event.target.value)} className="mt-1 block w-20 rounded border border-surface-border bg-surface-raised px-2 py-1 text-xs text-gray-200" /></label>
+        <label className="text-xs text-gray-500">End<input type="number" min={1} value={end} onChange={event => setEnd(event.target.value)} className="mt-1 block w-20 rounded border border-surface-border bg-surface-raised px-2 py-1 text-xs text-gray-200" /></label>
         <button type="button" onClick={() => void save()} disabled={saving} className="rounded border border-surface-border px-2 py-1 text-xs text-gray-300 hover:border-accent disabled:opacity-50">
           {saving ? "Saving" : "Save range"}
         </button>

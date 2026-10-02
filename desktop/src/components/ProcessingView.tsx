@@ -44,9 +44,9 @@ export function ProcessingView({ videoId, onComplete }: Props) {
   const displayError = api.friendlyErrorMessage(unifiedJob?.error || status?.error_message || error || "");
 
   return (
-    <div className="h-full overflow-y-auto p-8" aria-live="polite">
-      <div className="mx-auto min-h-full w-full max-w-lg space-y-8 py-8">
-        <div className="space-y-2 text-center">
+    <div className="h-full min-w-0 overflow-y-auto bg-surface p-4 text-gray-100 lg:p-6" aria-live="polite">
+      <div className="mx-auto w-full max-w-2xl space-y-5 py-4">
+        <div className="space-y-2 border-b border-surface-border pb-5 text-center">
           {isFailed ? (
             <XCircle className="mx-auto h-12 w-12 text-red-400" />
           ) : isReady ? (
@@ -66,7 +66,7 @@ export function ProcessingView({ videoId, onComplete }: Props) {
           <div className="rounded-lg border border-surface-border bg-surface-raised p-3 text-xs text-gray-300">
             <div className="flex items-center justify-between gap-3">
               <span className="font-semibold text-gray-100">{unifiedJob.type === "analysis" ? "Analysis job" : "Workflow job"}</span>
-              <span className="rounded-full border border-surface-border px-2 py-0.5 text-[11px] uppercase tracking-wide text-gray-400">{unifiedJob.state.replace(/_/g, " ")}</span>
+              <span className="rounded-full border border-surface-border px-2 py-0.5 text-xs uppercase tracking-wide text-gray-400">{unifiedJob.state.replace(/_/g, " ")}</span>
             </div>
             <p className="mt-1 text-gray-500">Stage: {unifiedJob.stage.replace(/_/g, " ")}</p>
             {unifiedJob.retryable ? <p className="mt-1 text-amber-200">This job can be retried without removing the source.</p> : null}
@@ -84,9 +84,9 @@ export function ProcessingView({ videoId, onComplete }: Props) {
               </span>
             ) : null}
           </div>
-          <div className="h-2 overflow-hidden rounded-full bg-surface-overlay">
+          <div className="h-2 overflow-hidden rounded-full bg-surface-overlay" role="progressbar" aria-label="Video processing" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progressPct)}>
             <div
-              className={`h-full rounded-full transition-all duration-700 ${isFailed ? "bg-red-500" : "bg-accent"}`}
+              className={`h-full rounded-full transition-colors duration-150 ${isFailed ? "bg-red-500" : "bg-accent"}`}
               style={{ width: `${progressPct}%` }}
             />
           </div>
@@ -106,7 +106,7 @@ export function ProcessingView({ videoId, onComplete }: Props) {
             return (
               <div
                 key={step.key}
-                className={`flex items-center justify-between rounded-lg px-4 py-2.5 text-sm transition-all ${
+                className={`flex items-start justify-between gap-3 rounded-md border border-transparent px-3 py-3 text-sm transition-colors ${
                   failed ? "border border-red-500/30 bg-red-500/10 text-red-200" :
                   isCompleted ? "bg-surface-raised text-gray-200" :
                   isCurrent ? "border border-accent/30 bg-accent/10 text-white" :
@@ -115,12 +115,12 @@ export function ProcessingView({ videoId, onComplete }: Props) {
               >
                 <div className="flex min-w-0 items-center gap-3">
                   <span className="w-5 shrink-0 text-center">
-                    {failed ? "x" : isCompleted ? "ok" : isCurrent ? "..." : "o"}
+                    {failed ? <XCircle aria-label="Failed" className="h-4 w-4" /> : isCompleted ? <CheckCircle2 aria-label="Complete" className="h-4 w-4" /> : isCurrent ? <Loader2 aria-label="In progress" className="h-4 w-4 animate-spin" /> : <Clock aria-label="Pending" className="h-4 w-4" />}
                   </span>
                   <span className="min-w-0">
-                    <span className="block truncate">{step.label}</span>
+                    <span className="block break-words">{step.label}</span>
                     {failed?.error && (
-                      <span className="mt-1 block max-w-[320px] truncate text-xs text-red-300">
+                      <span className="mt-1 block break-words text-xs leading-5 text-red-300">
                         {failed.error}
                       </span>
                     )}
