@@ -1,98 +1,79 @@
-name: Desktop V2 CI
+name: AIVE Electron Rebuild CI
 
 on:
   push:
-    branches:
-      - main
-    paths-ignore:
-      - '**.md'
+    branches: [main]
+    paths-ignore: ['**.md']
   pull_request:
-    branches:
-      - main
-    paths-ignore:
-      - '**.md'
+    branches: [main]
+    paths-ignore: ['**.md']
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: desktop-v2-ci-${{ github.head_ref || github.ref_name }}
+  group: rebuild-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  windows-desktop:
-    name: Windows desktop and Rust checks
+  electron:
+    name: Windows Electron build and boundary checks
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: desktop
+        shell: pwsh
     steps:
-      - name: Check out source
-        uses: actions/checkout@v7
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v7
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: "22"
-
-      - name: Install desktop dependencies
-        run: npm ci --prefix desktop
-
-      - name: Set up stable Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-
-      - name: Check Rust formatting
-        run: cargo fmt --all --check --manifest-path desktop/src-tauri/Cargo.toml
-
-      - name: Check Rust shell
-        run: cargo check --locked --manifest-path desktop/src-tauri/Cargo.toml
-
-      - name: Run Rust tests
-        run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml
-
-      - name: Build React and TypeScript frontend
-        run: npm run build --prefix desktop
-
-      - name: Build unsigned RC8 NSIS installer for production checks
-        run: npm run build:nsis:checked --prefix desktop
-
-      - name: Run desktop contract and installer checks
-        run: npm test --prefix desktop
-
-      - name: Execute built installer lifecycle on disposable runner
-        shell: powershell
+          node-version: '24.14.1'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install pinned desktop dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Build frontend and Electron controller
+        run: npm run build
+      - name: Run focused controller boundary checks
+        run: npm run test:rebuild
+      - name: Package assisted per-user installer
+        run: npm run package:win
+      - name: Verify actual unpacked window and preload
+        run: node ../scripts/rebuild/phase2-electron-smoke.cjs .. ../.test-output/playwright/phase2
+      - name: Record immutable artifact identities
         run: |
-          $installer = Get-ChildItem desktop/src-tauri/target/release/bundle/nsis -Filter '*setup.exe' -File | Select-Object -First 1
-          if (-not $installer) { throw 'Built NSIS installer missing.' }
-          & ./scripts/desktop-v2/Test-ActualInstallerLifecycle.ps1 -Installer $installer.FullName -EvidenceDir "$env:RUNNER_TEMP/rc8-lifecycle"
-
-      - name: Preserve exact tested installer and lifecycle evidence
-        if: always()
-        uses: actions/upload-artifact@v4
+          $installers = @(Get-ChildItem release-electron -Filter '*Setup.exe' -File)
+          if ($installers.Count -ne 1) { throw 'Expected exactly one installer' }
+          $installer = $installers[0]
+          $hash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $record = @{ schemaVersion='aive.ci-build.v1'; commit='${{ github.sha }}'; runId='${{ github.run_id }}'; runUrl='https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'; installer=$installer.Name; bytes=$installer.Length; sha256=$hash; qualification='Phase2 engineering shell; runtime packs unconfigured; no installed workflow acceptance' }
+          $record | ConvertTo-Json | Set-Content release-electron/ci-build.json
+          "$hash  $($installer.Name)" | Set-Content release-electron/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
         with:
-          name: rc8-tested-installer-${{ github.run_id }}
-          path: |
-            desktop/src-tauri/target/release/bundle/nsis/*setup.exe
-            ${{ runner.temp }}/rc8-lifecycle/*
-          if-no-files-found: warn
+          name: aive-phase2-windows-${{ github.sha }}
           retention-days: 14
-
-  windows-backend:
-    name: Windows backend unit tests
+          if-no-files-found: error
+          path: |
+            desktop/release-electron/*Setup.exe
+            desktop/release-electron/*Setup.exe.blockmap
+            desktop/release-electron/ci-build.json
+            desktop/release-electron/SHA256SUMS.txt
+            .test-output/playwright/phase2/electron-smoke.json
+            .test-output/playwright/phase2/setup*.png
+  backend:
+    name: Windows preserved backend unit tests
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
     steps:
-      - name: Check out source
-        uses: actions/checkout@v7
-
-      - name: Set up Python
-        uses: actions/setup-python@v7
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-
+          python-version: '3.12'
       - name: Install backend dependencies
         run: python -m pip install -r backend/requirements.txt
-
       - name: Run backend unit tests
-        run: python -m unittest discover -s backend/tests -p "test_*.py"
+        working-directory: backend
+        run: python -m unittest discover -s tests -v
