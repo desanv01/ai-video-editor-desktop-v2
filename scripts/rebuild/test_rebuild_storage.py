@@ -10,6 +10,8 @@ import unittest
 from pathlib import Path
 
 REPO = Path(sys.argv.pop(1)) if len(sys.argv)>1 and not sys.argv[1].startswith('-') else Path(__file__).resolve().parents[2]
+TEST_OUTPUT = REPO/'.test-output'/'storage'
+TEST_OUTPUT.mkdir(parents=True,exist_ok=True)
 sys.path.insert(0,str(REPO/'backend'/'app'))
 from desktop_native.vector_store import LanceVectorStore
 from desktop_native.index_journal import INDEX_DDL
@@ -19,7 +21,7 @@ from sqlalchemy import create_engine, MetaData, Table, Column, String
 
 class StorageTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.temp=tempfile.TemporaryDirectory(prefix='aive-real-storage-')
+        self.temp=tempfile.TemporaryDirectory(prefix='aive-real-storage-',dir=TEST_OUTPUT)
         self.root=Path(self.temp.name); self.database=self.root/'engine.sqlite3'
         with closing(sqlite3.connect(self.database)) as db, db:
             for statement in INDEX_DDL: db.execute(statement)
@@ -81,7 +83,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({h.payload['text'] for h in hits},{'new-one','new-two'})
 
 class SQLiteTests(unittest.TestCase):
-    def setUp(self):self.temp=tempfile.TemporaryDirectory(prefix='aive-sqlite-main-');self.root=Path(self.temp.name)
+    def setUp(self):self.temp=tempfile.TemporaryDirectory(prefix='aive-sqlite-main-',dir=TEST_OUTPUT);self.root=Path(self.temp.name)
     def tearDown(self):self.temp.cleanup()
     def test_future_revision_rejected_without_schema_change(self):
         p=self.root/'future.sqlite3'
