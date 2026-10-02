@@ -9,10 +9,11 @@ import logging
 import json
 import asyncio
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -56,6 +57,14 @@ from services.mode_comparison import (
 from services.renderer import generate_quality_report
 from services.text_extraction import text_extractor
 from services.transcript_timeline import build_transcript_timeline
+from services.transcript_exports import (
+    TRANSCRIPT_EXPORT_FORMATS,
+    TranscriptExportUnavailable,
+    format_transcript_export,
+    transcript_download_filename,
+    transcript_export_catalog,
+    write_transcript_artifacts,
+)
 from services.transcript_edit_decisions import (
     build_synced_timeline_plan,
     create_transcript_cut_decision,
@@ -1840,6 +1849,34 @@ async def download_rendered_video(video_id: str, db: AsyncSession = Depends(get_
     )
 
 
+@router.get("/videos/{video_id}/transcript/export", tags=["Transcript", "Export"])
+async def download_original_transcript(
+    video_id: uuid.UUID,
+    format: Literal["txt", "timestamped_txt", "json", "csv"] = "txt",
+    db: AsyncSession = Depends(get_db),
+):
+    """Download the stored original transcript, independently of edits or rendering."""
+    video = await db.get(Video, video_id)
+    if not video:
+        raise HTTPException(404, "Video not found")
+    result = await db.execute(select(Transcript).where(Transcript.video_id == video_id))
+    transcript = result.scalar_one_or_none()
+    try:
+        content = format_transcript_export(video, transcript, format)
+    except TranscriptExportUnavailable as error:
+        raise HTTPException(404, str(error)) from error
+    filename = transcript_download_filename(video, format)
+    return Response(
+        content=content.encode("utf-8"),
+        media_type=TRANSCRIPT_EXPORT_FORMATS[format][2],
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename, safe='')}",
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @router.get("/videos/{video_id}/subtitles", tags=["Videos"])
 async def download_subtitles(video_id: str, db: AsyncSession = Depends(get_db)):
     """Download SRT subtitle file for the rendered video."""
@@ -2077,12 +2114,14 @@ async def download_academic_evidence_bundle(video_id: str, db: AsyncSession = De
 
 
 @router.get("/videos/{video_id}/exports", tags=["Export"])
-async def list_exports(video_id: str, db: AsyncSession = Depends(get_db)):
+async def list_exports(video_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """List all available export files for a video."""
     video = await db.get(Video, video_id)
     if not video:
         raise HTTPException(404, "Video not found")
 
+    transcript_result = await db.execute(select(Transcript).where(Transcript.video_id == video_id))
+    transcript = transcript_result.scalar_one_or_none()
     base = settings.VIDEO_STORAGE_PATH
     rendered_output = {
         "path": f"/api/v1/videos/{video_id}/download",
@@ -2090,6 +2129,7 @@ async def list_exports(video_id: str, db: AsyncSession = Depends(get_db)):
         "kind": "audio_only" if str(video.processed_video_path or "").lower().endswith((".m4a", ".mp3", ".wav")) else "video",
     }
     files = {
+        **transcript_export_catalog(video_id, transcript),
         "edited_video": rendered_output,
         "rendered_output": rendered_output,
         "subtitles_srt": {
@@ -2221,6 +2261,7 @@ async def _ensure_evaluation_exports(video_id: str, db: AsyncSession) -> dict[st
         raise HTTPException(404, "Edit plan and segment data are required before exporting evidence")
 
     paths = _evaluation_artifact_paths(video)
+    paths.update(write_transcript_artifacts(video, video.transcript, settings.VIDEO_STORAGE_PATH))
     quality_report = await generate_quality_report(video_id, db)
     if "error" in quality_report:
         raise HTTPException(404, quality_report["error"])
