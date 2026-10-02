@@ -25,6 +25,7 @@ from db.models import (
     Transcript,
     Video,
 )
+from desktop_native.agent_transactions import column_snapshot, commit_native, fresh_read, snapshot
 from services.ffmpeg import ffmpeg_service
 from services.decision_values import normalize_confidence, normalize_slide_relation
 from services.editorial_plan import editorial_blocks_from_slide_timeline
@@ -50,8 +51,49 @@ class VisualContext:
     has_structure_reference: bool
 
 
+NATIVE_VIDEO_INPUT_FIELDS = (
+    "id", "file_path", "file_size_bytes", "duration_seconds", "project_id", "project_asset_id",
+)
+NATIVE_SEGMENT_INPUT_FIELDS = (
+    "id", "video_id", "text", "start_time", "end_time", "duration", "segment_index",
+    "topic_label", "summary", "speaker", "segment_type",
+)
+NATIVE_ASSET_INPUT_FIELDS = (
+    "id", "project_id", "file_path", "file_size_bytes", "kind", "role", "source_type",
+    "sync_role", "sync_offset_seconds", "status",
+)
+
+
+@dataclass(frozen=True)
+class NativeVisualInputs:
+    """Original detached inputs, kept separate from mutable visual outputs."""
+    video: Any
+    segments: tuple[Any, ...]
+    transcript: Any | None
+    assets: tuple[Any, ...]
+    slide_asset_id: Any | None
+
+
+def _native_asset_page_scope(asset: Any) -> tuple[Any, Any]:
+    """The same effective page bounds consumed by _page_scope_from_asset."""
+    metadata = dict(asset.metadata_json or {})
+    user_metadata = metadata.get("user_metadata")
+    if isinstance(user_metadata, dict):
+        metadata = {**metadata, **user_metadata}
+    return (
+        metadata.get("slide_page_start", metadata.get("page_start")),
+        metadata.get("slide_page_end", metadata.get("page_end")),
+    )
+
+
 async def run_visual_structure_agent(video_id: str, db: AsyncSession) -> dict:
     """Detect slide/scene changes without letting local CV stall processing."""
+    if settings.is_native_desktop:
+        try:
+            return await _run_native_visual_structure_agent(video_id, db)
+        except BaseException:
+            await db.rollback()
+            raise
     video = await db.get(Video, video_id)
     if not video:
         raise ValueError(f"Video {video_id} not found")
@@ -135,6 +177,217 @@ async def run_visual_structure_agent(video_id: str, db: AsyncSession) -> dict:
     )
 
 
+async def _run_native_visual_structure_agent(video_id: str, db: AsyncSession) -> dict:
+    """Compute on detached inputs, then replace visual state in one transaction."""
+    video = await db.get(Video, video_id)
+    if not video:
+        raise ValueError(f"Video {video_id} not found")
+    if not os.path.exists(video.file_path):
+        raise FileNotFoundError(f"Video file not found: {video.file_path}")
+
+    loaded_context = await _load_visual_context(video, db)
+    context = VisualContext(
+        assets=[column_snapshot(asset) for asset in loaded_context.assets],
+        source_roles=set(loaded_context.source_roles),
+        structure_reference_count=loaded_context.structure_reference_count,
+        has_screen_reference=loaded_context.has_screen_reference,
+        has_camera_reference=loaded_context.has_camera_reference,
+        has_structure_reference=loaded_context.has_structure_reference,
+    )
+    video = column_snapshot(video)
+    segment_result = await db.execute(
+        select(Segment)
+        .where(Segment.video_id == video_id)
+        .order_by(Segment.segment_index)
+    )
+    segments = [column_snapshot(segment) for segment in segment_result.scalars().all()]
+    transcript_result = await db.execute(
+        select(Transcript).where(Transcript.video_id == video_id)
+    )
+    transcript = transcript_result.scalar_one_or_none()
+    timed_words = column_snapshot(transcript).words_json if transcript else []
+    selected_slide_asset = _find_slide_deck_asset(context)
+    inputs = NativeVisualInputs(
+        video=snapshot(video, NATIVE_VIDEO_INPUT_FIELDS),
+        segments=tuple(snapshot(segment, NATIVE_SEGMENT_INPUT_FIELDS) for segment in segments),
+        transcript=snapshot(transcript, ("id", "video_id", "words_json")) if transcript else None,
+        assets=tuple(
+            snapshot(asset, NATIVE_ASSET_INPUT_FIELDS + ("metadata_json",))
+            for asset in context.assets
+        ),
+        slide_asset_id=selected_slide_asset.id if selected_slide_asset else None,
+    )
+    await commit_native(db)
+
+    # Reset only detached output fields; stored scenes/flags remain visible.
+    for segment in segments:
+        segment.has_slide_change = False
+        segment.slide_index = None
+        segment.scene_id = None
+
+    if video.project_id and _detect_camera_with_slides(context):
+        slide_result = await _run_slide_alignment(
+            video_id, video, db, context,
+            snapshot_segments=segments, snapshot_words=timed_words,
+        )
+        if slide_result is not None:
+            await _apply_native_visual_state(video_id, segments, [], db, inputs=inputs)
+            logger.info(
+                "Agent 4: Used PDF slide alignment for video %s — %s",
+                video_id,
+                slide_result.get("analysis_source", "pdf_slide_alignment"),
+            )
+            return slide_result
+
+    skip_reason = _scene_detection_skip_reason(video, context)
+    if skip_reason:
+        result = _visual_result(
+            status="success",
+            scenes_detected=0,
+            scene_timestamps=[],
+            analysis_source="structure_reference_skip",
+            skip_reason=skip_reason,
+            context=context,
+        )
+        await _apply_native_visual_state(video_id, segments, [], db, inputs=inputs)
+        logger.info("Agent 4: Skipped local scene detection for %s: %s", video_id, skip_reason)
+        return result
+
+    logger.info("Agent 4: Starting local scene detection for video %s", video_id)
+    scene_list, timed_out = await _detect_scenes_with_timeout(video.file_path)
+    if timed_out:
+        result = _visual_result(
+            status="success",
+            scenes_detected=0,
+            scene_timestamps=[],
+            analysis_source="pyscenedetect_timeout_fallback",
+            skip_reason="Local PySceneDetect exceeded the Agent 4 timeout and was treated as no detected slide changes.",
+            context=context,
+        )
+        await _apply_native_visual_state(video_id, segments, [], db, inputs=inputs)
+        return result
+
+    if not scene_list:
+        result = _visual_result(
+            status="success",
+            scenes_detected=0,
+            scene_timestamps=[],
+            analysis_source="pyscenedetect",
+            context=context,
+        )
+        await _apply_native_visual_state(video_id, segments, [], db, inputs=inputs)
+        logger.info("Agent 4: No scene changes detected for video %s", video_id)
+        return result
+
+    scenes_created = await _create_scene_records(video, scene_list, db)
+    segments_with_changes = await _mark_segments_for_scenes(
+        video_id, scenes_created, db, snapshot_segments=segments,
+    )
+    # Capture result scalars before commit can expire newly attached Scene rows.
+    result = _visual_result(
+        status="success",
+        scenes_detected=len(scenes_created),
+        scene_timestamps=[round(scene.timestamp, 2) for scene in scenes_created],
+        analysis_source="pyscenedetect",
+        context=context,
+    )
+    await _apply_native_visual_state(video_id, segments, scenes_created, db, inputs=inputs)
+    logger.info(
+        "Agent 4 complete: %s scenes, %s segment slide marks",
+        len(scenes_created),
+        segments_with_changes,
+    )
+    return result
+
+
+async def _apply_native_visual_state(
+    video_id: str, segments: list[Any], scenes: list[Scene], db: AsyncSession,
+    *, inputs: NativeVisualInputs,
+) -> None:
+    current_result = await fresh_read(
+        db,
+        select(Segment)
+        .where(Segment.video_id == video_id)
+        .order_by(Segment.segment_index),
+    )
+    current_segments = list(current_result.scalars().all())
+    expected_ids = [segment.id for segment in inputs.segments]
+    if [segment.id for segment in current_segments] != expected_ids:
+        raise ValueError(
+            f"Stale visual analysis for video {video_id}: the complete segment IDs/order changed"
+        )
+    if [segment.id for segment in segments] != expected_ids:
+        raise ValueError(
+            f"Stale visual analysis for video {video_id}: computed segment IDs/order changed"
+        )
+    current_by_id = {segment.id: segment for segment in current_segments}
+    for original in inputs.segments:
+        current = current_by_id[original.id]
+        if any(
+            getattr(current, field) != getattr(original, field)
+            for field in NATIVE_SEGMENT_INPUT_FIELDS
+        ):
+            raise ValueError(
+                f"Stale visual analysis for segment {original.id}: its semantic input changed"
+            )
+
+    # All subsequent reads remain inside the same BEGIN IMMEDIATE reservation.
+    current_video_result = await db.execute(
+        select(Video).where(Video.id == video_id).execution_options(populate_existing=True)
+    )
+    current_video = current_video_result.scalar_one_or_none()
+    if current_video is None or any(
+        getattr(current_video, field) != getattr(inputs.video, field)
+        for field in NATIVE_VIDEO_INPUT_FIELDS
+    ):
+        raise ValueError(f"Stale visual analysis for video {video_id}: its source input changed")
+
+    current_transcript_result = await db.execute(
+        select(Transcript)
+        .where(Transcript.video_id == video_id)
+        .execution_options(populate_existing=True)
+    )
+    current_transcript = current_transcript_result.scalar_one_or_none()
+    if (current_transcript is None) != (inputs.transcript is None) or (
+        inputs.transcript is not None and any(
+            getattr(current_transcript, field) != getattr(inputs.transcript, field)
+            for field in ("id", "video_id", "words_json")
+        )
+    ):
+        raise ValueError(f"Stale visual analysis for video {video_id}: transcript identity/words changed")
+
+    current_assets = []
+    if current_video.project_id:
+        current_asset_result = await db.execute(
+            select(ProjectAsset)
+            .where(ProjectAsset.project_id == current_video.project_id)
+            .where(ProjectAsset.status != ProjectAssetStatus.ARCHIVED)
+            .execution_options(populate_existing=True)
+        )
+        current_assets = list(current_asset_result.scalars().all())
+    if [asset.id for asset in current_assets] != [asset.id for asset in inputs.assets]:
+        raise ValueError(f"Stale visual analysis for video {video_id}: source asset selection/order changed")
+    for current, original in zip(current_assets, inputs.assets):
+        if any(
+            getattr(current, field) != getattr(original, field)
+            for field in NATIVE_ASSET_INPUT_FIELDS
+        ) or (
+            original.id == inputs.slide_asset_id
+            and _native_asset_page_scope(current) != _native_asset_page_scope(original)
+        ):
+            raise ValueError(f"Stale visual analysis for asset {original.id}: source/page scope changed")
+
+    # Every original source input has been validated before replacing stored state.
+    await db.execute(delete(Scene).where(Scene.video_id == video_id))
+    for scene in scenes:
+        db.add(scene)
+    for computed in segments:
+        current = current_by_id[computed.id]
+        for field in ("has_slide_change", "slide_index", "scene_id"):
+            setattr(current, field, getattr(computed, field))
+    await commit_native(db)
+
+
 # ─────────────────────────────────────────────────────────────────────
 #  Scenario A: PDF Slide Alignment (camera video + uploaded slide deck)
 # ─────────────────────────────────────────────────────────────────────
@@ -172,6 +425,9 @@ async def _run_slide_alignment(
     video: Video,
     db: AsyncSession,
     context: VisualContext,
+    *,
+    snapshot_segments: list[Any] | None = None,
+    snapshot_words: list[dict[str, Any]] | None = None,
 ) -> dict | None:
     """Match transcript segments to PDF slide pages via semantic similarity.
 
@@ -220,22 +476,28 @@ async def _run_slide_alignment(
     logger.info("Agent 4: Extracted %d pages from %s slide deck for video %s", len(pages), ext_label, video_id)
 
     # 3. Load transcript segments and word timestamps ------------------------
-    result = await db.execute(
-        select(Segment)
-        .where(Segment.video_id == video_id)
-        .order_by(Segment.segment_index)
-    )
-    segments = list(result.scalars().all())
+    if snapshot_segments is None:
+        result = await db.execute(
+            select(Segment)
+            .where(Segment.video_id == video_id)
+            .order_by(Segment.segment_index)
+        )
+        segments = list(result.scalars().all())
+    else:
+        segments = snapshot_segments
     for segment in segments:
         segment.has_slide_change = False
         segment.slide_index = None
         segment.scene_id = None
 
-    transcript_result = await db.execute(
-        select(Transcript).where(Transcript.video_id == video_id)
-    )
-    transcript = transcript_result.scalar_one_or_none()
-    timed_words = list(transcript.words_json or []) if transcript else []
+    if snapshot_segments is None:
+        transcript_result = await db.execute(
+            select(Transcript).where(Transcript.video_id == video_id)
+        )
+        transcript = transcript_result.scalar_one_or_none()
+        timed_words = list(transcript.words_json or []) if transcript else []
+    else:
+        timed_words = list(snapshot_words or [])
 
     if not segments:
         logger.info("Agent 4: No transcript segments found for video %s — skipping alignment", video_id)
@@ -320,7 +582,8 @@ async def _run_slide_alignment(
                     segment.scene_id = f"slide_{current_page}"
                     matched_count += 1
 
-            await db.flush()
+            if snapshot_segments is None:
+                await db.flush()
             logger.info(
                 "Agent 4: LLM slide timeline matched %d/%d segments for video %s",
                 matched_count,
@@ -397,7 +660,8 @@ async def _run_slide_alignment(
             segment.scene_id = f"slide_{slide_idx}"
             matched_count += 1
 
-    await db.flush()
+    if snapshot_segments is None:
+        await db.flush()
 
     logger.info(
         "Agent 4: Linear fallback matched %d/%d segments for video %s",
@@ -1490,19 +1754,26 @@ async def _create_scene_records(video: Video, scene_list: list[tuple[Any, Any]],
             thumbnail_path=thumb_path,
             confidence=0.8,
         )
-        db.add(scene)
+        if not settings.is_native_desktop:
+            db.add(scene)
         scenes_created.append(scene)
 
     return scenes_created
 
 
-async def _mark_segments_for_scenes(video_id: str, scenes: list[Scene], db: AsyncSession) -> int:
-    result = await db.execute(
-        select(Segment)
-        .where(Segment.video_id == video_id)
-        .order_by(Segment.segment_index)
-    )
-    segments = list(result.scalars().all())
+async def _mark_segments_for_scenes(
+    video_id: str, scenes: list[Scene], db: AsyncSession,
+    *, snapshot_segments: list[Any] | None = None,
+) -> int:
+    if snapshot_segments is None:
+        result = await db.execute(
+            select(Segment)
+            .where(Segment.video_id == video_id)
+            .order_by(Segment.segment_index)
+        )
+        segments = list(result.scalars().all())
+    else:
+        segments = snapshot_segments
     scene_times = [scene.timestamp for scene in scenes]
     segments_with_changes = 0
 
