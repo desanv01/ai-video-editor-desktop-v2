@@ -28,6 +28,10 @@ assert.ok(
 
 const rendered = await readFile(renderedPath, "utf8");
 const code = rendered.split(/\r?\n/).filter(line => !/^\s*;/.test(line)).join("\n");
+assert.doesNotMatch(code, /\$\{?PROGRAMDATA\b/i, "rendered NSIS must not contain the undefined $PROGRAMDATA token");
+assert.match(code, /!define AIVEINSTALLERDIR "\$COMMONPROGRAMDATA\\AI Video Editor\\Installer"/);
+assert.match(code, /Function ValidateInstallerPerimeter[\s\S]*?StrCmp \$0 "\$COMMONPROGRAMDATA" 0 installer_perimeter_failed/);
+assert.match(code, /Function un\.ValidateInstallerPerimeter[\s\S]*?StrCmp \$0 "\$COMMONPROGRAMDATA" 0 un_installer_perimeter_failed/);
 
 function functionBody(name) {
   const start = code.indexOf(`Function ${name}`);
@@ -69,5 +73,7 @@ const rollback = functionBody("RollbackInstallTransaction");
 assert.match(rollback, /Call SetSafeWorkingDir[\s\S]*?Rename "\$\{AIVEBACKUPDIR\}" "\$\{AIVEINSTALLDIR\}"/);
 assert.match(code, /Section Install[\s\S]*?Call BeginInstallTransaction[\s\S]*?SetOutPath "\$\{AIVESTAGINGDIR\}"[\s\S]*?File /);
 assert.match(code, /Function \.onInstFailed[\s\S]*?InstallStarted = 1[\s\S]*?InstallCommitted = 0[\s\S]*?Call RollbackInstallTransaction/);
+assert.match(functionBody(".onInstFailed"), /JournalOk = 1[\s\S]*?Call RollbackInstallTransaction/);
+assert.match(functionBody("WriteTransactionJournal"), /StrCpy \$JournalStep "atomic-publish"[\s\S]*?StrCpy \$JournalStep "final-readback"[\s\S]*?FileRead \$9 \$R3/);
 
 console.log(JSON.stringify({ status: "pass", schemaVersion: "desktop.rendered-nsis-verification.v1", renderedPath }));
