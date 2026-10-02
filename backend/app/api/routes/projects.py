@@ -119,6 +119,10 @@ MATERIAL_EXTENSIONS = {
 }
 
 VIDEO_ARTIFACT_SUFFIXES = (
+    "original_transcript.txt",
+    "original_transcript_timestamped.txt",
+    "original_transcript.json",
+    "original_transcript_segments.csv",
     "subtitles.srt",
     "subtitles.vtt",
     "chapters.txt",

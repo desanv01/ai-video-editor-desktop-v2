@@ -88,3 +88,6 @@ jobs:
         run: python scripts/rebuild/test_visual_transactions.py
       - name: Run native planning, teacher race and caller acceptance checks
         run: python scripts/rebuild/test_plan_transactions.py
+
+      - name: Run native original transcript API acceptance checks
+        run: python scripts/rebuild/test_transcript_api.py

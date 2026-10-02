@@ -9,11 +9,13 @@ import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable
+from services.transcript_exports import TRANSCRIPT_EXPORT_FORMATS
 
 
 EXPORT_ARTIFACT_SCHEMA_VERSION = "phase9.evaluation-artifacts.v1"
 
 ARTIFACT_LABELS = {
+    **{kind: label for kind, _suffix, _media_type, label in TRANSCRIPT_EXPORT_FORMATS.values()},
     "edited_video": "Edited video",
     "audio_only": "Audio-only export",
     "subtitles_srt": "Captions (SRT)",

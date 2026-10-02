@@ -64,6 +64,7 @@ from services.evaluation_metrics import build_evaluation_metrics
 from services.layout_model import LayoutMode
 from services.lecture_structure import build_structure_references_from_assets
 from services.transcript_edit_decisions import build_synced_timeline_plan
+from services.transcript_exports import write_transcript_artifacts
 from services.export_presets import get_export_preset
 from services.native_semantic_compositor import render_semantic_plan_with_ffmpeg
 from services.revideo_renderer import RevideoUnavailable, render_semantic_plan_with_revideo
@@ -957,6 +958,7 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
         evidence_index_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_generated_evidence_index.json")
         artifact_paths = {
             "edited_video": output_path,
+            **write_transcript_artifacts(video, transcript, settings.VIDEO_STORAGE_PATH),
             "subtitles_srt": srt_path if sidecar_enabled else None,
             "subtitles_vtt": vtt_path if sidecar_enabled else None,
             "chapters": chapters_path,
@@ -2041,6 +2043,7 @@ async def _render_audio_only_export(
         evidence_index_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_generated_evidence_index.json")
         artifact_paths = {
             "audio_only": output_path,
+            **write_transcript_artifacts(video, transcript, settings.VIDEO_STORAGE_PATH),
             "transcript_srt": srt_path,
             "transcript_vtt": vtt_path,
             "chapters": chapters_path,
