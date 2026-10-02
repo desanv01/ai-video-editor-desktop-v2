@@ -1,0 +1,2 @@
+lancedb==0.39.0
+pyarrow==24.0.0
