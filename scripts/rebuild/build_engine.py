@@ -127,6 +127,18 @@ storage_data_excludes = [
     'conftest.py', '**/conftest.py', 'conftest.pyc', '**/conftest.pyc',
 ]
 
+# Python 3.11 pkg_resources -> jaraco.context needs this vendored backport.
+# Initialize setuptools' installed vendor setup for validation; keep the public
+# hidden import so PyInstaller's pre-safe-import hook supplies its vendor alias.
+required_runtime_imports = []
+if sys.version_info < (3, 12):
+    try:
+        importlib.import_module('setuptools')
+        importlib.import_module('backports.tarfile')
+    except ImportError as exc:
+        raise RuntimeError('Required setuptools runtime import unavailable: backports.tarfile') from exc
+    required_runtime_imports.append('backports.tarfile')
+
 # Required native storage packages must never degrade into an empty collection.
 required_datas = []
 required_binaries = []
@@ -197,6 +209,7 @@ hiddenimports = [
     'rag.vector_store',
 ]
 hiddenimports += required_imports
+hiddenimports += required_runtime_imports
 for package_name in ('api', 'services', 'providers', 'agents', 'models', 'rag', 'desktop_native'):
     hiddenimports += collect_submodules(package_name, on_error='raise')
 hiddenimports += safe_submodules('asyncpg')
