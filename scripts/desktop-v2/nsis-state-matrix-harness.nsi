@@ -26,15 +26,26 @@ Var PriorArp
 Var PriorCommitted
 Var PriorDesktop
 Var PriorStartMenu
+Var Mutex
+Var WindowsError
+
+Function ReleaseMutex
+  StrCmp $Mutex 0 mutex_released
+    StrCpy $0 $Mutex
+    System::Call 'kernel32::CloseHandle(p r0) i .r1'
+    StrCpy $Mutex 0
+  mutex_released:
+FunctionEnd
 
 Function WriteResult
   FileOpen $0 "$Result" w
-  FileWrite $0 "case=$Case$\r$\nstate=$State$\r$\ncode=$Code$\r$\noutdir=$OUTDIR$\r$\n"
+  FileWrite $0 "case=$Case$\r$\nstate=$State$\r$\ncode=$Code$\r$\nwin32error=$WindowsError$\r$\noutdir=$OUTDIR$\r$\n"
   FileClose $0
 FunctionEnd
 
 Function Fail
   Call WriteResult
+  Call ReleaseMutex
   SetErrorLevel $Code
   Quit
 FunctionEnd
@@ -292,6 +303,8 @@ Function Rollback
 FunctionEnd
 
 Section
+  StrCpy $Mutex 0
+  StrCpy $WindowsError 0
   ${GetOptions} $CMDLINE "/AIVE_TEST_ROOT=" $Root
   ${GetOptions} $CMDLINE "/AIVE_TEST_BOUNDARY=" $Boundary
   ${GetOptions} $CMDLINE "/CASE=" $Case
@@ -306,13 +319,24 @@ Section
   StrCpy $RegKey "Software\AIVE Installer State Matrix\$RunId"
   StrCpy $CredKey "Software\AIVE Installer State Matrix Credentials\$RunId"
   Call SafeCwd
-  System::Call 'kernel32::CreateMutexW(p0, i0, w "Local\AIVE-RC6-StateMatrix-$RunId") p .rMutex ?e'
-  Pop $0
-  StrCmp $0 183 concurrent_failed
+  StrCmp $Case "mutex-create-fail" 0 +3
+    System::Call 'kernel32::CreateMutexW(p0, i0, w "Local\AIVE-StateMatrix\Invalid") p .r0 ?e'
+    Goto mutex_created
+  System::Call 'kernel32::CreateMutexW(p0, i0, w "Local\AIVE-RC6-StateMatrix-$RunId") p .r0 ?e'
+  mutex_created:
+  StrCpy $Mutex $0
+  Pop $WindowsError
+  StrCmp $Mutex 0 mutex_create_failed
+  StrCmp $WindowsError 183 concurrent_failed
   StrCmp $Case "hold-mutex" 0 after_hold
-    Sleep 3000
     StrCpy $State "mutex-held"
     Call WriteResult
+    StrCpy $1 0
+    hold_wait:
+      IfFileExists "$Root\release-mutex" done
+      Sleep 50
+      IntOp $1 $1 + 1
+      IntCmp $1 600 done hold_wait done
     Goto done
   after_hold:
   StrCmp $Case "classify-only" 0 after_classify
@@ -462,6 +486,10 @@ Section
     StrCpy $State "concurrent-refused"
     StrCpy $Code 2113
     Call Fail
+  mutex_create_failed:
+    StrCpy $State "mutex-create-failed"
+    StrCpy $Code 2114
+    Call Fail
   conflict_failed:
     StrCpy $State "conflict-preserved"
     StrCpy $Code 2112
@@ -477,5 +505,5 @@ Section
     Call Rollback
     Call Fail
   done:
-  System::Call 'kernel32::CloseHandle(p rMutex)'
+  Call ReleaseMutex
 SectionEnd

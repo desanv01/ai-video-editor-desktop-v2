@@ -1,4 +1,4 @@
-; AI Video Editor Desktop V2 RC.6 pinned NSIS template.
+; AI Video Editor Desktop V2 RC.7 pinned NSIS template.
 ; Derived from @tauri-apps/cli 2.11.2 / tauri-v2.11.2 installer.nsi.
 ; Intentional policy changes: fixed per-machine path, no directory/start-menu
 ; chooser, one shortcut owner, verified shortcuts before ARP commit, and a
@@ -90,6 +90,7 @@ ManifestDPIAwareness PerMonitorV2
 !define AIVE_E_INVARIANT 2111
 !define AIVE_E_CONFLICT 2112
 !define AIVE_E_CONCURRENT 2113
+!define AIVE_E_MUTEX_CREATE 2114
 
 Var PassiveMode
 Var UpdateMode
@@ -228,7 +229,7 @@ FunctionEnd
 Function SetCanonicalInstallDir
   ${IfNot} ${RunningX64}
     SetErrorLevel ${AIVE_E_INVARIANT}
-    MessageBox MB_ICONSTOP|MB_OK "AI Video Editor Desktop V2 RC.6 requires 64-bit Windows."
+    MessageBox MB_ICONSTOP|MB_OK "AI Video Editor Desktop V2 RC.7 requires 64-bit Windows."
     Abort
   ${EndIf}
   StrCpy $INSTDIR "${AIVEINSTALLDIR}"
@@ -397,8 +398,11 @@ Function FailInstall
   Call AppendSetupLog
   ; Recovery must retain the durable semantic phase that selected its retry
   ; path. FailureStage is diagnostic and must not replace uninstall/commit
-  ; phases when a recovery attempt aborts.
+  ; phases when a recovery attempt aborts. Mutex failures occur before the
+  ; transaction begins, so they must not write a journal either.
   ${If} $RecoveryActive != 1
+  ${AndIf} $FailureCode != ${AIVE_E_CONCURRENT}
+  ${AndIf} $FailureCode != ${AIVE_E_MUTEX_CREATE}
     Call WriteTransactionJournal
   ${EndIf}
   SetErrorLevel $FailureCode
@@ -409,19 +413,32 @@ Function FailInstall
 FunctionEnd
 
 Function AcquireInstallerMutex
-  System::Call 'kernel32::CreateMutexW(p0, i0, w "Global\AI-Video-Editor-Desktop-V2-RC6-Setup") p .rMutexHandle ?e'
+  StrCpy $MutexHandle 0
+  ; System outputs must use numeric registers. Preserve the returned handle
+  ; before another call can overwrite $0.
+  System::Call 'kernel32::CreateMutexW(p0, i0, w "Global\AI-Video-Editor-Desktop-V2-RC6-Setup") p .r0 ?e'
+  StrCpy $MutexHandle $0
   Pop $0
   ${If} $MutexHandle = 0
-    StrCpy $FailureCode ${AIVE_E_CONCURRENT}
-    StrCpy $FailureStage "mutex"
-    StrCpy $FailureMessage "Setup could not acquire its installation mutex."
+    StrCpy $FailureCode ${AIVE_E_MUTEX_CREATE}
+    StrCpy $FailureStage "mutex-create"
+    StrCpy $FailureMessage "Setup could not create its installation mutex (Windows error $0)."
     Call FailInstall
   ${EndIf}
   ${If} $0 = 183
+    Call ReleaseInstallerMutex
     StrCpy $FailureCode ${AIVE_E_CONCURRENT}
     StrCpy $FailureStage "mutex"
     StrCpy $FailureMessage "Another setup or uninstall is already running. Wait for it to finish, then retry."
     Call FailInstall
+  ${EndIf}
+FunctionEnd
+
+Function ReleaseInstallerMutex
+  ${If} $MutexHandle <> 0
+    StrCpy $0 $MutexHandle
+    System::Call 'kernel32::CloseHandle(p r0) i .r1'
+    StrCpy $MutexHandle 0
   ${EndIf}
 FunctionEnd
 
@@ -498,6 +515,9 @@ Function HasCoherentPayload
   FileRead $2 $3
   FileClose $2
   StrCmp $3 '{"schemaVersion":"desktop.install-identity.v1","productName":"AI Video Editor Desktop V2","identifier":"${AIVEIDENTIFIER}","packageIdentity":"${AIVEPACKAGEID}","version":"${VERSION}","channel":"beta","canonicalPath":"%ProgramFiles%/AI Video Editor Desktop V2/Shell","installCommitted":true}' coherent_payload_valid
+  ; RC.6 used the same transaction namespace and package identity. Accept its
+  ; exact committed identity so RC.7 can upgrade or recover it safely.
+  StrCmp $3 '{"schemaVersion":"desktop.install-identity.v1","productName":"AI Video Editor Desktop V2","identifier":"${AIVEIDENTIFIER}","packageIdentity":"${AIVEPACKAGEID}","version":"2.0.0-rc.6","channel":"beta","canonicalPath":"%ProgramFiles%/AI Video Editor Desktop V2/Shell","installCommitted":true}' coherent_payload_valid
   ; Exact legacy RC.6 identity emitted by the predecessor this recovery build
   ; upgrades. No other filename-only or arbitrary JSON identity is accepted.
   StrCmp $3 '{"productName":"AI Video Editor Desktop V2","identifier":"com.fyp.ai-video-editor.desktop-v2","version":"2.0.0-rc.6","channel":"beta","installCommitted":true}' 0 coherent_payload_done
@@ -1282,7 +1302,7 @@ Section WebView2
     webview2_failed:
       Delete "$TEMP\MicrosoftEdgeWebview2Setup.exe"
       Delete "$TEMP\MicrosoftEdgeWebView2RuntimeInstaller.exe"
-      Abort "WebView2 installation failed before the RC.6 application transaction began."
+      Abort "WebView2 installation failed before the RC.7 application transaction began."
     webview2_done:
   ${EndIf}
 SectionEnd
@@ -1579,7 +1599,7 @@ Section Install
   payload_copy_failed:
     StrCpy $FailureCode ${AIVE_E_INVARIANT}
     StrCpy $FailureStage "payload"
-    StrCpy $FailureMessage "Failed to extract a required RC.6 payload file into staging."
+    StrCpy $FailureMessage "Failed to extract a required RC.7 payload file into staging."
     Call FailInstall
   uninstaller_failed:
     StrCpy $FailureCode ${AIVE_E_IDENTITY}
@@ -1754,7 +1774,7 @@ Function RestoreRegistrySnapshot
 FunctionEnd
 
 Function RollbackInstallTransaction
-  DetailPrint "Rolling back the bounded RC.6 install transaction."
+  DetailPrint "Rolling back the bounded RC.7 install transaction."
   StrCpy $FailureCode 0
   StrCpy $FailureStage "rollback-in-progress"
   StrCpy $FailureMessage "transaction rollback in progress"
@@ -1858,18 +1878,14 @@ Function .onInstFailed
   ${AndIf} $JournalOk = 1
     Call RollbackInstallTransaction
   ${EndIf}
-  ${If} $MutexHandle <> 0
-    System::Call 'kernel32::CloseHandle(p rMutexHandle)'
-  ${EndIf}
+  Call ReleaseInstallerMutex
 FunctionEnd
 
 Function .onInstSuccess
   ${If} $InstallCommitted <> 1
-    MessageBox MB_ICONSTOP|MB_OK "RC.6 Setup ended without a committed identity marker. Run Setup again to repair."
+    MessageBox MB_ICONSTOP|MB_OK "RC.7 Setup ended without a committed identity marker. Run Setup again to repair."
     SetErrorLevel ${AIVE_E_INVARIANT}
-    ${If} $MutexHandle <> 0
-      System::Call 'kernel32::CloseHandle(p rMutexHandle)'
-    ${EndIf}
+    Call ReleaseInstallerMutex
     Return
   ${EndIf}
   ${If} $DeferredCleanup = 1
@@ -1883,9 +1899,7 @@ Function .onInstSuccess
       nsis_tauri_utils::RunAsUser "$INSTDIR\${MAINBINARYNAME}.exe" ""
     ${EndIf}
   ${EndIf}
-  ${If} $MutexHandle <> 0
-    System::Call 'kernel32::CloseHandle(p rMutexHandle)'
-  ${EndIf}
+  Call ReleaseInstallerMutex
 FunctionEnd
 
 Function RunMainBinary
@@ -2062,23 +2076,35 @@ Function un.Fail
   ${IfNot} ${Silent}
     MessageBox MB_ICONSTOP|MB_OK "$FailureMessage$\r$\n$\r$\nUninstall code: $FailureCode ($FailureStage)$\r$\nLog: ${AIVEINSTALLERDIR}\uninstall-rc6.log"
   ${EndIf}
+  Call un.ReleaseInstallerMutex
   Abort
 FunctionEnd
 
 Function un.AcquireInstallerMutex
-  System::Call 'kernel32::CreateMutexW(p0, i0, w "Global\AI-Video-Editor-Desktop-V2-RC6-Setup") p .rMutexHandle ?e'
+  StrCpy $MutexHandle 0
+  System::Call 'kernel32::CreateMutexW(p0, i0, w "Global\AI-Video-Editor-Desktop-V2-RC6-Setup") p .r0 ?e'
+  StrCpy $MutexHandle $0
   Pop $0
   ${If} $MutexHandle = 0
-    StrCpy $FailureCode ${AIVE_E_CONCURRENT}
-    StrCpy $FailureStage "mutex"
-    StrCpy $FailureMessage "Uninstall could not acquire the product mutex."
+    StrCpy $FailureCode ${AIVE_E_MUTEX_CREATE}
+    StrCpy $FailureStage "mutex-create"
+    StrCpy $FailureMessage "Uninstall could not create the product mutex (Windows error $0)."
     Call un.Fail
   ${EndIf}
   ${If} $0 = 183
+    Call un.ReleaseInstallerMutex
     StrCpy $FailureCode ${AIVE_E_CONCURRENT}
     StrCpy $FailureStage "mutex"
     StrCpy $FailureMessage "Another setup or uninstall is already running. Wait for it to finish, then retry."
     Call un.Fail
+  ${EndIf}
+FunctionEnd
+
+Function un.ReleaseInstallerMutex
+  ${If} $MutexHandle <> 0
+    StrCpy $0 $MutexHandle
+    System::Call 'kernel32::CloseHandle(p r0) i .r1'
+    StrCpy $MutexHandle 0
   ${EndIf}
 FunctionEnd
 
@@ -2219,7 +2245,7 @@ Section Uninstall
   ; Report locked Program Files leftovers and remove the parent only when empty.
   IfFileExists "$UninstallTombstone\*.*" program_files_leftover shell_empty
   program_files_leftover:
-    DetailPrint "RC.6 Program Files cleanup is deferred until restart: $UninstallTombstone"
+    DetailPrint "RC.7 Program Files cleanup is deferred until restart: $UninstallTombstone"
     SetRebootFlag true
     Goto program_files_report_done
   shell_empty:
@@ -2248,9 +2274,7 @@ Section Uninstall
     StrCpy $FailureMessage "Uninstall could not move the verified live shell to its unique cleanup path. Close the app, restart Windows if needed, and retry."
     Call un.Fail
   uninstall_done:
-  ${If} $MutexHandle <> 0
-    System::Call 'kernel32::CloseHandle(p rMutexHandle)'
-  ${EndIf}
+  Call un.ReleaseInstallerMutex
 SectionEnd
 
 Function SkipIfPassive

@@ -54,7 +54,7 @@ jobs:
       - name: Build React and TypeScript frontend
         run: npm run build --prefix desktop
 
-      - name: Build unsigned RC6 NSIS source for installer checks
+      - name: Build unsigned RC7 NSIS source for installer checks
         run: npm run build:nsis:checked --prefix desktop
 
       - name: Run desktop contract and installer checks

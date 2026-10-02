@@ -229,13 +229,28 @@ SectionEnd
   $firstResult = Join-Path $concurrentRoot 'first.txt'; $secondResult = Join-Path $concurrentRoot 'second.txt'
   $first = Start-Process -FilePath $script:harnessExe -ArgumentList @("/AIVE_TEST_ROOT=$concurrentRoot","/AIVE_TEST_BOUNDARY=$script:tempBoundary",'/CASE=hold-mutex',"/RUNID=$concurrentId","/RESULT=$firstResult") -PassThru -WindowStyle Hidden
   try {
-    Start-Sleep -Milliseconds 400
+    $readyUntil = [DateTime]::UtcNow.AddSeconds(10)
+    while (-not (Test-Path -LiteralPath $firstResult -PathType Leaf) -and -not $first.HasExited -and [DateTime]::UtcNow -lt $readyUntil) {
+      Start-Sleep -Milliseconds 50
+    }
+    Assert-True (Test-Path -LiteralPath $firstResult -PathType Leaf) 'Mutex holder did not signal readiness.'
+    Assert-Equal (Read-Result $firstResult).state mutex-held 'Mutex holder did not confirm a live handle.'
+    Assert-True (-not $first.HasExited) 'Mutex holder exited before the contender started.'
     $secondExit = Start-Harness $concurrentRoot classify-only $concurrentId $secondResult
     Assert-Equal $secondExit 2113 'Concurrent invocation was not refused'
     Assert-Equal (Read-Result $secondResult).state concurrent-refused 'Concurrent state mismatch'
+    Assert-Equal (Read-Result $secondResult).win32error 183 'Concurrent invocation did not report ERROR_ALREADY_EXISTS'
+    Set-Content -LiteralPath (Join-Path $concurrentRoot 'release-mutex') -Value release -NoNewline
     $first.WaitForExit(); Assert-Equal $first.ExitCode 0 'Mutex holder failed'
     $caseResults.Add([pscustomobject]@{name='concurrent';case='mutex';exitCode=2113;state='concurrent-refused'})
   } finally { if (-not $first.HasExited) { $first.Kill(); $first.WaitForExit() }; $first.Dispose() }
+  $thirdResult = Join-Path $concurrentRoot 'third.txt'
+  Assert-Equal (Start-Harness $concurrentRoot classify-only $concurrentId $thirdResult) 0 'Mutex was not released after holder exit'
+  Assert-Equal (Read-Result $thirdResult).state pristine 'Post-release acquisition did not proceed'
+  $caseResults.Add([pscustomobject]@{name='mutex-after-release';case='mutex';exitCode=0;state='pristine'})
+  Invoke-Harness mutex-create-failure mutex-create-fail {} 2114 mutex-create-failed {
+    param($r,$p,$id,$result) Assert-True ([int]$result.win32error -ne 0 -and [int]$result.win32error -ne 183) 'Null-handle path did not retain the Windows error.'
+  }
 
   $seedUninstall = {
     param($r,$p,$id)

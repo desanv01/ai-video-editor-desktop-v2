@@ -14,7 +14,7 @@
       "properties": {
         "name": { "const": "AI Video Editor Desktop V2" },
         "identifier": { "const": "com.fyp.ai-video-editor.desktop-v2" },
-        "version": { "const": "2.0.0-rc.6" },
+        "version": { "const": "2.0.0-rc.7" },
         "channel": { "const": "beta" }
       }
     },
