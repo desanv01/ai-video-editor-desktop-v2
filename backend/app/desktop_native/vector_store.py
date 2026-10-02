@@ -1,24 +1,19 @@
-"""Persistent embedded vector-store adapters for the native profile.
-
-Qdrant local/path mode is preferred when the installed qdrant-client supports
-it.  The SQLite cosine fallback is deliberately capability-labelled as
-degraded and reports that it is not an external-Qdrant equivalent.
-"""
-
+"""Native exact cosine retrieval with SQLite-published LanceDB generations."""
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
-import sqlite3
-from contextlib import contextmanager
+import struct
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, Iterable
+from typing import Any
 
+from desktop_native.index_journal import IndexJournal
 
-@dataclass(frozen=True)
+@dataclass
 class VectorCapability:
     backend: str
     state: str
@@ -26,13 +21,8 @@ class VectorCapability:
     remediation_codes: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
-        return {
-            "backend": self.backend,
-            "state": self.state,
-            "detail": self.detail,
-            "remediationCodes": list(self.remediation_codes),
-        }
-
+        return {'backend': self.backend, 'state': self.state, 'detail': self.detail,
+                'remediationCodes': list(self.remediation_codes)}
 
 @dataclass(frozen=True)
 class LocalScoredPoint:
@@ -41,275 +31,233 @@ class LocalScoredPoint:
     payload: dict[str, Any]
 
 
-def _filter_pairs(selector: Any) -> list[tuple[str, Any]]:
-    filter_value = getattr(selector, "filter", selector)
-    conditions = getattr(filter_value, "must", None) or []
-    pairs: list[tuple[str, Any]] = []
-    for condition in conditions:
-        key = getattr(condition, "key", None)
-        match = getattr(condition, "match", None)
-        value = getattr(match, "value", None)
-        if key is not None:
-            pairs.append((str(key), value))
-    return pairs
+def sql_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
 
 
-class AsyncLocalQdrantAdapter:
-    """Async facade over qdrant-client's persistent local mode."""
-
-    def __init__(self, client: Any):
-        self._client = client
-
-    async def get_collections(self):
-        return await asyncio.to_thread(self._client.get_collections)
-
-    async def create_collection(self, **kwargs):
-        return await asyncio.to_thread(lambda: self._client.create_collection(**kwargs))
-
-    async def get_collection(self, collection_name: str):
-        return await asyncio.to_thread(lambda: self._client.get_collection(collection_name))
-
-    async def delete_collection(self, collection_name: str):
-        return await asyncio.to_thread(lambda: self._client.delete_collection(collection_name))
-
-    async def upsert(self, **kwargs):
-        return await asyncio.to_thread(lambda: self._client.upsert(**kwargs))
-
-    async def search(self, **kwargs):
-        if hasattr(self._client, "search"):
-            return await asyncio.to_thread(lambda: self._client.search(**kwargs))
-        query = kwargs.pop("query_vector")
-        return await asyncio.to_thread(
-            lambda: self._client.query_points(query=query, **kwargs).points
-        )
-
-    async def delete(self, **kwargs):
-        return await asyncio.to_thread(lambda: self._client.delete(**kwargs))
-
-
-class SQLiteVectorClient:
-    """Small persistent cosine-search fallback with an explicit capability."""
-
-    def __init__(self, root: Path, dimensions: int):
-        self.root = root
-        self.database_path = root / "vectors.sqlite3"
-        self.dimensions = dimensions
-        self.root.mkdir(parents=True, exist_ok=True)
-        with self._session() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS vector_collections (
-                    name TEXT PRIMARY KEY,
-                    dimensions INTEGER NOT NULL,
-                    distance TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS vector_points (
-                    collection TEXT NOT NULL REFERENCES vector_collections(name) ON DELETE CASCADE,
-                    point_id TEXT NOT NULL,
-                    vector_json TEXT NOT NULL,
-                    payload_json TEXT NOT NULL DEFAULT '{}',
-                    PRIMARY KEY(collection, point_id)
-                );
-                CREATE INDEX IF NOT EXISTS ix_vector_points_collection
-                    ON vector_points(collection);
-                """
-            )
-
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA synchronous=NORMAL")
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA busy_timeout=30000")
-        return connection
-
-    @contextmanager
-    def _session(self):  # type: ignore[no-untyped-def]
-        connection = self._connect()
-        try:
-            yield connection
-        finally:
-            connection.close()
-
-    async def get_collections(self):
-        def read():
-            with self._session() as connection:
-                rows = connection.execute(
-                    "SELECT name FROM vector_collections ORDER BY name"
-                ).fetchall()
-            return SimpleNamespace(collections=[SimpleNamespace(name=row["name"]) for row in rows])
-
-        return await asyncio.to_thread(read)
-
-    async def create_collection(self, *, collection_name: str, vectors_config: Any, **_kwargs):
-        dimensions = int(getattr(vectors_config, "size", self.dimensions))
-        distance = str(getattr(vectors_config, "distance", "Cosine"))
-
-        def create():
-            with self._session() as connection:
-                connection.execute(
-                    "INSERT OR IGNORE INTO vector_collections (name, dimensions, distance) "
-                    "VALUES (?, ?, ?)",
-                    (collection_name, dimensions, distance),
-                )
-                connection.commit()
-
-        await asyncio.to_thread(create)
-        return True
-
-    async def get_collection(self, collection_name: str):
-        def read():
-            with self._session() as connection:
-                collection = connection.execute(
-                    "SELECT dimensions FROM vector_collections WHERE name = ?",
-                    (collection_name,),
-                ).fetchone()
-                if collection is None:
-                    raise KeyError(collection_name)
-                count = connection.execute(
-                    "SELECT COUNT(*) AS count FROM vector_points WHERE collection = ?",
-                    (collection_name,),
-                ).fetchone()["count"]
-            return SimpleNamespace(
-                points_count=count,
-                vectors_count=count,
-                status=SimpleNamespace(value="green"),
-            )
-
-        return await asyncio.to_thread(read)
-
-    async def delete_collection(self, collection_name: str):
-        def delete():
-            with self._session() as connection:
-                connection.execute("DELETE FROM vector_collections WHERE name = ?", (collection_name,))
-                connection.commit()
-
-        await asyncio.to_thread(delete)
-        return True
-
-    async def upsert(self, *, collection_name: str, points: Iterable[Any], **_kwargs):
-        point_rows = []
-        for point in points:
-            point_id = str(getattr(point, "id", ""))
-            vector = list(getattr(point, "vector", []) or [])
-            payload = dict(getattr(point, "payload", {}) or {})
-            point_rows.append((collection_name, point_id, json.dumps(vector), json.dumps(payload)))
-
-        def write():
-            with self._session() as connection:
-                connection.executemany(
-                    "INSERT OR REPLACE INTO vector_points "
-                    "(collection, point_id, vector_json, payload_json) VALUES (?, ?, ?, ?)",
-                    point_rows,
-                )
-                connection.commit()
-
-        await asyncio.to_thread(write)
-        return True
-
-    async def search(
-        self,
-        *,
-        collection_name: str,
-        query_vector: list[float],
-        query_filter: Any = None,
-        limit: int = 5,
-        score_threshold: float | None = None,
-        **_kwargs,
-    ):
-        pairs = _filter_pairs(query_filter)
-
-        def read():
-            with self._session() as connection:
-                rows = connection.execute(
-                    "SELECT point_id, vector_json, payload_json FROM vector_points "
-                    "WHERE collection = ?",
-                    (collection_name,),
-                ).fetchall()
-            scored: list[LocalScoredPoint] = []
-            for row in rows:
-                payload = json.loads(row["payload_json"] or "{}")
-                if any(payload.get(key) != value for key, value in pairs):
-                    continue
-                vector = json.loads(row["vector_json"] or "[]")
-                score = _cosine_similarity(query_vector, vector)
-                if score_threshold is not None and score < score_threshold:
-                    continue
-                scored.append(LocalScoredPoint(row["point_id"], score, payload))
-            scored.sort(key=lambda item: item.score, reverse=True)
-            return scored[: max(1, min(int(limit), 500))]
-
-        return await asyncio.to_thread(read)
-
-    async def delete(self, *, collection_name: str, points_selector: Any = None, **_kwargs):
-        pairs = _filter_pairs(points_selector)
-
-        def delete():
-            with self._session() as connection:
-                rows = connection.execute(
-                    "SELECT point_id, payload_json FROM vector_points WHERE collection = ?",
-                    (collection_name,),
-                ).fetchall()
-                ids = [
-                    row["point_id"]
-                    for row in rows
-                    if all(json.loads(row["payload_json"] or "{}").get(key) == value for key, value in pairs)
-                ]
-                connection.executemany(
-                    "DELETE FROM vector_points WHERE collection = ? AND point_id = ?",
-                    [(collection_name, point_id) for point_id in ids],
-                )
-                connection.commit()
-
-        await asyncio.to_thread(delete)
-        return True
-
-
-def _cosine_similarity(left: list[float], right: list[float]) -> float:
-    if not left or not right or len(left) != len(right):
-        return 0.0
-    dot = sum(float(a) * float(b) for a, b in zip(left, right))
-    left_norm = math.sqrt(sum(float(a) * float(a) for a in left))
-    right_norm = math.sqrt(sum(float(b) * float(b) for b in right))
-    if left_norm == 0 or right_norm == 0:
-        return 0.0
-    return dot / (left_norm * right_norm)
-
-
-def create_local_vector_client(
-    root: str | Path,
-    *,
-    dimensions: int,
-) -> tuple[Any, VectorCapability]:
-    path = Path(root).resolve(strict=False)
-    path.mkdir(parents=True, exist_ok=True)
+def validate_vector(vector, dimensions: int) -> list[float]:
+    if len(vector) != dimensions:
+        raise ValueError(f'Embedding dimension mismatch: expected {dimensions}, got {len(vector)}; reindex required')
+    result = [float(value) for value in vector]
+    if not all(math.isfinite(value) for value in result) or not any(result):
+        raise ValueError('Embedding must contain finite values and have nonzero norm')
+    # Lance stores float32: reject values that overflow or vanish at that boundary.
     try:
-        from qdrant_client import QdrantClient
+        stored = [struct.unpack('f', struct.pack('f', value))[0] for value in result]
+    except (OverflowError, struct.error) as exc:
+        raise ValueError('Embedding cannot be represented as float32') from exc
+    if not all(math.isfinite(value) for value in stored) or not any(stored):
+        raise ValueError('Embedding must have finite nonzero float32 norm')
+    return result
 
-        client = QdrantClient(path=str(path))
-        # Force local-mode initialization now; no host/port is ever passed.
-        client.get_collections()
-        return (
-            AsyncLocalQdrantAdapter(client),
-            VectorCapability(
-                backend="qdrant-local",
-                state="available",
-                detail=f"Persistent Qdrant local/path mode at {path}; no external server configured.",
-            ),
-        )
-    except Exception as exc:  # pragma: no cover - depends on installed qdrant stack
-        fallback = SQLiteVectorClient(path, dimensions)
-        return (
-            fallback,
-            VectorCapability(
-                backend="sqlite-cosine-fallback",
-                state="degraded",
-                detail=(
-                    "Qdrant local/path mode was unavailable; using the explicit SQLite cosine "
-                    f"fallback at {fallback.database_path}. This is not an external-Qdrant equivalent. "
-                    f"Probe detail: {exc.__class__.__name__}: {exc}"
-                ),
-                remediation_codes=("VECTOR_STORE_UNAVAILABLE",),
-            ),
-        )
+
+class LanceVectorStore:
+    def __init__(self, root: str | Path, *, database_path: str | Path, collection: str, dimensions: int):
+        self.root = Path(root).resolve(strict=False)
+        self.dimensions = int(dimensions)
+        if self.dimensions <= 0:
+            raise ValueError('Embedding dimensions must be positive')
+        self.journal = IndexJournal(Path(database_path).resolve(strict=False), collection)
+        self._table_name = 'aive_' + hashlib.sha256(collection.encode()).hexdigest()[:24]
+        self._lock = asyncio.Lock()
+        self._connection = None
+        self._table = None
+        self.capability = VectorCapability('lancedb', 'unavailable', 'LanceDB has not been opened/recovered', ('VECTOR_STORE_UNAVAILABLE',))
+
+    async def _local(self, function, *args):
+        # Cancellation must not release the adapter lock while a local mutation
+        # continues in its executor thread. Journal recovery handles cancellation
+        # between these bounded local steps.
+        task = asyncio.create_task(asyncio.to_thread(function,*args))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
+            raise
+
+    def _failed(self, exc):
+        self.capability.state = 'unavailable'
+        self.capability.detail = f'LanceDB operation failed: {type(exc).__name__}: {exc}'
+        self.capability.remediation_codes = ('VECTOR_STORE_UNAVAILABLE',)
+
+    def _open(self):
+        if self._table is not None:
+            return
+        import lancedb
+        import pyarrow as pa
+        self.root.mkdir(parents=True, exist_ok=True)
+        self._connection = lancedb.connect(str(self.root))
+        schema = pa.schema([
+            pa.field('vector', pa.list_(pa.float32(), self.dimensions)),
+            *[pa.field(name, pa.string()) for name in ('chunk_id','row_id','source_type','source_id','config','generation','payload_json')],
+        ])
+        if self._table_name not in self._connection.table_names() and self.journal.published_counts():
+            raise RuntimeError('Published LanceDB table is missing; explicit recovery/reindex required')
+        self._table = self._connection.create_table(self._table_name, schema=schema, exist_ok=True)
+        if self._table.schema != schema:
+            self._table = None
+            if any(op['kind']=='reset' for op in self.journal.pending()):
+                self._connection.drop_table(self._table_name)
+                self._table = self._connection.create_table(self._table_name,schema=schema)
+            else:
+                raise RuntimeError('LanceDB schema/dimension mismatch: explicit reindex required')
+
+    def _require_open(self):
+        if self._table is None or self.capability.state != 'available':
+            raise RuntimeError('LanceDB is unavailable; ensure_collection recovery is required')
+
+    def _source_predicate(self, operation):
+        return f"source_type = {sql_literal(operation['source_type'])} AND source_id = {sql_literal(operation['source_id'])}"
+
+    def _replay(self):
+        for operation in self.journal.pending():
+            kind = operation['kind']
+            if kind == 'replace':
+                rows = self.journal.chunks(operation)
+                if len(rows) != operation['expected_count']:
+                    raise RuntimeError('Pending index snapshot is incomplete; refusing publication')
+                for row in rows:
+                    validate_vector(row['vector'], self.dimensions)
+                if rows and operation['status'] == 'pending':
+                    self._table.merge_insert('row_id').when_matched_update_all().when_not_matched_insert_all().execute(rows)
+                predicate = self._source_predicate(operation)
+                generation = sql_literal(operation['generation'])
+                if self._table.count_rows(f'{predicate} AND generation = {generation}') != len(rows):
+                    raise RuntimeError('LanceDB replacement incomplete; saved snapshots retained')
+                if operation['status'] == 'pending':
+                    self.journal.publish(operation)
+                self._table.delete(f'{predicate} AND generation <> {generation}')
+            elif kind == 'delete':
+                self._table.delete(self._source_predicate(operation))
+            elif kind == 'reset':
+                self._table.delete('true')
+            else:
+                raise RuntimeError(f'Unknown index operation: {kind}')
+            self.journal.finish(operation)
+
+    def _verify_published(self):
+        for source in self.journal.published_counts():
+            predicate = self._source_predicate(source)
+            generation = sql_literal(source['published_generation'])
+            if self._table.count_rows(f'{predicate} AND generation = {generation}') != source['expected_count']:
+                raise RuntimeError('Published LanceDB generation is missing/incomplete; explicit recovery/reindex required')
+
+    async def ensure(self, config: str):
+        async with self._lock:
+            try:
+                await self._local(self._open)
+                # Recover deletes/reset even if the selected configuration changed.
+                await self._local(self._replay)
+                await self._local(self.journal.require_configuration, config)
+                await self._local(self._verify_published)
+                self.capability.state = 'available'
+                self.capability.detail = 'LanceDB exact cosine index opened with durable SQLite generation visibility'
+                self.capability.remediation_codes = ()
+            except Exception as exc:
+                self._failed(exc)
+                raise
+
+    async def check_configuration(self, config: str):
+        async with self._lock:
+            self._require_open()
+            await self._local(self.journal.require_configuration, config)
+
+    async def replace(self, chunks: list[dict], embeddings: list[list[float]], source_id: str, source_type: str, config: str):
+        if len(chunks) != len(embeddings):
+            raise ValueError('Embedding count does not match chunk count')
+        vectors = [validate_vector(vector, self.dimensions) for vector in embeddings]
+        payloads = []
+        for index, chunk in enumerate(chunks):
+            payload = {'text':chunk['text'], 'source_id':source_id, 'source_type':source_type, 'chunk_index':index}
+            payload.update({key:value for key,value in chunk.get('metadata',{}).items() if value is not None})
+            payloads.append(json.dumps(payload,sort_keys=True,separators=(',',':'),allow_nan=False))
+        generation = hashlib.sha256(json.dumps([config,payloads,vectors],sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+        rows = []
+        for index, (payload, vector) in enumerate(zip(payloads,vectors)):
+            chunk_id = str(uuid.uuid5(uuid.NAMESPACE_URL,json.dumps([source_type,source_id,index,config],separators=(',',':'))))
+            rows.append(dict(chunk_id=chunk_id,row_id=str(uuid.uuid5(uuid.NAMESPACE_URL,chunk_id+':'+generation)),source_type=source_type,source_id=source_id,config=config,generation=generation,payload_json=payload,vector=vector))
+        async with self._lock:
+            self._require_open()
+            try:
+                await self._local(self._replay)
+                await self._local(self.journal.require_configuration, config)
+                await self._local(self.journal.replace,source_type,source_id,generation,config,rows)
+                await self._local(self._replay)
+            except Exception as exc:
+                self._failed(exc)
+                raise
+        return len(rows)
+
+    async def search(self, vector, config: str, *, source_type=None, source_id=None, top_k=5, score_threshold=0.0):
+        vector = validate_vector(vector,self.dimensions)
+        async with self._lock:
+            self._require_open()
+            try:
+                await self._local(self.journal.require_configuration,config)
+                visible = await self._local(self.journal.visibility,config)
+                selected = [row for row in visible if (source_type is None or row['source_type']==source_type) and (source_id is None or row['source_id']==source_id)]
+                if not selected or int(top_k)<=0:
+                    return []
+                visibility = ' OR '.join(f"(source_type = {sql_literal(row['source_type'])} AND source_id = {sql_literal(row['source_id'])} AND generation = {sql_literal(row['published_generation'])})" for row in selected)
+                predicate = f'config = {sql_literal(config)} AND ({visibility})'
+                def query():
+                    return self._table.search(vector).distance_type('cosine').bypass_vector_index().where(predicate,prefilter=True).limit(int(top_k)).to_list()
+                rows = await self._local(query)
+                hits = []
+                for row in rows:
+                    score = 1.0-float(row['_distance'])
+                    if score_threshold>0 and score<score_threshold:
+                        continue
+                    hits.append(LocalScoredPoint(row['chunk_id'],score,json.loads(row['payload_json'])))
+                return hits
+            except Exception as exc:
+                self._failed(exc)
+                raise
+
+    async def stats(self, config: str):
+        async with self._lock:
+            self._require_open()
+            await self._local(self.journal.require_configuration,config)
+            count = await self._local(self.journal.count,config)
+            return {'collection':self.journal.collection,'points_count':count,'vectors_count':count,'status':'green','backend':'lancedb','embedding_dimensions':self.dimensions}
+
+    async def delete_by_source(self, source_id: str, config: str):
+        async with self._lock:
+            self._require_open()
+            try:
+                await self._local(self._replay)
+                await self._local(self.journal.delete,source_id,config)
+                await self._local(self._replay)
+            except Exception as exc:
+                self._failed(exc)
+                raise
+
+    async def reset(self, config: str):
+        async with self._lock:
+            try:
+                await self._local(self.journal.reset,config)
+                await self._local(self._open)
+                await self._local(self._replay)
+                self.capability.state = 'available'
+                self.capability.detail = 'LanceDB collection reset and journal completed'
+                self.capability.remediation_codes = ()
+            except Exception as exc:
+                self._failed(exc)
+                raise
+
+    async def close(self):
+        async with self._lock:
+            def close():
+                for resource in (self._table,self._connection):
+                    method = getattr(resource,'close',None)
+                    if method:
+                        method()
+            await self._local(close)
+            self._table = self._connection = None
+            self.capability.state = 'unavailable'
+            self.capability.detail = 'LanceDB closed'
+
+
+def create_local_vector_client(root: str | Path, *, dimensions: int, database_path: str | Path, collection: str):
+    client = LanceVectorStore(root,database_path=database_path,collection=collection,dimensions=dimensions)
+    return client, client.capability

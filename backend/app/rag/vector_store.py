@@ -1,5 +1,5 @@
 """
-RAG Vector Store Service — manages the Qdrant knowledge base.
+RAG Vector Store Service — native LanceDB and Docker Qdrant knowledge base.
 
 Phase C: Complete RAG pipeline.
 
@@ -15,6 +15,8 @@ Handles:
 import uuid
 import asyncio
 import logging
+import json
+from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 try:
@@ -24,7 +26,7 @@ try:
         Filter, FieldCondition, MatchValue,
         models as qmodels,
     )
-except ImportError:  # Native SQLite fallback remains usable without qdrant-client.
+except ImportError:  # Native LanceDB does not require qdrant-client.
     from types import SimpleNamespace
 
     class _Distance:
@@ -71,18 +73,21 @@ UPSERT_BATCH_SIZE = 100      # points per Qdrant upsert call
 
 
 class RAGService:
-    """Manages the Qdrant vector knowledge base for course materials and transcripts."""
+    """Manages the selected vector knowledge base for course materials and transcripts."""
 
     def __init__(self):
         self.collection_name = settings.QDRANT_COLLECTION
         self.embedding_dim = settings.EMBEDDING_DIMENSIONS
         self.capability = None
+        self._native = bool(getattr(settings, "is_native_desktop", False))
         if getattr(settings, "is_native_desktop", False):
             from desktop_native.vector_store import create_local_vector_client
 
             self.client, self.capability = create_local_vector_client(
                 settings.DESKTOP_VECTOR_ROOT,
                 dimensions=self.embedding_dim,
+                database_path=self._native_database_path(),
+                collection=self.collection_name,
             )
         else:
             if AsyncQdrantClient is None:
@@ -92,12 +97,39 @@ class RAGService:
                 port=settings.QDRANT_PORT,
             )
 
+    @staticmethod
+    def _native_database_path():
+        from db.database import engine
+        return Path(engine.url.database).resolve(strict=False)
+
+    def _native_configuration(self):
+        from providers import ProviderKind
+        provider = llm_service._provider_for_kind(ProviderKind.EMBEDDING)
+        metadata = provider.metadata
+        dimensions = int(settings.EMBEDDING_DIMENSIONS)
+        if dimensions != self.embedding_dim:
+            raise RuntimeError('Embedding dimensions changed: restart and explicit reindex required')
+        if not metadata.default_model:
+            raise RuntimeError('Embedding provider does not expose its actual model identity')
+        signature = json.dumps({'provider_id':metadata.provider_id,'provider_name':metadata.provider_name,
+                                'model':metadata.default_model,'dimensions':dimensions},sort_keys=True,separators=(',',':'))
+        return provider, signature
+
+    async def close(self):
+        """Release native index resources; runtime shutdown must call this hook."""
+        if self._native:
+            await self.client.close()
+
     # ═══════════════════════════════════════════
     #  COLLECTION LIFECYCLE
     # ═══════════════════════════════════════════
 
     async def ensure_collection(self):
         """Create the collection if it doesn't exist."""
+        if self._native:
+            _, config = self._native_configuration()
+            await self.client.ensure(config)
+            return
         try:
             collections = await self.client.get_collections()
             existing = [c.name for c in collections.collections]
@@ -119,6 +151,9 @@ class RAGService:
 
     async def get_collection_stats(self) -> dict:
         """Get collection statistics (point count, segment count, etc.)."""
+        if self._native:
+            _, config = self._native_configuration()
+            return await self.client.stats(config)
         try:
             info = await self.client.get_collection(self.collection_name)
             return {
@@ -133,6 +168,10 @@ class RAGService:
 
     async def reset_collection(self):
         """Delete and recreate the collection (for testing)."""
+        if self._native:
+            _, config = self._native_configuration()
+            await self.client.reset(config)
+            return
         try:
             await self.client.delete_collection(self.collection_name)
             logger.info(f"Deleted collection: {self.collection_name}")
@@ -144,7 +183,18 @@ class RAGService:
     #  EMBEDDING (batched + rate-limited)
     # ═══════════════════════════════════════════
 
-    async def _embed_texts(self, texts: List[str]) -> List[List[float]]:
+    async def _embed_batch(self, texts, provider=None):
+        if provider is None:
+            return await llm_service.embed(texts)
+        from providers import EmbeddingRequest
+        response = await provider.embed(EmbeddingRequest(texts=texts,model=provider.metadata.default_model,dimensions=self.embedding_dim))
+        if response.provider_id != provider.metadata.provider_id or response.model != provider.metadata.default_model or response.dimensions != self.embedding_dim:
+            raise RuntimeError('Embedding response identity differs from selected configuration; reindex required')
+        if len(response.embeddings) != len(texts):
+            raise ValueError('Embedding count does not match requested batch')
+        return response.embeddings
+
+    async def _embed_texts(self, texts: List[str], provider=None) -> List[List[float]]:
         """
         Embed a list of texts with automatic batching.
 
@@ -159,14 +209,14 @@ class RAGService:
         for i in range(0, len(texts), EMBED_BATCH_SIZE):
             batch = texts[i:i + EMBED_BATCH_SIZE]
             try:
-                embeddings = await llm_service.embed(batch)
+                embeddings = await self._embed_batch(batch, provider)
                 all_embeddings.extend(embeddings)
             except Exception as e:
                 logger.error(f"Embedding batch {i//EMBED_BATCH_SIZE + 1} failed: {e}")
                 # Retry once after a short delay
                 await asyncio.sleep(2.0)
                 try:
-                    embeddings = await llm_service.embed(batch)
+                    embeddings = await self._embed_batch(batch, provider)
                     all_embeddings.extend(embeddings)
                 except Exception as e2:
                     logger.error(f"Embedding retry failed: {e2}")
@@ -395,25 +445,6 @@ class RAGService:
     #  STORAGE (shared by both ingest paths)
     # ═══════════════════════════════════════════
 
-    async def add_chunks(
-        self,
-        chunks: List[dict],
-        source_id: str,
-        source_type: str,
-    ) -> int:
-        """Public wrapper to store arbitrary chunked text in Qdrant for semantic search.
-
-        Args:
-            chunks: List of dicts with ``text`` and optional ``metadata`` keys.
-            source_id: Identifier for the source document (e.g. ``"<video_id>_slides"``).
-            source_type: Category label used as a search filter (e.g. ``"slide_page"``).
-
-        Returns:
-            Number of chunks stored.
-        """
-        await self._store_chunks(chunks, source_id, source_type)
-        return len(chunks)
-
     async def _store_chunks(
         self,
         chunks: List[dict],
@@ -421,6 +452,14 @@ class RAGService:
         source_type: str,
     ):
         """Embed chunks and store them in Qdrant with metadata."""
+        if self._native:
+            provider, config = self._native_configuration()
+            await self.client.check_configuration(config)
+            embeddings = await self._embed_texts([chunk['text'] for chunk in chunks],provider=provider)
+            if self._native_configuration()[1] != config:
+                raise RuntimeError('Embedding configuration changed during ingestion; reindex required')
+            await self.client.replace(chunks,embeddings,source_id,source_type,config)
+            return
         if not chunks:
             return
 
@@ -487,28 +526,40 @@ class RAGService:
         Returns:
             List of matching chunks with scores and metadata
         """
-        query_embedding = await llm_service.embed_single(query)
+        if self._native:
+            provider, config = self._native_configuration()
+            await self.client.check_configuration(config)
+            vectors = await self._embed_batch([query],provider)
+            if len(vectors) != 1:
+                raise ValueError('Query embedding count must be one')
+            if self._native_configuration()[1] != config:
+                raise RuntimeError('Embedding configuration changed during query')
+            results = await self.client.search(vectors[0],config,source_type=source_type or None,
+                                               source_id=source_id or None,top_k=top_k,score_threshold=score_threshold)
+        else:
+            query_embedding = await llm_service.embed_single(query)
 
-        # Build filter
-        must_conditions = []
-        if source_type:
-            must_conditions.append(
-                FieldCondition(key="source_type", match=MatchValue(value=source_type))
+            # Build filter
+            must_conditions = []
+            if source_type:
+                must_conditions.append(
+                    FieldCondition(key="source_type", match=MatchValue(value=source_type))
+                )
+            if source_id:
+                must_conditions.append(
+                    FieldCondition(key="source_id", match=MatchValue(value=source_id))
+                )
+
+            search_filter = Filter(must=must_conditions) if must_conditions else None
+
+            results = await self.client.search(
+                collection_name=self.collection_name,
+                query_vector=query_embedding,
+                query_filter=search_filter,
+                limit=top_k,
+                score_threshold=score_threshold if score_threshold > 0 else None,
             )
-        if source_id:
-            must_conditions.append(
-                FieldCondition(key="source_id", match=MatchValue(value=source_id))
-            )
 
-        search_filter = Filter(must=must_conditions) if must_conditions else None
-
-        results = await self.client.search(
-            collection_name=self.collection_name,
-            query_vector=query_embedding,
-            query_filter=search_filter,
-            limit=top_k,
-            score_threshold=score_threshold if score_threshold > 0 else None,
-        )
 
         return [
             {
@@ -531,6 +582,10 @@ class RAGService:
 
     async def delete_by_source(self, source_id: str):
         """Delete all chunks belonging to a specific source document."""
+        if self._native:
+            _, config = self._native_configuration()
+            await self.client.delete_by_source(source_id,config)
+            return
         try:
             await self.client.delete(
                 collection_name=self.collection_name,
@@ -559,9 +614,10 @@ class RAGService:
         chunks: List[dict],
         source_id: str,
         source_type: str = "course_material",
-    ):
+    ) -> int:
         """Legacy method — wraps _store_chunks for backward compatibility."""
         await self._store_chunks(chunks, source_id, source_type)
+        return len(chunks)
 
     @staticmethod
     def chunk_text(

@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import sqlite3
+from pathlib import Path
+from desktop_native.index_journal import INDEX_DDL
 
 from sqlalchemy import inspect, text
 
 
-NATIVE_SCHEMA_VERSION = "005_large_file_size_bigint"
+NATIVE_SCHEMA_VERSION = "006_lancedb_index_journal"
 MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("001_initial", "Core video, transcript, analysis, plan and material tables"),
     ("002_app_ai_settings", "Persistent AI settings"),
     ("003_project_assets", "Project and project asset compatibility tables"),
     ("004_project_media_sources", "Project source type and sync role columns"),
     ("005_large_file_size_bigint", "Large upload size compatibility marker"),
+    ("006_lancedb_index_journal", "Durable LanceDB snapshots and publication journal"),
 )
 
 
@@ -30,59 +34,53 @@ def _add_column_if_missing(connection, table: str, name: str, definition: str) -
         connection.execute(text(f'ALTER TABLE "{table}" ADD COLUMN "{name}" {definition}'))
 
 
-def initialize_native_schema(connection, metadata) -> None:  # type: ignore[no-untyped-def]
-    """Create current ORM tables and apply SQLite-safe additive migrations.
+def _validate_revisions(applied: list[str]) -> None:
+    known = [revision for revision, _ in MIGRATIONS]
+    if applied != known[:len(applied)]:
+        raise RuntimeError(f'Unknown, future or non-contiguous native schema revisions: {applied}')
 
-    The existing Alembic revisions stay PostgreSQL-specific.  Native SQLite
-    uses this equivalent migration ledger so a user's database can be opened
-    and upgraded without importing or executing PostgreSQL DDL.
-    """
 
-    connection.exec_driver_sql("PRAGMA foreign_keys=ON")
-    connection.exec_driver_sql("PRAGMA busy_timeout=30000")
-    metadata.create_all(connection)
+def preflight_native_schema(database_path: str | Path) -> dict:
+    """Read revision identity without opening a writable/WAL connection."""
+    path = Path(database_path).resolve(strict=False)
+    if not path.exists():
+        return {'applied': [], 'legacy': False, 'existing': False, 'upgrade': False}
+    connection = sqlite3.connect(path.as_uri() + '?mode=ro',uri=True,timeout=30)
+    try:
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+        has_ledger = 'desktop_schema_migrations' in tables
+        applied = [row[0] for row in connection.execute('SELECT revision FROM desktop_schema_migrations ORDER BY revision')] if has_ledger else []
+        _validate_revisions(applied)
+        return {'applied':applied,'legacy':bool(tables) and not has_ledger,'existing':bool(tables),'upgrade':bool(tables) and len(applied)<len(MIGRATIONS)}
+    finally:
+        connection.close()
 
-    # Databases created by an earlier native preview may predate the current
-    # project columns.  SQLite cannot add a column with a dynamic default, so
-    # only constant-safe definitions are used here.
-    if "videos" in inspect(connection).get_table_names():
-        _add_column_if_missing(connection, "videos", "project_id", "CHAR(36)")
-        _add_column_if_missing(connection, "videos", "project_asset_id", "CHAR(36)")
-    if "project_assets" in inspect(connection).get_table_names():
-        _add_column_if_missing(
-            connection,
-            "project_assets",
-            "source_type",
-            "VARCHAR(40) NOT NULL DEFAULT 'other'",
-        )
-        _add_column_if_missing(
-            connection,
-            "project_assets",
-            "sync_role",
-            "VARCHAR(40) NOT NULL DEFAULT 'none'",
-        )
 
-    connection.exec_driver_sql(
-        """
-        CREATE TABLE IF NOT EXISTS desktop_schema_migrations (
-            revision TEXT PRIMARY KEY,
-            description TEXT NOT NULL,
-            applied_at TEXT NOT NULL
-        )
-        """
-    )
-    for revision, description in MIGRATIONS:
-        connection.execute(
-            text(
-                "INSERT OR IGNORE INTO desktop_schema_migrations "
-                "(revision, description, applied_at) VALUES (:revision, :description, :applied_at)"
-            ),
-            {
-                "revision": revision,
-                "description": description,
-                "applied_at": _utc_now(),
-            },
-        )
+def initialize_native_schema(connection, metadata, expected=None) -> None:
+    """Apply only known pending revisions within the caller's explicit transaction."""
+    tables = set(inspect(connection).get_table_names())
+    applied = [row[0] for row in connection.exec_driver_sql('SELECT revision FROM desktop_schema_migrations ORDER BY revision')] if 'desktop_schema_migrations' in tables else []
+    _validate_revisions(applied)
+    if expected is not None and applied != expected['applied']:
+        raise RuntimeError('Native schema changed after preflight; restart upgrade')
+    if len(applied) == len(MIGRATIONS):
+        return
+    connection.exec_driver_sql('CREATE TABLE IF NOT EXISTS desktop_schema_migrations (revision TEXT PRIMARY KEY, description TEXT NOT NULL, applied_at TEXT NOT NULL)')
+    for revision, description in MIGRATIONS[len(applied):]:
+        if revision in ('001_initial','002_app_ai_settings','003_project_assets'):
+            metadata.create_all(connection)
+        if revision == '003_project_assets':
+            if 'videos' in inspect(connection).get_table_names():
+                _add_column_if_missing(connection,'videos','project_id','CHAR(36)')
+                _add_column_if_missing(connection,'videos','project_asset_id','CHAR(36)')
+        if revision == '004_project_media_sources':
+            if 'project_assets' in inspect(connection).get_table_names():
+                _add_column_if_missing(connection,'project_assets','source_type',"VARCHAR(40) NOT NULL DEFAULT 'other'")
+                _add_column_if_missing(connection,'project_assets','sync_role',"VARCHAR(40) NOT NULL DEFAULT 'none'")
+        if revision == '006_lancedb_index_journal':
+            for statement in INDEX_DDL:
+                connection.exec_driver_sql(statement)
+        connection.execute(text('INSERT INTO desktop_schema_migrations(revision,description,applied_at) VALUES(:revision,:description,:applied_at)'), {'revision':revision,'description':description,'applied_at':_utc_now()})
 
     connection.exec_driver_sql(
         """
@@ -127,7 +125,7 @@ def native_schema_status(connection) -> dict[str, object]:  # type: ignore[no-un
                 text("SELECT revision FROM desktop_schema_migrations ORDER BY revision")
             ).all()
         ]
-    required = {"videos", "projects", "project_assets", "app_ai_settings", "desktop_jobs"}
+    required = {"videos", "projects", "project_assets", "app_ai_settings", "desktop_jobs", "desktop_index_sources", "desktop_index_chunks", "desktop_index_operations"}
     return {
         "schemaVersion": NATIVE_SCHEMA_VERSION,
         "ready": required.issubset(tables)
