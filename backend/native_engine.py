@@ -25,7 +25,7 @@ BACKEND_ROOT = Path(__file__).resolve().parent
 APP_ROOT = BACKEND_ROOT / "app"
 STARTUP_HANDSHAKE_PROTOCOL = "desktop.engine-handshake.v2"
 ENGINE_ID = "aive-engine"
-ENGINE_VERSION = "2.0.0-rc.6"
+ENGINE_VERSION = "2.1.0-rebuild.2"
 SELF_TEST_DEADLINE_SECONDS = 15.0
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
@@ -96,6 +96,9 @@ def _self_test() -> int:
         "uvicorn",
         "sqlalchemy",
         "aiosqlite",
+        "lancedb",
+        "pyarrow",
+        "desktop_native.index_journal",
         "desktop_native.app",
         "desktop_native.runtime",
         "services.native_imports",

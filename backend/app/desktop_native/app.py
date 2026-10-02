@@ -35,8 +35,8 @@ def create_native_app(runtime: NativeDesktopRuntime) -> FastAPI:
 
     app = FastAPI(
         title="AI Video Editing Agent — Native Desktop",
-        description="Docker-free Desktop V2 Phase 4 native core engine.",
-        version="2.0.0-rc.6",
+        description="AIVE Desktop rebuild native core engine.",
+        version="2.1.0-rebuild.2",
         lifespan=lifespan,
     )
     app.state.native_runtime = runtime
@@ -95,7 +95,7 @@ def create_native_app(runtime: NativeDesktopRuntime) -> FastAPI:
         return {
             "service": "AI Video Editing Agent",
             "profile": "desktop-native",
-            "version": "2.0.0-rc.6",
+            "version": "2.1.0-rebuild.2",
             "readiness": "/readiness",
         }
 
