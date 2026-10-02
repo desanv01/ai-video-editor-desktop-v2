@@ -2,7 +2,7 @@
 const fs=require('node:fs/promises');
 const path=require('node:path');
 const assert=require('node:assert/strict');
-const root=process.argv[2],out=process.argv[3];
+const root=path.resolve(process.argv[2]),out=path.resolve(process.argv[3]);
 const {_electron}=require(process.env.AIVE_TEST_PLAYWRIGHT_MODULE || require.resolve('playwright',{paths:[path.join(root,'desktop')]}));
 (async()=>{
  await fs.mkdir(out,{recursive:true});
