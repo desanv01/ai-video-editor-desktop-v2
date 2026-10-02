@@ -2380,23 +2380,40 @@ def _evaluation_artifact_paths(video: Video) -> dict[str, str | None]:
 async def _embed_material_bg(material_id: str, filename: str, pages: list[dict]):
     """Embed an uploaded material after the HTTP upload response returns."""
     from db.database import async_session
+    from copy import deepcopy
+    from desktop_native.agent_transactions import commit_native, fresh_read, snapshot
+    native = bool(getattr(settings, "is_native_desktop", False))
 
     logger.info(f"Embedding queued material {material_id} ({filename})")
 
     async with async_session() as db:
+        material_input = None
         try:
             material = await db.get(CourseMaterial, material_id)
             if not material:
                 logger.warning(f"Material {material_id} missing before embedding")
                 return
 
+            if native:
+                material_fields = ("id", "filename", "file_path", "file_type", "content_text")
+                material_input = snapshot(material, material_fields)
+                extracted_pages = deepcopy(pages)
+                await commit_native(db)
+            else:
+                extracted_pages = pages
             await rag_service.ensure_collection()
             chunk_count = await rag_service.ingest_course_material(
                 source_id=material_id,
                 filename=filename,
-                pages=pages,
+                pages=extracted_pages,
             )
 
+            if native:
+                current = await fresh_read(db, select(CourseMaterial).where(CourseMaterial.id == material_id))
+                material = current.scalar_one_or_none()
+                if material is None or any(getattr(material, key) != getattr(material_input, key) for key in material_fields):
+                    await db.rollback()
+                    raise ValueError("Material changed or was deleted during embedding; source result was not applied")
             material.chunk_count = chunk_count
             material.is_embedded = chunk_count > 0
             await db.commit()
@@ -2407,6 +2424,21 @@ async def _embed_material_bg(material_id: str, filename: str, pages: list[dict])
 
         except Exception as e:
             logger.error(f"Material embedding failed for {material_id} ({filename}): {e}", exc_info=True)
+            if native:
+                await db.rollback()
+                try:
+                    if material_input is not None:
+                        current = await fresh_read(db, select(CourseMaterial).where(CourseMaterial.id == material_id))
+                        material = current.scalar_one_or_none()
+                        if material is not None and all(getattr(material, key) == getattr(material_input, key) for key in material_fields):
+                            material.is_embedded = False
+                            await commit_native(db)
+                        else:
+                            await db.rollback()
+                except Exception:
+                    await db.rollback()
+                    logger.error(f"Failed to mark material {material_id} embedding failure", exc_info=True)
+                return
             try:
                 material = await db.get(CourseMaterial, material_id)
                 if material:
@@ -2429,6 +2461,8 @@ async def _process_video_bg(video_id: str):
     logger = logging.getLogger("pipeline")
 
     from db.database import async_session
+    from desktop_native.agent_transactions import commit_native
+    native = bool(getattr(settings, "is_native_desktop", False))
     from services.progress import init_progress, fail_step
 
     logger.info(f"🎬 Starting pipeline for video {video_id}")
@@ -2445,6 +2479,8 @@ async def _process_video_bg(video_id: str):
             await db.commit()
 
             await load_and_apply_persisted_ai_settings(db)
+            if native:
+                await commit_native(db)
 
             # Ensure Qdrant collection exists
             await rag_service.ensure_collection()
@@ -2462,6 +2498,8 @@ async def _process_video_bg(video_id: str):
                 logger.info(f"Pipeline ended with status: {status}")
 
         except Exception as e:
+            if native:
+                await db.rollback()
             error_msg = f"Pipeline crashed: {str(e)}"
             logger.error(f"❌ {error_msg}\n{tb.format_exc()}")
             fail_step(video_id, "pipeline", str(e))
