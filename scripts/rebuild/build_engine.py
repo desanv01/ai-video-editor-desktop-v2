@@ -116,6 +116,17 @@ def safe_submodules(package_name):
     except Exception:
         return []
 
+def production_storage_module(module_name):
+    # Reject complete development subtrees before collect_submodules recurses.
+    # Exact path segments retain runtime names such as "testing" or "testifier".
+    return not any(part in ('test', 'tests', 'conftest') for part in module_name.split('.'))
+
+storage_data_excludes = [
+    'test', 'tests', 'test/**', 'tests/**',
+    '**/test', '**/tests', '**/test/**', '**/tests/**',
+    'conftest.py', '**/conftest.py', 'conftest.pyc', '**/conftest.pyc',
+]
+
 # Required native storage packages must never degrade into an empty collection.
 required_datas = []
 required_binaries = []
@@ -123,9 +134,11 @@ required_imports = []
 for package_name in ('lancedb', 'pyarrow'):
     try:
         importlib.import_module(package_name)
-        package_datas = collect_data_files(package_name)
+        package_datas = collect_data_files(package_name, excludes=storage_data_excludes)
         package_binaries = collect_dynamic_libs(package_name)
-        package_imports = collect_submodules(package_name, on_error='raise')
+        package_imports = collect_submodules(
+            package_name, filter=production_storage_module, on_error='raise'
+        )
         if not package_imports:
             raise RuntimeError('no submodules collected')
         required_datas += package_datas
