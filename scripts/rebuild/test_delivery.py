@@ -21,6 +21,8 @@ class DeliverySafety(unittest.TestCase):
    embedded={'component':cid,'version':self.version,'metadata':{('runtimeSourceCommit' if cid=='whisper-small' else 'sourceCommit'):self.commit}}
    members={'bin/tool.exe':b'Synthetic executable fixture','source-identity.json':json.dumps(embedded).encode()}
    if cid=='aive-engine':members['bin/_internal/certifi/cacert.pem']=b'Public CA fixture'
+   if cid=='aive-engine':members['bin/_internal/grpc/_cython/_credentials/roots.pem']=b'Public grpc CA fixture'
+   if cid=='documents':members['program/python-core-3.12.14/lib/pip/_vendor/certifi/cacert.pem']=b'Public document CA fixture'
    zipfiles(self.packs/(cid+'.zip'),members)
    self.manifest['components'].append({'id':cid,'version':self.version,'archive':cid+'.zip','sizeBytes':(self.packs/(cid+'.zip')).stat().st_size,'sha256':sha(self.packs/(cid+'.zip')),'expandedBytes':sum(map(len,members.values())),'required':True,'entrypoints':{'tool':'bin/tool.exe'},'probes':[{'kind':'engine-self-test','entrypoint':'tool'}]})
   self.release={'schemaVersion':'aive.delivery-inputs.v1','releaseVersion':self.version,'platform':'win32','architecture':'x64','sourceCommit':self.commit,'githubRepository':delivery.REPOSITORY,'githubReleaseTag':'v'+self.version,'ci':{'runId':1,'runUrl':f'https://github.com/{delivery.REPOSITORY}/actions/runs/1','commit':self.commit,'status':'success'},'qualification':{q:'Synthetic fixture only, not a verified capability' for q in delivery.QUALIFICATIONS},'componentSourceCommits':{c:self.commit for c in delivery.COMPONENTS},'installer':delivery.public_identity(delivery.identity(installer)),'sourceArchive':delivery.public_identity(delivery.identity(source))}
@@ -69,13 +71,13 @@ class DeliverySafety(unittest.TestCase):
  def test_actual_component_hash_checked(self):
   (self.packs/'ffmpeg.zip').write_bytes(b'Corrupt replacement');self.rejected('Actual component size/hash mismatch')
  def test_engine_ca_exception_is_exact_and_scoped(self):
-  for cid,name in [('ffmpeg','bin/_internal/certifi/cacert.pem'),('aive-engine','bin/_internal/certifi/CACERT.pem'),('aive-engine','bin/private.pem')]:
+  for cid,name in [('ffmpeg','bin/_internal/certifi/cacert.pem'),('aive-engine','bin/_internal/certifi/CACERT.pem'),('aive-engine','bin/private.pem'),('ffmpeg','bin/_internal/grpc/_cython/_credentials/roots.pem'),('aive-engine','bin/_internal/grpc/_cython/_credentials/ROOTS.pem'),('ffmpeg','program/python-core-3.12.14/lib/pip/_vendor/certifi/cacert.pem'),('documents','program/python-core-3.12.14/lib/pip/_vendor/certifi/CACERT.pem'),('documents','program/python-core-3.12.15/lib/pip/_vendor/certifi/cacert.pem')]:
    with self.subTest(cid=cid,name=name):
     path=self.packs/(cid+'.zip');original=path.read_bytes();row=copy.deepcopy(next(r for r in self.manifest['components'] if r['id']==cid))
     self.edit_pack(cid,lambda members:members.update({name:b'PEM fixture'}));self.rejected('Private file')
     path.write_bytes(original);self.manifest['components'][next(i for i,r in enumerate(self.manifest['components']) if r['id']==cid)]=row
  def test_source_ca_and_private_data_rejected(self):
-  for name in ('bin/_internal/certifi/cacert.pem','.env','credentials.json','db.sqlite3','events.log'):
+  for name in ('bin/_internal/certifi/cacert.pem','bin/_internal/grpc/_cython/_credentials/roots.pem','program/python-core-3.12.14/lib/pip/_vendor/certifi/cacert.pem','.env','credentials.json','db.sqlite3','events.log'):
    with self.subTest(name=name):
     path=self.paths['source-archive'];zipfiles(path,{name:b'private fixture'});self.release['sourceArchive']=delivery.public_identity(delivery.identity(path));self.rejected('Private')
  def test_whisper_declarations_must_all_match(self):

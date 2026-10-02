@@ -74,11 +74,14 @@ def reject_private(parts: tuple[str, ...] | list[str], *, component_id: str | No
             f"Private environment input rejected: {'/'.join(parts)}")
     leaf = folded[-1]
     # Engine packer prefixes the onedir runtime with bin/. No input/source exception.
-    engine_ca_bundle = component_id == 'aive-engine' and tuple(parts) == (
-        'bin', '_internal', 'certifi', 'cacert.pem')
+    engine_ca_bundle = component_id == 'aive-engine' and tuple(parts) in (
+        ('bin', '_internal', 'certifi', 'cacert.pem'),
+        ('bin', '_internal', 'grpc', '_cython', '_credentials', 'roots.pem'))
+    documents_ca_bundle = component_id == 'documents' and tuple(parts) == (
+        'program', 'python-core-3.12.14', 'lib', 'pip', '_vendor', 'certifi', 'cacert.pem')
     require(not (leaf in {"settings.json", "credentials.json", "credentials.yaml", "credentials.yml",
         "secrets.json", "secrets.yaml", "secrets.yml", "id_rsa", "id_ed25519"}
-        or ".sqlite" in leaf or leaf.endswith((".key", ".log")) or (leaf.endswith(".pem") and not engine_ca_bundle)
+        or ".sqlite" in leaf or leaf.endswith((".key", ".log")) or (leaf.endswith(".pem") and not (engine_ca_bundle or documents_ca_bundle))
         or re.fullmatch(r"(?:[\w.-]+[-_.])?(?:tokens?|credentials?|secrets?)[-_.]?(?:store|vault)?\.(?:json|ya?ml|txt|ini|cfg|toml|db)", leaf)),
         f"Private file rejected: {'/'.join(parts)}")
 

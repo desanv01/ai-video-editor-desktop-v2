@@ -1,7 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-export const RELEASE = '2.1.0-rebuild.1';
+export const RELEASE = '2.1.0-rebuild.2';
 export function relative(value: unknown): value is string { return typeof value === 'string' && value.length > 0 && value.length < 512 && !value.includes('\\') && !value.includes(':') && !value.includes('\0') && !value.startsWith('/') && value.split('/').every(p => p !== '..' && p !== '.' && p !== ''); }
 export function confined(root: string, value: string): string { if (!relative(value)) throw new Error('UNSAFE_PATH'); const result = path.resolve(root, value); if (!result.startsWith(path.resolve(root) + path.sep)) throw new Error('UNSAFE_PATH'); return result; }
 export async function atomic(file: string, value: unknown): Promise<void> { const temp = file + '.' + randomUUID() + '.tmp'; const handle = await fs.open(temp, 'wx'); try { await handle.writeFile(JSON.stringify(value)); await handle.sync(); } finally { await handle.close(); } await fs.rename(temp, file); }
