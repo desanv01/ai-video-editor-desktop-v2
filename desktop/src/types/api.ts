@@ -210,6 +210,23 @@ export interface Transcript {
   speakers: SpeakerInfo[] | null;
 }
 
+export type TranscriptExportFormat = "txt" | "timestamped_txt" | "json" | "csv";
+
+export interface ExportArtifactStatus {
+  path: string;
+  available: boolean;
+  reason?: string | null;
+  label?: string;
+  format?: TranscriptExportFormat;
+  timeline?: string;
+}
+
+export interface VideoExports {
+  video_id: string;
+  status: VideoStatus;
+  exports: Record<string, ExportArtifactStatus>;
+}
+
 export interface TranscriptTimelineWord {
   word_index: number;
   text: string;

@@ -38,6 +38,8 @@ jobs:
         run: npm run build
       - name: Run focused controller boundary checks
         run: npm run test:rebuild
+      - name: Run native and browser transcript download boundary checks
+        run: node ../scripts/rebuild/test_phase4_downloads.cjs ..
       - name: Package assisted per-user installer
         run: npm run package:win
       - name: Verify actual unpacked window and preload
