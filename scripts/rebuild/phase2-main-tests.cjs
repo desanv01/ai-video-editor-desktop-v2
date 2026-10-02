@@ -37,7 +37,7 @@ function zip(entries) {
   const directory=Buffer.concat(central),end=Buffer.alloc(22);end.writeUInt32LE(0x06054b50);end.writeUInt16LE(entries.length,8);end.writeUInt16LE(entries.length,10);end.writeUInt32LE(directory.length,12);end.writeUInt32LE(offset,16);
   return Buffer.concat([...local,directory,end]);
 }
-async function fixture(t){const p=await fs.mkdtemp(path.join(os.tmpdir(),'aive-phase2-main-'));t.after(()=>fs.rm(p,{recursive:true,force:true}));return p;}
+async function fixture(t){const p=await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()),'aive-phase2-main-'));t.after(()=>fs.rm(p,{recursive:true,force:true}));return p;}
 let probes=0;
 function probeSpawn(executable,args){probes++;const child=new EventEmitter();child.stdout=new EventEmitter();child.stderr=new EventEmitter();child.kill=()=>true;
   queueMicrotask(()=>{const text=path.basename(executable)==='engine.exe'?JSON.stringify({schemaVersion:'desktop.engine-self-test.v1',status:'ok',component:'aive-engine',version:util.RELEASE,frozen:true}):path.basename(executable)==='ffmpeg.exe'?'ffmpeg version fixture':'LibreOffice fixture';child.stdout.emit('data',Buffer.from(text));child.emit('exit',0);child.emit('close',0);});return child;}
