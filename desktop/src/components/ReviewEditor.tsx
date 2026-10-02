@@ -985,16 +985,16 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   const sourceName = videoFilename || videoDetail?.original_filename || "Lecture source";
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-surface text-gray-100">
+    <div className="review-workspace flex h-full min-h-0 min-w-0 flex-col bg-surface text-gray-100">
       <GuidedWorkflowStepper
         activeStep={activeWorkflowStep}
         completedStepIds={completedWorkflowSteps}
         onStepChange={setActiveWorkflowStep}
       />
 
-      <div className="grid min-h-0 flex-1 grid-cols-[minmax(300px,400px)_minmax(480px,1fr)_minmax(360px,460px)] grid-rows-[minmax(0,1fr)_118px] overflow-hidden xl:grid-cols-[minmax(340px,430px)_minmax(620px,1fr)_minmax(390px,480px)] xl:grid-rows-[minmax(0,1fr)_128px]">
+      <div className="review-grid min-h-0 min-w-0 flex-1">
         <div className="contents">
-          <aside className="row-span-2 flex min-h-0 min-w-0 flex-col border-r border-surface-border bg-surface-raised">
+          <aside className="review-source flex min-h-0 min-w-0 flex-col border-r border-surface-border bg-surface-raised" aria-label="Transcript and source assets">
             <div className="border-b border-surface-border px-3 py-3">
               <div className="mb-3 flex items-center justify-between gap-2">
                 <div className="min-w-0">
@@ -1008,8 +1008,9 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
               <div className="grid grid-cols-2 gap-1 rounded-md bg-surface-overlay p-1">
                 <button
                   type="button"
+                  aria-pressed={leftPanelTab === "transcript"}
                   onClick={() => setLeftPanelTab("transcript")}
-                  className={`flex items-center justify-center gap-1.5 rounded px-2 py-1.5 text-xs font-semibold transition-colors ${
+                  className={`flex items-center justify-center gap-1.5 min-h-8 rounded px-2 py-1.5 text-xs font-semibold transition-colors ${
                     leftPanelTab === "transcript" ? "bg-accent text-white" : "text-gray-400 hover:text-gray-200"
                   }`}
                 >
@@ -1018,8 +1019,9 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
                 </button>
                 <button
                   type="button"
+                  aria-pressed={leftPanelTab === "assets"}
                   onClick={() => setLeftPanelTab("assets")}
-                  className={`flex items-center justify-center gap-1.5 rounded px-2 py-1.5 text-xs font-semibold transition-colors ${
+                  className={`flex items-center justify-center gap-1.5 min-h-8 rounded px-2 py-1.5 text-xs font-semibold transition-colors ${
                     leftPanelTab === "assets" ? "bg-accent text-white" : "text-gray-400 hover:text-gray-200"
                   }`}
                 >
@@ -1057,13 +1059,13 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
             </div>
           </aside>
 
-          <main className="col-start-2 row-start-1 flex min-h-0 min-w-0 flex-col border-b border-surface-border bg-[#15151f]">
-            <div className="flex items-center justify-between gap-4 border-b border-surface-border bg-surface-raised px-4 py-2">
+          <section className="review-preview flex min-h-0 min-w-0 flex-col border-b border-surface-border bg-surface" aria-label="Program preview and playback">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-surface-border bg-surface-raised px-3 py-2">
               <div className="min-w-0">
                 <p className="text-[11px] font-semibold uppercase tracking-wider text-accent">{activeWorkflowLabel} workspace</p>
                 <h2 className="truncate text-sm font-semibold text-white">{sourceName}</h2>
               </div>
-              <div className="flex items-center gap-2 text-xs text-gray-400">
+              <div className="flex flex-wrap items-center gap-2 text-xs text-gray-400">
                 <span className="inline-flex items-center gap-1 rounded bg-surface-overlay px-2 py-1">
                   <Clock3 className="h-3.5 w-3.5" />
                   {formatDuration(currentTime)} / {formatDuration(effectiveDuration)}
@@ -1072,7 +1074,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
                   type="button"
                   onClick={handleUndo}
                   disabled={!canUndo}
-                  className="flex h-7 w-7 items-center justify-center rounded-md bg-surface-overlay text-gray-300 transition-colors hover:bg-surface-border disabled:cursor-not-allowed disabled:opacity-40"
+                  className="flex h-8 w-8 items-center justify-center rounded-md bg-surface-overlay text-gray-300 transition-colors hover:bg-surface-border disabled:cursor-not-allowed disabled:opacity-40"
                   aria-label={nextUndoEntry ? `Undo ${nextUndoEntry.label}` : "Undo"}
                   title={nextUndoEntry ? `Undo ${nextUndoEntry.label} (Ctrl+Z)` : "Nothing to undo"}
                 >
@@ -1082,7 +1084,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
                   type="button"
                   onClick={handleRedo}
                   disabled={!canRedo}
-                  className="flex h-7 w-7 items-center justify-center rounded-md bg-surface-overlay text-gray-300 transition-colors hover:bg-surface-border disabled:cursor-not-allowed disabled:opacity-40"
+                  className="flex h-8 w-8 items-center justify-center rounded-md bg-surface-overlay text-gray-300 transition-colors hover:bg-surface-border disabled:cursor-not-allowed disabled:opacity-40"
                   aria-label={nextRedoEntry ? `Redo ${nextRedoEntry.label}` : "Redo"}
                   title={nextRedoEntry ? `Redo ${nextRedoEntry.label} (Ctrl+Shift+Z)` : "Nothing to redo"}
                 >
@@ -1091,7 +1093,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
                 <button
                   type="button"
                   onClick={() => setCommandPaletteOpen(true)}
-                  className="flex h-7 w-7 items-center justify-center rounded-md bg-surface-overlay text-gray-300 transition-colors hover:bg-surface-border"
+                  className="flex h-8 w-8 items-center justify-center rounded-md bg-surface-overlay text-gray-300 transition-colors hover:bg-surface-border"
                   aria-label="Open command palette"
                   title="Open command palette (Ctrl+K)"
                 >
@@ -1100,7 +1102,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
                 <button
                   type="button"
                   onClick={togglePlay}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-accent-hover"
+                  className="inline-flex items-center gap-1.5 min-h-8 rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-accent-hover"
                 >
                   {isPlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
                   {isPlaying ? "Pause" : "Play"}
@@ -1130,7 +1132,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
               />
             </div>
 
-            <div className="grid grid-cols-4 gap-px border-t border-surface-border bg-surface-border text-xs">
+            <div className="grid grid-cols-2 gap-px border-t border-surface-border bg-surface-border text-xs">
               <PreviewMetric icon={<Activity className="h-3.5 w-3.5" />} label="Reviewed" value={`${reviewedSegments}/${segments.length}`} />
               <PreviewMetric icon={<Layers className="h-3.5 w-3.5" />} label="Step" value={activeWorkflowLabel} />
               <PreviewMetric icon={<RadioTower className="h-3.5 w-3.5" />} label="Warnings" value={String(warningCount)} tone={warningCount > 0 ? "warn" : "good"} />
@@ -1140,9 +1142,9 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
                 value={formatDuration(syncedExportPlan?.estimated_output_duration_seconds ?? plan?.estimated_duration ?? effectiveDuration)}
               />
             </div>
-          </main>
+          </section>
 
-          <aside className="col-start-3 row-span-2 row-start-1 min-h-0 min-w-0 overflow-hidden border-l border-surface-border bg-surface-raised">
+          <aside className="review-inspector min-h-0 min-w-0 overflow-hidden border-l border-surface-border bg-surface-raised" aria-label="Workflow inspector">
             <GuidedWorkflowPanel
               activeStep={activeWorkflowStep}
               completedStepIds={completedWorkflowSteps}
@@ -1186,8 +1188,8 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
           </aside>
         </div>
 
-        <footer className="col-start-2 row-start-2 flex min-h-0 flex-col bg-surface-raised">
-          <div className="flex items-center justify-between gap-4 border-b border-surface-border px-4 py-2">
+        <footer className="review-timeline flex min-h-0 min-w-0 flex-col bg-surface-raised" aria-label="Review timeline">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-surface-border px-3 py-2">
             <div className="min-w-0">
               <h2 className="text-sm font-semibold text-white">
                 {activeWorkflowStep === "layout" ? "Content Layout Timeline" : "Review Timeline"}
@@ -1201,7 +1203,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
             <div className="flex items-center gap-3 text-xs">
               {activeWorkflowStep !== "layout" && <button
                 onClick={handleAcceptAll}
-                className="flex items-center gap-1.5 rounded-md bg-green-600/20 px-3 py-1.5 font-semibold text-green-300 transition-all hover:bg-green-600/30"
+                className="flex items-center gap-1.5 min-h-8 rounded-md bg-green-600/20 px-3 py-1.5 font-semibold text-green-300 transition-all hover:bg-green-600/30"
               >
                 <CheckSquare className="h-3.5 w-3.5" /> Accept All High-Confidence
               </button>}
@@ -1214,7 +1216,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-hidden px-4 py-2">
+          <div className="min-h-0 flex-1 overflow-auto px-3 py-2">
             {activeWorkflowStep === "layout" && editorialBlocks.length > 0 ? (
               <EditorialTimeline
                 blocks={editorialBlocks}
@@ -1243,7 +1245,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
                 onSelectEducationalOverlay={handleSelectEducationalOverlay}
               />
             )}
-            <div className="mt-2 flex items-center justify-between text-xs text-gray-500">
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-gray-500">
               <span>{activeWorkflowStep === "layout" ? `${editorialBlocks.length} teaching blocks` : `${segments.length} transcript segments`}</span>
               <span>
                 {syncedExportPlan?.transcript_cut_count ?? visibleTranscriptCuts.length} transcript cuts synced to preview, timeline, and export

@@ -2,54 +2,136 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ─── Scrollbar (dark theme) ─── */
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: #1e1e2e; }
-::-webkit-scrollbar-thumb { background: #45455a; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #5a5a74; }
+/* Shared desktop workspace tokens; system fonts work fully offline. */
+:root {
+  color-scheme: dark;
+  --workspace-base: #191e23;
+  --workspace-raised: #232a31;
+  --workspace-border: #46535f;
+  --workspace-focus: #99f6e4;
+  --workspace-accent-text: #5eead4;
+}
 
-/* ─── Selection ─── */
-::selection { background: #7c3aed40; }
-
-/* ─── Base ─── */
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; min-width: 0; }
 body {
   margin: 0;
   overflow: hidden;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--workspace-base);
+  color: #edf2f7;
+  font-family: "Segoe UI", Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
 }
-
-button,
-input,
-select {
-  font: inherit;
+button, input, select, textarea { font: inherit; }
+button { min-height: 32px; }
+button:not(:disabled), summary { cursor: pointer; }
+input:not([type="range"]):not([type="checkbox"]):not([type="radio"]), select {
+  min-height: 32px;
+  max-width: 100%;
 }
-
-button:focus-visible,
-input:focus-visible,
-select:focus-visible,
-[role="button"]:focus-visible {
-  outline: 2px solid #a78bfa;
+select option { background: var(--workspace-raised); color: #edf2f7; }
+textarea { max-width: 100%; }
+p { overflow-wrap: anywhere; }
+button, a, input, select, textarea, [tabindex] { scroll-margin: 8px; }
+:where(button, a, input, select, textarea, [tabindex], [role="button"]):focus-visible {
+  outline: 2px solid var(--workspace-focus) !important;
   outline-offset: 2px;
+}
+::selection { background: #0f766e; color: #ffffff; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--workspace-base); }
+::-webkit-scrollbar-thumb {
+  background: #596977;
+  border: 2px solid var(--workspace-base);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover { background: #8193a3; }
+/* Bright text sits on charcoal; the darker accent remains readable under white buttons. */
+.text-accent, .text-accent\/70 { color: var(--workspace-accent-text); }
+
+.dashboard-layout { grid-template-columns: minmax(0, 1fr); }
+.dashboard-projects { min-height: 460px; }
+.project-row { grid-template-columns: minmax(0, 1fr); }
+.project-actions { justify-content: flex-start; }
+@media (min-width: 900px) {
+  .dashboard-layout { height: 100%; grid-template-columns: minmax(0, 1fr) 320px; }
+  .dashboard-projects { min-height: 0; overflow: hidden; border-right-width: 1px; }
+  .dashboard-create { border-top-width: 0; }
+  .project-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .project-actions { grid-column: 1 / -1; }
+}
+@media (min-width: 1440px) {
+  .dashboard-layout { grid-template-columns: minmax(0, 1fr) 340px; }
+  .project-row { grid-template-columns: minmax(0, 1fr) 130px 140px; }
+  .project-actions { justify-content: flex-end; }
+}
+
+/* Narrow and zoomed windows scroll through every workspace region. */
+.review-grid {
+  display: grid;
+  overflow: auto;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "source" "preview" "timeline" "inspector";
+  grid-template-rows: 360px 420px 240px 680px;
+  align-content: start;
+}
+.review-source { grid-area: source; }
+.review-preview { grid-area: preview; }
+.review-timeline { grid-area: timeline; }
+.review-inspector { grid-area: inspector; }
+.review-grid > .contents > aside, .review-timeline { min-width: 0; }
+.review-inspector > aside { min-height: 0; min-width: 0; }
+.review-inspector > aside > :first-child,
+.review-inspector > aside > :last-child { flex-shrink: 0; }
+.review-inspector > aside > .flex-1 { min-height: 0; min-width: 0; }
+.review-workspace .text-\[11px\], .workflow-stepper .text-\[11px\] { font-size: 12px; }
+.review-timeline > :first-child, .review-preview > :first-child { flex-shrink: 0; }
+.review-timeline > :first-child > :last-child { flex-wrap: wrap; }
+.review-inspector .workflow-card > :last-child { margin-bottom: 0; }
+.review-source, .review-inspector { border-bottom: 1px solid var(--workspace-border); }
+@media (min-width: 900px) {
+  .review-grid {
+    grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+    grid-template-areas: "source preview" "source timeline" "inspector inspector";
+    grid-template-rows: 420px 220px 680px;
+  }
+}
+@media (min-width: 1440px) {
+  .review-grid {
+    grid-template-columns: minmax(260px, 0.85fr) minmax(0, 1.45fr) minmax(340px, 1fr);
+    grid-template-areas: "source preview inspector" "source timeline inspector";
+    grid-template-rows: minmax(300px, 1fr) 220px;
+  }
+}
+@media (max-width: 599px) {
+  .workspace-header { gap: 8px; padding-inline: 12px; }
+  .workspace-header > :last-child { width: 100%; }
+  .workspace-filename { max-width: 100%; }
+  .review-grid { grid-template-rows: 360px 440px 280px 720px; }
+  .intake-workspace { padding: 12px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
+  *, *::before, *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
   }
 }
-
 @media (forced-colors: active) {
-  button,
-  input,
-  select,
-  [role="progressbar"] {
-    forced-color-adjust: none;
-    border-color: CanvasText;
+  :root { --workspace-border: CanvasText; --workspace-focus: Highlight; }
+  body { background: Canvas; color: CanvasText; }
+  button, input, select, textarea, [role="progressbar"], progress {
+    border: 1px solid CanvasText;
+  }
+  button:disabled { color: GrayText; }
+  .text-accent, .text-accent\/70 { color: LinkText; }
+  .workflow-stepper [aria-current="step"], [aria-pressed="true"] {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
   }
 }
 
