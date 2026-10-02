@@ -160,6 +160,17 @@ for package_name in ('lancedb', 'pyarrow'):
     except Exception as exc:
         raise RuntimeError('Required native package collection failed: ' + package_name) from exc
 
+# NumPy's C extensions import production _core modules dynamically.
+# Keep PyInstaller's installed NumPy hook responsible for native DLL handling.
+try:
+    numpy_core_imports = collect_submodules(
+        'numpy._core', filter=production_storage_module, on_error='raise'
+    )
+    if not numpy_core_imports or 'numpy._core._exceptions' not in numpy_core_imports:
+        raise RuntimeError('Required NumPy _core collection lacks numpy._core._exceptions')
+except Exception as exc:
+    raise RuntimeError('Required production NumPy _core collection failed') from exc
+
 datas = [(str(contracts_root), 'contracts/desktop-v2/schemas')] + required_datas
 datas += safe_data_files('qdrant_client')
 datas += safe_data_files('pydantic')
@@ -210,6 +221,7 @@ hiddenimports = [
 ]
 hiddenimports += required_imports
 hiddenimports += required_runtime_imports
+hiddenimports += numpy_core_imports
 for package_name in ('api', 'services', 'providers', 'agents', 'models', 'rag', 'desktop_native'):
     hiddenimports += collect_submodules(package_name, on_error='raise')
 hiddenimports += safe_submodules('asyncpg')
