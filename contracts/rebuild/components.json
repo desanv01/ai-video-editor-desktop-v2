@@ -1,1 +1,98 @@
-{"schemaVersion":"aive.components.v1","releaseVersion":"2.1.0-rebuild.2","platform":"win32","architecture":"x64","components":[]}
+{
+  "schemaVersion": "aive.components.v1",
+  "releaseVersion": "2.1.0-rebuild.2",
+  "platform": "win32",
+  "architecture": "x64",
+  "components": [
+    {
+      "archive": "aive-engine-2.1.0-rebuild.2-win32-x64.zip",
+      "entrypoints": {
+        "engine": "bin/aive-engine.exe"
+      },
+      "expandedBytes": 702261952,
+      "id": "aive-engine",
+      "probes": [
+        {
+          "entrypoint": "engine",
+          "kind": "engine-self-test"
+        }
+      ],
+      "required": true,
+      "sha256": "819171815e6f5b27bbf139c5b7656823beaeeda06dc1c6720f3c02a53679e26d",
+      "sizeBytes": 254065716,
+      "version": "2.1.0-rebuild.2"
+    },
+    {
+      "archive": "ffmpeg-8.1.1-win32-x64.zip",
+      "entrypoints": {
+        "ffmpeg": "bin/ffmpeg.exe",
+        "ffprobe": "bin/ffprobe.exe"
+      },
+      "expandedBytes": 454637827,
+      "id": "ffmpeg",
+      "probes": [
+        {
+          "entrypoint": "ffmpeg",
+          "kind": "ffmpeg-version"
+        },
+        {
+          "entrypoint": "ffprobe",
+          "kind": "ffprobe-version"
+        },
+        {
+          "entrypoint": "ffmpeg",
+          "kind": "filter-codec-check"
+        }
+      ],
+      "required": true,
+      "sha256": "45286b26d0b97334e59afef73e1736e71742b6203b1ead997e4089fa689cb812",
+      "sizeBytes": 172864795,
+      "version": "8.1.1"
+    },
+    {
+      "archive": "documents-26.2.6-tdf.3-win32-x64.zip",
+      "entrypoints": {
+        "libreoffice": "program/soffice.com"
+      },
+      "expandedBytes": 1578940493,
+      "id": "documents",
+      "probes": [
+        {
+          "entrypoint": "libreoffice",
+          "kind": "document-tool-version"
+        }
+      ],
+      "required": true,
+      "sha256": "4914bf7d08a768cb67f915600da509078759c0c8b0bb6bd6355c1e75644b765b",
+      "sizeBytes": 508813810,
+      "version": "26.2.6-tdf.3"
+    },
+    {
+      "archive": "whisper-small-1.9.4-b5130-small-win32-x64.zip",
+      "entrypoints": {
+        "audio": "probes/jfk.wav",
+        "model": "models/ggml-small.bin",
+        "whisper": "bin/whisper-cli.exe"
+      },
+      "expandedBytes": 499609931,
+      "id": "whisper-small",
+      "probes": [
+        {
+          "entrypoint": "whisper",
+          "kind": "whisper-runtime"
+        },
+        {
+          "audioEntrypoint": "audio",
+          "entrypoint": "model",
+          "expectedText": "and so my fellow americans",
+          "kind": "whisper-model",
+          "runtimeEntrypoint": "whisper"
+        }
+      ],
+      "required": true,
+      "sha256": "bff80723000e5e058230f8ae27751a4e2ed4378d5dc1c0f849222cb5d022213f",
+      "sizeBytes": 451226025,
+      "version": "1.9.4-b5130-small"
+    }
+  ]
+}
