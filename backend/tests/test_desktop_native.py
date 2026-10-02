@@ -17,7 +17,6 @@ import time
 import unittest
 import uuid
 from pathlib import Path
-from types import SimpleNamespace
 
 import httpx
 
@@ -31,7 +30,7 @@ from desktop_native.jobs import DurableJobStore  # noqa: E402
 from desktop_native.paths import NativeDesktopPaths, NativePathError  # noqa: E402
 from desktop_native.sqlite_storage import backup_database, restore_database  # noqa: E402
 from desktop_native.tools import discover_ffmpeg  # noqa: E402
-from desktop_native.vector_store import SQLiteVectorClient, VectorCapability  # noqa: E402
+from desktop_native.vector_store import VectorCapability  # noqa: E402
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -81,45 +80,6 @@ class NativeDesktopTests(unittest.TestCase):
             "recovered",
         )
 
-    def test_sqlite_vector_persistence_and_filter(self):
-        root = _test_root("vectors")
-
-        async def exercise():
-            client = SQLiteVectorClient(root / "vectors", dimensions=2)
-            await client.create_collection(
-                collection_name="course_materials",
-                vectors_config=SimpleNamespace(size=2, distance="Cosine"),
-            )
-            await client.upsert(
-                collection_name="course_materials",
-                points=[
-                    SimpleNamespace(
-                        id="one",
-                        vector=[1.0, 0.0],
-                        payload={"source_id": "a", "text": "one"},
-                    ),
-                    SimpleNamespace(
-                        id="two",
-                        vector=[0.0, 1.0],
-                        payload={"source_id": "b", "text": "two"},
-                    ),
-                ],
-            )
-            hits = await client.search(
-                collection_name="course_materials",
-                query_vector=[1.0, 0.0],
-                query_filter=SimpleNamespace(
-                    must=[SimpleNamespace(key="source_id", match=SimpleNamespace(value="a"))]
-                ),
-                limit=5,
-            )
-            self.assertEqual([hit.id for hit in hits], ["one"])
-            reopened = SQLiteVectorClient(root / "vectors", dimensions=2)
-            stats = await reopened.get_collection("course_materials")
-            self.assertEqual(stats.points_count, 2)
-
-        asyncio.run(exercise())
-
     def test_ffmpeg_discovery_success_and_failure_are_deterministic(self):
         root = _test_root("tools")
         success = discover_ffmpeg(FIXTURE_ROOT, temp_root=root, allow_fixture=True)
@@ -132,15 +92,15 @@ class NativeDesktopTests(unittest.TestCase):
         self.assertIn("FFMPEG_MISSING", failure.remediation_codes)
         self.assertIn("PATH", failure.ffmpeg.detail + failure.ffprobe.detail)
 
-    def test_health_payload_reports_degraded_vector_fallback(self):
+    def test_health_payload_reports_unavailable_lancedb(self):
         payload = build_health_payload(
             api_ready=True,
             database_ready=True,
             database_detail="SQLite ready",
             vector_capability=VectorCapability(
-                backend="sqlite-cosine-fallback",
-                state="degraded",
-                detail="Explicit fallback; not external Qdrant equivalent.",
+                backend="lancedb",
+                state="unavailable",
+                detail="Failed native index; no fallback is allowed.",
                 remediation_codes=("VECTOR_STORE_UNAVAILABLE",),
             ),
             ffmpeg_probe=None,
@@ -153,6 +113,10 @@ class NativeDesktopTests(unittest.TestCase):
         root = _test_root("storage")
         database = root / "engine.sqlite3"
         store = DurableJobStore(database)
+        with store._session() as db:
+            self.assertEqual(db.execute("PRAGMA synchronous").fetchone()[0], 2)
+            self.assertEqual(db.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+            self.assertEqual(db.execute("PRAGMA busy_timeout").fetchone()[0], 30000)
 
         def create(index: int):
             return store.create_job("concurrent", {"index": index})["job_id"]
