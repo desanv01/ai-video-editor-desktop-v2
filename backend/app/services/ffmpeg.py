@@ -1862,7 +1862,19 @@ class FFmpegService:
 
     @staticmethod
     def _escape_subtitle_path(path: str) -> str:
-        return str(path).replace("\\", "/").replace(":", r"\:")
+        """Escape an unquoted filename through option and filtergraph parsing."""
+        normalized = str(path).replace("\\", "/")
+        # The subtitle option parser consumes its own backslashes and quotes.
+        option_value = "".join(
+            "\\" + char if char in "\\':" or char.isspace() else char
+            for char in normalized
+        )
+        # The filtergraph parser runs first, so preserve the option-layer escapes
+        # while protecting graph separators. Arguments are passed without a shell.
+        return "".join(
+            "\\" + char if char in "\\'[],;" or char.isspace() else char
+            for char in option_value
+        )
 
     @staticmethod
     async def extract_frame(video_path: str, timestamp: float, output_path: str) -> str:

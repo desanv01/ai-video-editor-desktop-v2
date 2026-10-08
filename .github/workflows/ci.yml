@@ -143,3 +143,9 @@ jobs:
 
       - name: Verify durable manual workflow progress without approval side effects
         run: python scripts/rebuild/test_workflow_progress.py --repo . --output .test-output/workflow-progress
+
+      - name: Verify actual Windows subtitle and ASS path escaping
+        shell: pwsh
+        run: |
+          $subtitleMediaRoot = Split-Path -Parent (Split-Path -Parent (Get-Command ffmpeg.exe).Source)
+          python scripts/rebuild/test_subtitle_paths.py --repo . --output .test-output/subtitle-paths --ffmpeg-root $subtitleMediaRoot
