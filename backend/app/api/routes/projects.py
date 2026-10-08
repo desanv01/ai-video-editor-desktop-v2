@@ -696,7 +696,7 @@ async def get_project_readiness(project_id: UUID, db: AsyncSession = Depends(get
     """Run a non-destructive preflight for a project in either runtime mode."""
     result = await db.execute(
         select(Project)
-        .options(selectinload(Project.assets), selectinload(Project.videos))
+        .options(selectinload(Project.assets), selectinload(Project.videos).selectinload(Video.edit_plan))
         .where(Project.id == project_id)
     )
     project = result.scalar_one_or_none()
@@ -1391,18 +1391,8 @@ async def append_browser_project_primary_import_chunk(
     except OSError as exc:
         raise HTTPException(500, f"Could not persist upload chunk: {exc}") from exc
 
-    percent = round((bytes_received / session.file_size_bytes) * 100, 3) if session.file_size_bytes else 0.0
     return PrimaryImportChunkResponse(
-        token=token,
-        project_id=project_id,
-        filename=session.original_filename,
-        status=session.status,
-        bytes_received=bytes_received,
-        total_bytes=session.file_size_bytes,
-        percent=percent,
-        complete=complete,
-        updated_at=session.updated_at,
-        warnings=_import_session_warnings(session),
+        **_import_session_status_response(session, project_id=project_id).model_dump(),
         next_offset=bytes_received,
     )
 
