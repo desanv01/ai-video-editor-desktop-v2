@@ -140,3 +140,6 @@ jobs:
 
       - name: Verify teacher-reviewed report duration and timing provenance
         run: python scripts/rebuild/test_report_metrics.py --repo . --output .test-output/report-metrics
+
+      - name: Verify durable manual workflow progress without approval side effects
+        run: python scripts/rebuild/test_workflow_progress.py --repo . --output .test-output/workflow-progress
