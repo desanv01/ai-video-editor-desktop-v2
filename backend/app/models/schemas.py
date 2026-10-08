@@ -1134,6 +1134,16 @@ class APIKeyStatus(BaseModel):
 
 
 class LocalTranscriptionModelCatalogItem(BaseModel):
+    size_bytes: Optional[int] = None
+    sha256: Optional[str] = None
+    storage_required_bytes: Optional[int] = None
+    bundled: bool = False
+    can_cancel: bool = False
+    can_resume: bool = False
+    can_verify: bool = False
+    verification_required: bool = False
+    download_message: str = ""
+    download_error: Optional[str] = None
     model_id: str
     provider_id: str = "whisper-cpp"
     tier: str
@@ -1160,6 +1170,8 @@ class LocalTranscriptionModelCatalogItem(BaseModel):
 
 
 class LocalTranscriptionModelCatalogResponse(BaseModel):
+    native: bool = False
+    optional_state: Optional[str] = None
     provider_id: str = "whisper-cpp"
     active_model_id: str
     runtime_configured: bool = False

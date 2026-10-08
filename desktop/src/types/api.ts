@@ -1354,9 +1354,19 @@ export interface ProviderConnectionTestResult {
 }
 
 export type LocalTranscriptionModelStatus =
-  | "not_downloaded" | "queued" | "downloading" | "downloaded" | "completed" | "failed";
+  | "not_downloaded" | "queued" | "downloading" | "verifying" | "probing" | "paused" | "interrupted" | "downloaded" | "completed" | "failed";
 
 export interface LocalTranscriptionModel {
+  size_bytes?: number | null;
+  sha256?: string | null;
+  storage_required_bytes?: number | null;
+  bundled?: boolean;
+  can_cancel?: boolean;
+  can_resume?: boolean;
+  can_verify?: boolean;
+  verification_required?: boolean;
+  download_message?: string;
+  download_error?: string | null;
   model_id: string;
   provider_id: "whisper-cpp";
   tier: "fast" | "balanced" | "accurate" | string;
@@ -1383,6 +1393,8 @@ export interface LocalTranscriptionModel {
 }
 
 export interface LocalTranscriptionModelCatalog {
+  native?: boolean;
+  optional_state?: string | null;
   provider_id: "whisper-cpp";
   active_model_id: string;
   runtime_configured: boolean;
@@ -1390,6 +1402,16 @@ export interface LocalTranscriptionModelCatalog {
   runtime_message: string;
   runtime_binary_path: string | null;
   models: LocalTranscriptionModel[];
+}
+
+export interface NativeModelSelection {
+  model_id: string;
+  file_path: string;
+  runtime_binary: string;
+  ready: boolean;
+  requested_model_id: string;
+  optional_state: string;
+  fallback: boolean;
 }
 
 export interface LocalTranscriptionModelDownload {

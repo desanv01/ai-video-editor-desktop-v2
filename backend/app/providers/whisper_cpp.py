@@ -13,6 +13,9 @@ import os
 import re
 import shutil
 import stat
+import subprocess
+import threading
+import signal
 from pathlib import Path
 import uuid
 from dataclasses import dataclass
@@ -182,18 +185,15 @@ def _managed_whisper_files(component_root: str, binary_path: str, model_path: st
 
 def resolve_whisper_cpp_model_selection(settings) -> WhisperCppModelSelection:
     if getattr(settings, "is_native_desktop", False):
-        binary_path, model_path, _ = _managed_whisper_files(
-            getattr(settings, "WHISPER_CPP_COMPONENT_ROOT", ""),
-            getattr(settings, "WHISPER_CPP_BINARY_PATH", ""),
-            getattr(settings, "WHISPER_CPP_MODEL_PATH", ""),
-        )
-        alternate = str(getattr(settings, "LOCAL_TRANSCRIPTION_MODEL_PATH", "") or "")
-        if alternate and os.path.normcase(os.path.abspath(alternate)) != os.path.normcase(os.path.abspath(str(getattr(settings, "WHISPER_CPP_MODEL_PATH", "") or ""))):
-            binary_path, model_path = "", ""
-        return WhisperCppModelSelection(
-            model_id="small", tier=WHISPER_CPP_MODEL_OPTIONS[0].tier,
-            model_path=model_path, binary_path=binary_path,
-        )
+        from desktop_native.model_manager import native_selection
+        try:
+            selected = native_selection(settings)
+            option = get_whisper_cpp_model_option(selected["model_id"])
+            return WhisperCppModelSelection(model_id=option.model_id, tier=option.tier,
+                model_path=selected["file_path"], binary_path=selected["runtime_binary"])
+        except (RuntimeError, OSError, ValueError):
+            return WhisperCppModelSelection(model_id="small", tier=WHISPER_CPP_MODEL_OPTIONS[0].tier,
+                                            model_path="", binary_path="")
     model_id = (
         getattr(settings, "WHISPER_CPP_MODEL_ID", "")
         or getattr(settings, "LOCAL_TRANSCRIPTION_MODEL_ID", "")
@@ -227,9 +227,13 @@ def resolve_whisper_cpp_runtime_status(settings) -> WhisperCppRuntimeStatus:
             getattr(settings, "WHISPER_CPP_BINARY_PATH", ""),
             getattr(settings, "WHISPER_CPP_MODEL_PATH", ""),
         )
-        alternate = str(getattr(settings, "LOCAL_TRANSCRIPTION_MODEL_PATH", "") or "")
-        if alternate and os.path.normcase(os.path.abspath(alternate)) != os.path.normcase(os.path.abspath(str(getattr(settings, "WHISPER_CPP_MODEL_PATH", "") or ""))):
-            issues.append("LOCAL_TRANSCRIPTION_MODEL_PATH must match the activated Whisper small model; repair the component binding")
+        if not issues:
+            from desktop_native.model_manager import native_selection
+            try:
+                selected = native_selection(settings)
+                binary_path, model_path = selected["runtime_binary"], selected["file_path"]
+            except (RuntimeError, OSError, ValueError) as exc:
+                issues.append(str(exc))
         return WhisperCppRuntimeStatus(
             configured=not issues, binary_path=binary_path, model_path=model_path,
             issues=tuple(issues), message="whisper.cpp runtime is ready." if not issues else "; ".join(issues),
@@ -262,14 +266,21 @@ def resolve_whisper_cpp_binary_path(binary_path: str) -> str:
 
 def build_whisper_cpp_model_catalog(settings) -> list[WhisperCppModelCatalogEntry]:
     if getattr(settings, "is_native_desktop", False):
-        status = resolve_whisper_cpp_runtime_status(settings)
+        from desktop_native.model_manager import native_catalog_snapshot
+        from desktop_native.model_catalog import lookup
+        try:
+            snapshot = native_catalog_snapshot(settings)
+            states = {item["model_id"]: item for item in snapshot["models"]}
+        except (RuntimeError, OSError, ValueError):
+            states = {}
         return [WhisperCppModelCatalogEntry(
             model_id=option.model_id, tier=option.tier, label=option.label,
-            expected_filename=option.expected_filename, download_url=option.download_url,
+            expected_filename=option.expected_filename, download_url=lookup(option.model_id).url,
             description=option.description, size_label=option.size_label, size_mb=option.size_mb,
-            speed=option.speed, quality=option.quality, active=option.model_id == "small",
-            downloaded=option.model_id == "small" and status.configured,
-            file_path=status.model_path if option.model_id == "small" and status.configured else None,
+            speed=option.speed, quality=option.quality,
+            active=states.get(option.model_id, {}).get("active", option.model_id == "small"),
+            downloaded=states.get(option.model_id, {}).get("downloaded", False),
+            file_path=states.get(option.model_id, {}).get("file_path"),
         ) for option in WHISPER_CPP_MODEL_OPTIONS]
     selection = resolve_whisper_cpp_model_selection(settings)
     configured_model_path = (
@@ -403,9 +414,17 @@ class WhisperCppTranscriptionProvider(TranscriptionProvider):
         self._binding_issues = list(resolve_whisper_cpp_runtime_status(runtime_settings).issues) if self._native_desktop else []
         self._binary_path = (binary_path or "") if self._native_desktop else (binary_path or "whisper-cli")
         self._model_path = model_path or ""
-        self._model_id = "small" if self._native_desktop else normalize_whisper_cpp_model_id(model_id or "small")
+        self._model_id = model_id if self._native_desktop else normalize_whisper_cpp_model_id(model_id or "small")
+        self._native_store = None
+        if self._native_desktop and not self._binding_issues:
+            from desktop_native.model_manager import get_native_model_store, native_selection, validate_captured_binding
+            self._native_store = get_native_model_store(runtime_settings)
+            selected = native_selection(runtime_settings)
+            if model_id != selected["model_id"]:
+                raise RuntimeError("Explicit native model ID must match the current verified store selection")
+            validate_captured_binding(self._native_store, self._model_id, self._model_path, self._binary_path)
         self._work_dir = work_dir
-        self._runner = runner or self._run_command
+        self._runner = runner or (self._run_native_command if self._native_desktop else self._run_command)
         self._validate_runtime = validate_runtime
         self._metadata = ProviderMetadata(
             provider_id=WHISPER_CPP_PROVIDER_ID,
@@ -450,6 +469,123 @@ class WhisperCppTranscriptionProvider(TranscriptionProvider):
         )
 
     async def transcribe(self, request: TranscriptionRequest) -> TranscriptionResponse:
+        if not self._native_desktop:
+            return await self._transcribe_legacy(request)
+        issues = self._runtime_issues()
+        if issues:
+            raise RuntimeError("whisper.cpp local transcription is not configured: " + "; ".join(issues))
+        from desktop_native.model_manager import native_model_lease
+        with native_model_lease(self._native_store, self._model_id, self._model_path, self._binary_path):
+            owner = asyncio.create_task(self._transcribe_native(request))
+            cancelled = False
+            while True:
+                try:
+                    result = await asyncio.shield(owner)
+                    break
+                except asyncio.CancelledError:
+                    cancelled = True
+                    if owner.done():
+                        raise
+                    owner.cancel()
+                    # Keep the lease until the runner's owned cleanup finishes.
+                    while not owner.done():
+                        try:
+                            await asyncio.shield(owner)
+                        except asyncio.CancelledError:
+                            continue
+                    if not owner.cancelled():
+                        owner.result()
+                    raise
+            if cancelled:
+                raise asyncio.CancelledError()
+            return result
+
+    async def _transcribe_native(self, request):
+        work_dir = self._work_dir or os.path.dirname(request.audio_path) or os.getcwd()
+        os.makedirs(work_dir, exist_ok=True)
+        output_base = os.path.join(work_dir, f"whisper_cpp_{uuid.uuid4().hex}")
+        output_json_path = f"{output_base}.json"
+        command = [self._resolved_binary_path(), "-m", self._model_path, "-f", request.audio_path,
+                   "-oj", "-of", output_base]
+        if request.language:
+            command.extend(["-l", request.language])
+        threads = request.metadata.get("threads")
+        if isinstance(threads, int) and threads > 0:
+            command.extend(["-t", str(threads)])
+        try:
+            result = await self._runner(command, output_json_path)
+            raw_payload = self._load_json_payload(output_json_path, result.stdout)
+            transcript = self._parse_payload(raw_payload, request.metadata.get("duration"))
+            transcript["provider"] = self.metadata.provider_id
+            return TranscriptionResponse(transcript=transcript, provider_id=self.metadata.provider_id,
+                                         model=self._model_id, raw=raw_payload)
+        finally:
+            try:
+                os.remove(output_json_path)
+            except OSError:
+                pass
+
+    async def _run_native_command(self, command, output_json_path):
+        cancel = threading.Event()
+        owner = asyncio.create_task(asyncio.to_thread(self._run_native_sync, command, output_json_path, cancel))
+        try:
+            return await asyncio.shield(owner)
+        except asyncio.CancelledError:
+            cancel.set()
+            while not owner.done():
+                try:
+                    await asyncio.shield(owner)
+                except asyncio.CancelledError:
+                    continue
+            if not owner.cancelled():
+                owner.result()
+            raise
+
+    def _run_native_sync(self, command, output_json_path, cancel):
+        from desktop_native.model_store import _WindowsProcessJob
+        options = {"creationflags": subprocess.CREATE_NO_WINDOW | 0x4} if os.name == "nt" else {"start_new_session": True}
+        proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, shell=False, **options)
+        job = None
+        try:
+            if os.name == "nt":
+                job = _WindowsProcessJob(proc)
+                job.resume(proc)
+            while True:
+                if cancel.is_set():
+                    if job is not None:
+                        job.close()
+                    self._native_store._kill(proc)
+                try:
+                    stdout, stderr = proc.communicate(timeout=.25)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+            if cancel.is_set():
+                return WhisperCppRunResult(stdout="", stderr="Cancelled")
+            stdout_text = stdout.decode("utf-8", errors="replace")
+            stderr_text = stderr.decode("utf-8", errors="replace")
+            if proc.returncode != 0:
+                raise RuntimeError(f"whisper.cpp failed with exit code {proc.returncode}: {stderr_text[:500]}")
+            if not os.path.exists(output_json_path) and not stdout_text.strip():
+                raise RuntimeError("whisper.cpp completed but did not produce JSON output")
+            return WhisperCppRunResult(stdout=stdout_text, stderr=stderr_text)
+        finally:
+            try:
+                if job is not None:
+                    job.close()
+                if proc.poll() is None:
+                    self._native_store._kill(proc)
+                elif os.name != "nt":
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+            finally:
+                proc.stdout.close()
+                proc.stderr.close()
+
+    async def _transcribe_legacy(self, request: TranscriptionRequest) -> TranscriptionResponse:
         issues = self._runtime_issues() if self._native_desktop or self._validate_runtime else []
         if issues:
             raise RuntimeError(
@@ -498,7 +634,14 @@ class WhisperCppTranscriptionProvider(TranscriptionProvider):
 
     def _runtime_issues(self) -> list[str]:
         if self._native_desktop:
-            return self._binding_issues + _managed_whisper_files(self._component_root, self._binary_path, self._model_path)[2]
+            if self._binding_issues or self._native_store is None:
+                return self._binding_issues or ["Native model binding is missing; prepare or repair Whisper"]
+            from desktop_native.model_manager import validate_captured_binding
+            try:
+                validate_captured_binding(self._native_store, self._model_id, self._model_path, self._binary_path)
+                return []
+            except (RuntimeError, OSError, ValueError) as exc:
+                return [str(exc)]
         issues: list[str] = []
         if not self._resolved_binary_path():
             issues.append(
@@ -512,10 +655,10 @@ class WhisperCppTranscriptionProvider(TranscriptionProvider):
 
     def _resolved_binary_path(self) -> str:
         if self._native_desktop:
-            binary, _, issues = _managed_whisper_files(self._component_root, self._binary_path, self._model_path)
+            issues = self._runtime_issues()
             if issues:
                 raise RuntimeError("; ".join(issues))
-            return binary
+            return self._binary_path
         return resolve_whisper_cpp_binary_path(self._binary_path)
 
     @staticmethod
