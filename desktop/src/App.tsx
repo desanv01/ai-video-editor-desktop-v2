@@ -4,6 +4,7 @@ import { UploadPanel } from "./components/UploadPanel";
 import { ProcessingView } from "./components/ProcessingView";
 import { ReviewEditor } from "./components/ReviewEditor";
 import { MainSettingsPanel } from "./components/MainSettingsPanel";
+import { TranscriptionSettingsPanel } from "./components/TranscriptionSettingsPanel";
 import { ProjectDashboard } from "./components/ProjectDashboard";
 import { DesktopV2ErrorBoundary, DesktopV2Shell } from "./components/DesktopV2Shell";
 import { DesktopComponentManagementDialog } from "./components/DesktopComponentManagementDialog";
@@ -65,6 +66,7 @@ export function BrowserEditorApp({ nativeMode = false }: { nativeMode?: boolean 
   const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [nativeModelsOpen, setNativeModelsOpen] = useState(false);
   const [desktopManagementOpen, setDesktopManagementOpen] = useState(false);
   useEffect(() => {
     (async () => {
@@ -223,9 +225,22 @@ export function BrowserEditorApp({ nativeMode = false }: { nativeMode?: boolean 
       </main>
 
       <MainSettingsPanel
-        isOpen={settingsOpen}
+        isOpen={settingsOpen && !nativeModelsOpen}
         onClose={() => setSettingsOpen(false)}
+        onManageNativeModels={window.aiveDesktop ? () => {
+          setSettingsOpen(false);
+          setNativeModelsOpen(true);
+        } : undefined}
       />
+      {window.aiveDesktop && (
+        <TranscriptionSettingsPanel
+          isOpen={nativeModelsOpen}
+          onClose={() => {
+            setNativeModelsOpen(false);
+            setSettingsOpen(true);
+          }}
+        />
+      )}
       {nativeMode && desktopManagementOpen && (
         <DesktopComponentManagementDialog onClose={() => setDesktopManagementOpen(false)} />
       )}

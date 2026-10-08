@@ -43,6 +43,7 @@ import type {
 interface Props {
   isOpen: boolean;
   onClose: () => void;
+  onManageNativeModels?: () => void;
 }
 
 type SettingsTabId = "ai" | "providers" | "export" | "appearance" | "models" | "tours";
@@ -261,7 +262,7 @@ async function chooseDirectory(currentValue: string): Promise<string | null> {
   }
 }
 
-export function MainSettingsPanel({ isOpen, onClose }: Props) {
+export function MainSettingsPanel({ isOpen, onClose, onManageNativeModels }: Props) {
   const [activeTab, setActiveTab] = useState<SettingsTabId>("ai");
   const [backendSettings, setBackendSettings] = useState<BackendAISettings | null>(null);
   const [desktopSettings, setDesktopSettings] = useState<AppSettings>(defaultAppSettings());
@@ -661,6 +662,7 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
                       onSelectedModelChange={setSelectedModelId}
                       onDownload={handleDownload}
                       onRemove={handleRemove}
+                      onManageNativeModels={onManageNativeModels}
                       onPathChange={(kind, value) => setLocalPaths(prev => prev ? { ...prev, [kind]: value } : prev)}
                     />
                   )}
@@ -868,6 +870,7 @@ function LocalModelsTab({
   onDownload,
   onRemove,
   onPathChange,
+  onManageNativeModels,
 }: {
   catalog: LocalTranscriptionModelCatalog | null;
   selectedModelId: string;
@@ -877,11 +880,30 @@ function LocalModelsTab({
   onDownload: (model: LocalTranscriptionModel) => void;
   onRemove: (model: LocalTranscriptionModel) => void;
   onPathChange: (kind: AIProviderKind, value: string) => void;
+  onManageNativeModels?: () => void;
 }) {
   return (
     <PanelStack>
       <SectionHeader title="Local Whisper" icon={Cpu} />
-      {window.aiveDesktop && <p className="text-xs text-gray-400">Whisper small is managed by Desktop preparation. Prepare or repair the component in Desktop setup to change its availability. Current model: small; path: {catalog?.models.find(model => model.model_id === "small")?.file_path ?? "Not prepared"}.</p>}
+      {window.aiveDesktop ? (
+        <div className="space-y-3 rounded-md border border-surface-border bg-surface p-3">
+          <p className="text-sm text-gray-100">Current model: {catalog?.active_model_id ?? "Not selected"}</p>
+          <p className="text-xs leading-5 text-gray-300">
+            Runtime {catalog ? catalog.runtime_configured ? "ready" : "not ready" : "status unavailable"}.
+            {catalog?.runtime_message && ` ${catalog.runtime_message}`}
+          </p>
+          <p className="text-xs leading-5 text-gray-400">Bundled Whisper small remains protected. Optional models are managed separately.</p>
+          <button
+            type="button"
+            onClick={onManageNativeModels}
+            disabled={!onManageNativeModels}
+            className="inline-flex min-h-11 items-center rounded-md bg-accent px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Manage local Whisper models
+          </button>
+        </div>
+      ) : (
+        <>
       {catalog && (
         <div className={`rounded-md border px-3 py-2 text-xs ${
           catalog.runtime_configured
@@ -999,6 +1021,8 @@ function LocalModelsTab({
           );
         })}
       </div>
+        </>
+      )}
 
       <SectionHeader title="Local Paths" icon={FolderOpen} />
       <div className="grid gap-3">
