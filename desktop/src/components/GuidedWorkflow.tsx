@@ -272,6 +272,7 @@ type PanelProps = StepperProps & {
   selectedAnnotationId: string | null;
   selectedEducationalOverlayId: string | null;
   plan: EditPlan | null;
+  synchronizedEstimatedDurationSeconds?: number | null;
   readiness: ProjectReadiness | null;
   readinessLoading: boolean;
   currentTime: number;
@@ -368,6 +369,7 @@ export function GuidedWorkflowPanel({
   selectedAnnotationId,
   selectedEducationalOverlayId,
   plan,
+  synchronizedEstimatedDurationSeconds,
   readiness,
   readinessLoading,
   currentTime,
@@ -440,7 +442,7 @@ export function GuidedWorkflowPanel({
   }, [segments]);
 
   const original = plan?.original_duration ?? 0;
-  const estimated = plan?.estimated_duration ?? 0;
+  const estimated = synchronizedEstimatedDurationSeconds ?? plan?.estimated_duration ?? 0;
   const saved = Math.max(0, original - estimated);
   const warningCount = (warnings?.warnings.length ?? 0) + (warnings?.consequence_alerts.length ?? 0);
   const StepIcon = activeStepMeta.icon;

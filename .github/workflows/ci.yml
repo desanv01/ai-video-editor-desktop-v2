@@ -38,6 +38,8 @@ jobs:
         run: npm run build
       - name: Run focused controller boundary checks
         run: npm run test:rebuild
+      - name: Verify current teacher-reviewed export summary
+        run: node ../scripts/rebuild/test_export_duration.cjs .. ../.test-output/export-duration
       - name: Run immutable component update and legacy activation checks
         run: node ../scripts/rebuild/test_component_updates.cjs ..
       - name: Run native and browser transcript download boundary checks
