@@ -3,7 +3,7 @@ import argparse,asyncio,hashlib,io,json,os,sys,time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
-p=argparse.ArgumentParser();p.add_argument('--repo',type=Path,required=True);p.add_argument('--output',type=Path,required=True);a=p.parse_args();a.output.mkdir(parents=True,exist_ok=False)
+p=argparse.ArgumentParser();p.add_argument('--repo',type=Path,required=True);p.add_argument('--output',type=Path,required=True);a=p.parse_args();a.repo=a.repo.resolve();a.output=a.output.resolve();a.output.mkdir(parents=True,exist_ok=False)
 for key in list(os.environ):
  if key.startswith('AIVE_') or key.endswith('_API_KEY') or key in ('DATABASE_URL','DESKTOP_DB_PATH','DESKTOP_VECTOR_ROOT'):os.environ.pop(key,None)
 sys.path[:0]=[str(a.repo/'backend'),str(a.repo/'backend/app')]
