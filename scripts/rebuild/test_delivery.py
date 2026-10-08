@@ -37,7 +37,7 @@ class DeliverySafety(unittest.TestCase):
   try:
    with contextlib.redirect_stdout(io.StringIO()):self.assertEqual(delivery.main(),0)
   finally:sys.argv=previous
-  return self.root/name/f'AIVE-Desktop-{self.version}-win32-x64-delivery.zip'
+  return self.root/name/f'Aivora-{self.version}-win32-x64-delivery.zip'
  def edit_pack(self,cid,mutate):
   path=self.packs/(cid+'.zip')
   with zipfile.ZipFile(path) as archive:members={i.filename:archive.read(i) for i in archive.infolist()}

@@ -1,4 +1,4 @@
-name: AIVE Electron Rebuild CI
+name: Aivora Desktop CI
 
 on:
   push:

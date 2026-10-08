@@ -20,7 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const PRODUCT_NAME: &str = "AI Video Editor Desktop V2";
 pub const PRODUCT_LINE: &str = "Desktop V2";
-pub const PRODUCT_IDENTIFIER: &str = "com.fyp.ai-video-editor.desktop-v2";
+pub const PRODUCT_IDENTIFIER: &str = "com.aive.ai-video-editor.desktop-v2";
 /// The per-machine installer identity. This is deliberately distinct from
 /// the historical user-data directory so an upgrade cannot move projects or
 /// settings merely because the Program Files display name was corrected.

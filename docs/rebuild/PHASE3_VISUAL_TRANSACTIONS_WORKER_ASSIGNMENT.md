@@ -1,6 +1,6 @@
 # Phase 3B2: native Agent 4 snapshot/compute/apply
 
-Main owns design, diagnosis, review, tests, Git and acceptance. Implement only in existing `C:/Users/Dv/Desktop/ai-video-editor-standalone-release-work/rebuild/worktrees/phase3-transactions`, branch codex/aive-rebuild-phase3-transactions. Main has committed your previous four files as a35d00f; preserve them. No FYP edits, tests, app/provider execution, builds, installs, Git mutations or GitHub.
+Main owns design, diagnosis, review, tests, Git and acceptance. Implement only in existing `C:/Users/Dv/Desktop/ai-video-editor-standalone-release-work/rebuild/worktrees/phase3-transactions`, branch codex/aive-rebuild-phase3-transactions. Main has committed your previous four files as a35d00f; preserve them. No aive edits, tests, app/provider execution, builds, installs, Git mutations or GitHub.
 
 Allowed files: backend/app/agents/visual_structure.py and backend/app/desktop_native/agent_transactions.py only. Do not change Agents 1/2/3/5, orchestrator/callers, storage, runtime, tools, schemas, docs or UI. Another worker owns Agent 5/orchestration. Coordinate ownership blockers with main.
 

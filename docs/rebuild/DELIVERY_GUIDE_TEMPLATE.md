@@ -1,4 +1,4 @@
-AIVE Desktop delivery guide — MAIN MUST FINALIZE BEFORE DELIVERY
+Aivora delivery guide — MAIN MUST FINALIZE BEFORE DELIVERY
 
 Replace every bracketed field using verified release and installed evidence.
 This template is not acceptance evidence. Do not ship it with placeholders.
@@ -22,7 +22,7 @@ slides and any existing project backups. source/ contains the reviewed source ZI
 Install and prepare components
 Run [MAIN: installer filename] and follow the setup prompts. [MAIN: describe the
 actual observed installer trust/signature prompts without asserting signing].
-Open AIVE Desktop and [MAIN: exact verified offline-component selection steps].
+Open Aivora and [MAIN: exact verified offline-component selection steps].
 Wait for all required components to finish preparation and show ready. If a
 component fails, retain the delivery files, read the displayed error and retry
 through [MAIN: verified retry control]. Do not mark a failed component ready.

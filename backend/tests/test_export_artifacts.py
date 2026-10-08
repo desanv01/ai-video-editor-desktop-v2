@@ -14,7 +14,7 @@ from services.export_artifacts import (  # noqa: E402
     EXPORT_ARTIFACT_SCHEMA_VERSION,
     TIMELINE_DECISION_CSV_FIELDS,
     artifact_records,
-    build_academic_evidence_artifact,
+    build_editing_evidence_artifact,
     build_before_after_comparison,
     build_evidence_markdown,
     build_generated_evidence_index,
@@ -30,7 +30,7 @@ from services.export_artifacts import (  # noqa: E402
 
 
 class ExportArtifactTests(unittest.TestCase):
-    def test_builds_academic_evidence_with_metrics_and_decision_audit(self):
+    def test_builds_editing_evidence_with_metrics_and_decision_audit(self):
         video = SimpleNamespace(
             id="video-1",
             original_filename="lecture.mp4",
@@ -95,7 +95,7 @@ class ExportArtifactTests(unittest.TestCase):
             },
         }
 
-        evidence = build_academic_evidence_artifact(
+        evidence = build_editing_evidence_artifact(
             video=video,
             plan=plan,
             segments=segments,
@@ -117,7 +117,7 @@ class ExportArtifactTests(unittest.TestCase):
         self.assertEqual(evidence["provider_trace"]["processing_mode"], "local")
         self.assertEqual(evidence["before_after_comparison"]["after"]["segments_cut"], 1)
         self.assertEqual(evidence["timeline_decisions"]["decision_count"], 2)
-        self.assertEqual(evidence["thesis_metrics_summary"]["quality"]["segment_quality_score"], 0.86)
+        self.assertEqual(evidence["editing_metrics_summary"]["quality"]["segment_quality_score"], 0.86)
 
         markdown = build_evidence_markdown(evidence)
         self.assertIn("AI Video Editor Evidence Summary", markdown)
@@ -126,7 +126,7 @@ class ExportArtifactTests(unittest.TestCase):
         self.assertIn("Transcription accuracy proxy: 0.91", markdown)
         self.assertIn("Estimated cost: $0.00000", markdown)
 
-    def test_builds_thesis_specific_artifacts(self):
+    def test_builds_editing_specific_artifacts(self):
         video = SimpleNamespace(
             id="video-1",
             original_filename="lecture.mp4",
@@ -253,7 +253,7 @@ class ExportArtifactTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             plan_path = root / "video_edit_plan.json"
-            summary_path = root / "video_academic_evidence.md"
+            summary_path = root / "video_editing_evidence.md"
             missing_path = root / "video_subtitles.srt"
             write_json_artifact(str(plan_path), {"ok": True})
             write_text_artifact(str(summary_path), "# Summary\n")
@@ -261,7 +261,7 @@ class ExportArtifactTests(unittest.TestCase):
             records = artifact_records(
                 {
                     "plan_json": str(plan_path),
-                    "academic_evidence_markdown": str(summary_path),
+                    "editing_evidence_markdown": str(summary_path),
                     "subtitles_srt": str(missing_path),
                 }
             )
@@ -286,7 +286,7 @@ class ExportArtifactTests(unittest.TestCase):
             with zipfile.ZipFile(bundle_path) as archive:
                 self.assertEqual(
                     set(archive.namelist()),
-                    {"video_edit_plan.json", "video_academic_evidence.md"},
+                    {"video_edit_plan.json", "video_editing_evidence.md"},
                 )
                 payload = json.loads(archive.read("video_edit_plan.json"))
                 self.assertEqual(payload["ok"], True)

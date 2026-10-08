@@ -126,7 +126,7 @@
   ; both shortcuts and commits ARP/identity after this hook succeeds.
   FileOpen $0 "$INSTDIR\component-broker.json" w
   IfErrors broker_marker_failed
-  FileWrite $0 '{"schemaVersion":"desktop.component-broker.v1","identifier":"aive-component-broker","scope":"per-machine","productIdentifier":"com.fyp.ai-video-editor.desktop-v2"}'
+  FileWrite $0 '{"schemaVersion":"desktop.component-broker.v1","identifier":"aive-component-broker","scope":"per-machine","productIdentifier":"com.aive.ai-video-editor.desktop-v2"}'
   FileClose $0
   Goto broker_marker_done
   broker_marker_failed:

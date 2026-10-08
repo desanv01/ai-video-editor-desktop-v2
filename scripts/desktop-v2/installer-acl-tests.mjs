@@ -42,7 +42,7 @@ assert.match(hook, /AIVE_REMOVE_OWNED_TREE "\$5\\Cache"/);
 assert.doesNotMatch(hook, /CreateShortCut/i, "the generated Tauri NSIS section is the sole shortcut creator");
 assert.doesNotMatch(hook, /Ignore|ignore|continue path/i);
 assert.match(installerTemplate, /AIVEPACKAGEID "rc6-sep4-installer-recovery-v1"/);
-assert.match(hook, /com\.fyp\.ai-video-editor\.desktop-v2/);
+assert.match(hook, /com\.aive\.ai-video-editor\.desktop-v2/);
 
 const generatedCandidates = [
   path.join(repoRoot, "desktop", "src-tauri", "target", "release", "bundle", "nsis", "installer.nsi"),

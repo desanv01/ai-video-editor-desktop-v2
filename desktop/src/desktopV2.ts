@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 export const DESKTOP_V2_PRODUCT_NAME = "AI Video Editor Desktop V2";
 export const DESKTOP_V2_PRODUCT_LINE = "Desktop V2";
-export const DESKTOP_V2_IDENTIFIER = "com.fyp.ai-video-editor.desktop-v2";
+export const DESKTOP_V2_IDENTIFIER = "com.aive.ai-video-editor.desktop-v2";
 export const DESKTOP_V2_STATE_VERSION = "desktop.shell-state.v1";
 
 export type DesktopBootState =

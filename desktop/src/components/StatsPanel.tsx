@@ -128,7 +128,7 @@ export function StatsPanel({ videoId, plan, onApprove, approving }: Props) {
           <StatsDownloadLink href={api.getTimelineDecisionsUrl(videoId)} label="Timeline Decisions" />
           <StatsDownloadLink href={api.getProviderModeTraceUrl(videoId)} label="Provider Mode" />
           <StatsDownloadLink href={api.getMetricsSummaryUrl(videoId)} label="Metrics Summary" />
-          <StatsDownloadLink href={api.getAcademicEvidenceBundleUrl(videoId)} label="Evidence Bundle" />
+          <StatsDownloadLink href={api.getEditingEvidenceBundleUrl(videoId)} label="Evidence Bundle" />
         </div>
       )}
     </div>

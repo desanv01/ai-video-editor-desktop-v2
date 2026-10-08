@@ -544,7 +544,7 @@ export function MainSettingsPanel({ isOpen, onClose }: Props) {
         <div className="flex items-center justify-between border-b border-surface-border px-5 py-4">
           <div>
             <p className="text-xs uppercase tracking-wide text-gray-500">Workspace Settings</p>
-            <h2 className="text-base font-semibold text-gray-100">AI Video Editor</h2>
+            <h2 className="text-base font-semibold text-gray-100">Aivora</h2>
           </div>
           <div className="flex items-center gap-2">
             <button

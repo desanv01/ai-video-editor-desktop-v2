@@ -40,7 +40,7 @@ def create_native_app(runtime: NativeDesktopRuntime) -> FastAPI:
 
     app = FastAPI(
         title="AI Video Editing Agent — Native Desktop",
-        description="AIVE Desktop rebuild native core engine.",
+        description="Aivora rebuild native core engine.",
         version="2.1.0-rebuild.2",
         lifespan=lifespan,
     )

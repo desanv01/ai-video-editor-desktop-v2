@@ -11,7 +11,7 @@ const {_electron}=require(process.env.AIVE_TEST_PLAYWRIGHT_MODULE || require.res
  await fs.mkdir(out,{recursive:true});
  const isolated=path.join(out,'isolated-profile');await fs.mkdir(isolated,{recursive:true});
  const env={...process.env,LOCALAPPDATA:isolated};delete env.ELECTRON_RUN_AS_NODE;delete env.AIVE_DEV_URL;delete env.AIVE_DEVELOPER_MODE;
- const app=await _electron.launch({executablePath:path.join(root,'desktop/release-electron/win-unpacked/AIVE Desktop.exe'),env,timeout:30000});
+ const app=await _electron.launch({executablePath:path.join(root,'desktop/release-electron/win-unpacked/Aivora.exe'),env,timeout:30000});
  try{
   const page=await app.firstWindow();const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.getByRole('heading',{name:'Prepare your editing workspace'}).waitFor({timeout:20000});

@@ -51,7 +51,7 @@ assert.match(tauriConfig, /"installMode":\s*"perMachine"/, "Tauri must declare a
 assert.match(tauriConfig, /"startMenuFolder":\s*"AI Video Editor Desktop V2"/, "the Start Menu owner must use the V2 identity");
 mustInclude(contracts, 'shell_install: storage_descriptor("%ProgramFiles%\\\\AI Video Editor Desktop V2\\\\Shell"', "storage contracts must publish the canonical shell path");
 mustInclude(contracts, "program_files_runtime_writable: false", "Program Files must remain immutable at runtime");
-assert.match(migration, /V2_PRODUCT_IDENTIFIER|com\.fyp\.ai-video-editor\.desktop-v2/, "installer identity ownership must be product-scoped");
+assert.match(migration, /V2_PRODUCT_IDENTIFIER|com\.aive\.ai-video-editor\.desktop-v2/, "installer identity ownership must be product-scoped");
 
 // The pinned RC6 NSIS template is the sole installer shortcut owner.
 assert.doesNotMatch(installerCode, /CreateShortCut/i, "the custom NSIS hook must not create a duplicate shortcut");

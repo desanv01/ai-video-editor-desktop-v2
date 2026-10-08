@@ -1290,15 +1290,15 @@ export function getModeComparisonSummaryUrl(videoId: string): string {
   return resourceUrl(`/videos/${videoId}/mode-comparison/summary`);
 }
 
-export function getAcademicEvidenceExportUrl(videoId: string): string {
+export function getEditingEvidenceExportUrl(videoId: string): string {
   return resourceUrl(`/videos/${videoId}/evidence/export`);
 }
 
-export function getAcademicEvidenceSummaryUrl(videoId: string): string {
+export function getEditingEvidenceSummaryUrl(videoId: string): string {
   return resourceUrl(`/videos/${videoId}/evidence/summary`);
 }
 
-export function getAcademicEvidenceBundleUrl(videoId: string): string {
+export function getEditingEvidenceBundleUrl(videoId: string): string {
   return resourceUrl(`/videos/${videoId}/evidence/bundle`);
 }
 

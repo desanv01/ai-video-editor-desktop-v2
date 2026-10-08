@@ -71,7 +71,7 @@ ManifestDPIAwareness PerMonitorV2
 !define AIVEJOURNAL "${AIVEINSTALLERDIR}\transaction-rc6.json"
 !define AIVEUNINSTALLJOURNAL "${AIVEINSTALLERDIR}\uninstall-transaction-rc6.json"
 !define AIVEIDENTITY "desktop-v2.identity.json"
-!define AIVEIDENTIFIER "com.fyp.ai-video-editor.desktop-v2"
+!define AIVEIDENTIFIER "com.aive.ai-video-editor.desktop-v2"
 !define AIVEPACKAGEID "rc6-sep4-installer-recovery-v1"
 !define AIVESTARTMENUDIR "$SMPROGRAMS\AI Video Editor Desktop V2"
 !define AIVESTARTMENULINK "${AIVESTARTMENUDIR}\AI Video Editor Desktop V2.lnk"
@@ -532,7 +532,7 @@ Function HasCoherentPayload
   StrCmp $3 '{"schemaVersion":"desktop.install-identity.v1","productName":"AI Video Editor Desktop V2","identifier":"${AIVEIDENTIFIER}","packageIdentity":"${AIVEPACKAGEID}","version":"2.0.0-rc.6","channel":"beta","canonicalPath":"%ProgramFiles%/AI Video Editor Desktop V2/Shell","installCommitted":true}' coherent_payload_valid
   ; Exact legacy RC.6 identity emitted by the predecessor this recovery build
   ; upgrades. No other filename-only or arbitrary JSON identity is accepted.
-  StrCmp $3 '{"productName":"AI Video Editor Desktop V2","identifier":"com.fyp.ai-video-editor.desktop-v2","version":"2.0.0-rc.6","channel":"beta","installCommitted":true}' 0 coherent_payload_done
+  StrCmp $3 '{"productName":"AI Video Editor Desktop V2","identifier":"com.aive.ai-video-editor.desktop-v2","version":"2.0.0-rc.6","channel":"beta","installCommitted":true}' 0 coherent_payload_done
   coherent_payload_valid:
   StrCpy $1 1
   coherent_payload_done:

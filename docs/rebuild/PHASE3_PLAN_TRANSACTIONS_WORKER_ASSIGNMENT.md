@@ -1,6 +1,6 @@
 # Phase 3B3: native Agent 5 and orchestration boundaries
 
-Main owns architecture/design/diagnosis/tests/review/Git/acceptance. Implement this exact task only in `C:/Users/Dv/Desktop/ai-video-editor-standalone-release-work/rebuild/worktrees/phase3-plan-transactions`, branch codex/aive-rebuild-phase3-plan-transactions, base0fd650e (resolve its exact local HEAD read-only). Original FYP is read-only. No tests/app/provider/build/installs/Git/GitHub by worker.
+Main owns architecture/design/diagnosis/tests/review/Git/acceptance. Implement this exact task only in `C:/Users/Dv/Desktop/ai-video-editor-standalone-release-work/rebuild/worktrees/phase3-plan-transactions`, branch codex/aive-rebuild-phase3-plan-transactions, base0fd650e (resolve its exact local HEAD read-only). Original aive is read-only. No tests/app/provider/build/installs/Git/GitHub by worker.
 
 Allowed files: backend/app/agents/edit_planner.py, backend/app/agents/orchestrator.py and narrowly scoped backend/app/api/routes/videos.py transaction boundaries around `_embed_material_bg` and `_process_video_bg` only. If actual helper names differ, find existing ingestion background function and report exact name. Do not change Agent4/helper/Agents1–3/storage/runtime/providers/schema/UI or prompts. Main owns tests. Agent4 worker separately strengthens fresh_read to BEGIN IMMEDIATE; rely on that final contract without editing shared helper yourself.
 

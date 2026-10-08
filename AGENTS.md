@@ -1,6 +1,6 @@
-# AIVE Desktop rebuild coordination
+# Aivora rebuild coordination
 
-Original FYP `C:/Users/Dv/Desktop/ai-video-editor` is read-only. Implementation is only in the independent dedicated Desktop repository clone and its isolated worktrees, origin `https://github.com/desanv01/ai-video-editor-desktop-v2.git`.
+Original aive `C:/Users/Dv/Desktop/ai-video-editor` is read-only. Implementation is only in the independent dedicated Desktop repository clone and its isolated worktrees, origin `https://github.com/desanv01/ai-video-editor-desktop-v2.git`.
 
 Main chat `01a0fa11-0419-7fd2-aee1-9510fc8cf29e` owns architecture/planning, diagnosis, review/audits, proportionate tests, commits/push/PR/CI and release acceptance. Workers execute only exact assigned implementation/build/package work; no independent planning/tests/review/approval/GitHub actions. Main can author plans/contracts/test code. No merge without direct human authorization.
 

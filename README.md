@@ -1,193 +1,110 @@
-# AI Video Editor Desktop V2
+<p align="center">
+  <img src="docs/assets/aivora-lockup.svg" alt="Aivora" width="380" />
+</p>
 
-A Windows desktop application for lecturer-supervised editing of educational videos. The native UI is built with React and Tauri; a managed FastAPI engine handles projects, media processing, and exports.
+<p align="center">
+  <strong>Your footage. Your story. Your final cut.</strong><br />
+  AI-assisted video editing for lessons, tutorials, and presentations.<br />
+  Work from a transcript. Review every suggestion. Export on your terms.
+</p>
 
-![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4)
-![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB)
-![React](https://img.shields.io/badge/React-19-149ECA)
-![Release status](https://img.shields.io/badge/status-RC6%20developer%2Ftest-orange)
-[![Desktop V2 CI](https://github.com/desanv01/ai-video-editor-desktop-v2/actions/workflows/ci.yml/badge.svg)](https://github.com/desanv01/ai-video-editor-desktop-v2/actions/workflows/ci.yml)
+<p align="center">
+  <img src="https://img.shields.io/badge/Windows-x64-635BFF" alt="Windows x64" />
+  <img src="https://img.shields.io/badge/status-engineering_preview-635BFF" alt="Engineering preview" />
+  <a href="https://github.com/desanv01/ai-video-editor-desktop-v2/actions/workflows/ci.yml"><img src="https://github.com/desanv01/ai-video-editor-desktop-v2/actions/workflows/ci.yml/badge.svg" alt="Desktop CI" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-635BFF" alt="AGPL version 3" /></a>
+</p>
 
-[Status](#current-status) · [Architecture](#architecture) · [Development](#build-and-development) · [Checks](#checks) · [Data paths](#installation-and-data-boundaries) · [History](#development-history)
+<p align="center">
+  <a href="#features">Features</a> ·
+  <a href="#get-started">Get started</a> ·
+  <a href="docs/README.md">Documentation</a> ·
+  <a href="https://github.com/desanv01/ai-video-editor-desktop-v2/issues">Feedback</a>
+</p>
 
-## Current status
+<p align="center">
+  <img src="docs/assets/aivora-workflow.svg" alt="Aivora workflow: import sources, transcribe, clean, arrange sections, choose layouts, polish, and export after review" width="1000" />
+  <br /><sub>AI proposes. You decide. Aivora renders the approved plan.</sub>
+</p>
 
-The current source checkpoint is **2.0.0-rc.6**, with installer recovery work recorded on 4 September 2026. RC6 is a developer/test release candidate, not a production-ready release. Its installer is not Authenticode-signed, and the current source still needs clean-machine release validation and production signing evidence.
+## Features
 
-The current source checkpoint makes no claim to a production installer or a cleanly validated lecturer handoff. A test handoff requires a matched catalog and engine/FFmpeg component archives. Do not treat the test Ed25519 key or component signatures as a commercial publisher identity.
+### Edit from the words
 
-| Area | State |
-|---|---|
-| Native Windows shell and managed engine architecture | Implemented in source |
-| Windows CI | Configured; check the [Actions page](https://github.com/desanv01/ai-video-editor-desktop-v2/actions) for the latest run |
-| RC6 clean-machine installation evidence | Still required |
-| Authenticode signing | Not present |
-| Production release | Not ready |
+Review timestamped speech, correct the transcript, and select text to cut. Keep or override AI suggestions before they become final edits. Download the original transcript as plain TXT, timestamped TXT, JSON, or segment CSV, independently of the final video.
 
-## Product workflow
+### Bring the whole recording together
 
-- Creates projects and imports lecture recordings and course materials.
-- Guides a lecturer through source checks, processing, transcript review, edit decisions, and export.
-- Runs a separately managed native engine and communicates with it over authenticated loopback HTTP.
-- Installs engine and FFmpeg components through a manager that checks signed manifests, hashes, archive contents, and component self-tests before activation.
-- Stages component updates and records activation state to support repair and recovery.
-- Keeps projects and exports outside the installer directory; ordinary uninstall preserves user data.
+Import video, screen recordings, camera footage, audio, slides, and reference documents into a project. Use supporting materials to help the processing pipeline understand the content and propose relevant visuals.
 
-## Architecture
+### Shape a clear story
 
-~~~mermaid
-flowchart LR
-    UI[React and TypeScript UI] --> Shell[Tauri Windows shell]
-    Shell --> Supervisor[Engine supervisor]
-    Supervisor -->|dynamic loopback port plus bearer token| Engine[Managed FastAPI engine]
-    Components[Verified engine and FFmpeg components] --> Engine
-    Engine --> DB[(Native relational storage)]
-    Engine --> Media[User projects, uploads, and exports]
-~~~
+Review proposed cuts, content sections, and chapter order. The six-stage workspace takes you through **Transcribe → Clean → Sections → Layout → Polish → Export**, with manual decisions saved alongside the plan.
 
-The shell is a small per-machine application. The component manager verifies and activates the larger engine and FFmpeg runtime separately. The supervisor starts only the activated engine, selects a loopback port dynamically, supplies a generated bearer token, waits for the authenticated readiness handshake, and supports graceful shutdown.
+### Put the right visual on screen
 
-The native engine profile uses local application storage rather than requiring Docker for the installed application. The source repository also retains a browser-development route from the earlier FYP line; running Vite in a browser is not the same as launching or validating the native Desktop V2 shell.
+Review slide matches and choose fullscreen, side-by-side, or picture-in-picture layouts. Adjust captions, annotations, title cards, and other finishing elements before rendering.
 
-## Technical stack
+### Export with a record of your decisions
 
-| Area | Implementation |
-|---|---|
-| Desktop shell | Tauri 2.11.2, Rust, and the Windows NSIS/MSI packaging configuration |
-| Frontend | React 19, TypeScript 5.7, Vite 6, and Tailwind CSS |
-| Engine | FastAPI/Python 3.12, launched and supervised as a separate native process |
-| Native data profile | SQLite and per-user filesystem storage; vector capability can be degraded when optional local vector services are unavailable |
-| Media runtime | Managed FFmpeg 8.1.1 component |
-| Shell-to-engine security | Dynamic loopback binding, generated bearer token, and authenticated readiness/control calls |
-| Component integrity | Signed catalog and manifests, SHA-256 inventory checks, staging, activation, and recovery metadata |
+Render approved edits through managed FFmpeg. Save video, audio, captions, chapters, plans, quality reports, and editing evidence. Original transcript downloads retain source content even when speech is removed from the final cut.
 
-## Repository structure
+### A workspace on your machine
 
-| Path | Contents |
-|---|---|
-| desktop/ | React application, Tauri shell, and installer configuration |
-| backend/ | FastAPI engine and backend tests |
-| contracts/ | Versioned runtime contracts and release provenance fixtures |
-| scripts/desktop-v2/ | Packaging, installer, and validation tools |
-| docs/desktop-v2/ | Architecture, setup, operations, and release evidence |
-| fixtures/ | Synthetic inputs for selected checks |
+The Windows app manages its private engine and media tools, verifies component archives before activation, and stores projects locally. SQLite holds project state; LanceDB supports content retrieval. Configure your own provider credentials for hosted AI features, or use supported local transcription routes when their runtime and model are prepared.
 
-## Build and development
+---
 
-### Requirements for source development
+## Get started
 
-| Tool | Use |
-|---|---|
-| Windows 10 or 11 x64 | Target native shell and installer |
-| Node.js 22 and npm | Frontend dependencies and build; Node 22 is used by CI |
-| Stable Rust toolchain | Tauri shell |
-| Visual Studio C++ Build Tools | Native Windows dependencies for Tauri |
-| WebView2 Runtime | Windows web content inside the native shell |
-| Python 3.12 | Backend unit tests and engine development |
+**Current source version: `2.1.0-rebuild.2`.** Aivora is an engineering preview for Windows x64. The current app uses Electron; the older Tauri shell remains in source for compatibility checks. Release signing, installed end-to-end workflow acceptance, other-machine validation, and live provider/GPU results require separate release evidence.
 
-The installed lecturer application is intended to use its managed engine and FFmpeg components; it does not depend on system Python, Node.js, Docker, or a system FFmpeg installation. The current RC6 handoff remains a developer/test build and has not passed the production release gates.
+### Windows application
 
-### Clone and build the frontend
+Check [Releases](https://github.com/desanv01/ai-video-editor-desktop-v2/releases) for available handoffs and their stated validation. A usable handoff needs the matching installer, component manifest, and runtime archives. CI installer artifacts alone do not include the full runtime. Follow the [setup guide](docs/getting-started.md) and the instructions shipped with the handoff.
 
-~~~powershell
+The managed app is designed to run without system Python, Node.js, Docker, or FFmpeg. Required components must finish verification and preparation before the editor opens. Hosted processing needs your chosen provider's credentials and connectivity; local project storage does not imply that every AI feature works offline.
+
+### Build from source
+
+Use Windows x64, **Node.js `24.14.1`**, npm, and **Python 3.12** for backend development. Node's exact version is declared in the desktop package and used by CI.
+
+```powershell
 git clone https://github.com/desanv01/ai-video-editor-desktop-v2.git
 Set-Location ai-video-editor-desktop-v2
-
 npm ci --prefix desktop
 npm run build --prefix desktop
-~~~
+npm run dev:electron --prefix desktop
+```
 
-### Browser development mode
+The native shell loads the built interface. It needs the matching managed component set to run processing. For frontend iteration, `npm run dev --prefix desktop` starts Vite on port 1420; browser mode requires a separately configured API and does not launch the managed engine.
 
-~~~powershell
-npm run dev --prefix desktop
-~~~
+[Development and checks →](CONTRIBUTING.md)
 
-Vite serves on port 1420. Browser mode follows the retained web/FYP path and may use the API on port 8000. It does not start the native V2 engine or prove that an installed component handoff works.
+---
 
-### Native Tauri development mode
+## Built with
 
-~~~powershell
-Set-Location desktop
-npx tauri dev
-~~~
+| Desktop | Engine | Data | Managed tools |
+| --- | --- | --- | --- |
+| Electron · React 19 · TypeScript · Tailwind | Packaged FastAPI · Python 3.12 | SQLite · LanceDB · local files | FFmpeg/FFprobe · LibreOffice · whisper.cpp + model |
 
-A source-built shell does not include the generated release catalog or component archives. To exercise component installation, use a complete, matching developer/test handoff with its Catalog and Components folders kept together.
+The shell supervises the engine through authenticated loopback communication. Component preparation checks archive size, SHA-256, safe extraction, and probes before activation. [Architecture →](docs/architecture.md)
 
-## Checks
+## Documentation
 
-The [Windows CI workflow](.github/workflows/ci.yml) runs frontend build, Rust formatting/checks/tests, unsigned NSIS source generation, desktop contract and installer checks, and the backend unit suite. The rendered-NSIS tests need generated installer source, so build the NSIS source before running npm test.
+- [Install, prepare components, and configure providers](docs/getting-started.md)
+- [Architecture and repository map](docs/architecture.md)
+- [Transcript downloads and editing evidence](docs/exports.md)
+- [Development and contribution guide](CONTRIBUTING.md)
+- [Engineering contracts and release gates](docs/rebuild/CONTRACTS.md)
 
-~~~powershell
-npm ci --prefix desktop
-npm run build --prefix desktop
+## Feedback & contributions
 
-Push-Location desktop
-npx tauri build --bundles nsis --no-sign
-Pop-Location
+Found a bug or have a feature in mind? [Open an issue](https://github.com/desanv01/ai-video-editor-desktop-v2/issues). Include your app version, workflow, expected result, and reproduction steps. Use synthetic or permission-cleared samples and remove credentials and private media from public reports.
 
-npm test --prefix desktop
-cargo fmt --all --check --manifest-path desktop/src-tauri/Cargo.toml
-cargo check --locked --manifest-path desktop/src-tauri/Cargo.toml
-cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml
+Want to contribute? Start with [CONTRIBUTING.md](CONTRIBUTING.md). [Star the repo](https://github.com/desanv01/ai-video-editor-desktop-v2) to follow development.
 
-py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
-.\.venv\Scripts\python.exe -m unittest discover -s backend/tests -p "test_*.py"
-~~~
+## License
 
-A passing CI or source test run does not replace a clean-machine installer test, release handoff verification, or Authenticode signing.
-
-## Installation and data boundaries
-
-A complete test handoff starts with an empty shell. Setup Center imports the release catalog, validates its component references, and installs the engine and FFmpeg components before the application can run the full native workflow. Keep Catalog and Components as sibling folders; if the handoff is moved, import the catalog again from its new location.
-
-| Data | Default location |
-|---|---|
-| Per-machine shell | %ProgramFiles%\AI Video Editor Desktop V2\Shell |
-| Components, catalog, and activation state | %ProgramData%\AI Video Editor |
-| Per-user settings and disposable runtime state | %LocalAppData%\AI Video Editor |
-| Projects, uploads, models, and exports | %USERPROFILE%\Documents\AI Video Editor |
-| Provider credentials | Windows Credential Manager |
-
-The default uninstall preserves user projects, uploads, models, databases, exports, settings, and stored credentials. A separate full-wipe operation is destructive and requires its own explicit confirmation. Never commit provider credentials, signing seeds, certificates, user databases, recordings, course materials, generated media, or release binaries.
-
-Provider-backed AI features need the relevant lecturer-owned credentials. Local and manual workflows can run without provider keys where the selected workflow supports them.
-
-## Development history
-
-The milestone refs preserve the Desktop V2 work in chronological order. The product history ends with the September 4, 2026 RC6 work; later repository setup adds documentation and CI without claiming the RC6 release gates have passed.
-
-| Date | Milestone | Historical ref or checkpoint |
-|---|---|---|
-| 2026-08-20 | Phase 0: protected baseline | codex/desktop-v2-phase-0 |
-| 2026-08-20 | Phase 1: runtime contracts | codex/desktop-v2-phase-1 |
-| 2026-08-20 | Phase 2: thin Tauri shell | codex/desktop-v2-phase-2 |
-| 2026-08-20 | Phase 3: component manager | codex/desktop-v2-phase-3 |
-| 2026-08-20 | Phase 4: native engine and FFmpeg components | codex/desktop-v2-phase-4 |
-| 2026-08-20 | Phase 5: engine supervisor | codex/desktop-v2-phase-5 |
-| 2026-08-20 | Phase 6: Setup Center | codex/desktop-v2-phase-6 |
-| 2026-08-20 | Phase 7: migration and uninstall safety | codex/desktop-v2-phase-7 |
-| 2026-08-21 | Phase 8: desktop product workflow | codex/desktop-v2-phase-8 |
-| 2026-08-21 | Phase 9 and RC1 (2.0.0-rc.1): release handoff | codex/desktop-v2-phase-9; commit 2ccea79 |
-| 2026-08-22 | RC2 (2.0.0-rc.2): installer ACL hotfix | codex/desktop-v2-installer-acl-hotfix; commit a7da1b4 |
-| 2026-08-24 | RC3: lecturer handoff evidence hardening | codex/desktop-v2-rc3-lecturer-handoff-hardening |
-| 2026-08-28 | RC4: first-run recovery hardening | codex/desktop-v2-rc4-first-run-recovery |
-| 2026-09-02 | RC5: native runtime lifecycle hardening | codex/desktop-v2-rc5-commercial-overhaul |
-| 2026-09-03–04 | RC6: transactional installer and interrupted-uninstall recovery | codex/desktop-v2-rc6-commercial-overhaul → codex/desktop-v2-rc6-installer-recovery-sep4 |
-
-The Git history retains ancestry from the FYP repository. The separate 1.0.x standalone release-work copy is a legacy line and is not represented by these V2 milestone refs.
-
-## Technical documentation
-
-- [Architecture and operations](docs/desktop-v2/FINAL_ARCHITECTURE_AND_OPERATIONS.md)
-- [RC6 lecturer setup](docs/desktop-v2/RC6_LECTURER_SETUP.md)
-- [RC6 installation](docs/desktop-v2/RC6_LECTURER_INSTALL.md)
-- [RC6 configuration](docs/desktop-v2/RC6_LECTURER_CONFIGURATION.md)
-- [RC6 troubleshooting](docs/desktop-v2/RC6_LECTURER_TROUBLESHOOTING.md)
-- [RC6 release provenance and gates](docs/desktop-v2/RC6_RELEASE_PROVENANCE.md)
-- [RC3 clean Windows validation notes](docs/desktop-v2/CLEAN_WINDOWS_VALIDATION_RC3.md)
-
-## Related project
-
-The academic source and thesis evidence remain in the [AI Video Editor FYP repository](https://github.com/desanv01/ai-video-editor). This repository documents the separate Desktop V2 application line.
+Aivora is distributed under the [GNU Affero General Public License, version 3](LICENSE). Component distributions carry their own third-party notices and applicable licenses; see the `NOTICE.txt` supplied with a handoff.

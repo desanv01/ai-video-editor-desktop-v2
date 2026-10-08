@@ -13,7 +13,7 @@
       "required": ["name", "identifier", "version", "channel"],
       "properties": {
         "name": { "const": "AI Video Editor Desktop V2" },
-        "identifier": { "const": "com.fyp.ai-video-editor.desktop-v2" },
+        "identifier": { "const": "com.aive.ai-video-editor.desktop-v2" },
         "version": { "const": "2.0.0-rc.8" },
         "channel": { "const": "beta" }
       }

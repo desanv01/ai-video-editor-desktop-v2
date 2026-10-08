@@ -26,7 +26,7 @@ pub const UNINSTALL_PLAN_SCHEMA: &str = "desktop.uninstall-plan.v1";
 pub const UNINSTALL_REPORT_SCHEMA: &str = "desktop.uninstall-report.v1";
 pub const V2_PROGRAM_FILES_DIRECTORY: &str = "AI Video Editor Desktop V2";
 pub const V2_PRODUCT_DIRECTORY: &str = "AI Video Editor";
-pub const V2_PRODUCT_IDENTIFIER: &str = "com.fyp.ai-video-editor.desktop-v2";
+pub const V2_PRODUCT_IDENTIFIER: &str = "com.aive.ai-video-editor.desktop-v2";
 pub const FULL_WIPE_CONFIRMATION: &str = "REMOVE ALL AI VIDEO EDITOR USER DATA";
 const CURRENT_V2_MARKER_FILES: [&str; 3] = [
     "State/setup-state.json",
@@ -1023,7 +1023,7 @@ fn identity_for_scope(path: &Path, scope: &str, current_v2: bool) -> LegacyInsta
         identifier: if current_v2 {
             Some(V2_PRODUCT_IDENTIFIER.to_string())
         } else {
-            Some("com.fyp.ai-video-editor".to_string())
+            Some("com.aive.ai-video-editor".to_string())
         },
         version: None,
         install_scope: scope.to_string(),
@@ -3462,7 +3462,7 @@ mod tests {
     #[test]
     fn scanner_detects_old_runtime_split_install_and_unsupported_databases() {
         let tree = SyntheticTree::new();
-        tree.write("LocalAppData/AI Video Editor/identity.json", br#"{"productName":"AI Video Editor","identifier":"com.fyp.ai-video-editor","version":"1.0.0"}"#);
+        tree.write("LocalAppData/AI Video Editor/identity.json", br#"{"productName":"AI Video Editor","identifier":"com.aive.ai-video-editor","version":"1.0.0"}"#);
         tree.write("LocalAppData/AI Video Editor/backend.pid", b"123");
         tree.write("LocalAppData/AI Video Editor/backend.port", b"18000");
         tree.write(
@@ -3490,7 +3490,7 @@ mod tests {
             "ProgramFilesX86/AI Video Editor/resources/app.asar",
             b"old-resources",
         );
-        tree.write("Registry/uninstall.json", br#"{"displayName":"AI Video Editor","displayVersion":"1.0.0","identifier":"com.fyp.ai-video-editor","uninstallString":"old-uninstall.exe"}"#);
+        tree.write("Registry/uninstall.json", br#"{"displayName":"AI Video Editor","displayVersion":"1.0.0","identifier":"com.aive.ai-video-editor","uninstallString":"old-uninstall.exe"}"#);
         tree.write(
             "User/Desktop/AI Video Editor.lnk",
             b"target=C:\\Program Files\\AI Video Editor\\AI Video Editor.exe",

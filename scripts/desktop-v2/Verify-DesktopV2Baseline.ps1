@@ -201,7 +201,7 @@ if ($largeCandidates.Count -gt 0) {
 $runtimeTracked = @($trackedPaths | ForEach-Object { $_.Replace('\', '/') } | Where-Object {
     (($_ -match '(^|/)(uploads|data|output|runtime|node_modules|target|dist|build)(/|$)') -and $_ -notmatch '^backend/app/') -or
     $_ -match '(^|/)[^/]*\.(gguf|safetensors|onnx|ckpt|pth)$' -or
-    ($_ -match '(^|/)(runtime|output|export|artifact|bundle)[^/]*\.(zip|7z|tar|gz|mp4|mov|wav|db)$' -and $_ -ne 'docs/fyp_context_pack.zip')
+    ($_ -match '(^|/)(runtime|output|export|artifact|bundle)[^/]*\.(zip|7z|tar|gz|mp4|mov|wav|db)$')
 })
 if ($runtimeTracked.Count -gt 0) {
     Add-Failure ("Runtime/private paths appear in the Git-visible inventory: " + ($runtimeTracked -join ', '))

@@ -33,5 +33,5 @@ The full generator creates:
 - `transcripts/synthetic_lecture.srt` and `.vtt`: caption sidecars.
 - `synthetic_lecture_manifest.json`: generated asset manifest with relative paths.
 
-The source data models a short academic lecture with screen, camera, audio, slides,
+The source data models a short presentation with screen, camera, audio, slides,
 layout cues, edit decisions, filler words, dead air, and chapter markers.

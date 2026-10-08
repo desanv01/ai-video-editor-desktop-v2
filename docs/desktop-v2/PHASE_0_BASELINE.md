@@ -43,11 +43,11 @@ The existing localhost development path is preserved:
 - desktop/revideo and backend/revideo remain optional render support; Phase 0 does not remove or relocate them.
 - docker-compose.desktop.yml is preserved as the current packaged-compose reference. Phase 0 does not retrofit it or make the development stack depend on Desktop V2.
 
-No runtime ZIP, uploaded recording, course-material upload, model file, database volume, provider credential, .env, build output, dependency cache, or generated media is a Phase 0 source artifact. The existing docs/fyp_context_pack.zip is a 202,303-byte documentation archive already tracked at baseline; it is not a runtime bundle and is not a template for adding runtime archives.
+No runtime ZIP, uploaded recording, course-material upload, model file, database volume, provider credential, .env, build output, dependency cache, or generated media is a Phase 0 source artifact.
 
 ## 3. Current source inventory
 
-The baseline repository is a thesis/source snapshot with these active boundaries:
+The baseline repository is a product review/source snapshot with these active boundaries:
 
 | Area | Role | Important entry points |
 |---|---|---|
@@ -60,7 +60,7 @@ The baseline repository is a thesis/source snapshot with these active boundaries
 | docker-compose.yml | Local development services | FastAPI, PostgreSQL, Qdrant, Redis |
 | docker-compose.desktop.yml | Existing packaged desktop service definition | Loopback services with host bind mounts |
 | fixtures/synthetic_media | Privacy-safe deterministic test fixtures | Synthetic transcript, slides and manifest |
-| docs | Reproducibility, audit and thesis evidence | docs/fyp_context_pack/, docs/reproducibility/ |
+| docs | Reproducibility, audit and product review evidence | docs/desktop-v2/ |
 | scripts | Existing verification and source-package helpers | scripts/check_setup.py and test/verification scripts |
 
 Dependency manifests present at baseline are desktop/package.json and desktop/package-lock.json, desktop/src-tauri/Cargo.toml and Cargo.lock, backend/requirements.txt, and the two Compose files. There is no root Node project. desktop/node_modules was absent at inspection time, so an install is allowed only as a proportionate local verification prerequisite and must remain ignored/uncommitted.
@@ -168,7 +168,7 @@ The following checks were run from this worktree. Generated node_modules, deskto
 | cargo check --manifest-path desktop\src-tauri\Cargo.toml | PASS | Exit 0; Rust/Tauri dev profile finished in 2m 51s. |
 | Development Compose config | BLOCKED BY MISSING LOCAL CONFIG | docker compose config --quiet exited 1 because the ignored local .env file is absent. No .env was created. Passing .env.example with --env-file does not replace the Compose service env_file reference to .env, so that safe retry produced the same missing-file result. |
 | Raw packaged Compose config | EXPECTED FAILURE CONFIRMED | docker compose -f docker-compose.desktop.yml config --quiet exited 1, warning that AIVE_HOST_* and AIVE_DESKTOP_ENV_FILE were unset, then reporting an empty bind-mount section. This reproduces the documented launcher-variable failure mechanism without starting services. |
-| Artifact hygiene audit | PASS | Git-visible inventory and the verifier found no runtime/private tracked paths, live credential files, high-confidence token shapes or files over the 50 MiB threshold. Existing docs/fyp_context_pack.zip remains documentation evidence, not a runtime bundle. |
+| Artifact hygiene audit | PASS | Git-visible inventory and the verifier found no runtime/private tracked paths, live credential files, high-confidence token shapes or files over the 50 MiB threshold. |
 
 ## 10. Phase 0 gate
 

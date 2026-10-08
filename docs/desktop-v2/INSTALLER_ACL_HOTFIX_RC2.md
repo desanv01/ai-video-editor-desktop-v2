@@ -14,7 +14,7 @@ The token was not a valid NSIS shell variable. NSIS therefore preserved it as li
 
 ## Corrected policy
 
-rc.2 keeps the stable product identity `com.fyp.ai-video-editor.desktop-v2` and uses this layout:
+rc.2 keeps the stable product identity `com.aive.ai-video-editor.desktop-v2` and uses this layout:
 
 | Scope | Path | Policy |
 | --- | --- | --- |
@@ -28,7 +28,7 @@ The hook sets `SetShellVarContext all`, resolves `$APPDATA\AI Video Editor`, rea
 
 The final ACL policy is applied recursively with inheritance removed and the Administrators group as owner: SYSTEM and Administrators receive full control, and the local Users group receives Modify only within the scoped component perimeter. The uninstaller resolves the same machine root before deleting only machine runtime state. It captures the invoking user’s `%LOCALAPPDATA%` path before switching to all-users context, so disposable per-user state is cleaned without touching user projects, uploads, models, databases, configuration, or exports.
 
-The installer does not create WebView2 state for the administrator who approves UAC. At process start, the shell resolves the *actual launching user’s* `%LOCALAPPDATA%\com.fyp.ai-video-editor.desktop-v2`, creates it, performs a write/remove probe, and only then lets Tauri construct the first WebView2 window. This keeps a per-machine install usable by another Windows account and turns profile-permission failures into an actionable startup diagnostic rather than a generic WebView2 access-denied panic.
+The installer does not create WebView2 state for the administrator who approves UAC. At process start, the shell resolves the *actual launching user’s* `%LOCALAPPDATA%\com.aive.ai-video-editor.desktop-v2`, creates it, performs a write/remove probe, and only then lets Tauri construct the first WebView2 window. This keeps a per-machine install usable by another Windows account and turns profile-permission failures into an actionable startup diagnostic rather than a generic WebView2 access-denied panic.
 
 ## Regression coverage
 

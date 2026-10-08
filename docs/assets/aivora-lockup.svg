@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="160" viewBox="0 0 600 160" role="img" aria-labelledby="title">
+  <title id="title">Aivora</title>
+  <rect x="12" y="16" width="128" height="128" rx="30" fill="#635bff"/>
+  <path d="M38 109 67 48h19l28 61H92l-7-17H63l-7 17Z" fill="#fff"/>
+  <path d="m71 65 22 15-22 15Z" fill="#635bff"/>
+  <path d="M40 119h72" stroke="#b8ffda" stroke-width="6" stroke-linecap="round"/>
+  <text x="164" y="109" fill="#635bff" font-family="Segoe UI, Arial, sans-serif" font-size="94" font-weight="700" letter-spacing="-4">Aivora</text>
+</svg>
