@@ -17,7 +17,7 @@ import type {
   EditDecisionSync,
   CleanAnalyzeResult, CleanApplyResult, CleanProfileId,
   LocalTranscriptionModelCatalog, LocalTranscriptionModelDownload,
-  LocalTranscriptionModelRemoveResult,
+  LocalTranscriptionModelRemoveResult, NativeModelSelection,
   Project, ProjectAsset, ProjectAssetUploadResponse,
   ProjectAssetSyncUpdateRequest, ProjectAssetMetadataUpdateRequest, ProjectAssetUploadType,
   ProjectCreateRequest, ProjectDetail, ProjectSourceSyncPlan,
@@ -111,6 +111,10 @@ export function setNativeBridgeEnabled(enabled: boolean): void {
   NATIVE_BRIDGE_ENABLED = !ELECTRON_RUNTIME && enabled;
 }
 
+export function isElectronDesktopRuntime(): boolean {
+  return ELECTRON_RUNTIME;
+}
+
 export function isNativeBridgeEnabled(): boolean {
   return NATIVE_BRIDGE_ENABLED;
 }
@@ -119,7 +123,7 @@ function resourceUrl(path: string): string {
   return NATIVE_BRIDGE_ENABLED ? `bridge://engine-resource${path}` : `${BASE_URL}${path}`;
 }
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+async function request<T>(path: string, options?: RequestInit, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<T> {
   const url = `${BASE_URL}${path}`;
   const headers = new Headers(options?.headers);
   if (options?.body && !(options.body instanceof FormData) && !headers.has("Content-Type")) {
@@ -130,7 +134,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     res = await fetchWithTimeout(url, {
       ...options,
       headers,
-    }, DEFAULT_TIMEOUT_MS);
+    }, timeoutMs);
   } catch (error) {
     throw new ApiClientError(friendlyErrorMessage(error), { code: "BACKEND_UNAVAILABLE" });
   }
@@ -1224,6 +1228,15 @@ export async function downloadLocalTranscriptionModel(
   });
 }
 
+export async function cancelLocalTranscriptionModel(modelId: string): Promise<LocalTranscriptionModelDownload> {
+  return request(`/settings/models/local-transcription/${encodeURIComponent(modelId)}/cancel`, { method: "POST" });
+}
+
+export async function activateLocalTranscriptionModel(modelId: string): Promise<NativeModelSelection> {
+  // Full-file hashing plus the bounded runtime probe can exceed ordinary API deadlines.
+  return request(`/settings/models/local-transcription/${encodeURIComponent(modelId)}/activate`, { method: "POST" }, 10 * 60_000);
+}
+
 export async function getLocalTranscriptionModelDownload(
   modelId: string,
 ): Promise<LocalTranscriptionModelDownload> {
@@ -1331,4 +1344,3 @@ export function getMetricsSummaryUrl(videoId: string): string {
 export function getVideoStreamUrl(videoId: string): string {
   return resourceUrl(`/videos/${videoId}/stream`);
 }
-

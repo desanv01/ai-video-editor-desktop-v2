@@ -48,6 +48,8 @@ class NativeDesktopRuntime:
     started_at: str | None = None
     shutting_down: bool = False
     _rag_service: Any = field(default=None, init=False, repr=False)
+    model_store: Any = field(default=None, init=False, repr=False)
+    model_state: dict[str, Any] = field(default_factory=dict, init=False)
     _shutdown_complete: bool = field(default=False, init=False, repr=False)
     _shutdown_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
 
@@ -136,6 +138,16 @@ class NativeDesktopRuntime:
                     self.vector_capability.remediation_codes = ("VECTOR_STORE_UNAVAILABLE",)
                 logger.warning("native LanceDB vector store unavailable: %s", exc)
 
+            from .model_manager import get_native_model_store, verify_native_selection, apply_native_selection
+            try:
+                self.model_store = await asyncio.to_thread(get_native_model_store, settings, restart=True)
+                self.model_state = await asyncio.to_thread(verify_native_selection, settings)
+                apply_native_selection(settings)
+                if self.model_state.get("optional_error"):
+                    logger.warning("native optional model verification: %s", self.model_state["optional_error"])
+            except (RuntimeError, OSError, ValueError) as exc:
+                self.model_state = {"ready": False, "optional_state": "missing", "error": str(exc)}
+                logger.warning("native Whisper component requires repair: %s", exc)
             self.api_ready = True
             self.started_at = _now()
             logger.info(
@@ -145,6 +157,14 @@ class NativeDesktopRuntime:
                 bool(self.ffmpeg_probe and self.ffmpeg_probe.ready),
             )
         except asyncio.CancelledError:
+            from .model_manager import shutdown_native_model_store
+            cleanup = asyncio.create_task(asyncio.to_thread(shutdown_native_model_store))
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    continue
+            cleanup.result()
             self.jobs = None
             self.database_ready = False
             self.api_ready = False
@@ -170,18 +190,38 @@ class NativeDesktopRuntime:
             self.database_ready = False
             self.jobs = None
             logger.info("native engine graceful shutdown begins")
-            try:
+
+            async def cleanup_owner():
+                from .model_manager import shutdown_native_model_store
                 try:
-                    # Do not import/create RAG merely to close an unstarted runtime.
-                    if self._rag_service is not None:
-                        await self._rag_service.close()
+                    # Model workers must stop before engine resources are disposed.
+                    await asyncio.to_thread(shutdown_native_model_store)
                 finally:
-                    await dispose_db()
+                    try:
+                        # Do not create RAG merely to close an unstarted runtime.
+                        if self._rag_service is not None:
+                            await self._rag_service.close()
+                    finally:
+                        await dispose_db()
+                # A failed close remains retryable; only full success is idempotent.
+                self._shutdown_complete = True
+                logger.info("native engine graceful shutdown complete")
+
+            owner = asyncio.create_task(cleanup_owner())
+            caller_cancelled = False
+            try:
+                while not owner.done():
+                    try:
+                        await asyncio.shield(owner)
+                    except asyncio.CancelledError:
+                        caller_cancelled = True
+                # Surface cleanup failures before propagating deferred cancellation.
+                owner.result()
             except Exception:
                 logger.exception("native engine graceful shutdown failed")
                 raise
-            self._shutdown_complete = True
-            logger.info("native engine graceful shutdown complete")
+            if caller_cancelled:
+                raise asyncio.CancelledError()
 
     def health_payload(self) -> dict[str, Any]:
         return build_health_payload(

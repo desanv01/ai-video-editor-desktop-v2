@@ -168,7 +168,13 @@ class NativeModelStore:
                 self._validate_job(job, spec)
                 if job["status"] in RUNNING:
                     job.update(status="interrupted", message="Interrupted by application exit; resume explicitly", error=None)
-                    job["bytes_downloaded"] = self._partial_size(spec)
+                    if job.get("operation") == "qualification":
+                        file = self._owned(self._paths(spec)[0])
+                        actual_bytes = file.stat().st_size if file.exists() else 0
+                        job["actual_file_bytes"] = actual_bytes
+                        job["bytes_downloaded"] = min(actual_bytes, spec.size_bytes)
+                    else:
+                        job["bytes_downloaded"] = self._partial_size(spec)
                     self._progress(job)
                     self._write(journal, job)
                 self._jobs[spec.model_id] = job
@@ -682,14 +688,47 @@ class NativeModelStore:
         spec = lookup(model_id)
         with self._lock:
             cancel = self._reserve(model_id)
+        job_created = False
         try:
             self._binding()
             if model_id != "small":
-                file = self._paths(spec)[0]
-                self._qualify(spec, file, cancel)
+                file = self._owned(self._paths(spec)[0])
+                actual_bytes = file.stat().st_size if file.exists() else 0
+                with self._lock:
+                    prior = self._jobs.get(model_id)
+                    now = time.time()
+                    self._jobs[model_id] = {
+                        "schema": 1, "id": prior["id"] if prior else str(uuid.uuid4()),
+                        "model_id": model_id, "sha256": spec.sha256, "operation": "qualification",
+                        "status": "queued", "download_url": spec.url, "file_path": str(file),
+                        "bytes_downloaded": min(actual_bytes, spec.size_bytes),
+                        "actual_file_bytes": actual_bytes, "total_bytes": spec.size_bytes,
+                        "progress": 0, "message": "Queued for local model qualification; no download",
+                        "error": None, "active": False,
+                        "created_at": prior["created_at"] if prior else now, "updated_at": now,
+                    }
+                    job_created = True
+                    self._update(model_id)
+                # Byte progress describes retained bytes, not hash/probe readiness.
+                # _download_model remains None for this synchronous owner.
+                self._qualify(spec, file, cancel, job=True)
             with self._lock:
                 self._activate_locked(model_id, cancel)
+                if job_created:
+                    self._update(model_id, status="completed", bytes_downloaded=spec.size_bytes,
+                                 actual_file_bytes=spec.size_bytes,
+                                 message="Local model verified, runtime probe passed, and model activated", error=None)
                 return self.selection()
+        except _Paused:
+            if job_created:
+                self._update(model_id, status="paused",
+                             message="Local qualification paused; retained file can be verified later", error=None)
+            raise
+        except Exception as exc:
+            if job_created:
+                self._update(model_id, status="failed", message="Local model qualification failed; retained file preserved",
+                             error=str(exc))
+            raise
         finally:
             with self._lock:
                 self._busy = None
@@ -741,8 +780,3 @@ class NativeModelStore:
                 if self._busy is None:
                     return
             time.sleep(.05)
-
-
-
-
-

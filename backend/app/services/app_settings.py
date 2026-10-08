@@ -323,8 +323,13 @@ def apply_settings_record(record: AppAISettings) -> None:
         # Runtime/model/root paths belong to the activated Desktop component,
         # including an explicitly absent binding; persisted manual paths cannot
         # replace them when a catalogue or startup reloads AI preferences.
-        settings.LOCAL_TRANSCRIPTION_MODEL_ID = "small"
-        settings.WHISPER_CPP_MODEL_ID = "small"
+        from desktop_native.model_manager import apply_native_selection
+        try:
+            apply_native_selection(settings)
+        except (RuntimeError, OSError, ValueError):
+            # Missing mandatory component remains visible to runtime health.
+            settings.LOCAL_TRANSCRIPTION_MODEL_ID = "small"
+            settings.LOCAL_TRANSCRIPTION_MODEL_PATH = settings.WHISPER_CPP_MODEL_PATH or ""
     else:
         settings.LOCAL_TRANSCRIPTION_MODEL_PATH = local_paths.get(ProviderKind.TRANSCRIPTION.value) or ""
         settings.WHISPER_CPP_MODEL_PATH = settings.LOCAL_TRANSCRIPTION_MODEL_PATH
@@ -391,8 +396,13 @@ def settings_response(record: AppAISettings) -> AppSettingsResponse:
     local_model_ids = dict(_stored_local_model_ids(record))
     if settings.is_native_desktop:
         # Present current activated bindings without mutating the persisted row.
-        local_paths[ProviderKind.TRANSCRIPTION.value] = settings.WHISPER_CPP_MODEL_PATH or None
-        local_model_ids[ProviderKind.TRANSCRIPTION.value] = "small"
+        from desktop_native.model_manager import apply_native_selection
+        try:
+            selected = apply_native_selection(settings)
+        except (RuntimeError, OSError, ValueError):
+            selected = {"model_id": "small", "file_path": settings.WHISPER_CPP_MODEL_PATH or None}
+        local_paths[ProviderKind.TRANSCRIPTION.value] = selected["file_path"]
+        local_model_ids[ProviderKind.TRANSCRIPTION.value] = selected["model_id"]
 
     return AppSettingsResponse(
         asr_provider=settings.ASR_PROVIDER,
@@ -445,9 +455,14 @@ async def update_ai_settings(
         if request.api_keys:
             raise HTTPException(status.HTTP_409_CONFLICT, "Desktop credentials are managed by secure Desktop storage.")
         detail = (
-            "Local transcription runtime and models are managed by Desktop component preparation. "
-            "Prepare or repair the Whisper small component in Desktop setup."
+            "Native runtime paths are protected. Activate an owned verified model before saving its selected ID/path; "
+            "prepare or repair the Whisper component if its mandatory binding is missing."
         )
+        from desktop_native.model_manager import get_native_model_store
+        try:
+            selected = get_native_model_store(settings).selection()
+        except (RuntimeError, OSError, ValueError):
+            selected = {"model_id": "small", "file_path": settings.WHISPER_CPP_MODEL_PATH or ""}
         requested_paths = request.local_model_paths or {}
         transcription = ProviderKind.TRANSCRIPTION.value
         local_runtime = ProviderKind.LOCAL_RUNTIME.value
@@ -455,13 +470,13 @@ async def update_ai_settings(
         def path_value(value: Optional[str]) -> str:
             return value.strip() if isinstance(value, str) else ""
 
-        if transcription in requested_paths and path_value(requested_paths[transcription]) != path_value(settings.WHISPER_CPP_MODEL_PATH):
+        if transcription in requested_paths and path_value(requested_paths[transcription]) != path_value(selected["file_path"]):
             raise HTTPException(status.HTTP_409_CONFLICT, detail)
         if local_runtime in requested_paths and path_value(requested_paths[local_runtime]) not in {
             path_value(settings.LOCAL_RUNTIME_PATH), path_value(settings.WHISPER_CPP_BINARY_PATH),
         }:
             raise HTTPException(status.HTTP_409_CONFLICT, detail)
-        if transcription in (request.local_model_ids or {}) and request.local_model_ids[transcription] != "small":
+        if transcription in (request.local_model_ids or {}) and request.local_model_ids[transcription] != selected["model_id"]:
             raise HTTPException(status.HTTP_409_CONFLICT, detail)
 
     # Reject native binding changes before even creating or mutating a row.

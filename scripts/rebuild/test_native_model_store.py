@@ -155,6 +155,36 @@ class Cases(unittest.TestCase):
  def test_first_reader_start_failure_cleans_owned_probe(self):self.reader_failure(1)
  def test_second_reader_start_failure_cleans_started_reader_and_probe(self):self.reader_failure(2)
 
+ def activation_file(self,content=payload):
+  file=self.store._paths(self.specs['medium'])[0];file.parent.mkdir(parents=True,exist_ok=True);file.write_bytes(content);return file
+ def test_sync_qualification_observes_hash_probe_cancel_and_retains_previous(self):
+  file=self.activation_file();entered,release=threading.Event(),threading.Event();errors=[]
+  def probe(candidate,cancel):
+   entered.set();assert release.wait(10);self.store._check(cancel)
+  self.probe_mock.side_effect=probe
+  def activate():
+   try:self.store.activate('medium')
+   except BaseException as exc:errors.append(exc)
+  thread=threading.Thread(target=activate);thread.start()
+  try:
+   self.assertTrue(entered.wait(10));job=self.store.get_job('medium');self.assertEqual(job['status'],'probing');self.assertEqual(job['operation'],'qualification');self.assertIsNone(self.store._download_model)
+   with self.assertRaises(module.ModelStoreError):self.store.start_download('medium')
+   self.assertEqual(self.store.cancel('medium')['status'],'probing')
+  finally:release.set();thread.join(10)
+  self.assertFalse(thread.is_alive());self.assertIsInstance(errors[0],module._Paused);self.assertEqual(self.store.get_job('medium')['status'],'paused');self.assertEqual(self.store.selection()['model_id'],'small');self.assertEqual(file.read_bytes(),payload)
+ def test_sync_qualification_hash_failure_keeps_owned_file_and_selection(self):
+  file=self.activation_file(b'x'*len(payload))
+  with self.assertRaises(module.ModelStoreError):self.store.activate('medium')
+  self.assertEqual(self.store.get_job('medium')['status'],'failed');self.assertEqual(self.store.selection()['model_id'],'small');self.assertFalse(self.probes);self.assertTrue(file.exists())
+ def test_sync_missing_model_exposes_failed_job_without_network(self):
+  with patch.object(module.urllib.request,'build_opener',side_effect=AssertionError('Activation network forbidden')):
+   with self.assertRaises(OSError):self.store.activate('medium')
+  self.assertEqual(self.store.get_job('medium')['status'],'failed');self.assertEqual(self.store.get_job('medium')['bytes_downloaded'],0);self.assertEqual(self.store.selection()['model_id'],'small')
+ def test_recover_qualification_journal_uses_actual_final_file(self):
+  file=self.activation_file();self.store.activate('medium');job=self.store.get_job('medium');job.update(status='verifying',bytes_downloaded=0);self.store._write(self.store._journal('medium'),job)
+  with patch.object(module.urllib.request,'build_opener',side_effect=AssertionError('Automatic network forbidden')):reopened=self.new_store()
+  self.assertEqual(reopened.get_job('medium')['status'],'interrupted');self.assertEqual(reopened.get_job('medium')['bytes_downloaded'],len(payload));self.assertTrue(reopened.selection()['fallback']);self.assertEqual(file.read_bytes(),payload)
+
 class Result(unittest.TextTestResult):
  def addSuccess(self,test):super().addSuccess(test);records.append({'name':test._testMethodName,'status':'passed'})
  def addFailure(self,test,err):super().addFailure(test,err);records.append({'name':test._testMethodName,'status':'failed','error':self._exc_info_to_string(err,test)})

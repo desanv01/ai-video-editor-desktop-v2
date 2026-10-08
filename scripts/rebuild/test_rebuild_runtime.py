@@ -64,6 +64,26 @@ async def child(case, root):
         await runtime.shutdown(); await runtime.shutdown()
         assert not runtime.api_ready and runtime.jobs is None
         assert rag_service.client._connection is None and rag_service.client._table is None
+    elif case=='cancel-model-close':
+        import desktop_native.model_manager as manager
+        entered,release,finished=threading.Event(),threading.Event(),threading.Event()
+        def stop():
+            entered.set();assert release.wait(10);finished.set()
+        close=AsyncMock();dispose=AsyncMock();runtime._rag_service=SimpleNamespace(close=close)
+        with patch.object(manager,'shutdown_native_model_store',stop),patch.object(module,'dispose_db',dispose):
+            owner=asyncio.create_task(runtime.shutdown())
+            try:
+                assert await asyncio.to_thread(entered.wait,5)
+                owner.cancel();await asyncio.sleep(0)
+            finally:release.set()
+            try:await owner
+            except asyncio.CancelledError:pass
+            else:raise AssertionError('caller cancellation was lost')
+            assert finished.is_set(), 'owned model shutdown must complete'
+            assert close.await_count==1, 'cancelled model shutdown skipped LanceDB close'
+            assert dispose.await_count==1, 'cancelled model shutdown skipped SQLite disposal'
+            assert runtime._shutdown_complete, 'completed cleanup must remain idempotent'
+            await runtime.shutdown();assert close.await_count==1 and dispose.await_count==1
     elif case=='failed-close':
         close=AsyncMock(side_effect=RuntimeError('injected close error'))
         dispose=AsyncMock()
@@ -90,6 +110,7 @@ class RuntimeTests(unittest.TestCase):
                 cwd=REPO,env=os.environ.copy(),text=True,capture_output=True,timeout=60)
             self.assertEqual(result.returncode,0,result.stdout+'\n'+result.stderr)
             self.assertIn('"status": "passed"',result.stdout)
+    def test_cancelled_model_shutdown_still_closes_lance_and_sqlite(self):self.run_case('cancel-model-close')
     def test_future_revision_fails_before_job_schema_mutation(self):self.run_case('future')
     def test_actual_startup_capability_reference_and_repeated_close(self):self.run_case('startup-close')
     def test_database_disposal_when_lance_close_fails_and_retry(self):self.run_case('failed-close')

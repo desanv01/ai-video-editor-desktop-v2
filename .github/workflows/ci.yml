@@ -48,6 +48,8 @@ jobs:
         run: node ../scripts/rebuild/test_dashboard_reopen.cjs .. ../.test-output/dashboard-reopen
       - name: Verify material indexing feedback and stale response boundaries
         run: node ../scripts/rebuild/test_material_feedback.cjs .. ../.test-output/material-feedback
+      - name: Verify native model settings interaction and cancellation boundaries
+        run: node ../scripts/rebuild/test_native_model_ui.cjs .. ../.test-output/native-model-ui
       - name: Run immutable component update and legacy activation checks
         run: node ../scripts/rebuild/test_component_updates.cjs ..
       - name: Run native and browser transcript download boundary checks
@@ -130,6 +132,8 @@ jobs:
         run: python scripts/rebuild/test_document_profile.py --repo . --output .test-output/document-profile
       - name: Verify native model integrity, resumable state and owned probe boundaries
         run: python scripts/rebuild/test_native_model_store.py --repo . --output .test-output/native-model-store
+      - name: Verify native model API selection, settings and provider leases
+        run: python scripts/rebuild/test_native_model_integration.py --repo . --output .test-output/native-model-integration
       - name: Run native startup and resource lifecycle checks
         run: python scripts/rebuild/test_rebuild_runtime.py
       - name: Run native agent transaction acceptance checks

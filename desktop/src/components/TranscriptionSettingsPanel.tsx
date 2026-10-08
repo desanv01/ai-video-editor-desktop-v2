@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Check,
@@ -75,13 +75,22 @@ function selectedModelIdFrom(
     ?? "small";
 }
 
+const RUNNING_MODEL_STATES = new Set(["queued", "downloading", "verifying", "probing"]);
+
 function formatModelState(model: LocalTranscriptionModel): string {
-  if (model.status === "downloading" && model.download_progress_percent !== null) {
-    return `${Math.round(model.download_progress_percent)}%`;
-  }
   if (model.status === "queued") return "Queued";
+  if (model.status === "downloading") return `Downloading ${Math.round(model.download_progress_percent ?? 0)}%`;
+  if (model.status === "verifying") return "Verifying SHA256";
+  if (model.status === "probing") return "Testing local runtime";
+  if (model.verification_required) return "Verification required";
+  if (model.status === "paused") return "Paused";
+  if (model.status === "interrupted") return "Interrupted";
   if (model.status === "failed") return "Failed";
   return model.downloaded ? "Ready" : "Not downloaded";
+}
+
+function exactBytes(bytes: number): string {
+  return `${bytes.toLocaleString()} bytes`;
 }
 
 export function TranscriptionSettingsPanel({ isOpen, onClose }: Props) {
@@ -93,6 +102,8 @@ export function TranscriptionSettingsPanel({ isOpen, onClose }: Props) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [busyModelId, setBusyModelId] = useState<string | null>(null);
+  const [qualificationModelId, setQualificationModelId] = useState<string | null>(null);
+  const [cancellingModelId, setCancellingModelId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -101,19 +112,22 @@ export function TranscriptionSettingsPanel({ isOpen, onClose }: Props) {
     [catalog, selectedModelId],
   );
 
-  const hasRunningDownload = useMemo(
-    () => catalog?.models.some(model => model.status === "queued" || model.status === "downloading") ?? false,
-    [catalog],
-  );
+  const native = api.isElectronDesktopRuntime() || catalog?.native === true;
+  const sessionRef = useRef(0);
+  const openRef = useRef(false);
+  const actionRef = useRef<number | null>(null);
+  const refreshRef = useRef<{ session: number; promise: Promise<void> } | null>(null);
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const autoSelectRef = useRef<{ session: number; modelId: string } | null>(null);
+  const hasRunningDownload = catalog?.models.some(model => RUNNING_MODEL_STATES.has(model.status)) ?? false;
+  const currentSession = (session: number) => openRef.current && sessionRef.current === session;
 
-  const loadPanel = async () => {
+  const loadPanel = async (session = sessionRef.current) => {
     setLoading(true);
     setError(null);
     try {
-      const [nextSettings, nextCatalog] = await Promise.all([
-        api.getAISettings(),
-        api.getLocalTranscriptionModels(),
-      ]);
+      const [nextSettings, nextCatalog] = await Promise.all([api.getAISettings(), api.getLocalTranscriptionModels()]);
+      if (!currentSession(session)) return;
       const transcriptionSettings = nextSettings.capabilities.transcription;
       setSettings(nextSettings);
       setCatalog(nextCatalog);
@@ -121,129 +135,254 @@ export function TranscriptionSettingsPanel({ isOpen, onClose }: Props) {
       setFallbackEnabled(transcriptionSettings?.fallback_enabled ?? nextSettings.fallback_enabled);
       setSelectedModelId(selectedModelIdFrom(nextSettings, nextCatalog));
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (currentSession(session)) setError(api.friendlyErrorMessage(err));
     } finally {
-      setLoading(false);
+      if (currentSession(session)) setLoading(false);
     }
   };
 
-  const refreshCatalog = async () => {
-    try {
-      const nextCatalog = await api.getLocalTranscriptionModels();
-      setCatalog(nextCatalog);
-      const operation = await provisioningClient.status().catch(() => null);
-      if (operation?.operationKind === "local-transcription-model"
-        && (operation.state === "running" || operation.state === "cancelling")
-        && nextCatalog.models.some(model => model.model_id === operation.targetId && model.downloaded)) {
-        await provisioningClient.complete();
+  const refreshCatalog = (syncSelection = false, session = sessionRef.current): Promise<void> => {
+    const flight = refreshRef.current;
+    if (flight?.session === session) return flight.promise.then(() => {
+      if (syncSelection && currentSession(session)) return refreshCatalog(true, session);
+    });
+    const promise = (async () => {
+      try {
+        const [nextCatalog, nextSettings] = await Promise.all([api.getLocalTranscriptionModels(), api.getAISettings()]);
+        if (!currentSession(session)) return;
+        setCatalog(nextCatalog);
+        setSettings(nextSettings);
+        const requested = autoSelectRef.current;
+        if (requested?.session === session && nextCatalog.models.some(model => model.model_id === requested.modelId && model.downloaded && model.active)) {
+          setSelectedModelId(requested.modelId);
+          autoSelectRef.current = null;
+        }
+        if (syncSelection) setSelectedModelId(selectedModelIdFrom(nextSettings, nextCatalog));
+        if (!api.isElectronDesktopRuntime() && !nextCatalog.native) {
+          const operation = await provisioningClient.status().catch(() => null);
+          if (!currentSession(session)) return;
+          if (operation?.operationKind === "local-transcription-model"
+            && (operation.state === "running" || operation.state === "cancelling")
+            && nextCatalog.models.some(model => model.model_id === operation.targetId && model.downloaded)) {
+            await provisioningClient.complete();
+          }
+        }
+      } catch (err) {
+        if (currentSession(session)) setError(api.friendlyErrorMessage(err));
+      } finally {
+        if (refreshRef.current?.session === session) refreshRef.current = null;
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
+    })();
+    refreshRef.current = { session, promise };
+    return promise;
   };
 
   useEffect(() => {
-    if (isOpen) void loadPanel();
+    const session = ++sessionRef.current;
+    openRef.current = isOpen;
+    if (isOpen) {
+      setBusyModelId(null);
+      setQualificationModelId(null);
+      setCancellingModelId(null);
+      setSaving(false);
+      setNotice(null);
+      setCatalog(null);
+      autoSelectRef.current = null;
+      void loadPanel(session);
+    }
+    return () => {
+      openRef.current = false;
+      ++sessionRef.current;
+    };
   }, [isOpen]);
 
   useEffect(() => {
-    if (!isOpen || !hasRunningDownload) return;
-    const intervalId = window.setInterval(() => {
-      void refreshCatalog();
-    }, 1500);
-    return () => window.clearInterval(intervalId);
-  }, [hasRunningDownload, isOpen]);
+    if (!isOpen || (!hasRunningDownload && !qualificationModelId)) return;
+    const session = sessionRef.current;
+    let stopped = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      await refreshCatalog(false, session);
+      if (!stopped && currentSession(session)) timer = window.setTimeout(() => void poll(), 1500);
+    };
+    timer = window.setTimeout(() => void poll(), 1500);
+    return () => { stopped = true; window.clearTimeout(timer); };
+  }, [hasRunningDownload, qualificationModelId, isOpen]);
 
-  if (!isOpen) return null;
+  useEffect(() => {
+    if (!isOpen) return;
+    const previous = document.activeElement as HTMLElement | null;
+    dialogRef.current?.focus();
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); onClose(); }
+      if (event.key !== "Tab") return;
+      const controls = dialogRef.current?.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), [tabindex='0']");
+      if (!controls?.length) return;
+      const first = controls[0], last = controls[controls.length - 1];
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === dialogRef.current)) {
+        event.preventDefault(); last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault(); first.focus();
+      }
+    };
+    document.addEventListener("keydown", keydown);
+    return () => { document.removeEventListener("keydown", keydown); previous?.focus(); };
+  }, [isOpen, onClose]);
 
-  const handleDownload = async (model: LocalTranscriptionModel) => {
-    if (!window.confirm(`Download ${model.label} (${model.size}) for local transcription? This uses your internet connection and stores the model on this device.`)) return;
+  const runModelAction = async (model: LocalTranscriptionModel, action: () => Promise<void>) => {
+    const session = sessionRef.current;
+    if (actionRef.current !== null) return;
+    actionRef.current = session;
     setBusyModelId(model.model_id);
-    let coordinationStarted = false;
     setError(null);
     setNotice(null);
-    try {
-      await provisioningClient.begin("local-transcription-model", model.model_id);
-      coordinationStarted = true;
-      const job = await api.downloadLocalTranscriptionModel(model.model_id, true);
-      setSelectedModelId(model.model_id);
-      setNotice(job.status === "completed" ? `${model.label} is ready.` : `Downloading ${model.label}.`);
-      if (job.status === "completed") await provisioningClient.complete();
-      await refreshCatalog();
-    } catch (err) {
-      if (coordinationStarted) {
-        try { await provisioningClient.cancel(); } catch { /* operation already reached a terminal state */ }
-      }
-      setError(err instanceof Error ? err.message : String(err));
+    try { await action(); }
+    catch (err) {
+      await refreshCatalog(false, session);
+      if (currentSession(session)) setError(api.friendlyErrorMessage(err));
     } finally {
-      setBusyModelId(null);
+      if (actionRef.current === session) actionRef.current = null;
+      if (currentSession(session)) setBusyModelId(null);
     }
+  };
+
+  const handleDownload = async (model: LocalTranscriptionModel) => {
+    const session = sessionRef.current;
+    const verb = model.can_resume ? "Resume" : "Download";
+    const storage = model.storage_required_bytes ? ` Allow ${exactBytes(model.storage_required_bytes)} of free storage including the safety margin.` : "";
+    if (!window.confirm(`${verb} ${model.label} (${model.size_bytes ? exactBytes(model.size_bytes) : model.size})? This uses your internet connection and stores the model on this device.${storage}`)) return;
+    await runModelAction(model, async () => {
+      let coordinationStarted = false;
+      try {
+        if (!native) {
+          await provisioningClient.begin("local-transcription-model", model.model_id);
+          coordinationStarted = true;
+        }
+        const job = await api.downloadLocalTranscriptionModel(model.model_id, true);
+        if (!currentSession(session)) return;
+        if (native) autoSelectRef.current = { session, modelId: model.model_id };
+        setNotice(job.status === "completed" ? `${model.label} is ready.` : `${verb} requested for ${model.label}; it will become active after verification and the local runtime test.`);
+        if (!native) {
+          setSelectedModelId(model.model_id);
+          if (job.status === "completed") await provisioningClient.complete();
+        }
+        await refreshCatalog(job.status === "completed", session);
+      } catch (err) {
+        if (coordinationStarted) {
+          try { await provisioningClient.cancel(); } catch { /* already terminal */ }
+        }
+        throw err;
+      }
+    });
+  };
+
+  const handleCancel = async (model: LocalTranscriptionModel) => {
+    const session = sessionRef.current;
+    if (cancellingModelId) return;
+    setCancellingModelId(model.model_id);
+    try {
+      const job = await api.cancelLocalTranscriptionModel(model.model_id);
+      if (!currentSession(session)) return;
+      setNotice(job.status === "paused" ? `${model.label} paused; retained bytes can be resumed or verified.` : `Pause requested for ${model.label}; waiting for its transfer or verification to stop.`);
+      await refreshCatalog(false, session);
+    } catch (err) {
+      if (currentSession(session)) setError(api.friendlyErrorMessage(err));
+    } finally {
+      if (currentSession(session)) setCancellingModelId(null);
+    }
+  };
+
+  const handleVerify = async (model: LocalTranscriptionModel) => {
+    const session = sessionRef.current;
+    if (!window.confirm(`Verify the retained ${model.label} file and test it with the local runtime? This reads the local file and public test audio; it does not download a model. It becomes active only if both checks pass.`)) return;
+    await runModelAction(model, async () => {
+      setNotice(`Verifying ${model.label} and testing the local runtime…`);
+      setQualificationModelId(model.model_id);
+      try {
+        await api.activateLocalTranscriptionModel(model.model_id);
+      } finally {
+        if (currentSession(session)) setQualificationModelId(null);
+      }
+      if (!currentSession(session)) return;
+      setNotice(`${model.label} verified and active.`);
+      await refreshCatalog(true, session);
+    });
   };
 
   const handleRemove = async (model: LocalTranscriptionModel) => {
-    if (!window.confirm(`Remove ${model.label} from local storage?`)) return;
-
-    setBusyModelId(model.model_id);
-    setError(null);
-    setNotice(null);
-    try {
+    const session = sessionRef.current;
+    if (!window.confirm(`Remove ${model.label} and its retained partial from local storage? Protected Whisper small remains available.`)) return;
+    await runModelAction(model, async () => {
       const result = await api.removeLocalTranscriptionModel(model.model_id);
+      if (!currentSession(session)) return;
       setNotice(result.message);
-      await refreshCatalog();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusyModelId(null);
-    }
+      await refreshCatalog(true, session);
+    });
   };
 
   const handleSave = async () => {
-    if (!settings || !catalog) return;
-
+    if (!settings || !catalog || actionRef.current !== null) return;
+    const session = sessionRef.current;
+    actionRef.current = session;
     setSaving(true);
     setError(null);
     setNotice(null);
     try {
       const selected = catalog.models.find(model => model.model_id === selectedModelId);
-      const apiProviderId = settings.capabilities.transcription?.api_provider_id
-        ?? settings.asr_provider
-        ?? "voxtral";
+      let modelId = selectedModelId;
+      let modelPath = selected?.file_path;
+      if (native && modelId !== catalog.active_model_id) {
+        if (!selected?.downloaded && !selected?.verification_required) {
+          throw new Error("Download or resume this model explicitly before saving; model selection does not start a download.");
+        }
+        setNotice(`Verifying and activating ${selected.label} before saving…`);
+        setQualificationModelId(modelId);
+        const binding = await api.activateLocalTranscriptionModel(modelId);
+        if (!currentSession(session)) return;
+        modelId = binding.model_id;
+        modelPath = binding.file_path;
+      }
+      const apiProviderId = settings.capabilities.transcription?.api_provider_id ?? settings.asr_provider ?? "voxtral";
       const nextSettings = await api.updateAISettings({
         preferred_processing_mode: selectedMode,
         fallback_enabled: fallbackEnabled,
-        capabilities: {
-          transcription: {
-            mode: selectedMode,
-            api_provider_id: apiProviderId,
-            local_provider_id: "whisper-cpp",
-            fallback_enabled: fallbackEnabled,
-            hybrid_fallback_order: ["local", "api"],
-          },
-        },
-        local_model_paths: selected?.file_path ? { transcription: selected.file_path } : undefined,
-        local_model_ids: { transcription: selectedModelId },
+        capabilities: { transcription: {
+          mode: selectedMode, api_provider_id: apiProviderId, local_provider_id: "whisper-cpp",
+          fallback_enabled: fallbackEnabled, hybrid_fallback_order: ["local", "api"],
+        } },
+        local_model_paths: modelPath ? { transcription: modelPath } : undefined,
+        local_model_ids: { transcription: modelId },
       });
+      if (!currentSession(session)) return;
       setSettings(nextSettings);
       setNotice("Transcription settings saved.");
+      await refreshCatalog(false, session);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      await refreshCatalog(true, session);
+      if (currentSession(session)) setError(api.friendlyErrorMessage(err));
     } finally {
-      setSaving(false);
+      if (actionRef.current === session) actionRef.current = null;
+      if (currentSession(session)) {
+        setSaving(false);
+        setQualificationModelId(null);
+      }
     }
   };
 
+  if (!isOpen) return null;
+
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/50">
-      <aside className="h-full w-full max-w-[520px] overflow-y-auto border-l border-surface-border bg-surface-raised shadow-2xl">
+      <aside ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="transcription-settings-title" tabIndex={-1} className="h-full w-full max-w-[520px] overflow-y-auto border-l border-surface-border bg-surface-raised shadow-2xl">
         <div className="sticky top-0 z-10 flex items-center justify-between border-b border-surface-border bg-surface-raised px-5 py-4">
           <div>
             <p className="text-xs uppercase tracking-wide text-gray-500">Settings</p>
-            <h2 className="text-base font-semibold text-gray-100">Transcription</h2>
+            <h2 id="transcription-settings-title" className="text-base font-semibold text-gray-100">Transcription</h2>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-surface-overlay hover:text-gray-100"
+            className="rounded-lg p-2 text-gray-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent transition-colors hover:bg-surface-overlay hover:text-gray-100"
             aria-label="Close transcription settings"
           >
             <X className="h-4 w-4" />
@@ -258,14 +397,14 @@ export function TranscriptionSettingsPanel({ isOpen, onClose }: Props) {
         ) : (
           <div className="space-y-6 p-5">
             {error && (
-              <div className="flex gap-3 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200">
+              <div role="alert" className="flex gap-3 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>{error}</span>
               </div>
             )}
 
             {notice && (
-              <div className="flex gap-3 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-100">
+              <div role="status" aria-live="polite" aria-atomic="true" className="flex gap-3 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-100">
                 <Check className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>{notice}</span>
               </div>
@@ -276,7 +415,8 @@ export function TranscriptionSettingsPanel({ isOpen, onClose }: Props) {
                 <h3 className="text-sm font-semibold text-gray-100">Transcription Mode</h3>
                 <button
                   type="button"
-                  onClick={loadPanel}
+                  onClick={() => void loadPanel()}
+                  disabled={saving || busyModelId !== null}
                   className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-gray-400 transition-colors hover:bg-surface-overlay hover:text-gray-100"
                 >
                   <RefreshCw className="h-3.5 w-3.5" />
@@ -292,6 +432,8 @@ export function TranscriptionSettingsPanel({ isOpen, onClose }: Props) {
                       key={option.value}
                       type="button"
                       onClick={() => setSelectedMode(option.value)}
+                      aria-pressed={selected}
+                      disabled={saving}
                       className={`rounded-lg border p-3 text-left transition-colors ${
                         selected
                           ? "border-accent bg-accent/15 text-white"
@@ -324,11 +466,13 @@ export function TranscriptionSettingsPanel({ isOpen, onClose }: Props) {
                 <p className="mt-1 text-xs text-gray-500">Used by Local and Hybrid transcription modes.</p>
               </div>
 
+              <p className="text-xs text-gray-300">{catalog?.runtime_message}</p>
               <div className="space-y-2">
                 {catalog?.models.map(model => {
                   const selected = model.model_id === selectedModelId;
                   const busy = busyModelId === model.model_id;
-                  const running = model.status === "queued" || model.status === "downloading";
+                  const anyBusy = busyModelId !== null || saving;
+                  const running = RUNNING_MODEL_STATES.has(model.status);
                   return (
                     <div
                       key={model.model_id}
@@ -339,8 +483,11 @@ export function TranscriptionSettingsPanel({ isOpen, onClose }: Props) {
                       <div className="flex items-start justify-between gap-3">
                         <button
                           type="button"
-                          onClick={() => setSelectedModelId(model.model_id)}
-                          className="flex min-w-0 flex-1 items-start gap-3 text-left"
+                          onClick={() => { autoSelectRef.current = null; setSelectedModelId(model.model_id); }}
+                          aria-pressed={selected}
+                          disabled={anyBusy}
+                          aria-label={`Select ${model.label}`}
+                          className="flex min-w-0 flex-1 items-start gap-3 rounded text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
                         >
                           <span className={`mt-1 h-3 w-3 rounded-full border ${
                             selected ? "border-accent bg-accent" : "border-gray-500"
@@ -353,7 +500,7 @@ export function TranscriptionSettingsPanel({ isOpen, onClose }: Props) {
                               </span>
                             </span>
                             <span className="mt-1 block text-xs leading-5 text-gray-400">
-                              {model.size} / {model.speed} / {model.quality}
+                              {model.size} / {model.speed} / {model.quality}{model.bundled ? " / Protected bundle" : ""}
                             </span>
                             <span className="mt-1 block text-xs leading-5 text-gray-500">
                               {model.description}
@@ -367,23 +514,34 @@ export function TranscriptionSettingsPanel({ isOpen, onClose }: Props) {
                           }`}>
                             {formatModelState(model)}
                           </span>
-                          <div className="flex items-center gap-1">
-                            {model.can_download && (
+                          <div className="flex flex-wrap justify-end gap-2">
+                            {(model.can_download || model.can_resume) && (
                               <button
                                 type="button"
                                 onClick={() => void handleDownload(model)}
-                                disabled={busy || running}
+                                disabled={anyBusy || running}
+                                aria-label={`${model.can_resume ? "Resume" : "Download"} ${model.label}`}
                                 className="inline-flex items-center gap-1 rounded-lg bg-accent px-2 py-1 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
                               >
                                 {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                                Download
+                                {model.can_resume ? "Resume" : "Download"}
                               </button>
                             )}
-                            {model.can_remove && (
+                            {native && model.can_cancel && (
+                              <button type="button" onClick={() => void handleCancel(model)} disabled={cancellingModelId !== null || (anyBusy && qualificationModelId !== model.model_id)}
+                                aria-label={`Cancel ${model.label} download or verification`}
+                                className="rounded-lg px-2 py-1 text-xs text-gray-200 hover:bg-surface-overlay disabled:opacity-60">{cancellingModelId === model.model_id ? "Pausing…" : "Cancel"}</button>
+                            )}
+                            {native && model.can_verify && (
+                              <button type="button" onClick={() => void handleVerify(model)} disabled={anyBusy}
+                                aria-label={`Verify ${model.label}`}
+                                className="rounded-lg px-2 py-1 text-xs text-gray-200 hover:bg-surface-overlay disabled:opacity-60">Verify</button>
+                            )}
+                            {model.can_remove && !model.bundled && (
                               <button
                                 type="button"
                                 onClick={() => void handleRemove(model)}
-                                disabled={busy}
+                                disabled={anyBusy}
                                 className="rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-surface-overlay hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-60"
                                 aria-label={`Remove ${model.label}`}
                               >
@@ -394,11 +552,19 @@ export function TranscriptionSettingsPanel({ isOpen, onClose }: Props) {
                         </div>
                       </div>
 
+                      {native && model.size_bytes != null && (
+                        <p className="mt-2 text-xs text-gray-400">
+                          {exactBytes(model.download_bytes_downloaded)} retained / {exactBytes(model.size_bytes)} total
+                        </p>
+                      )}
+                      {model.download_message && <p className="mt-2 text-xs text-gray-300">{model.download_message}</p>}
+                      {model.download_error && <p className="mt-2 text-xs text-red-200">{model.download_error}</p>}
+                      {model.file_path && <p className="mt-2 break-all text-xs text-gray-400">{model.file_path}</p>}
                       {running && model.download_progress_percent !== null && (
-                        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-surface-overlay">
+                        <div role="progressbar" aria-label={`${model.label}: ${formatModelState(model)}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={model.download_progress_percent ?? 0} className="mt-3 h-1.5 overflow-hidden rounded-full bg-surface-overlay">
                           <div
                             className="h-full rounded-full bg-accent"
-                            style={{ width: `${Math.max(2, model.download_progress_percent)}%` }}
+                            style={{ width: `${Math.min(100, Math.max(2, model.download_progress_percent))}%` }}
                           />
                         </div>
                       )}
@@ -418,7 +584,7 @@ export function TranscriptionSettingsPanel({ isOpen, onClose }: Props) {
                 <button
                   type="button"
                   onClick={handleSave}
-                  disabled={saving || !settings || !catalog}
+                  disabled={saving || busyModelId !== null || !settings || !catalog || (native && hasRunningDownload)}
                   className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
