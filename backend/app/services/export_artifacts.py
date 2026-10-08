@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import csv
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Iterable
 from services.transcript_exports import TRANSCRIPT_EXPORT_FORMATS
 from services.transcript_edit_decisions import build_synced_timeline_plan
@@ -384,11 +386,26 @@ def build_timeline_decision_rows(
     plan_payload: dict[str, Any],
     quality_report: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    segment_list = list(segments)
+    source_duration = first_number(dict_value(quality_report or {}).get("original_duration_seconds"))
+    if source_duration is None or not math.isfinite(source_duration):
+        endpoints = [first_number(getattr(segment, "end_time", None)) for segment in segment_list]
+        source_duration = max((end for end in endpoints if end is not None and math.isfinite(end)), default=0.0)
+    sync_plan = build_synced_timeline_plan(
+        plan=SimpleNamespace(plan_json=plan_payload, original_duration=source_duration),
+        segments=segment_list,
+        duration_seconds=source_duration,
+    )
     ranges_by_segment: dict[str, list[dict[str, Any]]] = {}
-    transcript_sync = dict_value(dict_value(quality_report or {}).get("transcript_edit_sync"))
-    for overlay in transcript_sync.get("segment_overlays") or []:
-        if isinstance(overlay, dict) and overlay.get("segment_id"):
-            ranges_by_segment[str(overlay["segment_id"])] = list(overlay.get("output_ranges") or [])
+    for playable in sync_plan["playable_ranges"]:
+        ranges_by_segment.setdefault(str(playable["segment_id"]), []).append(playable)
+
+    def source_span_duration(segment: Any) -> float | None:
+        start = first_number(getattr(segment, "start_time", None))
+        end = first_number(getattr(segment, "end_time", None))
+        if start is None or end is None or not math.isfinite(start) or not math.isfinite(end):
+            return None
+        return round(max(0.0, end - start), 3)
 
     rows = [
         {
@@ -397,7 +414,8 @@ def build_timeline_decision_rows(
             "segment_index": getattr(segment, "segment_index", None),
             "start_time": getattr(segment, "start_time", None),
             "end_time": getattr(segment, "end_time", None),
-            "duration_seconds": segment_duration(segment),
+            "duration_seconds": source_span_duration(segment),
+            "stored_duration_seconds": getattr(segment, "duration", None),
             "topic": getattr(segment, "topic_label", None),
             "summary": getattr(segment, "summary", None),
             "ai_action": enum_value(getattr(segment, "action", None)),
@@ -406,10 +424,10 @@ def build_timeline_decision_rows(
             "teacher_action": enum_value(getattr(segment, "teacher_action", None)),
             "teacher_note": getattr(segment, "teacher_note", None),
             "final_action": final_action(segment),
-            "included_in_output": final_action(segment) in {"keep", "highlight", "shorten"},
+            "included_in_output": bool(ranges_by_segment.get(str(getattr(segment, "id", "")))),
             "output_ranges_json": json.dumps(ranges_by_segment.get(str(getattr(segment, "id", "")), [])),
         }
-        for segment in segments
+        for segment in segment_list
     ]
 
     for decision in plan_payload.get("edit_decisions", []) or []:
@@ -455,6 +473,7 @@ TIMELINE_DECISION_CSV_FIELDS = [
     "final_action",
     "included_in_output",
     "output_ranges_json",
+    "stored_duration_seconds",
 ]
 
 

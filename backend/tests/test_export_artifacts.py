@@ -43,6 +43,7 @@ class ExportArtifactTests(unittest.TestCase):
         transcript = SimpleNamespace(asr_provider="whisper-cpp", language="en")
         segments = [
             SimpleNamespace(
+                id="segment-1",
                 segment_index=0,
                 start_time=0.0,
                 end_time=30.0,
@@ -55,6 +56,7 @@ class ExportArtifactTests(unittest.TestCase):
                 is_teacher_modified=False,
             ),
             SimpleNamespace(
+                id="segment-2",
                 segment_index=1,
                 start_time=30.0,
                 end_time=60.0,
@@ -150,6 +152,7 @@ class ExportArtifactTests(unittest.TestCase):
                 action_reason="Core concept",
                 teacher_action=None,
                 teacher_note=None,
+                is_teacher_modified=False,
             ),
             SimpleNamespace(
                 id="segment-2",
@@ -164,6 +167,7 @@ class ExportArtifactTests(unittest.TestCase):
                 action_reason="Dead air",
                 teacher_action=SimpleNamespace(value="shorten"),
                 teacher_note="Keep first example only",
+                is_teacher_modified=True,
             ),
         ]
         plan_payload = {
