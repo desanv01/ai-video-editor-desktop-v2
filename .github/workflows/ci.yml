@@ -62,6 +62,8 @@ jobs:
           node ../scripts/rebuild/test_lifecycle_main.cjs ..
       - name: Verify real app native model settings navigation
         run: node ../scripts/rebuild/test_native_model_navigation.cjs .. ../.test-output/native-model-navigation corrected
+      - name: Verify preview aspect fit across viewport constraints
+        run: node ../scripts/rebuild/test_preview_aspect_fit.cjs .. ../.test-output/preview-aspect-fit
       - name: Package assisted per-user installer
         run: npm run package:win
       - name: Verify actual unpacked window and preload

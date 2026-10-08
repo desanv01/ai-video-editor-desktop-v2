@@ -79,6 +79,20 @@ button, a, input, select, textarea, [tabindex] { scroll-margin: 8px; }
 }
 .review-source { grid-area: source; }
 .review-preview { grid-area: preview; }
+.program-preview-viewport {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.program-preview-canvas {
+  flex: none;
+  transition: none;
+}
 .review-timeline { grid-area: timeline; }
 .review-inspector { grid-area: inspector; }
 .review-grid > .contents > aside, .review-timeline { min-width: 0; }

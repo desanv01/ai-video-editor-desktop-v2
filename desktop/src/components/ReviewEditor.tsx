@@ -1,4 +1,4 @@
-import { forwardRef, useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { forwardRef, useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from "react";
 import type { CSSProperties, VideoHTMLAttributes } from "react";
 import { useSegments, usePlaybackSync, useProcessingStatus } from "../hooks/useApi";
 import { useCommandShortcuts } from "../hooks/useCommandShortcuts";
@@ -1383,6 +1383,46 @@ const LayoutProgramPreview = forwardRef<HTMLVideoElement, LayoutProgramPreviewPr
   { src, settings, generatedSlidePreview, annotations, educationalOverlays, endCards, currentTime, contentDuration, ...videoProps },
   ref,
 ) {
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const [viewportSize, setViewportSize] = useState<{ width: number; height: number } | null>(null);
+  const aspectRatio = previewAspectRatio(settings.aspectRatio);
+  const [aspectWidth, aspectHeight] = aspectRatio.split(" / ").map(Number);
+  const ratio = aspectWidth / aspectHeight;
+  const fittedWidth = viewportSize ? Math.min(viewportSize.width, viewportSize.height * ratio) : null;
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    let active = true;
+    const updateSize = (width: number, height: number) => {
+      if (!active || width <= 0 || height <= 0) return;
+      setViewportSize(previous => previous?.width === width && previous.height === height
+        ? previous
+        : { width, height });
+    };
+    const measure = () => {
+      const { width, height } = viewport.getBoundingClientRect();
+      updateSize(width, height);
+    };
+    measure();
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(entries => {
+        const entry = entries[0];
+        if (entry) updateSize(entry.contentRect.width, entry.contentRect.height);
+      });
+      observer.observe(viewport);
+      return () => {
+        active = false;
+        observer.disconnect();
+      };
+    }
+    window.addEventListener("resize", measure);
+    return () => {
+      active = false;
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
+
   const activeAnnotations = annotations.filter(
     (annotation) => currentTime >= annotation.start_time && currentTime <= annotation.end_time,
   );
@@ -1405,14 +1445,15 @@ const LayoutProgramPreview = forwardRef<HTMLVideoElement, LayoutProgramPreviewPr
   const playbackOnlyVideo = shouldUseSlideScreen && settings.layout === "full_screen_source";
 
   return (
-    <div
-      className="relative flex max-h-full max-w-full overflow-hidden bg-[#08080d] shadow-2xl ring-1 ring-white/10"
-      style={{
-        aspectRatio: previewAspectRatio(settings.aspectRatio),
-        width: "100%",
-        transition: `all ${settings.transitionDurationSeconds}s ease-out`,
-      }}
-    >
+    <div ref={viewportRef} className="program-preview-viewport">
+      <div
+        className="program-preview-canvas relative flex overflow-hidden bg-[#08080d] shadow-2xl ring-1 ring-white/10"
+        style={{
+          aspectRatio,
+          width: fittedWidth ?? "100%",
+          height: fittedWidth === null ? undefined : fittedWidth / ratio,
+        }}
+      >
       {settings.layout === "side_by_side" ? (
         <div className="absolute inset-0 grid grid-cols-2 gap-px bg-surface-border">
           <div
@@ -1458,6 +1499,7 @@ const LayoutProgramPreview = forwardRef<HTMLVideoElement, LayoutProgramPreviewPr
         <EducationalOverlayPreview key={overlay.id} overlay={overlay} />
       ))}
       {activeEndCard && <EndCardPreview card={activeEndCard} />}
+      </div>
     </div>
   );
 });
