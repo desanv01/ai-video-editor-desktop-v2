@@ -3731,7 +3731,7 @@ async def generate_quality_report(video_id: str, db: AsyncSession) -> dict:
     # Action distribution (final actions including teacher overrides)
     action_dist = {}
     for s in segments:
-        final = (s.teacher_action or s.action)
+        final = s.teacher_action if s.is_teacher_modified and s.teacher_action else s.action
         action_key = final.value if final else "unknown"
         action_dist[action_key] = action_dist.get(action_key, 0) + 1
 
@@ -3742,8 +3742,12 @@ async def generate_quality_report(video_id: str, db: AsyncSession) -> dict:
         if s.is_teacher_modified and s.teacher_action != s.action
     )
 
-    time_saved = (plan.original_duration or 0) - (plan.estimated_duration or 0)
-    reduction_pct = (time_saved / plan.original_duration * 100) if plan.original_duration else 0
+    estimated_duration = sync_plan["export_plan"]["estimated_output_duration_seconds"]
+    original_duration = plan.original_duration if plan.original_duration is not None else (
+        video.duration_seconds if video and video.duration_seconds is not None else sum(s.duration or 0 for s in segments)
+    )
+    time_saved = max(0.0, (original_duration or 0) - estimated_duration)
+    reduction_pct = (time_saved / original_duration * 100) if original_duration else 0
 
     # Output video duration (if rendered)
     output_duration = None
@@ -3761,21 +3765,22 @@ async def generate_quality_report(video_id: str, db: AsyncSession) -> dict:
         transcript=transcript,
         plan_payload=plan_payload,
         actual_output_duration_seconds=output_duration,
+        synchronized_estimated_duration_seconds=estimated_duration,
     )
     evaluation_summary = evaluation_metrics["summary"]
 
     return {
         "video_id": str(video_id),
         "video_filename": video.original_filename if video else None,
-        "original_duration_seconds": plan.original_duration,
-        "estimated_duration_seconds": plan.estimated_duration,
+        "original_duration_seconds": original_duration,
+        "estimated_duration_seconds": estimated_duration,
         "actual_output_duration_seconds": output_duration,
         "time_saved_seconds": round(time_saved, 1),
         "reduction_percent": round(reduction_pct, 1),
         "total_segments": len(segments),
-        "segments_keep": plan.segments_keep,
-        "segments_cut": plan.segments_cut,
-        "segments_highlight": plan.segments_highlight,
+        "segments_keep": action_dist.get("keep", 0),
+        "segments_cut": action_dist.get("cut", 0),
+        "segments_highlight": action_dist.get("highlight", 0),
         "total_filler_words": total_fillers,
         "total_pause_seconds": round(total_pauses, 1),
         "average_importance_score": round(avg_importance, 3),

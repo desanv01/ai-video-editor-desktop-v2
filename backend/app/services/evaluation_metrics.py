@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from services.layout_model import normalize_layout_cues
+from services.transcript_edit_decisions import build_synced_timeline_plan
 
 
 EVALUATION_METRICS_SCHEMA_VERSION = "phase10.evaluation-metrics.v1"
@@ -30,6 +31,7 @@ def build_evaluation_metrics(
     transcript: Any | None = None,
     plan_payload: dict[str, Any] | None = None,
     actual_output_duration_seconds: float | None = None,
+    synchronized_estimated_duration_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Build the compact Phase 10 metric set from persisted processing data."""
     segment_list = list(segments or [])
@@ -39,10 +41,14 @@ def build_evaluation_metrics(
         getattr(video, "duration_seconds", None),
         _segment_duration_total(segment_list),
     )
-    estimated_duration = _first_number(
-        getattr(plan, "estimated_duration", None),
-        _estimated_duration_from_actions(segment_list),
-    )
+    estimated_duration = synchronized_estimated_duration_seconds
+    if estimated_duration is None:
+        sync_plan = build_synced_timeline_plan(
+            plan=plan,
+            segments=segment_list,
+            duration_seconds=getattr(video, "duration_seconds", None),
+        )
+        estimated_duration = sync_plan["export_plan"]["estimated_output_duration_seconds"]
     duration_reduction = _duration_reduction(
         original_duration=original_duration,
         estimated_duration=estimated_duration,
@@ -143,12 +149,16 @@ def _processing_time(video: Any | None, plan: Any) -> dict[str, Any]:
         _datetime_value(getattr(video, "updated_at", None) if video else None),
     ]
     ended_at = max((item for item in candidates if item is not None), default=None)
-    total_seconds = (ended_at - started_at).total_seconds() if started_at and ended_at and ended_at >= started_at else None
+    project_elapsed_seconds = (ended_at - started_at).total_seconds() if started_at and ended_at and ended_at >= started_at else None
     return {
-        "started_at": started_at.isoformat() if started_at else None,
-        "ended_at": ended_at.isoformat() if ended_at else None,
-        "total_seconds": _nullable_round(total_seconds, 3),
-        "source": "video_created_to_latest_plan_or_video_update",
+        "started_at": None,
+        "ended_at": None,
+        "total_seconds": None,
+        "source": "unavailable_no_persisted_processing_timing",
+        "project_started_at": started_at.isoformat() if started_at else None,
+        "project_ended_at": ended_at.isoformat() if ended_at else None,
+        "project_elapsed_seconds": _nullable_round(project_elapsed_seconds, 3),
+        "project_elapsed_source": "video_created_to_latest_plan_or_video_update",
     }
 
 

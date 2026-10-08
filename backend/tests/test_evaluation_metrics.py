@@ -28,6 +28,7 @@ class EvaluationMetricsTests(unittest.TestCase):
             updated_at=started + timedelta(seconds=80),
         )
         plan = SimpleNamespace(
+            plan_json={},
             original_duration=120.0,
             estimated_duration=75.0,
             filler_words_removed=3,
@@ -47,6 +48,7 @@ class EvaluationMetricsTests(unittest.TestCase):
         )
         segments = [
             SimpleNamespace(
+                id="segment-0", segment_index=0,
                 start_time=0.0,
                 end_time=30.0,
                 duration=30.0,
@@ -62,6 +64,7 @@ class EvaluationMetricsTests(unittest.TestCase):
                 is_teacher_modified=False,
             ),
             SimpleNamespace(
+                id="segment-1", segment_index=1,
                 start_time=30.0,
                 end_time=45.0,
                 duration=15.0,
@@ -77,6 +80,7 @@ class EvaluationMetricsTests(unittest.TestCase):
                 is_teacher_modified=False,
             ),
             SimpleNamespace(
+                id="segment-2", segment_index=2,
                 start_time=45.0,
                 end_time=120.0,
                 duration=75.0,
@@ -118,10 +122,15 @@ class EvaluationMetricsTests(unittest.TestCase):
         )
 
         self.assertEqual(metrics["schema_version"], EVALUATION_METRICS_SCHEMA_VERSION)
-        self.assertEqual(metrics["duration_reduction"]["reduction_percent"], 37.5)
+        self.assertEqual(metrics["duration_reduction"]["estimated_duration_seconds"], 105.0)
+        self.assertEqual(metrics["duration_reduction"]["reduction_percent"], 12.5)
+        self.assertEqual(metrics["duration_reduction"]["actual_output_duration_seconds"], 74.0)
+        self.assertAlmostEqual(metrics["duration_reduction"]["actual_reduction_percent"], 38.333, places=3)
         self.assertEqual(metrics["filler_dead_air_removal"]["removed_filler_words"], 3)
         self.assertEqual(metrics["filler_dead_air_removal"]["dead_air_removal_rate"], 0.8421)
-        self.assertEqual(metrics["processing_time"]["total_seconds"], 90.0)
+        self.assertIsNone(metrics["processing_time"]["total_seconds"])
+        self.assertEqual(metrics["processing_time"]["project_elapsed_seconds"], 90.0)
+        self.assertIsNone(metrics["summary"]["processing_time_seconds"])
         self.assertEqual(metrics["cost"]["estimated_total_usd"], 0.0)
         self.assertEqual(metrics["cost"]["processing_mode"], "hybrid")
         self.assertEqual(metrics["layout_correctness"]["score"], 1.0)
@@ -131,7 +140,7 @@ class EvaluationMetricsTests(unittest.TestCase):
         self.assertEqual(metrics["summary"]["teacher_override_rate"], 0.3333)
 
     def test_api_provider_cost_uses_duration_proxy(self):
-        plan = SimpleNamespace(original_duration=300.0, estimated_duration=240.0)
+        plan = SimpleNamespace(plan_json={}, original_duration=300.0, estimated_duration=240.0)
         transcript = SimpleNamespace(asr_provider="openai-whisper", full_text="", word_count=0, words_json=[])
 
         metrics = build_evaluation_metrics(

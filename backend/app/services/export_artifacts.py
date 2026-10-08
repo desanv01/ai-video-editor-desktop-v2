@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable
 from services.transcript_exports import TRANSCRIPT_EXPORT_FORMATS
+from services.transcript_edit_decisions import build_synced_timeline_plan
 
 
 EXPORT_ARTIFACT_SCHEMA_VERSION = "phase9.evaluation-artifacts.v1"
@@ -251,7 +252,7 @@ def build_evidence_markdown(evidence: dict[str, Any]) -> str:
         f"- Teacher overrides: {metrics.get('teacher_overrides', 0)} of {metrics.get('total_segments', 0)} segments",
         f"- Transcript cuts: {metrics.get('transcript_cut_count') or 0}",
         f"- Transcription accuracy proxy: {format_score(metrics.get('transcription_accuracy_proxy_score'))}",
-        f"- Processing time: {format_seconds(metrics.get('processing_time_seconds'))}",
+        f"- Processing time: {format_seconds(metrics.get('processing_time_seconds')) if metrics.get('processing_time_seconds') is not None else 'n/a'}",
         f"- Estimated cost: {format_usd(metrics.get('estimated_cost_usd'))}",
         f"- Segment quality score: {format_score(metrics.get('segment_quality_score'))}",
         f"- Layout correctness score: {format_score(metrics.get('layout_correctness_score'))}",
@@ -304,11 +305,14 @@ def build_before_after_comparison(
         getattr(video, "duration_seconds", None),
         sum(segment_duration(segment) for segment in segment_list),
     ) or 0.0
-    estimated_duration = first_number(
-        quality_report.get("estimated_duration_seconds"),
-        getattr(plan, "estimated_duration", None),
-        sum(segment_duration(segment) for segment in segment_list if final_action(segment) in {"keep", "highlight", "shorten"}),
-    ) or 0.0
+    estimated_duration = first_number(quality_report.get("estimated_duration_seconds"))
+    if estimated_duration is None:
+        sync_plan = build_synced_timeline_plan(
+            plan=plan,
+            segments=segment_list,
+            duration_seconds=getattr(video, "duration_seconds", None),
+        )
+        estimated_duration = sync_plan["export_plan"]["estimated_output_duration_seconds"]
     actual_duration = first_number(quality_report.get("actual_output_duration_seconds"))
     removed_duration = max(0.0, original_duration - estimated_duration)
     action_summary = summarize_segment_actions(segment_list)
@@ -326,7 +330,7 @@ def build_before_after_comparison(
         "after": {
             "estimated_duration_seconds": round(estimated_duration, 3),
             "actual_output_duration_seconds": round(actual_duration, 3) if actual_duration is not None else None,
-            "kept_duration_seconds": round(action_summary["kept_duration_seconds"], 3),
+            "kept_duration_seconds": round(estimated_duration, 3),
             "removed_duration_seconds": round(removed_duration, 3),
             "reduction_percent": round((removed_duration / original_duration * 100.0), 3) if original_duration else 0.0,
             "segments_kept": action_summary["segments_kept"],
