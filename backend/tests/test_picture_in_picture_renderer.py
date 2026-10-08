@@ -220,7 +220,7 @@ class LayoutModeCommandTests(unittest.TestCase):
         )
 
         self.assertIn("FontSize=30", style)
-        self.assertIn("Alignment=8", style)
+        self.assertIn("Alignment=6", style)
         self.assertIn("BorderStyle=3", style)
         self.assertIn("PrimaryColour=&H00FCFAF8", style)
 

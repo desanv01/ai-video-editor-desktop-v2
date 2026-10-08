@@ -159,3 +159,9 @@ jobs:
         run: |
           $endCardMediaRoot = Split-Path -Parent (Split-Path -Parent (Get-Command ffmpeg.exe).Source)
           python scripts/rebuild/test_end_card_canvas.py --repo . --output .test-output/end-card-canvas --ffmpeg-root $endCardMediaRoot
+
+      - name: Verify selected caption size and safe margins on actual video canvases
+        shell: pwsh
+        run: |
+          $captionMediaRoot = Split-Path -Parent (Split-Path -Parent (Get-Command ffmpeg.exe).Source)
+          python scripts/rebuild/test_caption_canvas.py --repo . --output .test-output/caption-canvas --ffmpeg-root $captionMediaRoot

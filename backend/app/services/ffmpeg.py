@@ -1756,11 +1756,24 @@ class FFmpegService:
         cancel_check: Callable[[], None] | None = None,
     ) -> str:
         """Burn SRT subtitles into the video (requires re-encoding)."""
+        if cancel_check:
+            cancel_check()
+        metadata = await FFmpegService.get_video_metadata(video_path)
+        if cancel_check:
+            cancel_check()
+        try:
+            width = int(metadata.get("width") or 0)
+            height = int(metadata.get("height") or 0)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Subtitle burn requires valid positive input video dimensions") from exc
+        if width <= 0 or height <= 0:
+            raise ValueError("Subtitle burn requires valid positive input video dimensions")
         force_style = FFmpegService._subtitle_force_style(
             font_size=font_size,
             placement=placement,
             style=style,
         )
+        force_style += f",PlayResX={width},PlayResY={height}"
         cmd = [
             ffmpeg_binary(), "-i", video_path,
             "-vf", f"subtitles={FFmpegService._escape_subtitle_path(srt_path)}:force_style='{force_style}'",
@@ -1813,9 +1826,9 @@ class FFmpegService:
             "bottom_left": 1,
             "bottom_center": 2,
             "bottom_right": 3,
-            "top_left": 7,
-            "top_center": 8,
-            "top_right": 9,
+            "top_left": 5,
+            "top_center": 6,
+            "top_right": 7,
         }.get(str(placement or "bottom_center"), 2)
         margin_v = 56 if alignment in {1, 2, 3} else 42
         return (
