@@ -764,6 +764,15 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
                 {"end_card_count": len(enabled_end_cards)},
             )
             width, height = _annotation_canvas_dimensions(plan_payload)
+            if clip_paths:
+                try:
+                    clip_metadata = await ffmpeg_service.get_video_metadata(clip_paths[0])
+                    clip_width = int(clip_metadata.get("width") or 0)
+                    clip_height = int(clip_metadata.get("height") or 0)
+                    if clip_width > 0 and clip_height > 0:
+                        width, height = clip_width, clip_height
+                except Exception:
+                    logger.warning("Could not read prepared clip dimensions for end cards; using annotation canvas", exc_info=True)
             for index, end_card in enumerate(enabled_end_cards):
                 _check_render_cancel(render_job_id, video_id)
                 end_card_clip = await _render_end_card_clip(

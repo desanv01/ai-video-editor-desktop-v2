@@ -149,3 +149,9 @@ jobs:
         run: |
           $subtitleMediaRoot = Split-Path -Parent (Split-Path -Parent (Get-Command ffmpeg.exe).Source)
           python scripts/rebuild/test_subtitle_paths.py --repo . --output .test-output/subtitle-paths --ffmpeg-root $subtitleMediaRoot
+
+      - name: Verify actual end-card render matches the prepared lecture canvas
+        shell: pwsh
+        run: |
+          $endCardMediaRoot = Split-Path -Parent (Split-Path -Parent (Get-Command ffmpeg.exe).Source)
+          python scripts/rebuild/test_end_card_canvas.py --repo . --output .test-output/end-card-canvas --ffmpeg-root $endCardMediaRoot
