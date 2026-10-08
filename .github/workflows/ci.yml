@@ -40,6 +40,8 @@ jobs:
         run: npm run test:rebuild
       - name: Verify current teacher-reviewed export summary
         run: node ../scripts/rebuild/test_export_duration.cjs .. ../.test-output/export-duration
+      - name: Prepare pinned Electron interaction runtime
+        run: node node_modules/electron/install.js
       - name: Verify failed-render project recovery and stale navigation boundaries
         run: node ../scripts/rebuild/test_dashboard_reopen.cjs .. ../.test-output/dashboard-reopen
       - name: Run immutable component update and legacy activation checks
