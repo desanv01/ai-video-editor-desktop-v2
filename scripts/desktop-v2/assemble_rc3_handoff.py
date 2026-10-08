@@ -24,7 +24,7 @@ from pathlib import Path
 VERSION = "2.0.0-rc.3"
 CHANNEL = "beta"
 PRODUCT_NAME = "AI Video Editor Desktop V2"
-PRODUCT_IDENTIFIER = "com.fyp.ai-video-editor.desktop-v2"
+PRODUCT_IDENTIFIER = "com.aive.ai-video-editor.desktop-v2"
 EXPECTED_TARGET_NAME = "AI-Video-Editor-Desktop-V2-Handoff-rc3"
 CANONICAL_INSTALL_TARGET = "C:/Program Files/AI Video Editor Desktop V2"
 REPOSITORY = "https://github.com/desanv01/ai-video-editor"

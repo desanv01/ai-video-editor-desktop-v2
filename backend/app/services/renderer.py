@@ -8,7 +8,7 @@ Takes the approved edit plan and produces:
   2. Word-level SRT subtitles (not 60s blocks — proper sentence splits)
   3. VTT subtitles (for web playback)
   4. Chapter markers file (YouTube-compatible)
-  5. Edit plan JSON export (for reproducibility / thesis documentation)
+  5. Edit plan JSON export (for reproducibility / product review documentation)
   6. Quality report (metrics dashboard data)
 
 SHORTEN action:
@@ -47,7 +47,7 @@ from services.edit_plan_payload import (
 )
 from services.export_artifacts import (
     artifact_records,
-    build_academic_evidence_artifact,
+    build_editing_evidence_artifact,
     build_before_after_comparison,
     build_evidence_markdown,
     build_generated_evidence_index,
@@ -948,8 +948,8 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
         plan_filename = f"{video.id}_edit_plan.json"
         plan_path = os.path.join(settings.VIDEO_STORAGE_PATH, plan_filename)
         quality_report_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_quality_report.json")
-        evidence_json_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_academic_evidence.json")
-        evidence_markdown_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_academic_evidence.md")
+        evidence_json_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_editing_evidence.json")
+        evidence_markdown_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_editing_evidence.md")
         before_after_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_before_after_comparison.json")
         timeline_json_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_timeline_decisions.json")
         timeline_csv_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_timeline_decisions.csv")
@@ -964,8 +964,8 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
             "chapters": chapters_path,
             "plan_json": plan_path,
             "quality_report": quality_report_path,
-            "academic_evidence_json": evidence_json_path,
-            "academic_evidence_markdown": evidence_markdown_path,
+            "editing_evidence_json": evidence_json_path,
+            "editing_evidence_markdown": evidence_markdown_path,
             "before_after_comparison_json": before_after_path,
             "timeline_decisions_json": timeline_json_path,
             "timeline_decisions_csv": timeline_csv_path,
@@ -1116,8 +1116,8 @@ async def render_final_video(video_id: str, db: AsyncSession, render_job_id: str
             "educational_overlay_count": len(educational_overlays),
             "end_card_count": len(enabled_end_cards),
             "quality_report_path": quality_report_path,
-            "academic_evidence_path": evidence_json_path,
-            "academic_evidence_markdown_path": evidence_markdown_path,
+            "editing_evidence_path": evidence_json_path,
+            "editing_evidence_markdown_path": evidence_markdown_path,
             "artifact_count": len(evaluation_artifacts["artifact_manifest"]),
         }
 
@@ -2033,8 +2033,8 @@ async def _render_audio_only_export(
         )
         plan_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_edit_plan.json")
         quality_report_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_quality_report.json")
-        evidence_json_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_academic_evidence.json")
-        evidence_markdown_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_academic_evidence.md")
+        evidence_json_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_editing_evidence.json")
+        evidence_markdown_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_editing_evidence.md")
         before_after_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_before_after_comparison.json")
         timeline_json_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_timeline_decisions.json")
         timeline_csv_path = os.path.join(settings.VIDEO_STORAGE_PATH, f"{video.id}_timeline_decisions.csv")
@@ -2049,8 +2049,8 @@ async def _render_audio_only_export(
             "chapters": chapters_path,
             "plan_json": plan_path,
             "quality_report": quality_report_path,
-            "academic_evidence_json": evidence_json_path,
-            "academic_evidence_markdown": evidence_markdown_path,
+            "editing_evidence_json": evidence_json_path,
+            "editing_evidence_markdown": evidence_markdown_path,
             "before_after_comparison_json": before_after_path,
             "timeline_decisions_json": timeline_json_path,
             "timeline_decisions_csv": timeline_csv_path,
@@ -2137,8 +2137,8 @@ async def _render_audio_only_export(
             "audio_clip_count": len(clip_paths),
             "audio_source": audio_source,
             "quality_report_path": quality_report_path,
-            "academic_evidence_path": evidence_json_path,
-            "academic_evidence_markdown_path": evidence_markdown_path,
+            "editing_evidence_path": evidence_json_path,
+            "editing_evidence_markdown_path": evidence_markdown_path,
             "artifact_count": len(evaluation_artifacts["artifact_manifest"]),
         }
     finally:
@@ -3461,7 +3461,7 @@ def _export_plan_json(
 ) -> dict:
     """
     Export the complete edit plan as a standalone JSON file.
-    Used for thesis documentation and reproducibility.
+    Used for product review documentation and reproducibility.
     """
     ranges_by_segment: dict[str, list[dict]] = {}
     for render_range in render_ranges:
@@ -3571,8 +3571,8 @@ async def _write_evaluation_artifacts(
     render_metadata: dict | None,
 ) -> dict:
     quality_report_path = artifact_paths.get("quality_report")
-    evidence_json_path = artifact_paths.get("academic_evidence_json")
-    evidence_markdown_path = artifact_paths.get("academic_evidence_markdown")
+    evidence_json_path = artifact_paths.get("editing_evidence_json")
+    evidence_markdown_path = artifact_paths.get("editing_evidence_markdown")
 
     quality_report = await generate_quality_report(str(video.id), db)
     if quality_report_path:
@@ -3631,7 +3631,7 @@ async def _write_evaluation_artifacts(
     if evidence_index_path:
         write_json_artifact(evidence_index_path, build_generated_evidence_index(manifest))
         manifest = artifact_records(artifact_paths)
-    evidence = build_academic_evidence_artifact(
+    evidence = build_editing_evidence_artifact(
         video=video,
         plan=plan,
         segments=segments,
@@ -3669,7 +3669,7 @@ async def _write_evaluation_artifacts(
 
     return {
         "quality_report": quality_report,
-        "academic_evidence": evidence,
+        "editing_evidence": evidence,
         "artifact_manifest": final_manifest,
     }
 
@@ -3677,7 +3677,7 @@ async def _write_evaluation_artifacts(
 async def generate_quality_report(video_id: str, db: AsyncSession) -> dict:
     """
     Generate a quality metrics report.
-    Data source for the desktop app's StatsPanel and thesis evaluation.
+    Data source for the desktop app's StatsPanel and product review evaluation.
     """
     video = await db.get(Video, video_id)
     result = await db.execute(
@@ -3798,8 +3798,8 @@ async def generate_quality_report(video_id: str, db: AsyncSession) -> dict:
             "chapters": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_chapters.txt"),
             "plan_json": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_edit_plan.json"),
             "quality_report": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_quality_report.json"),
-            "academic_evidence_json": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_academic_evidence.json"),
-            "academic_evidence_markdown": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_academic_evidence.md"),
+            "editing_evidence_json": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_editing_evidence.json"),
+            "editing_evidence_markdown": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_editing_evidence.md"),
             "before_after_comparison": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_before_after_comparison.json"),
             "timeline_decisions_json": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_timeline_decisions.json"),
             "timeline_decisions_csv": os.path.join(settings.VIDEO_STORAGE_PATH, f"{video_id}_timeline_decisions.csv"),

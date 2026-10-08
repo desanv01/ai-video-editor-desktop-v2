@@ -8,11 +8,11 @@ Git base: Desktop origin/main `131606d8d9746378febb80a2403c271ed68f157a`. Origin
 
 ## Paths and installation
 
-- Windows x64, per-user assisted NSIS first. appId `com.aive.desktop.rebuild`, product `AIVE Desktop`. No all-users toggle in this first supported scope.
-- Shell binaries: normal electron-builder per-user install location. Writable root: `%LOCALAPPDATA%/AIVE/Desktop`, independent of install directory and FYP/legacy app data. Electron Chromium userData: `%LOCALAPPDATA%/AIVE/Desktop/Shell`.
+- Windows x64, per-user assisted NSIS first. appId `com.aive.desktop.rebuild`, product `Aivora`. No all-users toggle in this first supported scope.
+- Shell binaries: normal electron-builder per-user install location. Writable root: `%LOCALAPPDATA%/AIVE/Desktop`, independent of install directory and aive/legacy app data. Electron Chromium userData: `%LOCALAPPDATA%/AIVE/Desktop/Shell`.
 - Backend data root: `%LOCALAPPDATA%/AIVE/Desktop/Data`, with existing explicit NativeDesktopPaths Config/engine.sqlite3, Uploads, Projects, Exports, Models, VectorStore, Backups, Temp, Logs. Components root `%LOCALAPPDATA%/AIVE/Desktop/Components`.
 - Controller state/cache/logs: `%LOCALAPPDATA%/AIVE/Desktop/{State,Cache,Logs}`. Component versions immutable under `Components/<id>/<version>`; active mapping in atomic JSON state, never rename a running version.
-- No writes to installation binaries or FYP. No automatic legacy-data migration/deletion. Uninstall preserves projects/database/models/exports by default; separate explicit data removal is outside installer scope.
+- No writes to installation binaries or aive. No automatic legacy-data migration/deletion. Uninstall preserves projects/database/models/exports by default; separate explicit data removal is outside installer scope.
 
 ## Private backend lifecycle and authentication
 
@@ -66,13 +66,13 @@ Private Python onedir executable with pinned requirements and imported Windows w
 
 Design read: lecturer desktop editing workspace, calm/precise, preserve workflow and useful editing density. UI UX Pro Max primary, Taste limited to applicable preservation/type/spacing/consistency. 12ui explicitly excluded. Existing React 19/Vite/Tailwind 3/Lucide retained. Variance 3, motion 2, density 7. Current source uses Segoe UI stack, purple accent, charcoal surfaces and action colors; redesign may unify them while preserving action semantics. Use system Segoe UI for offline typography, semantic tokens and visible keyboard focus; compact UI labels >=13px, transcript >=15px, body ~14-16px. Small laptop and Windows 125/150/200% scaling reviewed. Dialog labels/errors/loading/empty states and scroll containment explicit.
 
-Skill search returned a valid Productivity Tool category/minimal style but landing-page pattern/scroll-reveal/palette did not fit the multi-stage editor. Do not persist that output as an approved screen. Main design contract is a product-specific fallback synthesis: neutral surfaces, one restrained action accent, semantic action/status colors, no marketing heroes/images/scroll animations. Phase 2 setup minimal; final screen-by-screen tokens and layouts supplied before Phase 5.
+Skill search returned a valid Productivity Tool category/minimal style but landing-page pattern/scroll-reveal/palette did not fit the multi-stage editor. Do not persist that output as an approved screen. Main design contract is a product-specific fallback synproduct review: neutral surfaces, one restrained action accent, semantic action/status colors, no marketing heroes/images/scroll animations. Phase 2 setup minimal; final screen-by-screen tokens and layouts supplied before Phase 5.
 
 ## Acceptance gates (main owns execution)
 
 1. Shell/provisioning: main-focused tests for manifest rejection, path confinement, verification-before-activation, partial/Range recovery, cancellation and durable state; installed window opens without developer tools.
 2. Backend/storage: isolated SQLite migrations/backup/FK/teacher edits/concurrent agent writes; LanceDB same vectors/filter/threshold/top-k/delete/reopen/index interruption corpus.
-3. Workflow: real single video, materials and multi-source project; original five agents and six stages; approval; teacher override reopen; representative layout/captions/overlays/cards; actual export probe/playback and academic/original-transcript files.
+3. Workflow: real single video, materials and multi-source project; original five agents and six stages; approval; teacher override reopen; representative layout/captions/overlays/cards; actual export probe/playback and product/original-transcript files.
 4. Lifecycle: actual local whisper transcription, interrupted setup/import/render, lean relaunch measurements with hardware/time identity, diagnostics, controlled child shutdown and Windows uninstall preserving data.
 5. Release: main reviewed commits/push/PR; CI exact commit; uniquely named Desktop ZIP with exact verified installer/offline assets, guide, SHA-256/manifest/component/commit/CI identity, accurate signing/provider/clean-PC limitations. No merge without human authorization.
 

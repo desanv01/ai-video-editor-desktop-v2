@@ -2113,13 +2113,13 @@ export function GuidedWorkflowPanel({
                 <DownloadLink href={api.getChaptersDownloadUrl(videoId)} label="Chapter Markers" />
                 <DownloadLink href={api.getPlanExportUrl(videoId)} label="Edit Plan (JSON)" />
                 <DownloadLink href={api.getQualityReportExportUrl(videoId)} label="Quality Report (JSON)" />
-                <DownloadLink href={api.getAcademicEvidenceExportUrl(videoId)} label="Academic Evidence (JSON)" />
-                <DownloadLink href={api.getAcademicEvidenceSummaryUrl(videoId)} label="Evidence Summary (Markdown)" />
+                <DownloadLink href={api.getEditingEvidenceExportUrl(videoId)} label="Editing Evidence (JSON)" />
+                <DownloadLink href={api.getEditingEvidenceSummaryUrl(videoId)} label="Evidence Summary (Markdown)" />
                 <DownloadLink href={api.getBeforeAfterComparisonUrl(videoId)} label="Before/After Comparison" />
                 <DownloadLink href={api.getTimelineDecisionsUrl(videoId)} label="Timeline Decisions (CSV)" />
                 <DownloadLink href={api.getProviderModeTraceUrl(videoId)} label="Provider Mode Trace" />
                 <DownloadLink href={api.getMetricsSummaryUrl(videoId)} label="Metrics Summary" />
-                <DownloadLink href={api.getAcademicEvidenceBundleUrl(videoId)} label="Evidence Bundle (ZIP)" />
+                <DownloadLink href={api.getEditingEvidenceBundleUrl(videoId)} label="Evidence Bundle (ZIP)" />
                 <button
                   type="button"
                   onClick={handleExportSectionClips}

@@ -813,7 +813,7 @@ mod tests {
         let local_app_data = Path::new(r"C:\Users\Lecturer\AppData\Local");
         assert_eq!(
             webview_user_data_directory(local_app_data),
-            PathBuf::from(r"C:\Users\Lecturer\AppData\Local\com.fyp.ai-video-editor.desktop-v2")
+            PathBuf::from(r"C:\Users\Lecturer\AppData\Local\com.aive.ai-video-editor.desktop-v2")
         );
     }
 

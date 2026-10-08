@@ -42,7 +42,7 @@ MODE_TRADEOFFS = {
     ],
     "hybrid": [
         "Balances private local passes with API help for high-value reasoning.",
-        "Recommended academic demo default because it shows fallback behavior.",
+        "Recommended product demo default because it shows fallback behavior.",
         "Keeps deterministic cleaning and rendering local while using API planning where it matters.",
     ],
 }
@@ -492,7 +492,7 @@ def build_stage_matrix(settings_record: Any | None) -> dict[str, Any]:
 
 
 def build_mode_comparison_markdown(report: dict[str, Any]) -> str:
-    """Build a compact Markdown summary for thesis/demo evidence."""
+    """Build a compact Markdown summary for product review/demo evidence."""
     baseline = dict_value(report.get("baseline"))
     comparison = dict_value(report.get("comparison"))
     lines = [

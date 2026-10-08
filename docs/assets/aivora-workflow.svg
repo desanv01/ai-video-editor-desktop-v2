@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="330" viewBox="0 0 1200 330" role="img" aria-labelledby="title desc">
+  <title id="title">From recording to final cut</title>
+  <desc id="desc">A workflow illustration of Aivora's six editing stages. Import sources, review suggestions, then export the approved plan.</desc>
+  <rect width="1200" height="330" rx="22" fill="#17171c"/>
+  <g font-family="Segoe UI, Arial, sans-serif">
+    <text x="48" y="54" font-size="13" font-weight="700" letter-spacing="3" fill="#b8ffda">AIVORA / THE EDITING WORKSPACE</text>
+    <text x="48" y="100" font-size="33" font-weight="600" fill="#fff">From recording to final cut.</text>
+    <text x="48" y="128" font-size="16" fill="#babac9">One project. Six stages. Every decision in your hands.</text>
+    <path d="M82 190H1116" stroke="#45424f" stroke-width="2"/>
+    <g fill="#25252e" stroke="#45424f">
+      <rect x="48" y="159" width="170" height="111" rx="12"/>
+      <rect x="235" y="159" width="170" height="111" rx="12"/>
+      <rect x="422" y="159" width="170" height="111" rx="12"/>
+      <rect x="609" y="159" width="170" height="111" rx="12"/>
+      <rect x="796" y="159" width="170" height="111" rx="12"/>
+      <rect x="983" y="159" width="170" height="111" rx="12" fill="#635bff" stroke="#817aff"/>
+    </g>
+    <g fill="#b8b2ff" font-size="12" font-weight="700" letter-spacing="2">
+      <text x="66" y="184">01</text><text x="253" y="184">02</text><text x="440" y="184">03</text><text x="627" y="184">04</text><text x="814" y="184">05</text>
+      <text x="1001" y="184" fill="#fff">06</text>
+    </g>
+    <g fill="#fff" font-size="21" font-weight="600">
+      <text x="66" y="217">Transcribe</text><text x="253" y="217">Clean</text><text x="440" y="217">Sections</text><text x="627" y="217">Layout</text><text x="814" y="217">Polish</text><text x="1001" y="217">Export</text>
+    </g>
+    <g fill="#babac9" font-size="13">
+      <text x="66" y="246">Start with the words</text><text x="253" y="246">Keep what matters</text><text x="440" y="246">Build the story</text><text x="627" y="246">Arrange the visuals</text><text x="814" y="246">Add the finishing touch</text><text x="1001" y="246" fill="#fff">Render your final cut</text>
+    </g>
+    <text x="48" y="305" fill="#8e8e9d" font-size="12">WORKFLOW ILLUSTRATION</text>
+    <text x="1152" y="305" text-anchor="end" fill="#b8ffda" font-size="13">AI proposes. You decide.</text>
+  </g>
+</svg>

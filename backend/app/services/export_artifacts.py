@@ -27,8 +27,8 @@ ARTIFACT_LABELS = {
     "quality_report": "Quality report JSON",
     "mode_comparison_json": "API/local/hybrid comparison JSON",
     "mode_comparison_markdown": "API/local/hybrid comparison summary",
-    "academic_evidence_json": "Academic evidence JSON",
-    "academic_evidence_markdown": "Academic evidence summary",
+    "editing_evidence_json": "Editing evidence JSON",
+    "editing_evidence_markdown": "Editing evidence summary",
     "before_after_comparison_json": "Before/after comparison JSON",
     "timeline_decisions_json": "Timeline decisions JSON",
     "timeline_decisions_csv": "Timeline decisions CSV",
@@ -98,7 +98,7 @@ def write_csv_artifact(path: str, rows: Iterable[dict[str, Any]], fieldnames: li
             writer.writerow(row)
 
 
-def build_academic_evidence_artifact(
+def build_editing_evidence_artifact(
     *,
     video: Any,
     plan: Any,
@@ -110,7 +110,7 @@ def build_academic_evidence_artifact(
     render_metadata: dict[str, Any] | None = None,
     mode_comparison: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build a compact evidence payload for demos, evaluation, and thesis notes."""
+    """Build a compact evidence payload for reviewing edits and export quality."""
     segment_list = list(segments)
     teacher_modified = sum(1 for segment in segment_list if bool(getattr(segment, "is_teacher_modified", False)))
     teacher_overrides = sum(
@@ -149,7 +149,7 @@ def build_academic_evidence_artifact(
     return {
         "schema_version": EXPORT_ARTIFACT_SCHEMA_VERSION,
         "generated_at": utc_now(),
-        "purpose": "evaluation_demo_academic_evidence",
+        "purpose": "editing_decision_audit",
         "video": {
             "id": str(getattr(video, "id", "")),
             "filename": getattr(video, "original_filename", None),
@@ -180,7 +180,7 @@ def build_academic_evidence_artifact(
         },
         "before_after_comparison": before_after,
         "timeline_decisions": timeline_decisions,
-        "thesis_metrics_summary": metrics_summary,
+        "editing_metrics_summary": metrics_summary,
         "evaluation_metrics": evaluation_metrics,
         "decision_audit": [
             {
@@ -359,7 +359,7 @@ def build_timeline_decisions_artifact(
     plan_payload: dict[str, Any],
     quality_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build a thesis-friendly timeline decision audit from AI and teacher actions."""
+    """Build a product review-friendly timeline decision audit from AI and teacher actions."""
     rows = build_timeline_decision_rows(segments=segments, plan_payload=plan_payload, quality_report=quality_report)
     counts: dict[str, int] = {}
     for row in rows:
@@ -567,7 +567,7 @@ def create_artifact_bundle(bundle_path: str, artifacts: Iterable[dict[str, Any]]
             included.append({**artifact, "bundle_filename": filename})
 
     return {
-        "kind": "academic_evidence_bundle",
+        "kind": "editing_evidence_bundle",
         "path": bundle_path,
         "filename": os.path.basename(bundle_path),
         "media_type": "application/zip",

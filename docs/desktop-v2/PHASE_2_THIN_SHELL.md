@@ -58,7 +58,7 @@ The V2 installer uses:
 
 - Product: `AI Video Editor Desktop V2`
 - Version: `2.0.0`
-- Identifier: `com.fyp.ai-video-editor.desktop-v2`
+- Identifier: `com.aive.ai-video-editor.desktop-v2`
 - Windows target: per-machine NSIS installation with elevation
 - Start Menu folder: `AI Video Editor Desktop V2`
 - Shortcuts: Tauri NSIS default Start Menu and Desktop shortcuts, grouped in
@@ -69,7 +69,7 @@ The V2 installer uses:
 The thin shell is installed under `%ProgramFiles%\AI Video Editor\Shell` by
 the NSIS hook. The existing identity is retained in
 `desktop/src-tauri/tauri.legacy.identity.json` for compatibility references:
-`AI Video Editor`, `1.0.0`, `com.fyp.ai-video-editor`. It is not an installer
+`AI Video Editor`, `1.0.0`, `com.aive.ai-video-editor`. It is not an installer
 profile for this phase.
 
 The successful no-sign debug NSIS build produced this ignored artifact and it

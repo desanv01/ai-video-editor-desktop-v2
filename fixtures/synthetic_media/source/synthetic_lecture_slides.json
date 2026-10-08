@@ -56,7 +56,7 @@
       "start_time": 60.0,
       "end_time": 72.0,
       "title": "Export Evidence",
-      "subtitle": "Render outputs and academic evidence side by side",
+      "subtitle": "Render outputs and editing evidence side by side",
       "bullets": [
         "MP4, captions, chapters, and edit plan JSON",
         "Metrics for duration reduction and override rate",

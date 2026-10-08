@@ -53,13 +53,13 @@ backend/revideo/runtime-render-plan.json
 backend/revideo/*output*.mp4
 backend/revideo/*output*.wav
 
-# Local analysis and thesis-generation workspaces
+# Local analysis and product review-generation workspaces
 .audit/
 .codex-analysis/
 tmp/
 tmp_*/
 
-# Generated thesis/source-package deliverables
+# Generated product review/source-package deliverables
 output/
 
 # Electron rebuild generated output

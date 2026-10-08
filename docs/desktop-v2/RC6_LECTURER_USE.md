@@ -30,7 +30,7 @@ If local transcription is offered, review its model download size, hash, storage
 4. Start export and wait for completion before closing the app.
 5. Open the resulting MP4 from `%USERPROFILE%\Documents\AI Video Editor\Exports` or the folder you selected, and verify video playback and expected duration.
 
-JSON plans, quality reports, academic evidence, or section clips are supporting outputs; they do not replace checking the playable video.
+JSON plans, quality reports, editing evidence, or section clips are supporting outputs; they do not replace checking the playable video.
 
 ## Close and resume
 

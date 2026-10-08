@@ -22,7 +22,7 @@ VERSION = "2.0.0-rc.2"
 CHANNEL = "beta"
 BASE_RELEASE_COMMIT = "2ccea79bae4bf527022c9b332348b91c675e1922"
 HOTFIX_BRANCH = "codex/desktop-v2-installer-acl-hotfix"
-PRODUCT_IDENTIFIER = "com.fyp.ai-video-editor.desktop-v2"
+PRODUCT_IDENTIFIER = "com.aive.ai-video-editor.desktop-v2"
 KEY_ID = "aive-desktop-v2-lecturer-2026"
 PUBLIC_KEY_SHA256 = "471e7b08109f8723400afea495f63d1d93753e4757386e31560a7cbee6bd2a2d"
 EXPECTED_TARGET = Path(r"C:\Users\Dv\Desktop\AI-Video-Editor-Desktop-V2-Handoff")
@@ -159,7 +159,7 @@ def create_docs(root: Path, engine: dict[str, object], ffmpeg: dict[str, object]
         2. Double-click **AI Video Editor Desktop V2 Setup.exe**. Approve UAC. This is the small per-machine shell installer; it does not contain the heavy engine or FFmpeg payloads.
         3. If Windows SmartScreen warns that the installer is from an unknown publisher, choose **More info → Run anyway** only if this handoff was obtained from the lecturer. The installer is intentionally unsigned because no Authenticode certificate was available; the release does not claim commercial code signing.
         4. Launch **AI Video Editor Desktop V2** from the Start menu or desktop shortcut.
-        5. On first launch, the shell creates and write-checks the actual launching user’s `%LOCALAPPDATA%\\com.fyp.ai-video-editor.desktop-v2` WebView2 directory. The per-machine installer never creates this user-scoped directory, so another Windows account can launch the same install with its own profile.
+        5. On first launch, the shell creates and write-checks the actual launching user’s `%LOCALAPPDATA%\\com.aive.ai-video-editor.desktop-v2` WebView2 directory. The per-machine installer never creates this user-scoped directory, so another Windows account can launch the same install with its own profile.
         6. Open **Setup Center**, choose **Offline catalog / Import catalog**, and select `Catalog\\offline-catalog.json` from this folder.
         7. Confirm the catalog trust indicator names `{KEY_ID}` and that both required components are available. Select/install **AI Video Editor Native Core Engine** and **FFmpeg Native Desktop Tool Component**. The Setup Center verifies the Ed25519 signatures and SHA-256 hashes before activation.
         8. Wait for authenticated readiness. The engine is loopback-only and uses a generated bearer token; no Docker, system Python, system Node.js, or system FFmpeg is required.
@@ -248,7 +248,7 @@ def create_docs(root: Path, engine: dict[str, object], ffmpeg: dict[str, object]
         f"""# Release notes — Desktop V2 {VERSION}
 
         - Release channel: **{CHANNEL}**.
-        - Small per-machine Tauri/NSIS shell with stable Desktop V2 identity (`com.fyp.ai-video-editor.desktop-v2`), Program Files target, shortcuts, migration hooks, and data-preserving uninstall defaults.
+        - Small per-machine Tauri/NSIS shell with stable Desktop V2 identity (`com.aive.ai-video-editor.desktop-v2`), Program Files target, shortcuts, migration hooks, and data-preserving uninstall defaults.
         - Installer ACL hotfix: the machine perimeter resolves to `%ProgramData%`, applies a checked scoped ACL, and aborts on every path or ACL failure; no literal shell placeholder is accepted.
         - Launch-user WebView2 preflight: the shell creates and write-checks the actual user’s local data directory before Tauri constructs its first window; per-machine installation never seeds another account’s profile.
         - Real PyInstaller onedir Windows x64 native engine, self-test enabled, loopback authenticated API, local SQLite/vector degraded contract, and graceful shutdown.

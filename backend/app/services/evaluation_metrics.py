@@ -1,4 +1,4 @@
-"""Phase 10 evaluation metrics for demo and thesis evidence reports."""
+"""Editing quality metrics for export reports."""
 
 from __future__ import annotations
 

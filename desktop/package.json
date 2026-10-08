@@ -64,5 +64,7 @@
   "main": "dist-electron/desktop/electron/main.js",
   "engines": {
     "node": "24.14.1"
-  }
+  },
+  "description": "Aivora \u2014 AI-assisted video editing for Windows",
+  "license": "AGPL-3.0"
 }

@@ -9,7 +9,7 @@ This is the Desktop V2 installer ACL hotfix release candidate based on commit `2
 | Product | AI Video Editor Desktop V2 |
 | Version | `2.0.0-rc.2` |
 | Channel | `beta` |
-| Shell identity | `com.fyp.ai-video-editor.desktop-v2` |
+| Shell identity | `com.aive.ai-video-editor.desktop-v2` |
 | Shell contract | `desktop.shell-identity.v1` |
 | Engine contract | `desktop.health-readiness.v1` |
 | Component manifest | `desktop.component-manifest.v1` |
@@ -67,7 +67,7 @@ The root is persisted only as machine-scoped import metadata so later Setup Cent
 ## Install, update, repair, rollback, and uninstall flow
 
 1. Run `AI Video Editor Desktop V2 Setup.exe` and approve elevation. The installer targets `C:\Program Files\AI Video Editor Desktop V2`, creates Start-menu and desktop shortcuts, and bundles no heavy engine, FFmpeg, models, databases, uploads, projects, API keys, or environment files.
-2. On first launch, the shell resolves and write-checks the actual launching user’s `%LOCALAPPDATA%\com.fyp.ai-video-editor.desktop-v2` before Tauri creates the WebView2 window. The per-machine installer does not create this user-scoped directory for the administrator.
+2. On first launch, the shell resolves and write-checks the actual launching user’s `%LOCALAPPDATA%\com.aive.ai-video-editor.desktop-v2` before Tauri creates the WebView2 window. The per-machine installer does not create this user-scoped directory for the administrator.
 3. Launch the shell, open Setup Center, and choose **Offline catalog / Import catalog**. Select `Catalog/offline-catalog.json` while `Catalog` and `Components` remain siblings.
 4. Setup Center verifies the catalog trust root, imports both signed component manifests, resolves the dependency plan, calculates required disk space, downloads from the portable references, verifies hashes/signatures, stages, and activates under the machine-scoped component root.
 5. The Phase 5 supervisor starts the activated frozen engine on a dynamic loopback port, authenticates readiness with a generated bearer token, and routes only authenticated loopback traffic.

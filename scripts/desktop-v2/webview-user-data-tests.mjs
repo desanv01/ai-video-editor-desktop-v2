@@ -25,7 +25,7 @@ assert.ok(
 );
 assert.doesNotMatch(
   installerSource,
-  /(?:APPDATA|LOCALAPPDATA)[^\r\n]*com\.fyp\.ai-video-editor\.desktop-v2/,
+  /(?:APPDATA|LOCALAPPDATA)[^\r\n]*com\.aive\.ai-video-editor\.desktop-v2/,
   "the per-machine installer must not create a per-user WebView2 directory for the installing administrator",
 );
 

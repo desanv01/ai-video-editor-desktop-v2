@@ -1,6 +1,7 @@
 appId: com.aive.desktop.rebuild
-productName: AIVE Desktop
+productName: Aivora
 asar: true
+# Keep appId stable so upgrades retain the installed application identity.
 directories:
   output: release-electron
 files:
@@ -15,10 +16,11 @@ extraResources:
     to: rebuild/components.json
   - offline-components/**
 win:
+  icon: public/aivora-icon.ico
   target:
     - target: nsis
       arch: [x64]
-  artifactName: AIVE-Desktop-${version}-${arch}-Setup.${ext}
+  artifactName: Aivora-${version}-${arch}-Setup.${ext}
 nsis:
   oneClick: false
   perMachine: false
@@ -27,5 +29,4 @@ nsis:
   deleteAppDataOnUninstall: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
-
 

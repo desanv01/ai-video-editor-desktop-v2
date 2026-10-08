@@ -22,7 +22,7 @@ from pathlib import Path
 VERSION = "2.0.0-rc.8"
 FFMPEG_VERSION = "8.1.1"
 PRODUCT = "AI Video Editor Desktop V2"
-IDENTIFIER = "com.fyp.ai-video-editor.desktop-v2"
+IDENTIFIER = "com.aive.ai-video-editor.desktop-v2"
 INSTALL_TARGET = "%ProgramFiles%/AI Video Editor Desktop V2/Shell"
 FORBIDDEN_PRIVATE_NAMES = ("ed25519-seed", "private-key", ".pfx", ".p12", ".pem", ".key")
 

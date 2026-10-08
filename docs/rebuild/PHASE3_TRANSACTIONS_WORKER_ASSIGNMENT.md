@@ -1,6 +1,6 @@
 # Phase 3B1: short native transactions for Agents 1–3
 
-Implement this exact main-owned design only. Main owns diagnosis, review, all tests, commits, GitHub and acceptance. Worker does not run app/providers, tests, builds, dependency installs or Git mutations. Work only in `C:/Users/Dv/Desktop/ai-video-editor-standalone-release-work/rebuild/worktrees/phase3-transactions`, branch `codex/aive-rebuild-phase3-transactions`, base `39917296874d6c3d69bfd466378524c526a69ed1`. Original FYP is read-only. All output remains under the requested rebuild folder.
+Implement this exact main-owned design only. Main owns diagnosis, review, all tests, commits, GitHub and acceptance. Worker does not run app/providers, tests, builds, dependency installs or Git mutations. Work only in `C:/Users/Dv/Desktop/ai-video-editor-standalone-release-work/rebuild/worktrees/phase3-transactions`, branch `codex/aive-rebuild-phase3-transactions`, base `39917296874d6c3d69bfd466378524c526a69ed1`. Original aive is read-only. All output remains under the requested rebuild folder.
 
 Allowed files: backend/app/agents/transcription.py, content_understanding.py, fluency.py, and a new focused backend/app/desktop_native/agent_transactions.py helper. No other files, including orchestrator, Agents 4/5, RAG/store/database/runtime/providers, schemas, CI, UI or tests. Main assigns remaining callers/agents separately. Report ownership blockers; don't broaden scope.
 

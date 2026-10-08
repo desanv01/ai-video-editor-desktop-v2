@@ -30,7 +30,7 @@ $missing = @($required | Where-Object { $_ -notin $actual })
 if ($missing) { throw "Missing critical handoff files: $($missing -join ', ')" }
 
 $manifest = Get-Content -LiteralPath (Join-Path $rootPath 'release-manifest.json') -Raw | ConvertFrom-Json
-if ($manifest.product.identifier -ne 'com.fyp.ai-video-editor.desktop-v2') { throw 'Unexpected Desktop V2 product identifier.' }
+if ($manifest.product.identifier -ne 'com.aive.ai-video-editor.desktop-v2') { throw 'Unexpected Desktop V2 product identifier.' }
 if ($manifest.product.version -notmatch '^2\.0\.0-rc\.[3-9][0-9]*$') { throw "Expected rc.3 or higher handoff, found $($manifest.product.version)." }
 if ($manifest.installer.target -ne 'C:/Program Files/AI Video Editor Desktop V2/Shell') { throw 'Canonical installer target is incorrect.' }
 

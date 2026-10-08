@@ -8,7 +8,7 @@ import { ProjectDashboard } from "./components/ProjectDashboard";
 import { DesktopV2ErrorBoundary, DesktopV2Shell } from "./components/DesktopV2Shell";
 import { DesktopComponentManagementDialog } from "./components/DesktopComponentManagementDialog";
 import { resolveAppRoute } from "./desktopV2";
-import { Clapperboard, FolderOpen, Settings } from "lucide-react";
+import { FolderOpen, Settings } from "lucide-react";
 import type { Project, Video } from "./types/api";
 import * as api from "./lib/api";
 
@@ -54,7 +54,7 @@ function LegacyApp() {
 function RuntimeDetectionScreen() {
   return (
     <div className="flex h-dvh items-center justify-center bg-surface text-gray-300">
-      <div className="rounded-xl border border-surface-border bg-surface-raised px-5 py-4 text-sm">Preparing AI Video Editor…</div>
+      <div className="rounded-xl border border-surface-border bg-surface-raised px-5 py-4 text-sm">Preparing Aivora…</div>
     </div>
   );
 }
@@ -151,9 +151,9 @@ export function BrowserEditorApp({ nativeMode = false }: { nativeMode?: boolean 
           aria-label="Go to project dashboard"
         >
           <span className="flex h-7 w-7 items-center justify-center rounded-md bg-accent/15 text-accent ring-1 ring-accent/30 transition-colors group-hover:bg-accent/20">
-            <Clapperboard className="h-4 w-4" />
+            <img src="/aivora-mark.svg" alt="" aria-hidden="true" className="h-6 w-6" />
           </span>
-          <span className="text-sm font-semibold text-white">AI Video Editor</span>
+          <span className="text-sm font-semibold text-white">Aivora</span>
         </button>
         <div className="min-w-0 flex-1">
           {selectedProject && (

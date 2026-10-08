@@ -383,7 +383,7 @@ def main() -> int:
     data = {"DELIVERY.json": encode(delivery)}
     hashes["DELIVERY.json"] = hashlib.sha256(data["DELIVERY.json"]).hexdigest()
     data["SHA256SUMS.txt"] = "".join(f"{hashes[name]}  {name}\n" for name in sorted(hashes)).encode("utf-8")
-    final = output / f"AIVE-Desktop-{release['releaseVersion']}-win32-x64-delivery.zip"
+    final = output / f"Aivora-{release['releaseVersion']}-win32-x64-delivery.zip"
     partial = output / (final.name + "." + uuid.uuid4().hex + ".part")
     validate_output(final)
     validate_output(partial)

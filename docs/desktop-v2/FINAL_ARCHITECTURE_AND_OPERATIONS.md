@@ -14,7 +14,7 @@ Windows lecturer machine
   └─ user data and projects remain outside the installer/component perimeter
 ```
 
-The shell is a stable per-machine identity (`com.fyp.ai-video-editor.desktop-v2`) and does not carry heavy runtime resources. The component manager owns signed archive intake, bounded download/extraction, exact inventory/hash verification, self-test, staging, atomic activation, repair, rollback metadata, and data-preserving uninstall behavior. The supervisor resolves only an activated verified engine, uses a dynamic loopback port and generated bearer token, requires the engine handshake/readiness contract, and supports graceful shutdown/restart.
+The shell is a stable per-machine identity (`com.aive.ai-video-editor.desktop-v2`) and does not carry heavy runtime resources. The component manager owns signed archive intake, bounded download/extraction, exact inventory/hash verification, self-test, staging, atomic activation, repair, rollback metadata, and data-preserving uninstall behavior. The supervisor resolves only an activated verified engine, uses a dynamic loopback port and generated bearer token, requires the engine handshake/readiness contract, and supports graceful shutdown/restart.
 
 ## Release identity and compatibility
 

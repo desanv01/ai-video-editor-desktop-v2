@@ -42,7 +42,7 @@ Never copy, stage, commit, package or log any of the following:
 - downloaded ASR/LLM/embedding models or model caches;
 - runtime ZIPs, installers, container layers, binaries, node_modules, Rust target, Python environments, dist, build, temporary files or caches.
 
-.env.example, synthetic fixtures under fixtures/synthetic_media, small text fixtures and source documentation are allowed when they contain no live values. The existing docs/fyp_context_pack.zip is documentation evidence, not a runtime package; do not add similar archives for Desktop V2.
+.env.example, synthetic fixtures under fixtures/synthetic_media, small text fixtures and source documentation are allowed when they contain no live values.
 
 ## Development-path preservation
 
