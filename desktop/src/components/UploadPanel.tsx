@@ -119,6 +119,14 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
   const [dragOver, setDragOver] = useState(false);
   const [materials, setMaterials] = useState<MaterialItem[]>([]);
   const [materialUploading, setMaterialUploading] = useState(false);
+  const [materialRefreshing, setMaterialRefreshing] = useState(false);
+  const [materialFeedback, setMaterialFeedback] = useState<string | null>(null);
+  const [materialRefreshGeneration, setMaterialRefreshGeneration] = useState(0);
+  const [materialPausedSet, setMaterialPausedSet] = useState<string | null>(null);
+  const materialScopeRef = useRef<object | null>(null);
+  const materialMutationVersion = useRef(0);
+  const materialPollingPausedRef = useRef(false);
+  const materialReadQueue = useRef<Promise<void>>(Promise.resolve());
   const [projectAssets, setProjectAssets] = useState<ProjectAsset[]>([]);
   const [readiness, setReadiness] = useState<ProjectReadiness | null>(null);
   const [ingestValidation, setIngestValidation] = useState<IngestValidation | null>(null);
@@ -147,9 +155,96 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
   const embeddedMaterials = materials.filter(m => m.chunk_count > 0).length;
   const nativeImportActive = nativeImportProgress && ["copying", "finalizing"].includes(nativeImportProgress.status);
 
-  useEffect(() => {
-    api.listMaterials().then(setMaterials).catch(() => {});
+  const pendingMaterialSet = materials.filter(material => material.chunk_count <= 0).map(material => material.id).sort().join("|");
+  const materialIndexingUnconfirmed = Boolean(pendingMaterialSet && materialPausedSet === pendingMaterialSet);
+
+  const refreshMaterials = useCallback((shouldRead?: () => boolean): Promise<"updated" | "stale" | "failed"> => {
+    const scope = materialScopeRef.current;
+    const read = materialReadQueue.current.then(async (): Promise<"updated" | "stale" | "failed"> => {
+      if (!scope || materialScopeRef.current !== scope || (shouldRead && !shouldRead())) return "stale";
+      const version = materialMutationVersion.current;
+      setMaterialRefreshing(true);
+      try {
+        const nextMaterials = await api.listMaterials();
+        if (materialScopeRef.current !== scope || materialMutationVersion.current !== version) return "stale";
+        setMaterials(current => materialScopeRef.current === scope && materialMutationVersion.current === version ? nextMaterials : current);
+        setMaterialFeedback(null);
+        return "updated";
+      } catch (error) {
+        if (materialScopeRef.current !== scope || materialMutationVersion.current !== version) return "stale";
+        materialPollingPausedRef.current = true;
+        setMaterialFeedback(`Material indexing is not yet confirmed. ${api.friendlyErrorMessage(error)} Use Refresh materials to check again.`);
+        return "failed";
+      } finally {
+        if (materialScopeRef.current === scope) setMaterialRefreshing(false);
+      }
+    });
+    materialReadQueue.current = read.then(() => {});
+    return read;
   }, []);
+
+  useEffect(() => {
+    const scope = {};
+    materialScopeRef.current = scope;
+    void refreshMaterials();
+    return () => {
+      if (materialScopeRef.current === scope) materialScopeRef.current = null;
+    };
+  }, [refreshMaterials]);
+
+  useEffect(() => {
+    if (!pendingMaterialSet) {
+      setMaterialPausedSet(null);
+      return;
+    }
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = Date.now() + 120_000;
+    materialPollingPausedRef.current = false;
+    setMaterialPausedSet(null);
+    const pause = () => {
+      if (!active) return;
+      materialPollingPausedRef.current = true;
+      setMaterialPausedSet(pendingMaterialSet);
+      setMaterialFeedback("Material indexing is not yet confirmed. Use Refresh materials to check again.");
+    };
+    const poll = async () => {
+      if (!active) return;
+      if (materialPollingPausedRef.current) {
+        setMaterialPausedSet(pendingMaterialSet);
+        return;
+      }
+      if (Date.now() >= deadline) {
+        pause();
+        return;
+      }
+      const outcome = await refreshMaterials(() => active && !materialPollingPausedRef.current && Date.now() < deadline);
+      if (!active) return;
+      if (outcome === "failed") {
+        setMaterialPausedSet(pendingMaterialSet);
+        return;
+      }
+      if (Date.now() >= deadline) {
+        pause();
+        return;
+      }
+      timer = setTimeout(() => void poll(), Math.min(2000, deadline - Date.now()));
+    };
+    timer = setTimeout(() => void poll(), 2000);
+    return () => {
+      active = false;
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [pendingMaterialSet, materialRefreshGeneration, refreshMaterials]);
+
+  const handleRefreshMaterials = useCallback(() => {
+    materialPollingPausedRef.current = false;
+    setMaterialFeedback(null);
+    setMaterialRefreshGeneration(generation => generation + 1);
+    void refreshMaterials().then(outcome => {
+      if (outcome === "failed") setMaterialPausedSet(pendingMaterialSet);
+    });
+  }, [pendingMaterialSet, refreshMaterials]);
 
   useEffect(() => {
     let active = true;
@@ -559,14 +654,20 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
     const file = e.target.files?.[0];
     if (!file) return;
 
+    const scope = materialScopeRef.current;
     setMaterialUploading(true);
     try {
       const result = await api.uploadMaterial(file);
-      setMaterials(prev => [...prev, { id: result.id, filename: file.name, chunk_count: result.chunk_count }]);
+      if (!scope || materialScopeRef.current !== scope) return;
+      materialMutationVersion.current += 1;
+      setMaterials(prev => [...prev.filter(material => material.id !== result.id), { id: result.id, filename: file.name, chunk_count: result.chunk_count }]);
+      setMaterialFeedback(null);
     } catch (err) {
-      alert(`Material upload failed: ${api.friendlyErrorMessage(err)}`);
+      if (scope && materialScopeRef.current === scope) {
+        setMaterialFeedback(`Material upload failed: ${api.friendlyErrorMessage(err)}`);
+      }
     } finally {
-      setMaterialUploading(false);
+      if (scope && materialScopeRef.current === scope) setMaterialUploading(false);
       e.target.value = "";
     }
   };
@@ -609,8 +710,18 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
   };
 
   const handleDeleteMaterial = async (id: string) => {
-    await api.deleteMaterial(id);
-    setMaterials(prev => prev.filter(m => m.id !== id));
+    const scope = materialScopeRef.current;
+    try {
+      await api.deleteMaterial(id);
+      if (!scope || materialScopeRef.current !== scope) return;
+      materialMutationVersion.current += 1;
+      setMaterials(prev => prev.filter(m => m.id !== id));
+      setMaterialFeedback(null);
+    } catch (error) {
+      if (scope && materialScopeRef.current === scope) {
+        setMaterialFeedback(`Could not remove material. ${api.friendlyErrorMessage(error)} Try removing it again.`);
+      }
+    }
   };
 
   const handleStartProcessing = async () => {
@@ -698,6 +809,10 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
         <CourseMaterialsPanel
           materials={materials}
           materialUploading={materialUploading}
+          materialRefreshing={materialRefreshing}
+          feedback={materialFeedback}
+          indexingUnconfirmed={materialIndexingUnconfirmed}
+          onRefresh={handleRefreshMaterials}
           onUpload={handleMaterialUpload}
           onDelete={handleDeleteMaterial}
         />
@@ -1494,19 +1609,27 @@ function StructureAssetRow({
 function CourseMaterialsPanel({
   materials,
   materialUploading,
+  materialRefreshing,
+  feedback,
+  indexingUnconfirmed,
+  onRefresh,
   onUpload,
   onDelete,
 }: {
   materials: MaterialItem[];
   materialUploading: boolean;
+  materialRefreshing: boolean;
+  feedback: string | null;
+  indexingUnconfirmed: boolean;
+  onRefresh: () => void;
   onUpload: (event: React.ChangeEvent<HTMLInputElement>) => void;
   onDelete: (id: string) => void;
 }) {
   return (
     <div className="rounded-lg border border-surface-border bg-surface-raised p-6">
-      <div className="mb-4 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <BookOpen className="h-4 w-4 text-accent" />
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <BookOpen className="h-4 w-4 shrink-0 text-accent" />
           <h2 className="text-sm font-semibold">Course Materials (RAG Knowledge Base)</h2>
         </div>
         <label className="cursor-pointer text-xs text-accent transition-colors hover:text-accent-hover">
@@ -1515,9 +1638,18 @@ function CourseMaterialsPanel({
           ) : (
             <span className="flex items-center gap-1"><Upload className="h-3 w-3" /> Add PDF / PPTX / DOCX</span>
           )}
-          <input type="file" className="hidden" accept=".pdf,.pptx,.docx,.txt,.md" onChange={onUpload} disabled={materialUploading} />
+          <input type="file" aria-label="Add course material" className="hidden" accept=".pdf,.pptx,.docx,.txt,.md" onChange={onUpload} disabled={materialUploading} />
         </label>
       </div>
+
+      <div role="status" aria-live="polite" className="mb-3 text-xs text-gray-400">
+        {feedback || (materials.some(material => material.chunk_count <= 0) ? "Awaiting material embedding; indexed chunks will appear when confirmed." : materials.length > 0 ? "Material indexing confirmed." : "")}
+      </div>
+      {feedback || indexingUnconfirmed ? (
+        <button type="button" onClick={onRefresh} disabled={materialRefreshing} className="mb-3 rounded-md border border-surface-border px-3 py-1.5 text-xs text-accent hover:border-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50">
+          {materialRefreshing ? "Refreshing materials..." : "Refresh materials"}
+        </button>
+      ) : null}
 
       {materials.length === 0 ? (
         <p className="text-xs text-gray-500">
@@ -1526,12 +1658,12 @@ function CourseMaterialsPanel({
       ) : (
         <div className="space-y-2">
           {materials.map(material => (
-            <div key={material.id} className="flex items-center justify-between rounded-md bg-surface-overlay px-3 py-2 text-sm">
-              <div>
-                <span className="text-gray-200">{material.filename}</span>
-                <span className="ml-2 text-gray-500">({material.chunk_count} chunks)</span>
+            <div key={material.id} className="flex min-w-0 items-center justify-between gap-3 rounded-md bg-surface-overlay px-3 py-2 text-sm">
+              <div className="min-w-0 flex-1">
+                <span className="break-words text-gray-200 [overflow-wrap:anywhere]">{material.filename}</span>
+                <span className="ml-2 text-gray-500">{material.chunk_count > 0 ? `(${material.chunk_count} chunks)` : indexingUnconfirmed ? "(Indexing not yet confirmed)" : "(Awaiting embedding)"}</span>
               </div>
-              <button onClick={() => onDelete(material.id)} className="text-gray-500 hover:text-red-400">
+              <button type="button" onClick={() => onDelete(material.id)} aria-label={`Remove ${material.filename}`} className="shrink-0 rounded text-gray-500 hover:text-red-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
                 <X className="h-4 w-4" />
               </button>
             </div>

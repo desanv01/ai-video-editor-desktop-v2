@@ -46,6 +46,8 @@ jobs:
         run: node node_modules/electron/install.js
       - name: Verify failed-render project recovery and stale navigation boundaries
         run: node ../scripts/rebuild/test_dashboard_reopen.cjs .. ../.test-output/dashboard-reopen
+      - name: Verify material indexing feedback and stale response boundaries
+        run: node ../scripts/rebuild/test_material_feedback.cjs .. ../.test-output/material-feedback
       - name: Run immutable component update and legacy activation checks
         run: node ../scripts/rebuild/test_component_updates.cjs ..
       - name: Run native and browser transcript download boundary checks
