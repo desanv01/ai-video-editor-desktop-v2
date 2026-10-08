@@ -155,6 +155,9 @@ jobs:
       - name: Verify installed intake, readiness and credential regressions
         run: python scripts/rebuild/test_installed_boundaries.py --repo . --output .test-output/installed-boundaries
 
+      - name: Verify timeline evidence matches canonical current source and output ranges
+        run: python scripts/rebuild/test_evidence_timeline.py --repo . --output .test-output/evidence-timeline
+
       - name: Verify teacher-reviewed report duration and timing provenance
         run: python scripts/rebuild/test_report_metrics.py --repo . --output .test-output/report-metrics
 
