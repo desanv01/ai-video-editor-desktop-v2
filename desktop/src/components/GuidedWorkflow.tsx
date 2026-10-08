@@ -3049,34 +3049,61 @@ function createEducationalOverlayDraft(
 }
 
 function createEducationalOverlaysFromChapters(chapters: Chapter[], duration: number): EducationalOverlayAction[] {
-  const lessonTitle = chapters[0]?.label || "Lecture Overview";
-  const overlays: EducationalOverlayAction[] = [
-    {
-      ...createEducationalOverlayDraft("intro_card", 0, duration || 4.5, 1),
+  if (!Number.isFinite(duration) || duration < 0.5) return [];
+  const orderedChapters = chapters
+    .map((chapter, index) => ({ chapter, index }))
+    .filter(({ chapter }) => Number.isFinite(chapter.timestamp) && chapter.timestamp >= 0 && chapter.timestamp <= duration)
+    .sort((left, right) => left.chapter.timestamp - right.chapter.timestamp);
+  const lessonTitle = orderedChapters[0]?.chapter.label || "Lecture Overview";
+  const overlays: EducationalOverlayAction[] = [];
+  const boundedDraft = (type: EducationalOverlayType, start: number, boundary: number, ordinal: number) => {
+    const maxDuration = type === "chapter_label" ? 3 : 4.5;
+    const end = Math.min(duration, boundary, start + maxDuration);
+    if (start < 0 || end - start < 0.5) return null;
+    return {
+      ...createEducationalOverlayDraft(type, start, duration, ordinal),
+      start_time: start,
+      end_time: end,
+      duration: end - start,
+    };
+  };
+  const introBoundary = orderedChapters.find(({ chapter }) => chapter.timestamp > 0)?.chapter.timestamp ?? duration;
+  const intro = boundedDraft("intro_card", 0, introBoundary, 1);
+  if (intro) {
+    overlays.push({
+      ...intro,
       id: "edu-intro-card",
       title: lessonTitle,
       subtitle: chapters.length > 1 ? `${chapters.length} chapters in this lesson` : "Key ideas and examples",
       source: "chapter_generation",
-    },
-  ];
+    });
+  }
 
-  chapters.slice(0, 12).forEach((chapter, index) => {
-    const start = Math.max(0, chapter.timestamp);
-    overlays.push({
-      ...createEducationalOverlayDraft("section_title_card", start, duration || start + 4.5, index + 1),
-      id: `edu-section-${index + 1}`,
-      title: chapter.label,
-      subtitle: chapter.keywords?.slice(0, 3).join(" / ") ?? "",
-      chapter_index: index,
-      source: "chapter_generation",
-    });
-    overlays.push({
-      ...createEducationalOverlayDraft("chapter_label", start + 0.2, duration || start + 3.2, index + 1),
-      id: `edu-chapter-${index + 1}`,
-      title: chapter.label,
-      chapter_index: index,
-      source: "chapter_generation",
-    });
+  orderedChapters.slice(0, 12).forEach(({ chapter, index }, sortedIndex) => {
+    const start = chapter.timestamp;
+    const boundary = orderedChapters[sortedIndex + 1]?.chapter.timestamp ?? duration;
+    // The intro serves as the opening card for chapters beginning at zero.
+    const section = start > 0 ? boundedDraft("section_title_card", start, boundary, index + 1) : null;
+    if (section) {
+      overlays.push({
+        ...section,
+        id: `edu-section-${index + 1}`,
+        title: chapter.label,
+        subtitle: chapter.keywords?.slice(0, 3).join(" / ") ?? "",
+        chapter_index: index,
+        source: "chapter_generation",
+      });
+    }
+    const label = boundedDraft("chapter_label", start + 0.2, boundary, index + 1);
+    if (label) {
+      overlays.push({
+        ...label,
+        id: `edu-chapter-${index + 1}`,
+        title: chapter.label,
+        chapter_index: index,
+        source: "chapter_generation",
+      });
+    }
   });
 
   return overlays;
