@@ -422,6 +422,8 @@ class TranscriptionService:
         NOTE: timestamp_granularities and language are mutually exclusive
               in the current Mistral API — we prioritize timestamps.
         """
+        if not settings.MISTRAL_API_KEY:
+            raise ValueError("Mistral API key is required for Voxtral transcription")
         kwargs = {
             "model": "voxtral-mini-latest",
             "file": open(audio_path, "rb"),
@@ -444,7 +446,7 @@ class TranscriptionService:
         #     kwargs["language"] = language
 
         try:
-            response = await self._mistral.audio.transcriptions.create(**kwargs)
+            response = await self._mistral.with_options(api_key=settings.MISTRAL_API_KEY).audio.transcriptions.create(**kwargs)
             return self._clean_transcription_result(self._parse_voxtral_response(response))
         finally:
             # Close file handle
@@ -527,6 +529,8 @@ class TranscriptionService:
         language: Optional[str] = None,
     ) -> dict:
         """Single Whisper API call (file <= 25MB)."""
+        if not settings.OPENAI_API_KEY:
+            raise ValueError("OpenAI API key is required for Whisper transcription")
         kwargs = {
             "model": settings.WHISPER_MODEL,
             "file": open(audio_path, "rb"),
@@ -542,7 +546,7 @@ class TranscriptionService:
         kwargs["prompt"] = "\n".join(part for part in prompt_parts if part)
 
         try:
-            response = await self._openai.audio.transcriptions.create(**kwargs)
+            response = await self._openai.with_options(api_key=settings.OPENAI_API_KEY).audio.transcriptions.create(**kwargs)
         finally:
             kwargs["file"].close()
 
