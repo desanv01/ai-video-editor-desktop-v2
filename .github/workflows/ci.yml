@@ -130,6 +130,8 @@ jobs:
       - name: Run backend unit tests
         working-directory: backend
         run: python -m unittest discover -s tests -v
+      - name: Verify native vector import isolation and Docker preservation
+        run: python scripts/rebuild/test_native_vector_imports.py
       - name: Run real LanceDB and SQLite acceptance checks
         run: python scripts/rebuild/test_rebuild_storage.py
       - name: Verify isolated document profile alias identity and fallback guards
