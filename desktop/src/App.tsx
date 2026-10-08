@@ -67,7 +67,19 @@ export function BrowserEditorApp({ nativeMode = false }: { nativeMode?: boolean 
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [nativeModelsOpen, setNativeModelsOpen] = useState(false);
+  const [restoreNativeModelsFocus, setRestoreNativeModelsFocus] = useState(false);
   const [desktopManagementOpen, setDesktopManagementOpen] = useState(false);
+  const openSettings = () => {
+    setRestoreNativeModelsFocus(false);
+    setSettingsOpen(true);
+  };
+  const closeSettings = () => {
+    setRestoreNativeModelsFocus(false);
+    setSettingsOpen(false);
+  };
+  useEffect(() => {
+    setRestoreNativeModelsFocus(false);
+  }, [view]);
   useEffect(() => {
     (async () => {
       try {
@@ -171,7 +183,7 @@ export function BrowserEditorApp({ nativeMode = false }: { nativeMode?: boolean 
           )}
           <button
             type="button"
-            onClick={() => setSettingsOpen(true)}
+            onClick={openSettings}
             className="inline-flex min-h-11 items-center gap-2 rounded-md border border-surface-border px-3 py-2 transition-colors hover:bg-surface-overlay hover:text-gray-200"
           >
             <Settings className="w-3.5 h-3.5" />
@@ -219,15 +231,18 @@ export function BrowserEditorApp({ nativeMode = false }: { nativeMode?: boolean 
           <ReviewEditor
             videoId={videoId}
             videoFilename={videoFilename}
-            onOpenSettings={() => setSettingsOpen(true)}
+            onOpenSettings={openSettings}
           />
         )}
       </main>
 
       <MainSettingsPanel
         isOpen={settingsOpen && !nativeModelsOpen}
-        onClose={() => setSettingsOpen(false)}
+        onClose={closeSettings}
+        restoreNativeModelsFocus={restoreNativeModelsFocus}
+        onNativeModelsFocusRestored={() => setRestoreNativeModelsFocus(false)}
         onManageNativeModels={window.aiveDesktop ? () => {
+          setRestoreNativeModelsFocus(false);
           setSettingsOpen(false);
           setNativeModelsOpen(true);
         } : undefined}
@@ -237,6 +252,7 @@ export function BrowserEditorApp({ nativeMode = false }: { nativeMode?: boolean 
           isOpen={nativeModelsOpen}
           onClose={() => {
             setNativeModelsOpen(false);
+            setRestoreNativeModelsFocus(true);
             setSettingsOpen(true);
           }}
         />

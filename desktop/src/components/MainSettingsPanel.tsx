@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import type { ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode, RefObject } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   AlertTriangle,
@@ -41,6 +41,8 @@ import type {
 } from "../types/api";
 
 interface Props {
+  restoreNativeModelsFocus?: boolean;
+  onNativeModelsFocusRestored?: () => void;
   isOpen: boolean;
   onClose: () => void;
   onManageNativeModels?: () => void;
@@ -262,8 +264,11 @@ async function chooseDirectory(currentValue: string): Promise<string | null> {
   }
 }
 
-export function MainSettingsPanel({ isOpen, onClose, onManageNativeModels }: Props) {
+export function MainSettingsPanel({ isOpen, onClose, onManageNativeModels, restoreNativeModelsFocus = false, onNativeModelsFocusRestored }: Props) {
   const [activeTab, setActiveTab] = useState<SettingsTabId>("ai");
+  const manageNativeModelsButtonRef = useRef<HTMLButtonElement>(null);
+  const panelSessionRef = useRef(0);
+  const [panelSessionLoaded, setPanelSessionLoaded] = useState(false);
   const [backendSettings, setBackendSettings] = useState<BackendAISettings | null>(null);
   const [desktopSettings, setDesktopSettings] = useState<AppSettings>(defaultAppSettings());
   const [catalog, setCatalog] = useState<LocalTranscriptionModelCatalog | null>(null);
@@ -333,8 +338,28 @@ export function MainSettingsPanel({ isOpen, onClose, onManageNativeModels }: Pro
   };
 
   useEffect(() => {
-    if (isOpen) void loadPanel();
+    const session = ++panelSessionRef.current;
+    setPanelSessionLoaded(false);
+    if (isOpen) {
+      void loadPanel().then(() => {
+        if (panelSessionRef.current === session) setPanelSessionLoaded(true);
+      });
+    }
+    return () => { ++panelSessionRef.current; };
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || !window.aiveDesktop || !restoreNativeModelsFocus) return;
+    if (activeTab !== "models") {
+      onNativeModelsFocusRestored?.();
+      return;
+    }
+    if (!panelSessionLoaded || loading || !backendSettings || !capabilities || !localPaths) return;
+    const button = manageNativeModelsButtonRef.current;
+    if (!button || !button.isConnected || button.disabled || button.getClientRects().length === 0) return;
+    button.focus();
+    if (document.activeElement === button) onNativeModelsFocusRestored?.();
+  }, [isOpen, restoreNativeModelsFocus, activeTab, panelSessionLoaded, loading, backendSettings, capabilities, localPaths, onNativeModelsFocusRestored]);
 
   useEffect(() => {
     if (!isOpen || !hasRunningDownload) return;
@@ -663,6 +688,7 @@ export function MainSettingsPanel({ isOpen, onClose, onManageNativeModels }: Pro
                       onDownload={handleDownload}
                       onRemove={handleRemove}
                       onManageNativeModels={onManageNativeModels}
+                      manageNativeModelsButtonRef={manageNativeModelsButtonRef}
                       onPathChange={(kind, value) => setLocalPaths(prev => prev ? { ...prev, [kind]: value } : prev)}
                     />
                   )}
@@ -871,6 +897,7 @@ function LocalModelsTab({
   onRemove,
   onPathChange,
   onManageNativeModels,
+  manageNativeModelsButtonRef,
 }: {
   catalog: LocalTranscriptionModelCatalog | null;
   selectedModelId: string;
@@ -881,6 +908,7 @@ function LocalModelsTab({
   onRemove: (model: LocalTranscriptionModel) => void;
   onPathChange: (kind: AIProviderKind, value: string) => void;
   onManageNativeModels?: () => void;
+  manageNativeModelsButtonRef: RefObject<HTMLButtonElement | null>;
 }) {
   return (
     <PanelStack>
@@ -895,6 +923,7 @@ function LocalModelsTab({
           <p className="text-xs leading-5 text-gray-400">Bundled Whisper small remains protected. Optional models are managed separately.</p>
           <button
             type="button"
+            ref={manageNativeModelsButtonRef}
             onClick={onManageNativeModels}
             disabled={!onManageNativeModels}
             className="inline-flex min-h-11 items-center rounded-md bg-accent px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface disabled:cursor-not-allowed disabled:opacity-60"
