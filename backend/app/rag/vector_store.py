@@ -19,14 +19,21 @@ import json
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
-try:
-    from qdrant_client import AsyncQdrantClient
-    from qdrant_client.models import (
-        Distance, VectorParams, PointStruct,
-        Filter, FieldCondition, MatchValue,
-        models as qmodels,
-    )
-except ImportError:  # Native LanceDB does not require qdrant-client.
+from config import settings
+
+AsyncQdrantClient = None
+if not getattr(settings, "is_native_desktop", False):
+    try:
+        from qdrant_client import AsyncQdrantClient
+        from qdrant_client.models import (
+            Distance, VectorParams, PointStruct,
+            Filter, FieldCondition, MatchValue,
+            models as qmodels,
+        )
+    except ImportError:
+        AsyncQdrantClient = None
+
+if AsyncQdrantClient is None:  # Native LanceDB does not require qdrant-client.
     from types import SimpleNamespace
 
     class _Distance:
@@ -62,7 +69,6 @@ except ImportError:  # Native LanceDB does not require qdrant-client.
     )
     AsyncQdrantClient = None
 from services.llm import llm_service
-from config import settings
 
 logger = logging.getLogger(__name__)
 
