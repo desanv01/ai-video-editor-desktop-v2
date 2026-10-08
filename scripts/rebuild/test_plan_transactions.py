@@ -44,7 +44,7 @@ async def exercise(case,root):
                 approved_at=datetime(2026,1,1),teacher_notes='old notes',segments_total=16,original_duration=160,estimated_duration=160))
         db.add(CourseMaterial(id=mid,filename='fixture.txt',file_path=str(root/'fixture.txt'),file_type='txt',content_text='old content',chunk_count=7,is_embedded=True))
         await db.commit()
-    calls=[];clean_calls=[]
+    calls=[];clean_calls=[];guard_differences=[]
     def unlocked(label):
         with closing(sqlite3.connect(paths.database,timeout=.15)) as writer:
             writer.execute('BEGIN IMMEDIATE');writer.rollback()
@@ -83,6 +83,18 @@ async def exercise(case,root):
         return 3
     try:
         async with AsyncExitStack() as mocks:
+            if case=='clean-during':
+                original_matches=planner._matches_snapshot
+                def diagnosed_matches(row,saved,fields):
+                    matched=original_matches(row,saved,fields)
+                    if not matched:
+                        guard_differences.append({
+                            'row':type(row).__name__,
+                            'fields':[(key,repr(getattr(row,key,None))[:500],repr(getattr(saved,key,None))[:500])
+                                      for key in fields if getattr(row,key,None)!=getattr(saved,key,None)],
+                        })
+                    return matched
+                mocks.enter_context(patch.object(planner,'_matches_snapshot',diagnosed_matches))
             mocks.enter_context(patch.object(planner.llm_service,'chat_json',chat))
             mocks.enter_context(patch.object(planner.llm_service,'provider_id_for_kind',return_value='offline-fixture'))
             mocks.enter_context(patch.object(pipeline.rag_service,'ensure_collection',ensure))
@@ -165,6 +177,7 @@ async def exercise(case,root):
                             assert clean_calls==[]
                         elif case=='clean-during':
                             with unittest.TestCase().assertRaises(planner.StaleEditPlanningError):await pipeline._run_native_auto_clean(str(vid),db,clean)
+                            assert clean_calls==['conservative'], {'stage':'clean callback never reached','guard_differences':guard_differences,'calls':calls}
                         elif case=='clean':
                             await pipeline._run_native_auto_clean(str(vid),db,clean);assert clean_calls==['conservative'] and not db.info
                     assert not db.in_transaction()

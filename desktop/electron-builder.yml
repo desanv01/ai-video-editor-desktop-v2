@@ -11,6 +11,9 @@ files:
   - '!**/.env*'
   - '!src-tauri/**'
   - '!**/credentials.json'
+  - '!node_modules/@ffmpeg-installer/**'
+  - '!node_modules/@ffprobe-installer/**'
+  - '!node_modules/@esbuild/**'
 extraResources:
   - from: ../contracts/rebuild/components.json
     to: rebuild/components.json
