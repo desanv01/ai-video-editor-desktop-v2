@@ -828,6 +828,10 @@ class EditPlanResponse(BaseModel):
         from_attributes = True
 
 
+class WorkflowProgressUpdateRequest(BaseModel):
+    completed_step: Literal["transcribe", "clean", "sections", "layout", "polish", "export"]
+
+
 class EditPlanApproveRequest(BaseModel):
     teacher_notes: Optional[str] = None
     export_preset_id: Optional[str] = Field(default=None, max_length=80)

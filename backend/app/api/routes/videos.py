@@ -35,7 +35,7 @@ from models.schemas import (
     TranscriptCutDecisionRequest, TranscriptCutDecisionResponse, TranscriptCutTrimUpdateRequest,
     TranscriptCutWordRestoreRequest,
     TranscriptTimelineResponse,
-    EditPlanResponse, EditPlanApproveRequest, CaptionPolicyUpdateRequest,
+    EditPlanResponse, EditPlanApproveRequest, CaptionPolicyUpdateRequest, WorkflowProgressUpdateRequest,
     LayoutCuesUpdateRequest, LayoutCuesAutoGenerateRequest, SlideCuesUpdateRequest,
     EditorialBlocksUpdateRequest,
     AnnotationActionsUpdateRequest, EducationalOverlayActionsUpdateRequest,
@@ -906,6 +906,42 @@ async def get_edit_plan(video_id: str, db: AsyncSession = Depends(get_db)):
     plan = result.scalar_one_or_none()
     if not plan:
         raise HTTPException(404, "Edit plan not found")
+    return plan
+
+
+@router.put("/videos/{video_id}/plan/workflow-progress", response_model=EditPlanResponse, tags=["Edit Plan"])
+async def update_workflow_progress(
+    video_id: str,
+    request: WorkflowProgressUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Persist reviewed step completion without approving or rendering the plan."""
+    statement = select(EditPlan).where(EditPlan.video_id == video_id)
+    if settings.is_native_desktop:
+        from desktop_native.agent_transactions import fresh_read
+
+        result = await fresh_read(db, statement)
+    else:
+        result = await db.execute(statement.with_for_update())
+    plan = result.scalar_one_or_none()
+    if not plan:
+        raise HTTPException(404, "Edit plan not found")
+
+    payload = dict(plan.plan_json) if isinstance(plan.plan_json, dict) else normalize_plan_payload(plan.plan_json)
+    metadata = dict(payload.get("metadata")) if isinstance(payload.get("metadata"), dict) else {}
+    progress = dict(metadata.get("workflow_progress")) if isinstance(metadata.get("workflow_progress"), dict) else {}
+    step_order = ("transcribe", "clean", "sections", "layout", "polish", "export")
+    saved_steps = progress.get("completed_steps")
+    completed_steps = {
+        step for step in saved_steps if isinstance(step, str) and step in step_order
+    } if isinstance(saved_steps, list) else set()
+    completed_steps.add(request.completed_step)
+    progress["completed_steps"] = [step for step in step_order if step in completed_steps]
+    metadata["workflow_progress"] = progress
+    payload["metadata"] = metadata
+    plan.plan_json = payload
+    await db.commit()
+    await db.refresh(plan)
     return plan
 
 

@@ -1000,6 +1000,16 @@ export async function getEditPlan(videoId: string): Promise<EditPlan> {
   return request(`/videos/${videoId}/plan`);
 }
 
+export async function updateWorkflowProgress(
+  videoId: string,
+  completedStep: "transcribe" | "clean" | "sections" | "layout" | "polish" | "export",
+): Promise<EditPlan> {
+  return request(`/videos/${videoId}/plan/workflow-progress`, {
+    method: "PUT",
+    body: JSON.stringify({ completed_step: completedStep }),
+  });
+}
+
 export async function getSemanticRenderPlan(videoId: string): Promise<SemanticRenderPlan> {
   return request(`/videos/${videoId}/render-plan`);
 }

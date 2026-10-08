@@ -126,6 +126,14 @@ type GeneratedSlidePreview = {
   imageUrl?: string | null;
 };
 
+function savedWorkflowSteps(plan: EditPlan | null): GuidedWorkflowStepId[] {
+  const progress = plan?.metadata?.workflow_progress;
+  if (!progress || typeof progress !== "object" || Array.isArray(progress)) return [];
+  const completed = (progress as Record<string, unknown>).completed_steps;
+  if (!Array.isArray(completed)) return [];
+  return GUIDED_WORKFLOW_STEPS.filter(step => completed.includes(step.id)).map(step => step.id);
+}
+
 export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) {
   const { segments, loading, reload: reloadSegments, applySegmentOverride, acceptAllHighConfidence } = useSegments(videoId);
   const { currentTime, setCurrentTime, isPlaying, setIsPlaying, videoRef, seekTo, togglePlay } = usePlaybackSync();
@@ -161,6 +169,9 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   const [duration, setDuration] = useState(0);
   const [videoSrc, setVideoSrc] = useState("");
   const readinessRequestId = useRef(0);
+  const workflowScopeRef = useRef<{ videoId: string } | null>(null);
+  const workflowSaveQueue = useRef<Promise<void>>(Promise.resolve());
+  const planVideoIdRef = useRef<string | null>(null);
   const { status: processingStatus } = useProcessingStatus(videoId, 1500, renderPollVersion);
 
   const refreshReadiness = useCallback(async () => {
@@ -180,7 +191,21 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   }, [videoId]);
 
   useEffect(() => {
-    api.getEditPlan(videoId).then(setPlan).catch(() => {});
+    const scope = { videoId };
+    workflowScopeRef.current = scope;
+    planVideoIdRef.current = null;
+    workflowSaveQueue.current = Promise.resolve();
+    setPlan(null);
+    setCompletedWorkflowSteps(new Set());
+    setActiveWorkflowStep("transcribe");
+    api.getEditPlan(videoId).then(updatedPlan => {
+      if (workflowScopeRef.current !== scope) return;
+      planVideoIdRef.current = videoId;
+      setPlan(updatedPlan);
+    }).catch(() => {});
+    return () => {
+      if (workflowScopeRef.current === scope) workflowScopeRef.current = null;
+    };
   }, [videoId]);
 
   useEffect(() => {
@@ -293,13 +318,15 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   }, [loadTranscriptEditingData]);
 
   useEffect(() => {
+    if (planVideoIdRef.current !== videoId) return;
     setCompletedWorkflowSteps(prev => {
       const next = new Set(prev);
+      for (const step of savedWorkflowSteps(plan)) next.add(step);
       if (segments.length > 0) next.add("transcribe");
       if (plan?.is_approved) next.add("export");
       return next;
     });
-  }, [segments.length, plan?.is_approved]);
+  }, [segments.length, plan, videoId]);
 
   useEffect(() => {
     const resource = api.getVideoStreamUrl(videoId);
@@ -425,8 +452,11 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   }, [videoId]);
 
   const refreshEditPlan = useCallback(async () => {
+    const scope = workflowScopeRef.current;
     try {
       const updatedPlan = await api.getEditPlan(videoId);
+      if (!scope || workflowScopeRef.current !== scope || scope.videoId !== videoId) return;
+      planVideoIdRef.current = videoId;
       setPlan(updatedPlan);
       void refreshSemanticRenderPlan();
     } catch {
@@ -435,9 +465,11 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   }, [refreshSemanticRenderPlan, videoId]);
 
   const handlePlanUpdated = useCallback((updatedPlan: EditPlan) => {
+    if (workflowScopeRef.current?.videoId !== videoId) return;
+    planVideoIdRef.current = videoId;
     setPlan(updatedPlan);
     void refreshSemanticRenderPlan();
-  }, [refreshSemanticRenderPlan]);
+  }, [refreshSemanticRenderPlan, videoId]);
 
   const refreshEditDecisionSync = useCallback(async () => {
     try {
@@ -742,16 +774,44 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
     }
   }, [videoId]);
 
-  const handleCompleteWorkflowStep = useCallback((step: GuidedWorkflowStepId) => {
-    setCompletedWorkflowSteps(prev => new Set(prev).add(step));
-  }, []);
+  const persistWorkflowStep = useCallback((step: GuidedWorkflowStepId): Promise<boolean> => {
+    const scope = workflowScopeRef.current;
+    const save = workflowSaveQueue.current.then(async () => {
+      if (!scope || scope.videoId !== videoId || workflowScopeRef.current !== scope) return false;
+      try {
+        const updatedPlan = await api.updateWorkflowProgress(videoId, step);
+        if (workflowScopeRef.current !== scope) return false;
+        const savedSteps = savedWorkflowSteps(updatedPlan);
+        setCompletedWorkflowSteps(prev => new Set([...prev, ...savedSteps]));
+        // Merge progress only; a delayed save must not replace newer edit/approval data.
+        setPlan(current => current ? {
+          ...current,
+          metadata: { ...current.metadata, workflow_progress: updatedPlan.metadata.workflow_progress },
+        } : current);
+        return true;
+      } catch (error) {
+        if (workflowScopeRef.current === scope) {
+          alert(`Review progress could not be saved: ${api.friendlyErrorMessage(error)}`);
+        }
+        return false;
+      }
+    });
+    workflowSaveQueue.current = save.then(() => {});
+    return save;
+  }, [videoId]);
 
-  const handleNextWorkflowStep = useCallback(() => {
-    setCompletedWorkflowSteps(prev => new Set(prev).add(activeWorkflowStep));
+  const handleCompleteWorkflowStep = useCallback((step: GuidedWorkflowStepId) => {
+    void persistWorkflowStep(step);
+  }, [persistWorkflowStep]);
+
+  const handleNextWorkflowStep = useCallback(async () => {
+    const scope = workflowScopeRef.current;
+    const saved = await persistWorkflowStep(activeWorkflowStep);
+    if (!saved || workflowScopeRef.current !== scope) return;
     const currentIndex = GUIDED_WORKFLOW_STEPS.findIndex(step => step.id === activeWorkflowStep);
     const nextStep = GUIDED_WORKFLOW_STEPS[currentIndex + 1];
     if (nextStep) setActiveWorkflowStep(nextStep.id);
-  }, [activeWorkflowStep]);
+  }, [activeWorkflowStep, persistWorkflowStep]);
 
   const handlePreviousWorkflowStep = useCallback(() => {
     const currentIndex = GUIDED_WORKFLOW_STEPS.findIndex(step => step.id === activeWorkflowStep);
