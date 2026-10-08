@@ -94,6 +94,7 @@ jobs:
         run: |
           python scripts/rebuild/test_delivery.py
           python scripts/rebuild/test_tool_packs.py
+          python scripts/rebuild/test_application_notices.py --repo . --output .test-output/application-notices
       - name: Acquire exact managed FFmpeg 8.1.1 for preserved export tests
         shell: pwsh
         run: |
