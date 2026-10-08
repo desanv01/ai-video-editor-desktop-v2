@@ -122,6 +122,8 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Run real LanceDB and SQLite acceptance checks
         run: python scripts/rebuild/test_rebuild_storage.py
+      - name: Verify isolated document profile alias identity and fallback guards
+        run: python scripts/rebuild/test_document_profile.py --repo . --output .test-output/document-profile
       - name: Run native startup and resource lifecycle checks
         run: python scripts/rebuild/test_rebuild_runtime.py
       - name: Run native agent transaction acceptance checks

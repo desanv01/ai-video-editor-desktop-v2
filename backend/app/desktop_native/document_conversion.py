@@ -153,6 +153,43 @@ async def _terminate_owned(proc: asyncio.subprocess.Process, completion: asyncio
         raise ManagedDocumentError("Managed document process cleanup did not complete; its isolated workspace was retained") from exc
 
 
+def _profile_uri(profile: Path) -> str:
+    """Use only a verified shorter Windows alias of this same owned profile."""
+    original_uri = profile.as_uri()
+    if os.name != "nt":
+        return original_uri
+    original = profile.resolve(strict=True)
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        short_path = kernel32.GetShortPathNameW
+        short_path.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+        short_path.restype = wintypes.DWORD
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = short_path(str(original), buffer, len(buffer))
+        if not length or length >= len(buffer):
+            return original_uri
+        alias_text = buffer.value
+        if len(alias_text) != length or not alias_text:
+            return original_uri
+    except (OSError, AttributeError, ValueError):
+        # Some filesystems have no short aliases; never enable them or redirect.
+        return original_uri
+    alias = Path(alias_text)
+    if not alias.is_absolute():
+        raise ManagedDocumentError("Managed document profile alias is not absolute")
+    try:
+        matches = alias.samefile(profile) and alias.resolve(strict=True) == original
+    except (OSError, ValueError) as exc:
+        raise ManagedDocumentError("Managed document profile alias identity could not be verified") from exc
+    if not matches:
+        raise ManagedDocumentError("Managed document profile alias does not identify the owned profile")
+    if len(alias_text) >= len(str(original)):
+        return original_uri
+    return alias.as_uri()
+
 async def _conversion_owner(binary: str, source: Path, work: Path, state: ConversionState) -> Path:
     # This task is shielded and retained for its entire spawn/termination lifetime.
     pdf_dir = work / "pdf"
@@ -160,7 +197,7 @@ async def _conversion_owner(binary: str, source: Path, work: Path, state: Conver
     pdf_dir.mkdir()
     profile.mkdir()
     command = [
-        binary, f"-env:UserInstallation={profile.as_uri()}",
+        binary, f"-env:UserInstallation={_profile_uri(profile)}",
         "--headless", "--nologo", "--nodefault", "--nofirststartwizard", "--norestore",
         "--convert-to", "pdf:impress_pdf_Export", "--outdir", str(pdf_dir), str(source),
     ]
