@@ -1156,6 +1156,7 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
               selectedAnnotationId={selectedAnnotationId}
               selectedEducationalOverlayId={selectedEducationalOverlayId}
               plan={plan}
+              synchronizedEstimatedDurationSeconds={syncedExportPlan?.estimated_output_duration_seconds}
               readiness={readiness}
               readinessLoading={readinessLoading}
               currentTime={currentTime}
