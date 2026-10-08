@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   AlertTriangle,
@@ -62,6 +62,7 @@ const STATUS_META: Record<ProjectStatus, { label: string; className: string; ico
 const BUSY_VIDEO_STATUSES = new Set(["processing", "transcribing", "analyzing", "planning", "rendering"]);
 
 export function ProjectDashboard({ onContinue }: Props) {
+  const continuationSequence = useRef(0);
   const [projects, setProjects] = useState<Project[]>([]);
   const [videos, setVideos] = useState<Video[]>([]);
   const [loading, setLoading] = useState(true);
@@ -119,6 +120,10 @@ export function ProjectDashboard({ onContinue }: Props) {
     void loadDashboard();
   }, [loadDashboard]);
 
+  useEffect(() => () => {
+    continuationSequence.current += 1;
+  }, []);
+
   const videosByProject = useMemo(() => {
     const grouped = new Map<string, Video[]>();
     videos.forEach((video) => {
@@ -168,11 +173,29 @@ export function ProjectDashboard({ onContinue }: Props) {
     }
   };
 
-  const continueProject = (project: Project) => {
-    const linkedVideo = videosByProject.get(project.id)?.[0] ?? null;
+  const continueProject = async (project: Project) => {
+    const sequence = ++continuationSequence.current;
+    let linkedVideo = videosByProject.get(project.id)?.[0] ?? null;
     if (!linkedVideo) {
       onContinue({ project, video: null, nextView: "upload" });
       return;
+    }
+
+    if (linkedVideo.status === "failed") {
+      setError(null);
+      try {
+        linkedVideo = await api.getVideo(linkedVideo.id);
+      } catch (err) {
+        if (sequence === continuationSequence.current) setError(api.friendlyErrorMessage(err));
+        return;
+      }
+      if (sequence !== continuationSequence.current) return;
+      if (linkedVideo.status === "failed" && "edit_plan" in linkedVideo &&
+          linkedVideo.edit_plan !== null && typeof linkedVideo.edit_plan === "object" &&
+          !Array.isArray(linkedVideo.edit_plan)) {
+        onContinue({ project, video: linkedVideo, nextView: "review" });
+        return;
+      }
     }
 
     if (linkedVideo.status === "awaiting_review" || linkedVideo.status === "completed") {
