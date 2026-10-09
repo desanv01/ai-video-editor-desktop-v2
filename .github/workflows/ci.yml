@@ -64,6 +64,8 @@ jobs:
         run: node ../scripts/rebuild/test_native_model_navigation.cjs .. ../.test-output/native-model-navigation corrected
       - name: Verify preview aspect fit across viewport constraints
         run: node ../scripts/rebuild/test_preview_aspect_fit.cjs .. ../.test-output/preview-aspect-fit
+      - name: Verify complete generated slide content in constrained previews
+        run: node ../scripts/rebuild/test_preview_slide_content_fit.cjs .. ../.test-output/preview-slide-content-fit
       - name: Package assisted per-user installer
         run: npm run package:win
       - name: Verify actual unpacked window and preload
