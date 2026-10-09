@@ -6,7 +6,7 @@ import argparse, asyncio, hashlib, json, os, sys, uuid
 from pathlib import Path
 from types import SimpleNamespace
 
-parser=argparse.ArgumentParser();parser.add_argument('--repo',type=Path,required=True);parser.add_argument('--output',type=Path,required=True)
+parser=argparse.ArgumentParser();parser.add_argument('--repo',type=Path,required=True);parser.add_argument('--output',type=Path,required=True);parser.add_argument('--case',choices=('all','credentials'),default='all')
 args=parser.parse_args();repo=args.repo.resolve();output=args.output.resolve();output.mkdir(parents=True,exist_ok=False)
 for key in list(os.environ):
  if key.startswith('AIVE_') or key.endswith('_API_KEY') or key in ('DATABASE_URL','DESKTOP_DB_PATH','DESKTOP_VECTOR_ROOT'):os.environ.pop(key,None)
@@ -51,9 +51,9 @@ async def exercise():
     headers.append((request.url.host,request.headers.get('Authorization')))
     return httpx.Response(200,json={'text':'Bridge design pattern','language':'en','duration':1.0,'words':[],'segments':[]})
    initial_openai,initial_mistral=service._openai,service._mistral
-   assert not initial_openai.api_key and not initial_mistral.api_key,'Fixture must begin before credentials are synchronized'
+   assert initial_openai is None and initial_mistral is None,'Native service must defer cloud clients until a cloud operation';assert not settings.OPENAI_API_KEY and not settings.MISTRAL_API_KEY,'Fixture must begin before credentials are synchronized'
    openai_http=httpx.AsyncClient(transport=httpx.MockTransport(mock));mistral_http=httpx.AsyncClient(transport=httpx.MockTransport(mock))
-   service._openai=AsyncOpenAI(api_key=initial_openai.api_key,http_client=openai_http);service._mistral=AsyncOpenAI(api_key=initial_mistral.api_key,base_url=settings.MISTRAL_BASE_URL,http_client=mistral_http)
+   service._openai=AsyncOpenAI(api_key=settings.OPENAI_API_KEY,http_client=openai_http);service._mistral=AsyncOpenAI(api_key=settings.MISTRAL_API_KEY,base_url=settings.MISTRAL_BASE_URL,http_client=mistral_http)
    audio=paths.temp/'fixture.wav';audio.write_bytes(b'RIFF-owned-audio-fixture')
    try:
     for revision in ('ONE','TWO'):
@@ -68,8 +68,9 @@ async def exercise():
      else:raise AssertionError('Cleared credentials must fail before sending any stale or empty authorization header')
     assert len(headers)==before
    finally:
-    await service._openai.close();await service._mistral.close();await initial_openai.close();await initial_mistral.close()
+    await service._openai.close();await service._mistral.close()
   for name,test in [('chunk phases, durable bytes, resume status and offset conflict',chunks),('project readiness with absent and existing edit plan',readiness),('real SDK headers after secure sync, rotation and clearing',credentials)]:
+   if args.case=='credentials' and test is not credentials:continue
    try:await test();cases.append({'name':name,'status':'PASS'});print('PASS '+name,flush=True)
    except Exception as error:cases.append({'name':name,'status':'FAIL','errorType':type(error).__name__,'detail':str(error)[:500]});print('FAIL '+name+': '+type(error).__name__,flush=True)
  await dispose_db();receipt={'status':'PASS' if all(x['status']=='PASS' for x in cases) else 'FAIL','scope':__doc__.strip(),'repo':str(repo),'cases':cases};(output/'receipt.json').write_text(json.dumps(receipt,indent=2));return receipt['status']=='PASS'

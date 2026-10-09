@@ -2,8 +2,6 @@
 
 from typing import Optional
 
-from openai import AsyncOpenAI
-
 from providers.interfaces import (
     ChatProvider,
     ChatRequest,
@@ -34,10 +32,9 @@ class OpenAICompatibleChatProvider(ChatProvider):
     ):
         self._api_key = api_key
         self._default_model = default_model
-        self._client = AsyncOpenAI(
-            api_key=api_key or "not-configured",
-            base_url=base_url,
-        )
+        self._client = None
+        self._client_api_key = api_key or "not-configured"
+        self._base_url = base_url
         self._metadata = ProviderMetadata(
             provider_id=provider_id,
             kind=ProviderKind.CHAT,
@@ -62,6 +59,16 @@ class OpenAICompatibleChatProvider(ChatProvider):
             )
         return await super().health()
 
+    def _get_client(self):
+        if self._client is None:
+            from openai import AsyncOpenAI
+
+            self._client = AsyncOpenAI(
+                api_key=self._client_api_key,
+                base_url=self._base_url,
+            )
+        return self._client
+
     async def chat(self, request: ChatRequest) -> ChatResponse:
         model = request.model or self._default_model
         kwargs = {
@@ -73,7 +80,7 @@ class OpenAICompatibleChatProvider(ChatProvider):
         if request.response_format:
             kwargs["response_format"] = request.response_format
 
-        response = await self._client.chat.completions.create(**kwargs)
+        response = await self._get_client().chat.completions.create(**kwargs)
         return ChatResponse(
             text=response.choices[0].message.content or "",
             provider_id=self.metadata.provider_id,
@@ -97,7 +104,8 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         self._api_key = api_key
         self._default_model = default_model
         self._default_dimensions = default_dimensions
-        self._client = AsyncOpenAI(api_key=api_key or "not-configured")
+        self._client = None
+        self._client_api_key = api_key or "not-configured"
         self._metadata = ProviderMetadata(
             provider_id=provider_id,
             kind=ProviderKind.EMBEDDING,
@@ -122,10 +130,17 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             )
         return await super().health()
 
+    def _get_client(self):
+        if self._client is None:
+            from openai import AsyncOpenAI
+
+            self._client = AsyncOpenAI(api_key=self._client_api_key)
+        return self._client
+
     async def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
         model = request.model or self._default_model
         dimensions = request.dimensions or self._default_dimensions
-        response = await self._client.embeddings.create(
+        response = await self._get_client().embeddings.create(
             model=model,
             input=request.texts,
             dimensions=dimensions,

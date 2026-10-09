@@ -26,7 +26,6 @@ import json
 import logging
 import re
 from typing import List, Optional
-from openai import AsyncOpenAI
 from config import settings
 from services.tooling import ffmpeg_binary, ffprobe_binary
 from providers.defaults import get_provider_registry
@@ -147,17 +146,31 @@ class TranscriptionService:
     """Unified ASR service: Voxtral primary, Whisper fallback."""
 
     def __init__(self):
-        # Mistral client (OpenAI-compatible endpoint)
-        self._mistral = AsyncOpenAI(
-            api_key=settings.MISTRAL_API_KEY,
-            base_url=settings.MISTRAL_BASE_URL,
-        )
-        # OpenAI client (Whisper fallback + embeddings)
-        self._openai = AsyncOpenAI(
-            api_key=settings.OPENAI_API_KEY,
-        )
+        # Preserve constructor configuration without loading the cloud SDK.
+        self._mistral = None
+        self._mistral_api_key = settings.MISTRAL_API_KEY
+        self._mistral_base_url = settings.MISTRAL_BASE_URL
+        self._openai = None
+        self._openai_api_key = settings.OPENAI_API_KEY
         self._registered_registry = None
         self._registry()
+
+    def _get_mistral_client(self):
+        if self._mistral is None:
+            from openai import AsyncOpenAI
+
+            self._mistral = AsyncOpenAI(
+                api_key=self._mistral_api_key,
+                base_url=self._mistral_base_url,
+            )
+        return self._mistral
+
+    def _get_openai_client(self):
+        if self._openai is None:
+            from openai import AsyncOpenAI
+
+            self._openai = AsyncOpenAI(api_key=self._openai_api_key)
+        return self._openai
 
     def _registry(self):
         registry = get_provider_registry()
@@ -446,7 +459,7 @@ class TranscriptionService:
         #     kwargs["language"] = language
 
         try:
-            response = await self._mistral.with_options(api_key=settings.MISTRAL_API_KEY).audio.transcriptions.create(**kwargs)
+            response = await self._get_mistral_client().with_options(api_key=settings.MISTRAL_API_KEY).audio.transcriptions.create(**kwargs)
             return self._clean_transcription_result(self._parse_voxtral_response(response))
         finally:
             # Close file handle
@@ -546,7 +559,7 @@ class TranscriptionService:
         kwargs["prompt"] = "\n".join(part for part in prompt_parts if part)
 
         try:
-            response = await self._openai.with_options(api_key=settings.OPENAI_API_KEY).audio.transcriptions.create(**kwargs)
+            response = await self._get_openai_client().with_options(api_key=settings.OPENAI_API_KEY).audio.transcriptions.create(**kwargs)
         finally:
             kwargs["file"].close()
 
