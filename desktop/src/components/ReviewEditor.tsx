@@ -1505,6 +1505,40 @@ const LayoutProgramPreview = forwardRef<HTMLVideoElement, LayoutProgramPreviewPr
 });
 
 function GeneratedSlidePreviewSurface({ preview }: { preview: GeneratedSlidePreview }) {
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(1);
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    let active = true;
+    const updateScale = (width: number, height: number) => {
+      if (!active || width <= 0 || height <= 0) return;
+      setScale(Math.min(width / 1280, height / 720));
+    };
+    const measure = () => {
+      const { width, height } = viewport.getBoundingClientRect();
+      updateScale(width, height);
+    };
+    measure();
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(entries => {
+        const entry = entries[0];
+        if (entry) updateScale(entry.contentRect.width, entry.contentRect.height);
+      });
+      observer.observe(viewport);
+      return () => {
+        active = false;
+        observer.disconnect();
+      };
+    }
+    window.addEventListener("resize", measure);
+    return () => {
+      active = false;
+      window.removeEventListener("resize", measure);
+    };
+  }, [preview.imageUrl]);
+
   if (preview.imageUrl) {
     return (
       <div className="flex h-full w-full items-center justify-center bg-black">
@@ -1514,30 +1548,44 @@ function GeneratedSlidePreviewSurface({ preview }: { preview: GeneratedSlidePrev
   }
   const bullets = preview.bullets.length > 0 ? preview.bullets : [preview.subtitle].filter(Boolean);
   return (
-    <div className="flex h-full w-full flex-col justify-between bg-[#f8fafc] px-[6%] py-[5%] text-[#111827]">
-      <div className="min-w-0">
-        <div className="mb-3 inline-flex max-w-full items-center gap-2 rounded bg-[#2563eb]/10 px-3 py-1 text-[clamp(10px,1.2vw,14px)] font-semibold uppercase text-[#1d4ed8]">
-          <span className="h-2 w-2 rounded-full bg-[#2563eb]" />
-          <span className="truncate">{preview.sourceName}</span>
-        </div>
-        <h3 className="max-w-[88%] text-[clamp(22px,3vw,46px)] font-bold leading-tight text-[#111827]">
-          {preview.title}
-        </h3>
-        {preview.subtitle && (
-          <p className="mt-3 max-w-[78%] text-[clamp(13px,1.45vw,22px)] leading-snug text-[#475569]">
-            {preview.subtitle}
-          </p>
-        )}
-      </div>
-      <div className="grid max-w-[82%] gap-3">
-        {bullets.slice(0, 4).map((bullet, index) => (
-          <div key={`${bullet}-${index}`} className="flex items-start gap-3 rounded border border-[#cbd5e1] bg-white/80 px-4 py-3 shadow-sm">
-            <span className="mt-1 h-2.5 w-2.5 flex-none rounded-full bg-[#f59e0b]" />
-            <span className="text-[clamp(12px,1.35vw,20px)] font-medium leading-snug text-[#1f2937]">{compactPreviewText(bullet, 150)}</span>
+    <div ref={viewportRef} className="relative h-full w-full overflow-hidden bg-black">
+      <div
+        className="absolute flex flex-col justify-between overflow-hidden bg-[#f8fafc] text-[#111827]"
+        style={{
+          width: 1280,
+          height: 720,
+          left: "50%",
+          top: "50%",
+          padding: "64px 76.8px",
+          transform: `translate(-50%, -50%) scale(${scale})`,
+          transformOrigin: "center",
+          overflowWrap: "anywhere",
+        }}
+      >
+        <div className="min-w-0">
+          <div className="mb-3 inline-flex max-w-full items-center gap-2 rounded bg-[#2563eb]/10 px-3 py-1 text-[14px] font-semibold uppercase text-[#1d4ed8]">
+            <span className="h-2 w-2 rounded-full bg-[#2563eb]" />
+            <span className="truncate">{preview.sourceName}</span>
           </div>
-        ))}
+          <h3 className="max-w-[88%] text-[46px] font-bold leading-tight text-[#111827]">
+            {preview.title}
+          </h3>
+          {preview.subtitle && (
+            <p className="mt-3 max-w-[78%] text-[22px] leading-snug text-[#475569]">
+              {preview.subtitle}
+            </p>
+          )}
+        </div>
+        <div className="grid max-w-[82%] gap-3">
+          {bullets.slice(0, 4).map((bullet, index) => (
+            <div key={`${bullet}-${index}`} className="flex items-start gap-3 rounded border border-[#cbd5e1] bg-white/80 px-4 py-3 shadow-sm">
+              <span className="mt-1 h-2.5 w-2.5 flex-none rounded-full bg-[#f59e0b]" />
+              <span className="min-w-0 text-[20px] font-medium leading-snug text-[#1f2937]">{compactPreviewText(bullet, 150)}</span>
+            </div>
+          ))}
+        </div>
+        <div className="h-1.5 w-32 rounded-full bg-[#7c3aed]" />
       </div>
-      <div className="h-1.5 w-32 rounded-full bg-[#7c3aed]" />
     </div>
   );
 }
