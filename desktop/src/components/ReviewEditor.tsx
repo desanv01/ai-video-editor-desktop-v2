@@ -4,6 +4,8 @@ import { useSegments, usePlaybackSync, useProcessingStatus } from "../hooks/useA
 import { useCommandShortcuts } from "../hooks/useCommandShortcuts";
 import { EditorialTimeline, Timeline } from "./Timeline";
 import { TranscriptPanel } from "./TranscriptPanel";
+import { SourceSyncPanel } from "./SourceSyncPanel";
+import { SyncedSourceVideo } from "./SyncedSourceVideo";
 import { CommandPalette, type CommandPaletteCommand } from "./CommandPalette";
 import {
   DEFAULT_LAYOUT_PREVIEW_SETTINGS,
@@ -169,6 +171,21 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   const [duration, setDuration] = useState(0);
   const [videoSrc, setVideoSrc] = useState("");
   const readinessRequestId = useRef(0);
+  const semanticRequestId = useRef(0);
+  const assetRevision = useRef(0);
+  const sourceScopeRef = useRef<{ videoId: string; projectId: string | null } | null>(null);
+  const currentProjectId = videoDetail?.id === videoId ? videoDetail.project_id : null;
+
+  useLayoutEffect(() => {
+    const scope = { videoId, projectId: currentProjectId };
+    sourceScopeRef.current = scope;
+    ++semanticRequestId.current;
+    setSemanticRenderPlan(null);
+    return () => {
+      if (sourceScopeRef.current === scope) sourceScopeRef.current = null;
+      ++semanticRequestId.current;
+    };
+  }, [videoId, currentProjectId]);
   const workflowScopeRef = useRef<{ videoId: string } | null>(null);
   const workflowSaveQueue = useRef<Promise<void>>(Promise.resolve());
   const planVideoIdRef = useRef<string | null>(null);
@@ -213,13 +230,34 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   }, [refreshReadiness]);
 
   const refreshSemanticRenderPlan = useCallback(async () => {
+    const scope = sourceScopeRef.current;
+    if (!scope || scope.videoId !== videoId || scope.projectId !== currentProjectId) return;
+    const requestId = ++semanticRequestId.current;
     try {
       const renderPlan = await api.regenerateSemanticRenderPlan(videoId);
-      setSemanticRenderPlan(renderPlan);
+      if (sourceScopeRef.current === scope && requestId === semanticRequestId.current) {
+        setSemanticRenderPlan(renderPlan);
+      }
     } catch {
-      setSemanticRenderPlan(null);
+      if (sourceScopeRef.current === scope && requestId === semanticRequestId.current) {
+        setSemanticRenderPlan(null);
+      }
     }
-  }, [videoId]);
+  }, [videoId, currentProjectId]);
+
+  const handleSourceSyncSaved = useCallback(async (assets: ProjectAsset[]) => {
+    const scope = sourceScopeRef.current;
+    if (!scope || scope.videoId !== videoId || scope.projectId !== currentProjectId || !currentProjectId) return;
+    if (assets.some(asset => asset.project_id !== currentProjectId)) return;
+    ++assetRevision.current;
+    setProjectAssets(previous => {
+      if (sourceScopeRef.current !== scope) return previous;
+      const merged = new Map(previous.filter(asset => asset.project_id === currentProjectId).map(asset => [asset.id, asset]));
+      for (const asset of assets) merged.set(asset.id, asset);
+      return Array.from(merged.values());
+    });
+    await refreshSemanticRenderPlan();
+  }, [videoId, currentProjectId, refreshSemanticRenderPlan]);
 
   useEffect(() => {
     void refreshSemanticRenderPlan();
@@ -227,6 +265,8 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
 
   useEffect(() => {
     let cancelled = false;
+    ++assetRevision.current;
+    setProjectAssets([]);
     api.getVideo(videoId)
       .then(video => {
         if (cancelled) return;
@@ -235,12 +275,15 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
           setProjectAssets([]);
           return;
         }
+        const revision = assetRevision.current;
         api.listProjectAssets(video.project_id)
           .then(assets => {
-            if (!cancelled) setProjectAssets(assets);
+            if (!cancelled && revision === assetRevision.current) {
+              setProjectAssets(assets.filter(asset => asset.project_id === video.project_id));
+            }
           })
           .catch(() => {
-            if (!cancelled) setProjectAssets([]);
+            if (!cancelled && revision === assetRevision.current) setProjectAssets([]);
           });
       })
       .catch(() => {
@@ -362,6 +405,12 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
   const contentDuration = duration || plan?.original_duration || 0;
   const effectiveDuration = contentDuration + enabledEndCardDuration;
   const activeLayoutCue = layoutCueAtTime(plan?.layout_cues ?? [], currentTime) ?? plan?.layout_cues?.[0] ?? null;
+  const currentAssets = projectAssets.filter(asset => asset.project_id === currentProjectId);
+  const screenSource = resolvePreviewSource("screen", activeLayoutCue, currentAssets, videoDetail?.id === videoId ? videoDetail : null);
+  const cameraSource = resolvePreviewSource("camera", activeLayoutCue, currentAssets, videoDetail?.id === videoId ? videoDetail : null);
+  const syncableSourceCount = currentAssets.filter(asset =>
+    ["primary", "screen", "camera", "audio"].includes(asset.role) && asset.sync_role !== "structure_reference",
+  ).length;
   const editorialBlocks = plan?.editorial_blocks ?? [];
   const activeEditorialBlock = (
     layoutDraftDirty && layoutDraftBlockId
@@ -1114,6 +1163,14 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
                   chapters={chapters}
                   plan={plan}
                   duration={effectiveDuration}
+                  sourceSync={currentProjectId && syncableSourceCount >= 2 ? (
+                    <SourceSyncPanel
+                      key={`${videoId}:${currentProjectId}`}
+                      projectId={currentProjectId}
+                      disabled={approving || historyBusy || videoDetail?.status === "rendering"}
+                      onSaved={handleSourceSyncSaved}
+                    />
+                  ) : null}
                 />
               )}
             </div>
@@ -1179,6 +1236,9 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
                 src={videoSrc}
                 settings={previewLayoutSettings}
                 generatedSlidePreview={slidePreview}
+                screenSource={screenSource}
+                cameraSource={cameraSource}
+                isPlaying={isPlaying}
                 annotations={annotations}
                 educationalOverlays={educationalOverlays}
                 endCards={endCards}
@@ -1331,12 +1391,14 @@ function AssetPanel({
   chapters,
   plan,
   duration,
+  sourceSync,
 }: {
   sourceName: string;
   segments: Segment[];
   chapters: Chapter[];
   plan: EditPlan | null;
   duration: number;
+  sourceSync: React.ReactNode;
 }) {
   return (
     <div className="h-full overflow-y-auto p-3">
@@ -1345,6 +1407,7 @@ function AssetPanel({
         <AssetRow icon={<FileText className="h-4 w-4 text-green-300" />} label="Transcript" value={`${segments.length} segments`} detail={segments.length > 0 ? "Ready for review" : "Waiting"} />
         <AssetRow icon={<Layers className="h-4 w-4 text-yellow-300" />} label="Chapters" value={`${chapters.length} markers`} detail="Generated structure" />
         <AssetRow icon={<Activity className="h-4 w-4 text-purple-300" />} label="Edit plan" value={plan ? "Loaded" : "Pending"} detail={plan?.is_approved ? "Approved" : "Draft"} />
+        {sourceSync}
       </div>
     </div>
   );
@@ -1365,6 +1428,46 @@ function AssetRow({ icon, label, value, detail }: { icon: React.ReactNode; label
   );
 }
 
+type PreviewSource = {
+  url: string | null;
+  label: string;
+  offsetSeconds: number;
+  isPrimary: boolean;
+  structure?: boolean;
+};
+
+function resolvePreviewSource(
+  role: "screen" | "camera",
+  cue: EditPlan["layout_cues"][number] | null,
+  assets: ProjectAsset[],
+  video: Video | null,
+): PreviewSource | null {
+  if (!video?.project_id) return null;
+  const reference = cue?.sources?.[role];
+  const explicitId = reference?.asset_id;
+  if (role === "screen" && (reference?.track === "generated_slides" || explicitId === "generated_slides")) return null;
+  const current = assets.filter(asset => asset.project_id === video.project_id);
+  const asset = explicitId ? current.find(item => item.id === explicitId) : current.find(item => item.role === role);
+  if (!asset) return explicitId
+    ? { url: null, label: `Selected ${role} source unavailable`, offsetSeconds: 0, isPrimary: false }
+    : null;
+  const structure = asset.sync_role === "structure_reference"
+    || ["slides", "notes", "supporting_material"].includes(asset.role)
+    || ["slide_deck", "pdf_notes", "text_notes", "course_material", "image", "transcript"].includes(asset.kind);
+  const isVideo = !structure && (["mixed_video", "screen_video", "camera_video", "b_roll"].includes(asset.kind)
+    || asset.mime_type?.startsWith("video/"));
+  const assetOffset = Number.isFinite(asset.sync_offset_seconds) ? asset.sync_offset_seconds : 0;
+  const cueOffset = Number.isFinite(reference?.sync_offset_seconds) ? reference!.sync_offset_seconds : 0;
+  const available = isVideo && asset.status !== "failed" && asset.status !== "archived";
+  return {
+    url: available ? api.getProjectAssetDownloadUrl(video.project_id, asset.id) : null,
+    label: asset.original_filename || asset.filename || `${role} source`,
+    offsetSeconds: assetOffset || cueOffset || 0,
+    isPrimary: Boolean(available && (video.project_asset_id ? asset.id === video.project_asset_id : asset.is_primary || asset.role === "primary")),
+    structure,
+  };
+}
+
 type LayoutProgramPreviewProps = Pick<
   VideoHTMLAttributes<HTMLVideoElement>,
   "onTimeUpdate" | "onLoadedMetadata" | "onPlay" | "onPause" | "onClick"
@@ -1372,6 +1475,9 @@ type LayoutProgramPreviewProps = Pick<
   src: string;
   settings: LayoutPreviewSettings;
   generatedSlidePreview: GeneratedSlidePreview;
+  screenSource: PreviewSource | null;
+  cameraSource: PreviewSource | null;
+  isPlaying: boolean;
   annotations: AnnotationAction[];
   educationalOverlays: EducationalOverlayAction[];
   endCards: EndCardAction[];
@@ -1380,7 +1486,7 @@ type LayoutProgramPreviewProps = Pick<
 };
 
 const LayoutProgramPreview = forwardRef<HTMLVideoElement, LayoutProgramPreviewProps>(function LayoutProgramPreview(
-  { src, settings, generatedSlidePreview, annotations, educationalOverlays, endCards, currentTime, contentDuration, ...videoProps },
+  { src, settings, generatedSlidePreview, screenSource, cameraSource, isPlaying, annotations, educationalOverlays, endCards, currentTime, contentDuration, ...videoProps },
   ref,
 ) {
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -1430,19 +1536,41 @@ const LayoutProgramPreview = forwardRef<HTMLVideoElement, LayoutProgramPreviewPr
     (overlay) => currentTime >= overlay.start_time && currentTime <= overlay.end_time,
   );
   const activeEndCard = activeEndCardAtTime(endCards, currentTime, contentDuration);
-  const video = (
-    <video
-      ref={ref}
-      src={src}
-      className="h-full w-full bg-black object-contain"
-      {...videoProps}
+  const shouldUseSlideScreen = generatedSlidePreview.enabled && settings.layout !== "full_camera_source"
+    && (!screenSource || screenSource.structure);
+  const screenUsesMaster = !shouldUseSlideScreen && (!screenSource || screenSource.isPrimary);
+  // Preserve the legacy primary-as-camera fallback for generated slides and
+  // full-camera layouts only when no explicit/distinct camera was selected.
+  const cameraUsesMaster = cameraSource?.isPrimary
+    || (!cameraSource && (shouldUseSlideScreen || settings.layout === "full_camera_source"));
+  const screenVisible = settings.layout !== "full_camera_source";
+  const cameraVisible = settings.layout !== "full_screen_source";
+  const masterInScreen = screenVisible && screenUsesMaster;
+  const masterInCamera = cameraVisible && cameraUsesMaster && !masterInScreen;
+  const masterVisible = masterInScreen || masterInCamera;
+  const masterInset = masterInCamera && settings.layout === "picture_in_picture";
+  const masterStyle: CSSProperties = !masterVisible
+    ? { position: "absolute", width: 1, height: 1, opacity: 0, pointerEvents: "none" }
+    : masterInset
+      ? { position: "absolute", ...cameraInsetStyle(settings), zIndex: 10,
+          transition: `all ${settings.transitionDurationSeconds}s ease-out` }
+      : { position: "absolute", inset: 0,
+          ...(settings.layout === "side_by_side" ? { width: "50%", left: masterInCamera ? "50%" : 0 } : {}) };
+  const secondary = (source: PreviewSource | null, label: string) => (
+    <SyncedSourceVideo
+      sourceUrl={source?.url ?? null}
+      label={source?.label ?? label}
+      currentTime={currentTime}
+      offsetSeconds={source?.offsetSeconds ?? 0}
+      isPlaying={isPlaying}
     />
   );
-  const slideSurface = (
-    <GeneratedSlidePreviewSurface preview={generatedSlidePreview} />
-  );
-  const shouldUseSlideScreen = generatedSlidePreview.enabled && settings.layout !== "full_camera_source";
-  const playbackOnlyVideo = shouldUseSlideScreen && settings.layout === "full_screen_source";
+  const screenSurface = shouldUseSlideScreen
+    ? <GeneratedSlidePreviewSurface preview={generatedSlidePreview} />
+    : screenUsesMaster ? null : secondary(screenSource, "Screen source unavailable");
+  const cameraSurface = cameraUsesMaster
+    ? masterInScreen ? secondary(cameraSource ?? { url: src, label: "Primary camera", offsetSeconds: 0, isPrimary: true }, "Camera source") : null
+    : cameraSource ? secondary(cameraSource, "Camera source unavailable") : null;
 
   return (
     <div ref={viewportRef} className="program-preview-viewport">
@@ -1454,41 +1582,38 @@ const LayoutProgramPreview = forwardRef<HTMLVideoElement, LayoutProgramPreviewPr
           height: fittedWidth === null ? undefined : fittedWidth / ratio,
         }}
       >
+      {/* Keep one stable master element across layout changes, including when
+          its visual is hidden. It alone owns audio, time and playback events. */}
+      <video
+        ref={ref}
+        src={src}
+        aria-label="Primary playback"
+        aria-hidden={!masterVisible}
+        className={`bg-black object-contain ${masterInset ? `overflow-hidden border border-white/25 shadow-xl ${cameraShapeClass(settings.cameraShape)}` : "h-full w-full"}`}
+        style={masterStyle}
+        {...videoProps}
+      />
       {settings.layout === "side_by_side" ? (
-        <div className="absolute inset-0 grid grid-cols-2 gap-px bg-surface-border">
-          <div
-            className="relative min-w-0 bg-black transition-all ease-out"
-            style={{ transitionDuration: `${settings.transitionDurationSeconds}s` }}
-          >
-            {shouldUseSlideScreen ? slideSurface : video}
+        <div className="pointer-events-none absolute inset-0 grid grid-cols-2 gap-px">
+          <div className="relative min-w-0" style={{ transitionDuration: `${settings.transitionDurationSeconds}s` }}>
+            {screenSurface}
           </div>
-          <div
-            className="relative min-w-0 bg-black transition-all ease-out"
-            style={{ transitionDuration: `${settings.transitionDurationSeconds}s` }}
-          >
-            {shouldUseSlideScreen ? video : <CameraPreviewSurface settings={settings} variant="panel" />}
+          <div className="relative min-w-0" style={{ transitionDuration: `${settings.transitionDurationSeconds}s` }}>
+            {cameraUsesMaster || cameraSource ? cameraSurface : <CameraPreviewSurface settings={settings} variant="panel" />}
           </div>
         </div>
       ) : (
-        <div
-          className="absolute inset-0 bg-black transition-all ease-out"
-          style={{ transitionDuration: `${settings.transitionDurationSeconds}s` }}
-        >
-          {playbackOnlyVideo ? <div className="pointer-events-none absolute h-px w-px opacity-0">{video}</div> : shouldUseSlideScreen ? slideSurface : video}
+        <div className="pointer-events-none absolute inset-0" style={{ transitionDuration: `${settings.transitionDurationSeconds}s` }}>
+          {settings.layout === "full_camera_source" ? cameraSurface : screenSurface}
           {settings.layout === "picture_in_picture" && (
-            shouldUseSlideScreen ? (
+            cameraUsesMaster || cameraSource ? (
               <div
-                className={`absolute z-10 overflow-hidden border border-white/25 bg-black shadow-xl ${cameraShapeClass(settings.cameraShape)}`}
-                style={{
-                  ...cameraInsetStyle(settings),
-                  transition: `all ${settings.transitionDurationSeconds}s ease-out`,
-                }}
+                className={`absolute z-10 overflow-hidden border border-white/25 shadow-xl ${cameraShapeClass(settings.cameraShape)}`}
+                style={{ ...cameraInsetStyle(settings), transition: `all ${settings.transitionDurationSeconds}s ease-out` }}
               >
-                {video}
+                {cameraSurface}
               </div>
-            ) : (
-              <CameraPreviewSurface settings={settings} variant="inset" />
-            )
+            ) : <CameraPreviewSurface settings={settings} variant="inset" />
           )}
         </div>
       )}

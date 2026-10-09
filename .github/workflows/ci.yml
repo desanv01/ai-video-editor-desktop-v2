@@ -50,6 +50,8 @@ jobs:
         run: node ../scripts/rebuild/test_material_feedback.cjs .. ../.test-output/material-feedback
       - name: Verify native model settings interaction and cancellation boundaries
         run: node ../scripts/rebuild/test_native_model_ui.cjs .. ../.test-output/native-model-ui
+      - name: Verify source synchronization controls and stale project boundaries
+        run: node ../scripts/rebuild/test_source_sync_ui.cjs .. ../.test-output/source-sync-ui ./node_modules
       - name: Run immutable component update and legacy activation checks
         run: node ../scripts/rebuild/test_component_updates.cjs ..
       - name: Run native and browser transcript download boundary checks
