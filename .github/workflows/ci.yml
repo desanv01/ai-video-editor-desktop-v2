@@ -162,6 +162,9 @@ jobs:
       - name: Run native credential ASGI and SQLite security acceptance
         run: python scripts/rebuild/test_provider_credentials.py
 
+      - name: Verify deferred cloud SDK startup and first-use credential boundaries
+        run: python scripts/rebuild/test_lazy_cloud_startup.py .
+
       - name: Verify installed intake, readiness and credential regressions
         run: python scripts/rebuild/test_installed_boundaries.py --repo . --output .test-output/installed-boundaries
 
