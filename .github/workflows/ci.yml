@@ -134,6 +134,8 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Verify native vector import isolation and Docker preservation
         run: python scripts/rebuild/test_native_vector_imports.py
+      - name: Verify native self-test profile and retained user storage isolation
+        run: python scripts/rebuild/test_native_selftest_profile.py
       - name: Run real LanceDB and SQLite acceptance checks
         run: python scripts/rebuild/test_rebuild_storage.py
       - name: Verify isolated document profile alias identity and fallback guards

@@ -94,14 +94,96 @@ def _contract_root() -> Path:
 
 
 def _self_test() -> int:
-    """Run bounded, offline checks that exercise the actual frozen imports.
+    """Exercise native imports offline within an owned temporary profile."""
+    from tempfile import TemporaryDirectory
 
-    The build wrapper also enforces a subprocess timeout.  Keeping the checks
-    offline and read-only makes this safe to run before activation on a clean
-    machine without creating a user profile or touching project data.
-    """
+    # This path module does not import settings or any runtime services.
+    from desktop_native.paths import NativeDesktopPaths
 
     started = time.monotonic()
+    with TemporaryDirectory(prefix="aive-engine-self-test-") as temporary_root:
+        root = Path(temporary_root).resolve()
+        overrides = {
+            "data_root": root,
+            "database": root / "Config" / "engine.sqlite3",
+            "vector_root": root / "VectorStore",
+            "uploads": root / "Uploads",
+            "proxies": root / "Proxies",
+            "temp": root / "Temp",
+            "logs": root / "Logs",
+            "config": root / "Config",
+            "backups": root / "Backups",
+            "models": root / "Models",
+            "projects": root / "Projects",
+            "exports": root / "Exports",
+            "components": root / "Components",
+            "ffmpeg_component": root / "Components" / "ffmpeg",
+        }
+        paths = NativeDesktopPaths.from_environment(data_root=root, overrides=overrides)
+        environment = paths.settings_environment()
+        # Override the AIVE aliases too: later path resolution must not inherit
+        # an activated component or storage directory from the caller.
+        for name, key in {
+            "AIVE_DESKTOP_DATA_ROOT": "data_root",
+            "DESKTOP_DATA_ROOT": "data_root",
+            "AIVE_DESKTOP_DB_PATH": "database",
+            "AIVE_DESKTOP_VECTOR_ROOT": "vector_root",
+            "AIVE_DESKTOP_UPLOADS_PATH": "uploads",
+            "AIVE_DESKTOP_PROXIES_PATH": "proxies",
+            "AIVE_DESKTOP_TEMP_PATH": "temp",
+            "AIVE_DESKTOP_LOGS_PATH": "logs",
+            "AIVE_DESKTOP_CONFIG_PATH": "config",
+            "AIVE_DESKTOP_BACKUPS_PATH": "backups",
+            "AIVE_DESKTOP_MODELS_PATH": "models",
+            "AIVE_DESKTOP_PROJECTS_PATH": "projects",
+            "PROJECTS_PATH": "projects",
+            "AIVE_DESKTOP_EXPORTS_PATH": "exports",
+            "EXPORTS_PATH": "exports",
+            "AIVE_DESKTOP_COMPONENT_ROOT": "components",
+            "AIVE_FFMPEG_COMPONENT_ROOT": "ffmpeg_component",
+        }.items():
+            environment[name] = str(overrides[key])
+        environment.update({
+            "RUNTIME_PROFILE": "desktop-native",
+            "APP_ENV": "desktop-native",
+            "APP_DEBUG": "false",
+            "DATABASE_URL": f"sqlite+aiosqlite:///{paths.database.as_posix()}",
+            "DESKTOP_ENGINE_COMPONENT_ROOT": str(paths.components / "engine"),
+            "FFMPEG_BINARY_PATH": str(paths.ffmpeg_component / "bin" / "ffmpeg.exe"),
+            "FFPROBE_BINARY_PATH": str(paths.ffmpeg_component / "bin" / "ffprobe.exe"),
+            "LOCAL_RUNTIME_PATH": str(paths.components / "local-runtime"),
+            "LOCAL_CHAT_MODEL_PATH": str(paths.models / "chat"),
+            "LOCAL_EMBEDDING_MODEL_PATH": str(paths.models / "embedding"),
+            "LOCAL_VISION_MODEL_PATH": str(paths.models / "vision"),
+            "REVIDEO_RENDERER_WORKDIR": str(paths.temp / "revideo"),
+        })
+        for name in ("AIVE_DOCUMENTS_COMPONENT_ROOT", "LIBREOFFICE_COMPONENT_ROOT"):
+            environment[name] = str(paths.components / "documents")
+        for name in ("AIVE_LIBREOFFICE_BINARY_PATH", "LIBREOFFICE_BINARY_PATH"):
+            environment[name] = str(paths.components / "documents" / "program" / "soffice.com")
+        for name in ("AIVE_WHISPER_COMPONENT_ROOT", "WHISPER_CPP_COMPONENT_ROOT"):
+            environment[name] = str(paths.components / "whisper")
+        for name in ("AIVE_WHISPER_BINARY_PATH", "WHISPER_CPP_BINARY_PATH"):
+            environment[name] = str(paths.components / "whisper" / "bin" / "whisper-cli.exe")
+        for name in ("AIVE_WHISPER_MODEL_PATH", "WHISPER_CPP_MODEL_PATH", "LOCAL_TRANSCRIPTION_MODEL_PATH"):
+            environment[name] = str(paths.models / "ggml-small.bin")
+        for name in ("WHISPER_CPP_MODELS_DIR", "LOCAL_TRANSCRIPTION_MODELS_DIR"):
+            environment[name] = str(paths.models)
+        previous_environment = {name: os.environ.get(name) for name in environment}
+        try:
+            os.environ.update(environment)
+            paths.ensure_directories()
+            return _self_test_checks(started)
+        finally:
+            for name, previous_value in previous_environment.items():
+                if previous_value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = previous_value
+
+
+def _self_test_checks(started: float) -> int:
+    """Run the existing bounded checks after selecting the isolated profile."""
     checks: list[str] = []
     for module_name in (
         "fastapi",
