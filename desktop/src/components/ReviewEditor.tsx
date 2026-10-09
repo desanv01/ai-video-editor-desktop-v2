@@ -1389,6 +1389,11 @@ const LayoutProgramPreview = forwardRef<HTMLVideoElement, LayoutProgramPreviewPr
   const [aspectWidth, aspectHeight] = aspectRatio.split(" / ").map(Number);
   const ratio = aspectWidth / aspectHeight;
   const fittedWidth = viewportSize ? Math.min(viewportSize.width, viewportSize.height * ratio) : null;
+  const overlayCanvas = previewOverlayCanvasDimensions(settings.aspectRatio);
+  const overlayScale = fittedWidth === null ? null : Math.min(
+    fittedWidth / overlayCanvas.width,
+    (fittedWidth / ratio) / overlayCanvas.height,
+  );
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -1492,13 +1497,25 @@ const LayoutProgramPreview = forwardRef<HTMLVideoElement, LayoutProgramPreviewPr
           )}
         </div>
       )}
-      {activeAnnotations.map((annotation) => (
-        <AnnotationPreviewOverlay key={annotation.id} annotation={annotation} />
-      ))}
-      {activeEducationalOverlays.map((overlay) => (
-        <EducationalOverlayPreview key={overlay.id} overlay={overlay} />
-      ))}
-      {activeEndCard && <EndCardPreview card={activeEndCard} />}
+      {overlayScale !== null && overlayScale > 0 && (
+        <div
+          className="pointer-events-none absolute left-0 top-0 z-20"
+          style={{
+            width: overlayCanvas.width,
+            height: overlayCanvas.height,
+            transform: `scale(${overlayScale})`,
+            transformOrigin: "top left",
+          }}
+        >
+          {activeAnnotations.map((annotation) => (
+            <AnnotationPreviewOverlay key={annotation.id} annotation={annotation} />
+          ))}
+          {activeEducationalOverlays.map((overlay) => (
+            <EducationalOverlayPreview key={overlay.id} overlay={overlay} />
+          ))}
+          {activeEndCard && <EndCardPreview card={activeEndCard} />}
+        </div>
+      )}
       </div>
     </div>
   );
@@ -1602,7 +1619,7 @@ function AnnotationPreviewOverlay({ annotation }: { annotation: AnnotationAction
         color: style.text_color,
         backgroundColor: hexWithAlpha(style.background_color, style.opacity),
         borderColor: style.border_color,
-        fontSize: `${Math.max(12, Math.round(style.font_size * 0.48))}px`,
+        fontSize: `${style.font_size}px`,
         animation: previewAnimationCss(annotation.animation),
       }}
     >
@@ -1629,7 +1646,7 @@ function EducationalOverlayPreview({ overlay }: { overlay: EducationalOverlayAct
         color: style.text_color,
         backgroundColor: hexWithAlpha(style.background_color, style.opacity),
         borderColor: style.accent_color,
-        fontSize: `${Math.max(12, Math.round(style.font_size * 0.48))}px`,
+        fontSize: `${style.font_size}px`,
         animation: previewAnimationCss(overlay.animation),
       }}
     >
@@ -1638,7 +1655,7 @@ function EducationalOverlayPreview({ overlay }: { overlay: EducationalOverlayAct
       </div>
       <div className="leading-tight">{overlay.title}</div>
       {overlay.subtitle && (
-        <div className="mt-1 font-medium leading-tight" style={{ color: style.subtitle_color, fontSize: `${Math.max(10, Math.round(style.subtitle_font_size * 0.48))}px` }}>
+        <div className="mt-1 font-medium leading-tight" style={{ color: style.subtitle_color, fontSize: `${style.subtitle_font_size}px` }}>
           {overlay.subtitle}
         </div>
       )}
@@ -1661,18 +1678,18 @@ function EndCardPreview({ card }: { card: EndCardAction }) {
         <div className="mb-3 text-[11px] font-bold uppercase tracking-wider" style={{ color: style.accent_color }}>
           {endCardEyebrow(card.card_type)}
         </div>
-        <div className="font-semibold leading-tight" style={{ fontSize: `${Math.max(18, Math.round(style.font_size * 0.48))}px` }}>
+        <div className="font-semibold leading-tight" style={{ fontSize: `${style.font_size}px` }}>
           {card.title}
         </div>
         {card.summary_points.length > 0 && (
-          <div className="mt-3 space-y-1 text-left font-medium" style={{ color: style.body_color, fontSize: `${Math.max(11, Math.round(style.body_font_size * 0.48))}px` }}>
+          <div className="mt-3 space-y-1 text-left font-medium" style={{ color: style.body_color, fontSize: `${style.body_font_size}px` }}>
             {card.summary_points.slice(0, 5).map((point, index) => (
               <div key={`${point}-${index}`}>- {point}</div>
             ))}
           </div>
         )}
         {card.message && (
-          <div className="mt-3 font-medium leading-snug" style={{ color: style.body_color, fontSize: `${Math.max(11, Math.round(style.body_font_size * 0.48))}px` }}>
+          <div className="mt-3 font-medium leading-snug" style={{ color: style.body_color, fontSize: `${style.body_font_size}px` }}>
             {card.message}
           </div>
         )}
@@ -1973,6 +1990,13 @@ function formatDuration(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = Math.round(seconds % 60);
   return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
+}
+
+function previewOverlayCanvasDimensions(value: LayoutPreviewSettings["aspectRatio"]): { width: number; height: number } {
+  if (value === "4:3") return { width: 1440, height: 1080 };
+  if (value === "1:1") return { width: 1080, height: 1080 };
+  if (value === "9:16") return { width: 1080, height: 1920 };
+  return { width: 1920, height: 1080 };
 }
 
 function previewAspectRatio(value: LayoutPreviewSettings["aspectRatio"]): string {
