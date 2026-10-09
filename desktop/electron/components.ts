@@ -121,9 +121,10 @@ export class Components {
   const selected=this.manifest.components.filter(c => c.required); const journal:Journal={operationId:randomUUID(),selected:selected.map(c => c.id),totalBytes:selected.reduce((n,c)=>n+c.sizeBytes,0),phase:'checking',acquiredBytes:0,completedWork:0}; const totalWork=selected.length*4;
   const states=selected.map(c => ({id:c.id,version:c.version,phase:'checking' as SetupPhase,bytes:0,installed:false}));
   const update=async(phase:SetupPhase,c?:ComponentManifest,bytes?:number) => { journal.phase=phase; if(c) { const state=states.find(s => s.id===c.id)!; state.phase=phase; if(bytes!==undefined) state.bytes=bytes; } journal.acquiredBytes=states.reduce((n,s)=>n+s.bytes,0); this.publish({phase,components:states.map(s=>({...s})),error:null,canCancel:!['activating','ready'].includes(phase),canRetry:false,progress:{...journal,totalWork}}); await atomic(path.join(this.paths.state,'preparation.json'),journal); };
-  const staging=confined(this.paths.components,'staging-'+journal.operationId); const staged=new Map<string,string>();
+  const staging=confined(this.paths.components,'s'+Buffer.from(journal.operationId.replace(/-/g,''),'hex').toString('base64url')); const staged=new Map<string,string>(); let stagingOwned=false;
   try {
-   await fs.mkdir(staging,{recursive:true});
+   await this.assertActivationRoot(staging);
+   await fs.mkdir(staging); stagingOwned=true;
    for(const c of selected) {
     signal.throwIfAborted(); if(await this.installed(c)) { states.find(s=>s.id===c.id)!.installed=true; states.find(s=>s.id===c.id)!.bytes=c.sizeBytes; journal.completedWork+=4; await update('checking',c); continue; }
     const disk=await fs.statfs(this.paths.components); const retained=await sizeOf(path.join(this.paths.components,c.id)); const need=c.sizeBytes+c.expandedBytes+retained+256*1024*1024; if(disk.bavail*disk.bsize<need) throw new Error('DISK_SPACE_LOW');
@@ -162,7 +163,10 @@ export class Components {
    }
    await atomic(path.join(this.paths.state,'active.json'),next); this.active=next; journal.completedWork=totalWork; await update('starting'); this.publish({canCancel:false});
   } catch(error) { const cancelled=signal.aborted; journal.phase=cancelled?'cancelled':'error'; await atomic(path.join(this.paths.state,'preparation.json'),journal); this.publish({phase:journal.phase,canCancel:false,canRetry:true,error:{code:cancelled?'PREPARATION_CANCELLED':error instanceof Error?error.message:'PREPARATION_FAILED',message:cancelled?'Preparation was cancelled. Verified downloads are retained for retry.':'Component preparation failed. Open diagnostics or retry. Your existing components and projects are preserved.',retryable:true}}); throw error; }
-  finally { await fs.rm(staging,{recursive:true,force:true}); this.busy=false; this.abort=null; }
+  finally {
+   try { if(stagingOwned) { await this.assertActivationRoot(staging); await fs.rm(staging,{recursive:true,force:true}); } }
+   finally { this.busy=false; this.abort=null; }
+  }
  }
  private async acquire(c:ComponentManifest,signal:AbortSignal,progress:(bytes:number)=>void):Promise<string> {
   const part=confined(this.paths.cache,c.id+'-'+c.version+'-'+c.sha256+'.part');
