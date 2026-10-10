@@ -1132,6 +1132,7 @@ export function GuidedWorkflowPanel({
                         </button>
                         <div className="mt-3 grid grid-cols-2 gap-2">
                           <select
+                            aria-label={`Layout mode for ${block.title} (${formatTime(block.start_time)}-${formatTime(block.end_time)})`}
                             value={activeEditorialBlock?.id === block.id ? layoutSettings.layout : block.layout}
                             disabled={activeEditorialBlock?.id !== block.id}
                             onChange={event => {
@@ -1147,6 +1148,7 @@ export function GuidedWorkflowPanel({
                             <option value="full_screen_source">Slide only</option>
                           </select>
                           <select
+                            aria-label={`Selected slide for ${block.title} (${formatTime(block.start_time)}-${formatTime(block.end_time)})`}
                             value={(activeEditorialBlock?.id === block.id ? draftSlideIndex : block.slide_index) == null
                               ? "none"
                               : String(activeEditorialBlock?.id === block.id ? draftSlideIndex : block.slide_index)}

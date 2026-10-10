@@ -1,5 +1,5 @@
 import { ElectronSetup } from "./electron/ElectronSetup";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { UploadPanel } from "./components/UploadPanel";
 import { ProcessingView } from "./components/ProcessingView";
 import { ReviewEditor } from "./components/ReviewEditor";
@@ -69,16 +69,36 @@ export function BrowserEditorApp({ nativeMode = false }: { nativeMode?: boolean 
   const [nativeModelsOpen, setNativeModelsOpen] = useState(false);
   const [restoreNativeModelsFocus, setRestoreNativeModelsFocus] = useState(false);
   const [desktopManagementOpen, setDesktopManagementOpen] = useState(false);
+  const settingsTriggerRef = useRef<HTMLButtonElement>(null);
+  const settingsReturnFocusRef = useRef<HTMLElement | null>(null);
+  const ordinarySettingsCloseRef = useRef(false);
   const openSettings = () => {
+    if (!settingsOpen && !nativeModelsOpen) {
+      settingsReturnFocusRef.current = document.activeElement instanceof HTMLElement
+        && document.activeElement !== document.body ? document.activeElement : settingsTriggerRef.current;
+    }
+    ordinarySettingsCloseRef.current = false;
     setRestoreNativeModelsFocus(false);
     setSettingsOpen(true);
   };
   const closeSettings = () => {
+    ordinarySettingsCloseRef.current = true;
     setRestoreNativeModelsFocus(false);
     setSettingsOpen(false);
   };
+  useLayoutEffect(() => {
+    if (settingsOpen || nativeModelsOpen || !ordinarySettingsCloseRef.current) return;
+    ordinarySettingsCloseRef.current = false;
+    const trigger = settingsReturnFocusRef.current;
+    settingsReturnFocusRef.current = null;
+    if (trigger?.isConnected && !trigger.matches(":disabled")
+      && !trigger.closest('[hidden], [inert], [aria-hidden="true"]')
+      && trigger.getClientRects().length > 0) trigger.focus();
+  }, [settingsOpen, nativeModelsOpen]);
   useEffect(() => {
     setRestoreNativeModelsFocus(false);
+    settingsReturnFocusRef.current = null;
+    ordinarySettingsCloseRef.current = false;
   }, [view]);
   useEffect(() => {
     (async () => {
@@ -183,6 +203,7 @@ export function BrowserEditorApp({ nativeMode = false }: { nativeMode?: boolean 
           )}
           <button
             type="button"
+            ref={settingsTriggerRef}
             onClick={openSettings}
             className="inline-flex min-h-11 items-center gap-2 rounded-md border border-surface-border px-3 py-2 transition-colors hover:bg-surface-overlay hover:text-gray-200"
           >
@@ -242,6 +263,7 @@ export function BrowserEditorApp({ nativeMode = false }: { nativeMode?: boolean 
         restoreNativeModelsFocus={restoreNativeModelsFocus}
         onNativeModelsFocusRestored={() => setRestoreNativeModelsFocus(false)}
         onManageNativeModels={window.aiveDesktop ? () => {
+          ordinarySettingsCloseRef.current = false;
           setRestoreNativeModelsFocus(false);
           setSettingsOpen(false);
           setNativeModelsOpen(true);
