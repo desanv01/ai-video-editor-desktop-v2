@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode, RefObject } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -267,6 +267,90 @@ async function chooseDirectory(currentValue: string): Promise<string | null> {
 export function MainSettingsPanel({ isOpen, onClose, onManageNativeModels, restoreNativeModelsFocus = false, onNativeModelsFocusRestored }: Props) {
   const [activeTab, setActiveTab] = useState<SettingsTabId>("ai");
   const manageNativeModelsButtonRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const dialogHeadingId = useId();
+  const dialogOwnsFocusRef = useRef(false);
+  const openingFocusedRef = useRef(false);
+  const onCloseRef = useRef(onClose);
+  const onManageNativeModelsRef = useRef(onManageNativeModels);
+
+  useLayoutEffect(() => {
+    onCloseRef.current = onClose;
+    onManageNativeModelsRef.current = onManageNativeModels;
+  }, [onClose, onManageNativeModels]);
+
+  useLayoutEffect(() => {
+    if (!isOpen) {
+      dialogOwnsFocusRef.current = false;
+      openingFocusedRef.current = false;
+      return;
+    }
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    dialogOwnsFocusRef.current = true;
+    const usable = (element: HTMLElement) => element.isConnected
+      && !element.matches(":disabled")
+      && !element.closest('[hidden], [inert], [aria-hidden="true"]')
+      && element.getClientRects().length > 0
+      && getComputedStyle(element).visibility !== "hidden";
+    const controls = () => Array.from(dialog.querySelectorAll<HTMLElement>(
+      'button, input:not([type="hidden"]), select, textarea, a[href], [tabindex], [contenteditable="true"]',
+    )).filter(element => element.tabIndex >= 0 && usable(element));
+    const fallback = () => {
+      const close = closeButtonRef.current;
+      return close && usable(close) ? close : controls()[0] ?? dialog;
+    };
+    let lastFocused: HTMLElement | null = null;
+    const containFocus = (event: FocusEvent) => {
+      if (!dialogOwnsFocusRef.current) return;
+      const target = event.target;
+      if (target instanceof HTMLElement && dialog.contains(target)) {
+        if (usable(target)) lastFocused = target;
+        return;
+      }
+      const next = lastFocused && usable(lastFocused) && dialog.contains(lastFocused)
+        ? lastFocused : fallback();
+      next.focus();
+    };
+    const containKeys = (event: KeyboardEvent) => {
+      if (!dialogOwnsFocusRef.current) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        dialogOwnsFocusRef.current = false;
+        onCloseRef.current();
+      } else if (event.key === "Tab") {
+        const available = controls();
+        const index = available.findIndex(element => element === document.activeElement);
+        const next = available.length === 0 ? dialog
+          : available[index < 0 ? (event.shiftKey ? available.length - 1 : 0)
+            : (index + (event.shiftKey ? -1 : 1) + available.length) % available.length];
+        event.preventDefault();
+        next.focus();
+      }
+    };
+    document.addEventListener("focusin", containFocus, true);
+    document.addEventListener("keydown", containKeys, true);
+    if (!openingFocusedRef.current) {
+      openingFocusedRef.current = true;
+      fallback().focus();
+    }
+    return () => {
+      dialogOwnsFocusRef.current = false;
+      document.removeEventListener("focusin", containFocus, true);
+      document.removeEventListener("keydown", containKeys, true);
+    };
+  }, [isOpen]);
+
+  const closeDialog = () => {
+    dialogOwnsFocusRef.current = false;
+    onCloseRef.current();
+  };
+  const transferToNativeModels = () => {
+    dialogOwnsFocusRef.current = false;
+    onManageNativeModelsRef.current?.();
+  };
   const panelSessionRef = useRef(0);
   const [panelSessionLoaded, setPanelSessionLoaded] = useState(false);
   const [backendSettings, setBackendSettings] = useState<BackendAISettings | null>(null);
@@ -566,11 +650,11 @@ export function MainSettingsPanel({ isOpen, onClose, onManageNativeModels, resto
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/50">
-      <aside className="flex h-full w-full max-w-[980px] flex-col border-l border-surface-border bg-surface-raised shadow-2xl">
+      <aside ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={dialogHeadingId} tabIndex={-1} className="flex h-full w-full max-w-[980px] flex-col border-l border-surface-border bg-surface-raised shadow-2xl">
         <div className="flex items-center justify-between border-b border-surface-border px-5 py-4">
           <div>
             <p className="text-xs uppercase tracking-wide text-gray-500">Workspace Settings</p>
-            <h2 className="text-base font-semibold text-gray-100">Aivora</h2>
+            <h2 id={dialogHeadingId} className="text-base font-semibold text-gray-100">Aivora settings</h2>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -583,7 +667,8 @@ export function MainSettingsPanel({ isOpen, onClose, onManageNativeModels, resto
             </button>
             <button
               type="button"
-              onClick={onClose}
+              ref={closeButtonRef}
+              onClick={closeDialog}
               className="rounded-md p-2 text-gray-400 transition-colors hover:bg-surface-overlay hover:text-gray-100"
               aria-label="Close settings"
             >
@@ -687,7 +772,7 @@ export function MainSettingsPanel({ isOpen, onClose, onManageNativeModels, resto
                       onSelectedModelChange={setSelectedModelId}
                       onDownload={handleDownload}
                       onRemove={handleRemove}
-                      onManageNativeModels={onManageNativeModels}
+                      onManageNativeModels={onManageNativeModels ? transferToNativeModels : undefined}
                       manageNativeModelsButtonRef={manageNativeModelsButtonRef}
                       onPathChange={(kind, value) => setLocalPaths(prev => prev ? { ...prev, [kind]: value } : prev)}
                     />
