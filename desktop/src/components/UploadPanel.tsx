@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import {
   BookOpen,
@@ -18,6 +18,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import * as api from "../lib/api";
+import { SourceSyncPanel } from "./SourceSyncPanel";
 import { validateVideoFile, type IngestValidation } from "../lib/ingest";
 import type {
   NativeImportProgress,
@@ -142,6 +143,22 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
   const browserPrimaryUploadControllerRef = useRef<AbortController | null>(null);
 
   const projectId = activeProject?.id ?? uploadedVideo?.projectId ?? null;
+  const sourceSyncScopeRef = useRef<{ projectId: string | null; active: boolean; revision: number } | null>(null);
+  useLayoutEffect(() => {
+    const scope = { projectId, active: true, revision: 0 };
+    sourceSyncScopeRef.current = scope;
+    return () => { scope.active = false; };
+  }, [projectId]);
+  const handleSourceSyncSaved = async (assets: ProjectAsset[]) => {
+    const scope = sourceSyncScopeRef.current;
+    if (!scope || !scope.active || scope.projectId !== projectId || !projectId) return;
+    if (assets.some(asset => asset.project_id !== projectId)) throw new Error("Source refresh belongs to another project.");
+    const revision = ++scope.revision;
+    const savedById = new Map(assets.map(asset => [asset.id, asset]));
+    setProjectAssets(previous => previous.map(asset => savedById.get(asset.id) ?? asset));
+    const nextReadiness = await api.getProjectReadiness(projectId);
+    if (scope.active && sourceSyncScopeRef.current === scope && revision === scope.revision) setReadiness(nextReadiness);
+  };
   const uploading = Boolean(uploadingLabel);
   const isMultiSource = activeProject?.source_mode === "multi_source";
   const sourceAssets = useMemo(
@@ -274,15 +291,24 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
       setProjectAssets([]);
       return;
     }
+    const scope = sourceSyncScopeRef.current;
+    const revision = scope?.revision;
+    const stillOwned = () => Boolean(
+      scope && scope.active && scope.projectId === id
+      && sourceSyncScopeRef.current === scope && scope.revision === revision
+    );
     try {
       const assets = await api.listProjectAssets(id);
+      if (!stillOwned()) return;
       setProjectAssets(assets);
       try {
-        setReadiness(await api.getProjectReadiness(id));
+        const nextReadiness = await api.getProjectReadiness(id);
+        if (stillOwned()) setReadiness(nextReadiness);
       } catch {
-        setReadiness(null);
+        if (stillOwned()) setReadiness(null);
       }
     } catch {
+      if (!stillOwned()) return;
       setProjectAssets([]);
       setReadiness(null);
     }
@@ -791,6 +817,14 @@ export function UploadPanel({ onUpload, onProjectResolved, project, existingVide
             cancellable={Boolean(nativeImportActive)}
           />
         ) : null}
+
+        {projectId && isMultiSource && sourceAssets.length >= 2 && (
+          <SourceSyncPanel
+            projectId={projectId}
+            disabled={uploading || starting || Boolean(recording) || Boolean(nativeImportActive)}
+            onSaved={handleSourceSyncSaved}
+          />
+        )}
 
         <StructureAssetsPanel
           structureAssets={structureAssets}
