@@ -433,9 +433,11 @@ export function ReviewEditor({ videoId, videoFilename, onOpenSettings }: Props) 
     }),
     [activeLayoutCue, activeRenderScene, chapters, currentTime, projectAssets, segments, semanticRenderPlan],
   );
+  const ownsLayoutDraft = activeWorkflowStep === "layout" && layoutDraftDirty
+    && (!layoutDraftBlockId || activeEditorialBlock?.id === layoutDraftBlockId);
   const previewLayoutSettings = useMemo(
-    () => layoutSettingsFromRenderScene(layoutPreviewSettings, activeRenderScene),
-    [activeRenderScene, layoutPreviewSettings],
+    () => ownsLayoutDraft ? layoutPreviewSettings : layoutSettingsFromRenderScene(layoutPreviewSettings, activeRenderScene),
+    [activeRenderScene, layoutPreviewSettings, ownsLayoutDraft],
   );
 
   const handleTimeUpdate = useCallback(() => {
