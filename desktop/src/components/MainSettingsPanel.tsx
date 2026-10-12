@@ -887,6 +887,7 @@ function ProvidersTab({
   providerTests: Record<string, ProviderTestSummary>;
   onTestProvider: (provider: string) => void;
 }) {
+  const apiKeyIdPrefix = useId();
   // Always show these API providers even if no key is configured yet
   const knownProviders = ["mistral", "openai", "deepseek", "alibaba"];
   const apiKeys: [string, APIKeyStatus][] = knownProviders.map(provider => {
@@ -924,16 +925,23 @@ function ProvidersTab({
                 {status.has_key ? status.display_value ?? "Configured" : "Missing"}
               </span>
             </div>
-            <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_auto_auto_auto]">
-              <input
-                type="password"
-                value={apiKeyDrafts[provider] ?? ""}
-                onChange={event => onApiKeyDraftChange(provider, event.target.value)}
-                placeholder="New API key"
-                className="min-w-0 rounded-md border border-surface-border bg-surface-overlay px-3 py-2 text-sm text-gray-100 outline-none focus:border-accent"
-              />
+            <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_auto_auto_auto] sm:items-end">
+              <div className="min-w-0 space-y-1">
+                <label htmlFor={`${apiKeyIdPrefix}-${provider}`} className="block text-xs font-medium text-gray-300">
+                  {providerLabel(provider)} API key
+                </label>
+                <input
+                  id={`${apiKeyIdPrefix}-${provider}`}
+                  type="password"
+                  value={apiKeyDrafts[provider] ?? ""}
+                  onChange={event => onApiKeyDraftChange(provider, event.target.value)}
+                  placeholder="New API key"
+                  className="w-full min-w-0 rounded-md border border-surface-border bg-surface-overlay px-3 py-2 text-sm text-gray-100 outline-none focus:border-accent"
+                />
+              </div>
               <button
                 type="button"
+                aria-label={`Use Env key for ${providerLabel(provider)}`}
                 onClick={() => onUseEnvKey(provider, status)}
                 disabled={Boolean(window.aiveDesktop)}
                 title={window.aiveDesktop ? "Desktop uses encrypted Windows storage instead of environment keys." : undefined}
@@ -944,6 +952,7 @@ function ProvidersTab({
               </button>
               <button
                 type="button"
+                aria-label={`Clear ${providerLabel(provider)} API key`}
                 onClick={() => onClearKey(provider, status)}
                 className="inline-flex items-center justify-center gap-2 rounded-md bg-surface-overlay px-3 py-2 text-sm text-gray-200 transition-colors hover:bg-surface-border hover:text-red-300"
               >
@@ -952,6 +961,7 @@ function ProvidersTab({
               </button>
               <button
                 type="button"
+                aria-label={`Test ${providerLabel(provider)} connection`}
                 onClick={() => onTestProvider(provider)}
                 disabled={testingProvider === provider}
                 className="inline-flex items-center justify-center gap-2 rounded-md bg-accent/15 px-3 py-2 text-sm text-accent transition-colors hover:bg-accent/25 disabled:cursor-not-allowed disabled:opacity-60"
