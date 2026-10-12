@@ -1,5 +1,9 @@
 """Main acceptance: planning, pipeline ordering and callers on actual SQLite."""
 import asyncio
+import hashlib
+from importlib import metadata
+import json
+import platform
 from contextlib import AsyncExitStack, closing
 from copy import deepcopy
 from datetime import datetime
@@ -15,6 +19,104 @@ import uuid
 
 REPO=Path(sys.argv.pop(1)) if len(sys.argv)>1 and not sys.argv[1].startswith('-') else Path(__file__).resolve().parents[2]
 
+# Optional durable report is restricted to contained validation output. The child
+# also emits one JSON record on stdout, including when its existing assertions fail.
+DIAGNOSTIC_REPORT = None
+if '--diagnostic-report' in sys.argv:
+    report_index = sys.argv.index('--diagnostic-report')
+    DIAGNOSTIC_REPORT = Path(sys.argv[report_index + 1]).resolve()
+    del sys.argv[report_index:report_index + 2]
+    validation_root = Path('C:/Users/Dv/Desktop/ai-video-editor-standalone-release-work/rebuild/validation').resolve()
+    if not DIAGNOSTIC_REPORT.is_relative_to(validation_root):
+        raise ValueError('Diagnostic report must be under contained rebuild/validation')
+
+CLEAN_DIAGNOSTIC = None
+
+def fixture_value(value):
+    # Called only on this script's disposable fixture, never on user data.
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): fixture_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [fixture_value(item) for item in value]
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if hasattr(value, 'value'):
+        return fixture_value(value.value)
+    return str(value)
+
+def breadcrumb(event, **values):
+    if CLEAN_DIAGNOSTIC is not None:
+        CLEAN_DIAGNOSTIC['events'].append({
+            'sequence': len(CLEAN_DIAGNOSTIC['events']) + 1,
+            'event': event, **fixture_value(values),
+        })
+
+def guard_breadcrumb(stage, row, saved, fields, matched):
+    differences = [
+        {'field': key, 'actual': fixture_value(getattr(row, key, None)),
+         'saved': fixture_value(getattr(saved, key, None))}
+        for key in fields if getattr(row, key, None) != getattr(saved, key, None)
+    ]
+    breadcrumb('guard_return', stage=stage, row=type(row).__name__,
+               row_id=getattr(row, 'id', None), matched=matched,
+               differing_fields=differences)
+
+def collect_identities():
+    names = ['scripts/rebuild/test_plan_transactions.py',
+             'backend/app/desktop_native/agent_transactions.py',
+             'backend/app/agents/edit_planner.py', 'backend/app/agents/orchestrator.py',
+             'backend/requirements.txt', 'backend/requirements-rebuild-storage.txt']
+    sources = {}
+    for name in names:
+        path = REPO / name
+        sources[name] = hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+    dependencies = {}
+    for name in ('SQLAlchemy', 'aiosqlite', 'greenlet', 'pydantic'):
+        try:
+            dependencies[name] = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            dependencies[name] = None
+    return {'source_sha256': sources, 'dependencies': dependencies,
+            'python': sys.version, 'executable': sys.executable,
+            'platform': platform.platform(), 'sqlite': sqlite3.sqlite_version,
+            'fixture_schema': 'test_plan_transactions/clean-during/v1',
+            'historical_ci_cause': 'UNKNOWN'}
+
+def fresh_fixture_diagnostic():
+    # Post-outcome read only, after normal dispose_db; does not replace assertions.
+    database = CLEAN_DIAGNOSTIC.get('fixture_database')
+    if not database or not Path(database).exists():
+        return {'available': False}
+    with closing(sqlite3.connect(Path(database).as_uri() + '?mode=ro', uri=True)) as reader:
+        reader.row_factory = sqlite3.Row
+        plan = reader.execute(
+            'SELECT plan_json, teacher_notes, is_approved, approved_at, estimated_duration '
+            'FROM edit_plans WHERE video_id=?', (CLEAN_DIAGNOSTIC['video_id_hex'],)).fetchone()
+        segment = reader.execute(
+            'SELECT teacher_action, teacher_note, is_teacher_modified, action_reason '
+            'FROM segments WHERE id=?', (CLEAN_DIAGNOSTIC['segment_id_hex'],)).fetchone()
+    return {'available': True, 'plan': dict(plan) if plan else None,
+            'teacher_segment': dict(segment) if segment else None,
+            'observation_stage': 'after_child_outcome_and_normal_cleanup'}
+
+def emit_clean_diagnostic():
+    try:
+        CLEAN_DIAGNOSTIC['final_fresh_fixture'] = fresh_fixture_diagnostic()
+    except Exception as exc:
+        CLEAN_DIAGNOSTIC['final_fresh_fixture'] = {'available': False,
+            'read_error': {'type': type(exc).__name__, 'message': str(exc)}}
+    record = json.dumps(CLEAN_DIAGNOSTIC, sort_keys=True)
+    print('CLEAN_DURING_DIAGNOSTIC ' + record, flush=True)
+    if DIAGNOSTIC_REPORT is not None:
+        try:
+            DIAGNOSTIC_REPORT.parent.mkdir(parents=True, exist_ok=True)
+            DIAGNOSTIC_REPORT.write_text(record + '\n', encoding='utf-8')
+        except Exception as exc:
+            # Telemetry cannot mask the original test outcome or cleanup error.
+            print('Diagnostic report write failed: ' + repr(exc), file=sys.stderr)
+
 async def exercise(case,root):
     sys.path.insert(0,str(REPO/'backend'/'app'))
     from desktop_native.paths import NativeDesktopPaths
@@ -28,6 +130,9 @@ async def exercise(case,root):
     from sqlalchemy import select
     await init_db()
     vid,sid,pid,mid=[uuid.uuid4() for _ in range(4)]
+    if case=='clean-during':
+        CLEAN_DIAGNOSTIC.update(fixture_database=str(paths.database), video_id_hex=vid.hex,
+                                segment_id_hex=sid.hex, fixture_root=str(root))
     pipeline_case=case.startswith('pipeline')
     async with async_session() as db:
         db.add(Video(id=vid,filename='fixture.mp4',original_filename='fixture.mp4',file_path=str(root/'fixture.mp4'),duration_seconds=160))
@@ -44,7 +149,10 @@ async def exercise(case,root):
                 approved_at=datetime(2026,1,1),teacher_notes='old notes',segments_total=16,original_duration=160,estimated_duration=160))
         db.add(CourseMaterial(id=mid,filename='fixture.txt',file_path=str(root/'fixture.txt'),file_type='txt',content_text='old content',chunk_count=7,is_embedded=True))
         await db.commit()
+    if case=='clean-during':breadcrumb('fixture_initial_commit_completed')
     calls=[];clean_calls=[];guard_differences=[]
+    if case=='clean-during':
+        CLEAN_DIAGNOSTIC.update(calls=calls, clean_calls=clean_calls, guard_differences=guard_differences)
     def unlocked(label):
         with closing(sqlite3.connect(paths.database,timeout=.15)) as writer:
             writer.execute('BEGIN IMMEDIATE');writer.rollback()
@@ -63,6 +171,7 @@ async def exercise(case,root):
             if case=='plan-cancel':raise asyncio.CancelledError()
         return {'decisions':[{'segment_index':i,'action':'keep','layout_mode':'pip_slide','confidence':.95,'reason':'Core educational content'} for i in range(16)],'warnings':[]}
     def clean(**kwargs):
+        if case=='clean-during':breadcrumb('clean_callback_entered')
         unlocked('clean');clean_calls.append(kwargs['profile_id'])
         assert not hasattr(kwargs['plan'],'_sa_instance_state') and not hasattr(kwargs['segments'][0],'_sa_instance_state')
         if case=='clean-during':
@@ -70,8 +179,12 @@ async def exercise(case,root):
                 writer.execute("UPDATE edit_plans SET teacher_notes='concurrent teacher',is_approved=1,plan_json=?",('{"teacher_marker":"new plan"}',))
                 writer.execute("UPDATE segments SET teacher_note='teacher decision',is_teacher_modified=1")
                 writer.commit()
+            breadcrumb('teacher_fixture_commit_completed', teacher_notes='concurrent teacher',
+                       plan_json={'teacher_marker':'new plan'}, is_approved=True,
+                       teacher_note='teacher decision', is_teacher_modified=True)
         kwargs['plan'].plan_json={'automatic_clean_marker':True};kwargs['plan'].estimated_duration=123
         kwargs['segments'][0].teacher_action=SegmentAction.CUT;kwargs['segments'][0].teacher_note='automatic suggestion'
+        if case=='clean-during':breadcrumb('clean_callback_completed')
         return {'summary':{'fixture':True}}
     async def ensure():unlocked('ensure')
     async def ingest(**kwargs):
@@ -87,6 +200,7 @@ async def exercise(case,root):
                 original_matches=planner._matches_snapshot
                 def diagnosed_matches(row,saved,fields):
                     matched=original_matches(row,saved,fields)
+                    guard_breadcrumb(sys._getframe(1).f_code.co_name, row,saved,fields,matched)
                     if not matched:
                         guard_differences.append({
                             'row':type(row).__name__,
@@ -176,7 +290,29 @@ async def exercise(case,root):
                             with unittest.TestCase().assertRaises(planner.StaleEditPlanningError):await pipeline._run_native_auto_clean(str(vid),db,clean)
                             assert clean_calls==[]
                         elif case=='clean-during':
-                            with unittest.TestCase().assertRaises(planner.StaleEditPlanningError):await pipeline._run_native_auto_clean(str(vid),db,clean)
+                            previous_profile=sys.getprofile()
+                            def clean_guard_profile(frame,event,arg):
+                                # Observe the existing local post-clean predicate's return;
+                                # never call it again or change its result/short circuiting.
+                                if (event=='return' and frame.f_code.co_name=='matches'
+                                        and frame.f_code.co_filename==pipeline.__file__):
+                                    local=frame.f_locals
+                                    guard_breadcrumb('post_clean_apply',local['row'],local['saved'],local['fields'],arg)
+                                if previous_profile is not None:previous_profile(frame,event,arg)
+                            sys.setprofile(clean_guard_profile)
+                            try:
+                                with unittest.TestCase().assertRaises(planner.StaleEditPlanningError):
+                                    try:
+                                        await pipeline._run_native_auto_clean(str(vid),db,clean)
+                                    except planner.StaleEditPlanningError as exc:
+                                        breadcrumb('stale_rejection', stage=(
+                                            'post_callback' if 'clean_callback_completed' in
+                                            [event['event'] for event in CLEAN_DIAGNOSTIC['events']]
+                                            else 'callback_incomplete' if 'clean_callback_entered' in
+                                            [event['event'] for event in CLEAN_DIAGNOSTIC['events']]
+                                            else 'before_callback'), exception_type=type(exc).__name__, message=str(exc))
+                                        raise
+                            finally:sys.setprofile(previous_profile)
                             assert clean_calls==['conservative'], {'stage':'clean callback never reached','guard_differences':guard_differences,'calls':calls}
                         elif case=='clean':
                             await pipeline._run_native_auto_clean(str(vid),db,clean);assert clean_calls==['conservative'] and not db.info
@@ -203,8 +339,22 @@ class PlanTransactionsTests(unittest.TestCase):
     def run_case(self,case):
         output=REPO/'.test-output'/'plan-transactions';output.mkdir(parents=True,exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=case+'-',dir=output) as temp:
-            result=subprocess.run([sys.executable,str(Path(__file__).resolve()),str(REPO),'--child',case,temp],cwd=REPO,
+            result=subprocess.run([sys.executable,str(Path(__file__).resolve()),str(REPO),'--child',case,temp]+
+                (['--diagnostic-report',str(DIAGNOSTIC_REPORT)] if case=='clean-during' and DIAGNOSTIC_REPORT else []),cwd=REPO,
                 env=os.environ.copy(),capture_output=True,text=True,timeout=60)
+            if case=='clean-during':
+                print('CLEAN_DURING_PROCESS_EXIT '+json.dumps({'returncode':result.returncode}),flush=True)
+                # Successful child output is normally captured by unittest; surface
+                # its structured breadcrumbs in required CI as well as failures.
+                for line in result.stdout.splitlines():
+                    if line.startswith('CLEAN_DURING_DIAGNOSTIC '):print(line,flush=True)
+                if DIAGNOSTIC_REPORT is not None and DIAGNOSTIC_REPORT.exists():
+                    try:
+                        report=json.loads(DIAGNOSTIC_REPORT.read_text(encoding='utf-8'))
+                        report['observed_subprocess_returncode']=result.returncode
+                        DIAGNOSTIC_REPORT.write_text(json.dumps(report,sort_keys=True)+'\n',encoding='utf-8')
+                    except Exception as exc:
+                        print('Diagnostic exit update failed: '+repr(exc),file=sys.stderr)
             self.assertEqual(result.returncode,0,result.stdout+'\n'+result.stderr);self.assertIn('PASS '+case,result.stdout)
     def test_planner_batches_release_writer_and_commit_complete_plan(self):self.run_case('plan')
     def test_teacher_changes_during_planning_preserved_without_partial_decisions(self):self.run_case('plan-stale')
@@ -222,5 +372,17 @@ class PlanTransactionsTests(unittest.TestCase):
     def test_processing_caller_releases_settings_transaction_before_rag(self):self.run_case('caller')
 
 if __name__=='__main__':
-    if len(sys.argv)>1 and sys.argv[1]=='--child':asyncio.run(exercise(sys.argv[2],Path(sys.argv[3])))
+    if len(sys.argv)>1 and sys.argv[1]=='--child':
+        if sys.argv[2]!='clean-during':asyncio.run(exercise(sys.argv[2],Path(sys.argv[3])))
+        else:
+            CLEAN_DIAGNOSTIC={'case':'clean-during','events':[], 'identities':collect_identities()}
+            try:
+                asyncio.run(exercise(sys.argv[2],Path(sys.argv[3])))
+            except BaseException as exc:
+                CLEAN_DIAGNOSTIC['outcome']={'status':'failure','exception_type':type(exc).__name__,
+                    'message':str(exc), 'exception_exit_status':
+                    (exc.code if isinstance(exc,SystemExit) and isinstance(exc.code,int) else 1)}
+                raise
+            else:CLEAN_DIAGNOSTIC['outcome']={'status':'success','exception':None,'exception_exit_status':0}
+            finally:emit_clean_diagnostic()
     else:unittest.main(verbosity=2)

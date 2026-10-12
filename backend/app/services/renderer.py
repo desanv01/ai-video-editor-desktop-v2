@@ -189,6 +189,42 @@ async def _try_render_revideo_timeline_clip(
     return None
 
 
+def _native_semantic_source_bindings(
+    video: Video, render_plan: dict, context: LayoutRenderContext | None,
+) -> dict[str, dict]:
+    """Resolve private scene inputs without persisting paths in the public plan."""
+    primary = next((asset for asset in context.assets_by_id.values()
+                    if asset.file_path == video.file_path), None) if context else None
+    bindings = {}
+    for scene in render_plan.get("scenes") or []:
+        if not isinstance(scene, dict):
+            continue
+        cue = None
+        if context:
+            cue = next((item for item in context.cues
+                        if scene.get("layout_cue_id") is not None
+                        and item.get("id") == scene.get("layout_cue_id")), None)
+            if cue is None:
+                cue = _cue_at_time(context.cues, float(scene.get("source_start_time") or 0.0))
+        source = _dict_value(_dict_value(cue).get("sources")).get("camera")
+        enabled = (_dict_value(source).get("enabled", True)
+                   and _dict_value(scene.get("camera")).get("enabled", True))
+        camera = None
+        if context and enabled:
+            camera = _cue_asset(cue, "camera", context) or context.fallback_camera_asset
+        bindings[str(scene.get("id"))] = {
+            "primary": {"asset_id": str(primary.id) if primary else None,
+                        "video_id": str(video.id), "file_path": video.file_path,
+                        "sync_offset_seconds": 0.0, "provenance": "primary_master"},
+            "camera": {"enabled": bool(enabled),
+                       "asset_id": str(camera.id) if camera else (str(primary.id) if primary else None),
+                       "file_path": camera.file_path if camera else video.file_path,
+                       "sync_offset_seconds": _cue_sync_offset(cue, "camera", camera) if enabled else 0.0,
+                       "provenance": "resolved_layout_asset" if camera else "primary_fallback"},
+        }
+    return bindings
+
+
 async def _try_render_native_semantic_timeline_clip(
     *,
     video: Video,
@@ -254,6 +290,7 @@ async def _try_render_native_semantic_timeline_clip(
         await render_semantic_plan_with_ffmpeg(
             render_plan=render_plan,
             source_video_path=video.file_path,
+            scene_source_bindings=_native_semantic_source_bindings(video, render_plan, layout_context),
             output_path=output_path,
             work_dir=work_dir,
             output_width=output_width,

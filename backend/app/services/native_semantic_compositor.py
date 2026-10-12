@@ -47,6 +47,7 @@ async def render_semantic_plan_with_ffmpeg(
     source_video_path: str,
     output_path: str,
     work_dir: str,
+    scene_source_bindings: dict[str, dict[str, Any]] | None = None,
     output_width: int = 1920,
     output_height: int = 1080,
     fps: int = 30,
@@ -70,6 +71,7 @@ async def render_semantic_plan_with_ffmpeg(
         raise FileNotFoundError(f"Source video not found: {source_video_path}")
 
     os.makedirs(work_dir, exist_ok=True)
+    original_primary_path = source_video_path
     source_video_path = await _ensure_render_proxy(
         source_video_path=source_video_path,
         output_width=output_width,
@@ -78,6 +80,26 @@ async def render_semantic_plan_with_ffmpeg(
         progress_callback=progress_callback,
         cancel_check=cancel_check,
     )
+    # Keep primary/master audio independent of the selected camera visual.
+    camera_proxies = {original_primary_path: source_video_path}
+    for scene in scenes:
+        binding = (scene_source_bindings or {}).get(str(scene.get("id")))
+        if not binding:
+            continue
+        camera = dict(binding.get("camera") or {})
+        original_path = str(camera.get("file_path") or original_primary_path)
+        if camera.get("enabled", True):
+            if original_path not in camera_proxies:
+                camera_proxies[original_path] = await _ensure_render_proxy(
+                    source_video_path=original_path, output_width=output_width,
+                    output_height=output_height, fps=fps,
+                    progress_callback=progress_callback, cancel_check=cancel_check,
+                )
+            camera["original_file_path"] = original_path
+            camera["file_path"] = camera_proxies[original_path]
+        primary = {**(binding.get("primary") or {}),
+                   "original_file_path": original_primary_path, "file_path": source_video_path}
+        scene["native_sources"] = {"primary": primary, "camera": camera}
     slide_paths = _render_slide_images(render_plan, scenes, work_dir, output_width, output_height)
     total_duration = sum(float(scene["duration_seconds"]) for scene in scenes)
     if progress_callback:
@@ -419,9 +441,14 @@ def _build_bounded_scene_command(
     duration = float(scene["duration_seconds"])
     source_start = float(scene.get("source_start_time") or 0.0)
     layout = str(scene.get("layout") or "picture_in_picture")
+    camera = (scene.get("native_sources") or {}).get("camera") or {}
+    camera_path = str(camera.get("file_path") or source_video_path)
+    camera_start = round(max(0.0, source_start - _float(camera.get("sync_offset_seconds"))), 3)
+    if not camera.get("enabled", True):
+        layout = "full_screen_source"
     cmd = [
         ffmpeg_binary(), "-hide_banner", "-nostdin", "-y",
-        "-ss", f"{source_start:.3f}", "-t", f"{duration:.3f}", "-i", source_video_path,
+        "-ss", f"{camera_start:.3f}", "-t", f"{duration:.3f}", "-i", camera_path,
         "-loop", "1", "-t", f"{duration:.3f}", "-i", slide_path,
     ]
     transition = scene.get("transition") if isinstance(scene.get("transition"), dict) else {}
