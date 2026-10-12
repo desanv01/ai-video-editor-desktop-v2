@@ -9,7 +9,7 @@
       "entrypoints": {
         "engine": "bin/aive-engine.exe"
       },
-      "expandedBytes": 702320487,
+      "expandedBytes": 702330391,
       "id": "aive-engine",
       "probes": [
         {
@@ -18,8 +18,8 @@
         }
       ],
       "required": true,
-      "sha256": "2ddf1e68d786d1a6bc3290e8fe25a5c708485fcc698412bff31379c6d6e542c3",
-      "sizeBytes": 254121340,
+      "sha256": "50f28b8e26dbb24a6d290b0e294f4b6d5a391051d06b3dd10c8d63bef1004a1b",
+      "sizeBytes": 254125793,
       "version": "2.1.0-rebuild.2"
     },
     {
