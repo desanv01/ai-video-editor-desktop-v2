@@ -2657,7 +2657,7 @@ function ResourceDownloadLink({ href, label, primary = false }: { href: string; 
   const native = Boolean(window.aiveDesktop);
   const managedDownload = native || href.startsWith("bridge:");
   const style = `flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold transition-colors ${
-    primary ? "bg-green-600 text-white hover:bg-green-700" : "bg-surface-overlay text-gray-200 hover:bg-surface-border"
+    primary ? "bg-green-700 text-white hover:bg-green-800" : "bg-surface-overlay text-gray-200 hover:bg-surface-border"
   }`;
   const handleSave = async () => {
     if (locked.current) return;
