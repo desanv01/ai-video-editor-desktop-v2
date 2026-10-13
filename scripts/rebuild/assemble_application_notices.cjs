@@ -61,6 +61,124 @@ function argsFrom(argv) {
   if(!args['--inventory'] || !args['--output-dir']) throw Error('Both --inventory and --output-dir are required');
   return args;
 }
+// Typed checks cover retained identities and mechanical markers, not licensing scope.
+function typedObject(v, required, optional=[]) {
+  if(!v || typeof v!=='object' || Array.isArray(v) || required.some(k=>!Object.hasOwn(v,k)) ||
+     Object.keys(v).some(k=>!required.includes(k) && !optional.includes(k))) throw Error('Invalid typed supplement fields');
+}
+const gitId=v=>typeof v==='string' && /^[a-f0-9]{40}$/.test(v);
+const nonempty=v=>typeof v==='string' && !!v.trim();
+function typedRelative(v) {
+  return typeof v==='string' && /^[A-Za-z0-9._/-]+$/.test(v) && !path.isAbsolute(v) &&
+    !v.split('/').some(p=>!p || p==='.' || p==='..');
+}
+function typedRepository(v) {
+  if(typeof v!=='string' || !/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(v) ||
+     v.slice(19).split('/').some(p=>p==='.' || p==='..')) throw Error('Invalid typed source repository');
+  return v.slice('https://github.com/'.length);
+}
+function typedPinnedSource(v, slug, commit, directory=false) {
+  typedObject(v,['commit','sourcePath','url'],['gitBlob']);
+  if(!gitId(v.commit) || (commit && v.commit!==commit) || !typedRelative(v.sourcePath) ||
+     (v.gitBlob!==undefined && !gitId(v.gitBlob))) throw Error('Invalid pinned source identity');
+  const expected=directory ? 'https://github.com/'+slug+'/tree/'+v.commit+'/'+v.sourcePath :
+    'https://raw.githubusercontent.com/'+slug+'/'+v.commit+'/'+v.sourcePath;
+  if(v.url!==expected) throw Error('Source URL/repository/revision/path mismatch');
+}
+function typedPackageProvenance(v,pkg) {
+  typedObject(v,['registryMetadata','tarball','verificationQualification']);
+  typedObject(v.registryMetadata,['url','sha256','publishedGitHead']);
+  typedObject(v.tarball,['url','sha256','sizeBytes','distIntegrity']);
+  const r=v.registryMetadata,t=v.tarball, name=pkg.name.split('/').pop();
+  if(r.url!=='https://registry.npmjs.org/'+encodeURIComponent(pkg.name)+'/'+encodeURIComponent(pkg.version) ||
+     !validHash(r.sha256) || !(r.publishedGitHead===null || gitId(r.publishedGitHead)) ||
+     t.url!=='https://registry.npmjs.org/'+pkg.name+'/-/'+name+'-'+pkg.version+'.tgz' ||
+     !validHash(t.sha256) || !validSize(t.sizeBytes) || !t.sizeBytes ||
+     typeof t.distIntegrity!=='string' || !/^sha512-[A-Za-z0-9+/]{86}==$/.test(t.distIntegrity) ||
+     Buffer.from(t.distIntegrity.slice(7),'base64').length!==64 ||
+     Buffer.from(t.distIntegrity.slice(7),'base64').toString('base64')!==t.distIntegrity.slice(7) ||
+     !nonempty(v.verificationQualification)) throw Error('Invalid recorded archive/registry provenance');
+  // The assembler does not read or newly verify upstream tarball/registry bytes.
+}
+function typedRevision(v,slug,pkg,published) {
+  if(!v || typeof v!=='object') throw Error('Missing typed revision');
+  if(v.kind==='published-git-head') {
+    typedObject(v,['kind','publishedGitHead','commit']);
+    if(!gitId(v.commit) || v.commit!==v.publishedGitHead || v.publishedGitHead!==published) throw Error('Published gitHead mismatch');
+  } else if(v.kind==='version-tag') {
+    typedObject(v,['kind','publishedGitHead','tag','tagRefUrl','tagObjectSha','tagObjectUrl','commit','versionWitness','qualification']);
+    if(v.publishedGitHead!==null || published!==null || !gitId(v.commit) || !gitId(v.tagObjectSha) ||
+       v.tag!==pkg.name+'@'+pkg.version ||
+       v.tagRefUrl!=='https://api.github.com/repos/'+slug+'/git/ref/tags/'+encodeURIComponent(v.tag) ||
+       v.tagObjectUrl!=='https://api.github.com/repos/'+slug+'/git/tags/'+v.tagObjectSha ||
+       !nonempty(v.qualification)) throw Error('Invalid annotated version-tag binding');
+    const z=v.versionWitness;
+    typedObject(z,['name','version','declaredLicense','sha256','sizeBytes','source']);
+    if(z.name!==pkg.name || z.version!==pkg.version || z.declaredLicense!==pkg.license ||
+       !validHash(z.sha256) || !validSize(z.sizeBytes) || !z.sizeBytes || z.sizeBytes>LIMIT) throw Error('Version witness/package mismatch');
+    typedPinnedSource(z.source,slug,v.commit);
+    if(path.posix.basename(z.source.sourcePath)!=='package.json') throw Error('Version witness must identify package.json');
+  } else throw Error('Unknown typed revision kind');
+  return v.commit;
+}
+function typedGrantMarkers(raw,license,attribution=false) {
+  // Temporary inspection copy only; original raw bytes are always emitted.
+  const text=raw.toString('utf8').replace(/\s+/g,' ').toLowerCase();
+  const markers=attribution ? ['copyright','licensed under the apache license, version 2.0'] :
+    license==='MIT' ? ['copyright','permission is hereby granted','above copyright notice','software is provided','as is'] :
+    license==='Apache-2.0' ? ['apache license','version 2.0','grant of copyright license','redistribution','disclaimer of warranty','end of terms and conditions'] : null;
+  if(!markers || markers.some(m=>!text.includes(m))) throw Error('Missing mechanical full-grant/attribution markers');
+}
+function typedSupplement(item,pkg,base) {
+  typedObject(item,['name','version','declaredLicense','packageJsonPath','packageJsonSha256','packageJsonSizeBytes','evidenceType','provenance','files']);
+  if(!/^(?:@[A-Za-z0-9._-]+\/)?[A-Za-z0-9._-]+$/.test(item.name) || !nonempty(item.version) ||
+     !['MIT','Apache-2.0'].includes(item.declaredLicense) || !Array.isArray(item.files)) throw Error('Invalid typed package/evidence');
+  typedObject(item.provenance,['sourceRepository','revisionBinding','package','evidenceSources','associationQualification']);
+  const p=item.provenance,slug=typedRepository(p.sourceRepository);
+  if(!nonempty(p.associationQualification)) throw Error('Missing association qualification');
+  typedPackageProvenance(p.package,pkg);
+  const commit=typedRevision(p.revisionBinding,slug,pkg,p.package.registryMetadata.publishedGitHead);
+  let roles;
+  if(item.evidenceType==='source-license-file' || item.evidenceType==='source-readme-full-mit-grant') {
+    roles=[item.evidenceType==='source-license-file'?'source-license-file':'source-readme-full-text'];
+    if(item.evidenceType==='source-readme-full-mit-grant' && pkg.license!=='MIT') throw Error('README grant type requires MIT');
+    typedObject(p.evidenceSources,['notice']);
+    typedPinnedSource(p.evidenceSources.notice,slug,commit);
+    const name=path.posix.basename(p.evidenceSources.notice.sourcePath);
+    if(item.evidenceType==='source-license-file' ? !/^licen[sc]e(?:[._-].*)?$/i.test(name) :
+       !/^readme(?:[._-].*)?$/i.test(name)) throw Error('Evidence type/source path mismatch');
+  } else if(item.evidenceType==='license-text-with-source-application-notices') {
+    roles=['complete-license-text','source-application-notices'];
+    if(pkg.license!=='Apache-2.0') throw Error('Application-notice pair requires Apache-2.0');
+    typedObject(p.evidenceSources,['terms','applicationNotices','maintainerExplanationUrl']);
+    typedPinnedSource(p.evidenceSources.terms,slug,null);
+    if(path.posix.basename(p.evidenceSources.terms.sourcePath)!=='LICENSE' ||
+       !gitId(p.evidenceSources.terms.gitBlob)) throw Error('Invalid complete-terms source');
+    typedPinnedSource(p.evidenceSources.applicationNotices,slug,commit,true);
+    const prefix='https://github.com/'+slug+'/issues/',url=p.evidenceSources.maintainerExplanationUrl;
+    if(typeof url!=='string' || !url.startsWith(prefix) || !/^[0-9]+#issuecomment-[0-9]+$/.test(url.slice(prefix.length))) throw Error('Invalid maintainer URL');
+  } else throw Error('Unknown typed evidence kind');
+  if(item.files.length!==roles.length || new Set(item.files.map(f=>f.file)).size!==roles.length ||
+     !roles.every(role=>item.files.filter(f=>f.kind===role).length===1)) throw Error('Typed evidence role/cardinality mismatch');
+  const notices=[],inputs=[];
+  for(const n of [...item.files].sort((a,b)=>cmp(a.file,b.file))) {
+    typedObject(n,['kind','file','sha256','sizeBytes']);
+    if(!typedRelative(n.file) || !validHash(n.sha256) || !validSize(n.sizeBytes) || !n.sizeBytes ||
+       n.sizeBytes>LIMIT) throw Error('Invalid typed notice identity/path');
+    const file=guarded(path.resolve(base,n.file),'file');
+    if(!inside(base,file)) throw Error('Typed notice escapes manifest folder');
+    const bytes=readBounded(file);
+    if(bytes.length!==n.sizeBytes || hash(bytes)!==n.sha256) throw Error('Typed notice bytes/SHA mismatch');
+    typedGrantMarkers(bytes,pkg.license,n.kind==='source-application-notices');
+    inputs.push({file,bytes});
+    notices.push({kind:n.kind,file:n.file,sizeBytes:bytes.length,sha256:n.sha256});
+  }
+  return {record:{name:pkg.name,version:pkg.version,declaredLicense:pkg.license,packageJsonPath:pkg.packageJsonPath,
+    packageJsonSha256:pkg.packageJsonSha256,packageJsonSizeBytes:pkg.packageJsonSizeBytes,
+    evidenceType:item.evidenceType,provenance:p,notices,
+    evidenceCheckQualification:'Mechanical markers and recorded identities only; no licensing scope or fresh upstream/archive verification.'},inputs};
+}
+
 function main() {
   if(ROOT===path.parse(ROOT).root) throw Error('Filesystem root is not an approved rebuild root');
   guarded(ROOT,'directory');
@@ -106,11 +224,34 @@ function main() {
   // Supplements are separate upstream evidence, never fictional ASAR capture.
   const supplementInputs=[], supplementalBlobs=new Map(), supplemented=new Map();
   let supplementIdentity;
+  let typedSupplementManifest=false;
   if(args['--supplements']) {
     const manifestPath=guarded(args['--supplements'],'file');
     const base=guarded(path.dirname(manifestPath),'directory');
     if(inside(base,output) || inside(output,base)) throw Error('Supplement/output overlap rejected');
     const bytes=readBounded(manifestPath), manifest=JSON.parse(bytes.toString('utf8'));
+    if(manifest.schema==='aive.application-notice-supplements.v2') {
+      typedObject(manifest,['schema','packages']);
+      if(!Array.isArray(manifest.packages) || !manifest.packages.length) throw Error('Empty typed manifest');
+      typedSupplementManifest=true;
+      supplementInputs.push({file:manifestPath,bytes});
+      supplementIdentity={sizeBytes:bytes.length,sha256:hash(bytes)};
+      for(const item of [...manifest.packages].sort((a,b)=>cmp(a.packageJsonPath,b.packageJsonPath))) {
+        const pkg=packages.find(p=>p.packageJsonPath===item.packageJsonPath);
+        if(!pkg || pkg.notices.length || supplemented.has(item.packageJsonPath) ||
+           pkg.name!==item.name || pkg.version!==item.version || pkg.license!==item.declaredLicense ||
+           pkg.packageJsonSha256!==item.packageJsonSha256 || pkg.packageJsonSizeBytes!==item.packageJsonSizeBytes ||
+           !validHash(item.packageJsonSha256) || !validSize(item.packageJsonSizeBytes)) throw Error('Typed owner identity mismatch/duplicate');
+        const selected=typedSupplement(item,pkg,base);
+        supplemented.set(item.packageJsonPath,selected.record);
+        for(const input of selected.inputs) {
+          supplementInputs.push(input);
+          const digest=hash(input.bytes);
+          if(supplementalBlobs.has(digest) && !supplementalBlobs.get(digest).equals(input.bytes)) throw Error('Repeated typed blob differs');
+          supplementalBlobs.set(digest,input.bytes);
+        }
+      }
+    } else {
     if(manifest.schema!=='aive.application-notice-supplements.v1' || !Array.isArray(manifest.packages) || !manifest.packages.length) throw Error('Invalid supplement manifest');
     supplementInputs.push({file:manifestPath,bytes});
     supplementIdentity={sizeBytes:bytes.length,sha256:hash(bytes)};
@@ -146,6 +287,7 @@ function main() {
       supplemented.set(item.packageJsonPath,{name:pkg.name,version:pkg.version,packageJsonPath:pkg.packageJsonPath,
         packageJsonSha256:pkg.packageJsonSha256,packageJsonSizeBytes:pkg.packageJsonSizeBytes,
         provenance:item.provenance,notices});
+    }
     }
   }
   const unresolvedNoticeInputs=missing.filter(p=>!supplemented.has(p.packageJsonPath));
@@ -199,12 +341,19 @@ function main() {
     record.supplementedPackages=[...supplemented.values()];
     record.unresolvedNoticeInputs=unresolvedNoticeInputs;
   }
+  if(typedSupplementManifest) {
+    record.schema='aive.application-notices-assembly.v3';
+    record.status='assembled-matched-upstream-inputs';
+    record.inputs.upstreamSupplements.schema='aive.application-notice-supplements.v2';
+    record.evidenceValidationQualification='Typed retained inputs; mechanical markers and recorded linkage only. No new upstream/archive authenticity, licensing scope, corresponding-source or release determination.';
+  }
   for(const selected of supplementInputs) if(!readBounded(selected.file).equals(selected.bytes)) throw Error('Supplement input changed during assembly');
   if(!fs.readFileSync(guarded(input,'file')).equals(inventoryBytes)) throw Error('Inventory changed during assembly');
   guarded(output,undefined,true);
   fs.mkdirSync(output);
   fs.writeFileSync(path.join(output,'THIRD_PARTY_APPLICATION_NOTICES.txt'),noticeBytes,{flag:'wx'});
   fs.writeFileSync(path.join(output,'notice-assembly.json'),JSON.stringify(stable(record),null,2)+'\n',{flag:'wx'});
-  console.log(JSON.stringify({status:record.status,outputDir:output,packageRecords:packages.length,capturedNoticeBlobs:blobs.size,unresolved:missing.length,releaseApproved:false}));
+  if(typedSupplementManifest) console.log(JSON.stringify({status:record.status,outputDir:output,packageRecords:packages.length,capturedNoticeBlobs:blobs.size,rawCaptureGaps:missing.length,supplementedPackages:supplemented.size,supplementalNoticeBlobs:supplementalBlobs.size,unresolved:unresolvedNoticeInputs.length,releaseApproved:false}));
+  else console.log(JSON.stringify({status:record.status,outputDir:output,packageRecords:packages.length,capturedNoticeBlobs:blobs.size,unresolved:missing.length,releaseApproved:false}));
 }
 try { main(); } catch(error) { console.error('Notice assembly failed; inputs and any partial output preserved; no retry: '+error.stack); process.exitCode=1; }

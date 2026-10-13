@@ -39,6 +39,26 @@ The accepted input association combines:
 
 At that exact gitHead, 38 of 39 TypeScript files carry those headers; `ts/index.ts` is a headerless export aggregator. The association relies on existing version-specific source notices, not assumed retroactive application of a later grant. The [manifest](application-notice-supplements.v1.json) retains exact revisions, blob and tarball identities, public source URLs, and hashes for both supplied files.
 
+## Typed retained inputs (manifest v2)
+
+Use the existing CLI with the new manifest:
+
+~~~shell
+node scripts/rebuild/assemble_application_notices.cjs --inventory evidence/captured/inventory.json --output-dir evidence/assembled-typed --supplements docs/rebuild/licenses/application-notice-supplements.v2.json
+~~~
+
+The original v1 manifest retains assembly.v2 output. No flag still uses captured-only assembly.v1. Typed v2 manifests emit aive.application-notices-assembly.v3 and distinguish:
+
+- source-license-file: one exact retained upstream root license, without synthetic separate attribution.
+- source-readme-full-mit-grant: the entire original README containing the grant/copyright, retaining entity bytes; it is not a standalone root LICENSE.
+- license-text-with-source-application-notices: complete terms plus separately retained exact-version source application notices, preserving the qualified mj association.
+
+Published-git-head bindings match actual recorded registry gitHead. Version-tag bindings have explicit null gitHead and an annotated-tag chain/package-version-license witness. Degenerator5.0.1 uses annotated398c4707c9edf23ae89f6f2383964d16bd1cd3c6 -> commitd5cdaa1b774c699c75b543eb4b112290d261e321. No gitHead is invented. Source URLs match structured repository, revision and source path. Registry/tarball hashes and SHA512 integrity are previously reviewed provenance; the assembler does not acquire or reverify those archives.
+
+The manifest binds nine exact owners to eight distinct raw blobs; three Puppeteer owners share one license. Expected selected-current output is274 packages,176 captured blobs,11 raw capture gaps unchanged,9 upstream associations and2 unresolved MIT grants (lazy-val/load-script). Typed stdout distinguishes remaining unresolved inputs from capture gaps. Output still requires exact package JSON matching and does not establish release approval.
+
+Strict validation covers evidence roles, provenance linkage, current package identity, raw bytes and mechanical complete-grant/attribution markers. Marker checks use a temporary whitespace-folded inspection copy; original bytes/entities are not changed and licensing scope is not determined. Scoped -text attributes preserve retained-upstream files. Unsafe/reparse paths, input/output overlap, existing output, size limits, tampering and changed inputs remain rejected.
+
 ## Remaining gaps
 
 Full applicable MIT grants for `lazy-val@1.0.5` and `load-script@1.0.0` remain missing. License declarations alone do not resolve those gaps, and this manifest supplies no invented grants for them.

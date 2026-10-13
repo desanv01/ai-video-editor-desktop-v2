@@ -1,0 +1,458 @@
+{
+  "schema": "aive.application-notice-supplements.v2",
+  "packages": [
+    {
+      "name": "@puppeteer/browsers",
+      "version": "2.6.1",
+      "declaredLicense": "Apache-2.0",
+      "packageJsonPath": "node_modules/@puppeteer/browsers/package.json",
+      "packageJsonSha256": "19f29812e05fdad7be397eddbfc8fd6c2b12f7ff3260d49e9dce642536f6b320",
+      "packageJsonSizeBytes": 2392,
+      "evidenceType": "source-license-file",
+      "provenance": {
+        "sourceRepository": "https://github.com/puppeteer/puppeteer",
+        "revisionBinding": {
+          "kind": "published-git-head",
+          "publishedGitHead": "193fffd891af063b9a4a6dc61c0872d452c4407b",
+          "commit": "193fffd891af063b9a4a6dc61c0872d452c4407b"
+        },
+        "package": {
+          "registryMetadata": {
+            "url": "https://registry.npmjs.org/%40puppeteer%2Fbrowsers/2.6.1",
+            "sha256": "7e5fcba0393fbb158cd7c98ced3507bada89a5924c2af9f3f53d47d15eb3b57f",
+            "publishedGitHead": "193fffd891af063b9a4a6dc61c0872d452c4407b"
+          },
+          "tarball": {
+            "url": "https://registry.npmjs.org/@puppeteer/browsers/-/browsers-2.6.1.tgz",
+            "sha256": "d3ad263e602e107688e5ef5ccc68851c6f84b4a70f5116b07477f04ad3468ecc",
+            "sizeBytes": 75774,
+            "distIntegrity": "sha512-aBSREisdsGH890S2rQqK82qmQYU3uFpSH8wcZWHgHzl3LfzsxAKbLNiAG9mO8v1Y0UICBeClICxPJvyr0rcuxg=="
+          },
+          "verificationQualification": "Retained registry/tarball identities and integrity were previously reviewed independently. This assembler reads notices/current owner metadata only; no archive acquisition or fresh rehash. Electron-pruned ASAR package JSON is bound separately."
+        },
+        "evidenceSources": {
+          "notice": {
+            "commit": "193fffd891af063b9a4a6dc61c0872d452c4407b",
+            "sourcePath": "LICENSE",
+            "url": "https://raw.githubusercontent.com/puppeteer/puppeteer/193fffd891af063b9a4a6dc61c0872d452c4407b/LICENSE"
+          }
+        },
+        "associationQualification": "Previously reviewed exact current-owner/retained-source notice association. Full original upstream license bytes preserved; no licensing scope, corresponding-source or release completion."
+      },
+      "files": [
+        {
+          "kind": "source-license-file",
+          "file": "retained-upstream/a27ca07269b3518550b2e83aed13eadd7d14d924b5864e14889b40cf227530ca.txt",
+          "sha256": "a27ca07269b3518550b2e83aed13eadd7d14d924b5864e14889b40cf227530ca",
+          "sizeBytes": 11344
+        }
+      ]
+    },
+    {
+      "name": "@rive-app/canvas-advanced",
+      "version": "2.7.3",
+      "declaredLicense": "MIT",
+      "packageJsonPath": "node_modules/@rive-app/canvas-advanced/package.json",
+      "packageJsonSha256": "881847bfd7281cb0681a86168538d88945f662df07f7f48d988a8e7c3ad60b42",
+      "packageJsonSizeBytes": 554,
+      "evidenceType": "source-license-file",
+      "provenance": {
+        "sourceRepository": "https://github.com/rive-app/rive-wasm",
+        "revisionBinding": {
+          "kind": "published-git-head",
+          "publishedGitHead": "f7e69246a4c9c64f747ff0da979a7f28cb336dc7",
+          "commit": "f7e69246a4c9c64f747ff0da979a7f28cb336dc7"
+        },
+        "package": {
+          "registryMetadata": {
+            "url": "https://registry.npmjs.org/%40rive-app%2Fcanvas-advanced/2.7.3",
+            "sha256": "dfe4ecc14043ab10c7533170f3354eeb0cb183418f292f7abafb697e3dcc1f37",
+            "publishedGitHead": "f7e69246a4c9c64f747ff0da979a7f28cb336dc7"
+          },
+          "tarball": {
+            "url": "https://registry.npmjs.org/@rive-app/canvas-advanced/-/canvas-advanced-2.7.3.tgz",
+            "sha256": "8e0a8ddfc2542ba1ee6e656ac2631ebac636e8fce57f92fa8d8b7ddae8014634",
+            "sizeBytes": 337081,
+            "distIntegrity": "sha512-3+zi0CiiTYVZpaBUooTgQ3p0uSBKW+g7UiORUPykt5w5Wue1zxUX/iaGVzEyrXg40KU32juHADxXi6uOhbaPcg=="
+          },
+          "verificationQualification": "Retained registry/tarball identities and integrity were previously reviewed independently. This assembler reads notices/current owner metadata only; no archive acquisition or fresh rehash. Electron-pruned ASAR package JSON is bound separately."
+        },
+        "evidenceSources": {
+          "notice": {
+            "commit": "f7e69246a4c9c64f747ff0da979a7f28cb336dc7",
+            "sourcePath": "LICENSE",
+            "url": "https://raw.githubusercontent.com/rive-app/rive-wasm/f7e69246a4c9c64f747ff0da979a7f28cb336dc7/LICENSE"
+          }
+        },
+        "associationQualification": "Previously reviewed exact current-owner/retained-source notice association. Full original upstream license bytes preserved; no licensing scope, corresponding-source or release completion."
+      },
+      "files": [
+        {
+          "kind": "source-license-file",
+          "file": "retained-upstream/8a1efa755d19446b51a18e1c15f6308728da0b36283c4d38050698ad6954b69a.txt",
+          "sha256": "8a1efa755d19446b51a18e1c15f6308728da0b36283c4d38050698ad6954b69a",
+          "sizeBytes": 1066
+        }
+      ]
+    },
+    {
+      "name": "agent-base",
+      "version": "6.0.2",
+      "declaredLicense": "MIT",
+      "packageJsonPath": "node_modules/axios/node_modules/agent-base/package.json",
+      "packageJsonSha256": "1c22afa50ae7fedb6d51d34394cccb31fc4ed27163271d3060355b044a5b5777",
+      "packageJsonSizeBytes": 1198,
+      "evidenceType": "source-readme-full-mit-grant",
+      "provenance": {
+        "sourceRepository": "https://github.com/TooTallNate/node-agent-base",
+        "revisionBinding": {
+          "kind": "published-git-head",
+          "publishedGitHead": "c4b8ea2e1a11bae023bb09b708050a50418204e9",
+          "commit": "c4b8ea2e1a11bae023bb09b708050a50418204e9"
+        },
+        "package": {
+          "registryMetadata": {
+            "url": "https://registry.npmjs.org/agent-base/6.0.2",
+            "sha256": "b4670f909dc2ae3092fee34a0c817e721ca1a6a85b3735d748e8ac78228146a0",
+            "publishedGitHead": "c4b8ea2e1a11bae023bb09b708050a50418204e9"
+          },
+          "tarball": {
+            "url": "https://registry.npmjs.org/agent-base/-/agent-base-6.0.2.tgz",
+            "sha256": "bc6da06f2a2e6bc80fa5878bd7227bd0318812976d45f47f17e1aafcec2be831",
+            "sizeBytes": 9273,
+            "distIntegrity": "sha512-RZNwNclF7+MS/8bDg70amg32dyeZGZxiDuQmZxKLAlQjr3jGyLx+4Kkk58UO7D2QdgFIQCovuSuZESne6RG6XQ=="
+          },
+          "verificationQualification": "Retained registry/tarball identities and integrity were previously reviewed independently. This assembler reads notices/current owner metadata only; no archive acquisition or fresh rehash. Electron-pruned ASAR package JSON is bound separately."
+        },
+        "evidenceSources": {
+          "notice": {
+            "commit": "c4b8ea2e1a11bae023bb09b708050a50418204e9",
+            "sourcePath": "README.md",
+            "url": "https://raw.githubusercontent.com/TooTallNate/node-agent-base/c4b8ea2e1a11bae023bb09b708050a50418204e9/README.md"
+          }
+        },
+        "associationQualification": "Previously reviewed exact current-owner/retained-source notice association. Full original README with embedded MIT grant bytes preserved; no licensing scope, corresponding-source or release completion."
+      },
+      "files": [
+        {
+          "kind": "source-readme-full-text",
+          "file": "retained-upstream/f1425c3b72330fe4fb2aa5a2fb152e939bdf534692a32b5f0b38f74147b98556.txt",
+          "sha256": "f1425c3b72330fe4fb2aa5a2fb152e939bdf534692a32b5f0b38f74147b98556",
+          "sizeBytes": 5056
+        }
+      ]
+    },
+    {
+      "name": "https-proxy-agent",
+      "version": "5.0.1",
+      "declaredLicense": "MIT",
+      "packageJsonPath": "node_modules/axios/node_modules/https-proxy-agent/package.json",
+      "packageJsonSha256": "5cb594f8198cff9c055f9fd0be3564d1230b4df27a40fe5279772dfdc4da874f",
+      "packageJsonSizeBytes": 1047,
+      "evidenceType": "source-readme-full-mit-grant",
+      "provenance": {
+        "sourceRepository": "https://github.com/TooTallNate/node-https-proxy-agent",
+        "revisionBinding": {
+          "kind": "published-git-head",
+          "publishedGitHead": "d0d80cc0482f20495aa8595f802e1a9f3b1b3409",
+          "commit": "d0d80cc0482f20495aa8595f802e1a9f3b1b3409"
+        },
+        "package": {
+          "registryMetadata": {
+            "url": "https://registry.npmjs.org/https-proxy-agent/5.0.1",
+            "sha256": "9ed34fec5e4151933a940a610a49aa084fbf625f5f43fd5d841f4ecc64e0d08b",
+            "publishedGitHead": "d0d80cc0482f20495aa8595f802e1a9f3b1b3409"
+          },
+          "tarball": {
+            "url": "https://registry.npmjs.org/https-proxy-agent/-/https-proxy-agent-5.0.1.tgz",
+            "sha256": "6da16fb44331f2e5d30bd21bf880aa934c1ad4fe7da7187910ef2b2509712019",
+            "sizeBytes": 8412,
+            "distIntegrity": "sha512-dFcAjpTQFgoLMzC2VwU+C/CbS7uRL0lWmxDITmqm7C+7F0Odmj6s9l6alZc6AELXhrnggM2CeWSXHGOdX2YtwA=="
+          },
+          "verificationQualification": "Retained registry/tarball identities and integrity were previously reviewed independently. This assembler reads notices/current owner metadata only; no archive acquisition or fresh rehash. Electron-pruned ASAR package JSON is bound separately."
+        },
+        "evidenceSources": {
+          "notice": {
+            "commit": "d0d80cc0482f20495aa8595f802e1a9f3b1b3409",
+            "sourcePath": "README.md",
+            "url": "https://raw.githubusercontent.com/TooTallNate/node-https-proxy-agent/d0d80cc0482f20495aa8595f802e1a9f3b1b3409/README.md"
+          }
+        },
+        "associationQualification": "Previously reviewed exact current-owner/retained-source notice association. Full original README with embedded MIT grant bytes preserved; no licensing scope, corresponding-source or release completion."
+      },
+      "files": [
+        {
+          "kind": "source-readme-full-text",
+          "file": "retained-upstream/32f0856d2c43df7d05cca960fdee84e1e38ab545bd7b2186433dfa41aa90a712.txt",
+          "sha256": "32f0856d2c43df7d05cca960fdee84e1e38ab545bd7b2186433dfa41aa90a712",
+          "sizeBytes": 4761
+        }
+      ]
+    },
+    {
+      "name": "degenerator",
+      "version": "5.0.1",
+      "declaredLicense": "MIT",
+      "packageJsonPath": "node_modules/degenerator/package.json",
+      "packageJsonSha256": "63efb50dc683a0949e2a69016a3f45a6e3619ac2872b6fdf1b77ee6900a08ea4",
+      "packageJsonSizeBytes": 900,
+      "evidenceType": "source-readme-full-mit-grant",
+      "provenance": {
+        "sourceRepository": "https://github.com/TooTallNate/proxy-agents",
+        "revisionBinding": {
+          "kind": "version-tag",
+          "publishedGitHead": null,
+          "tag": "degenerator@5.0.1",
+          "tagRefUrl": "https://api.github.com/repos/TooTallNate/proxy-agents/git/ref/tags/degenerator%405.0.1",
+          "tagObjectSha": "398c4707c9edf23ae89f6f2383964d16bd1cd3c6",
+          "tagObjectUrl": "https://api.github.com/repos/TooTallNate/proxy-agents/git/tags/398c4707c9edf23ae89f6f2383964d16bd1cd3c6",
+          "commit": "d5cdaa1b774c699c75b543eb4b112290d261e321",
+          "versionWitness": {
+            "name": "degenerator",
+            "version": "5.0.1",
+            "declaredLicense": "MIT",
+            "sha256": "9fc6081efd862d9079b695367e1b52b147e0cdbce09fc1952b7f220a9fc389ee",
+            "sizeBytes": 1071,
+            "source": {
+              "commit": "d5cdaa1b774c699c75b543eb4b112290d261e321",
+              "sourcePath": "packages/degenerator/package.json",
+              "url": "https://raw.githubusercontent.com/TooTallNate/proxy-agents/d5cdaa1b774c699c75b543eb4b112290d261e321/packages/degenerator/package.json"
+            }
+          },
+          "qualification": "Published registry gitHead is absent. The retained association uses the official version tag reference and annotated tag object, the identified source commit, and the retained 5.0.1 package version/license witness. This manifest records that previously reviewed association; it does not perform a new remote lookup or independently verify a fresh tag response."
+        },
+        "package": {
+          "registryMetadata": {
+            "url": "https://registry.npmjs.org/degenerator/5.0.1",
+            "sha256": "8d5352a0e250cdb4e5c2afe57ba3ee1e69db1bcc544304723f023f6a8f9644d3",
+            "publishedGitHead": null
+          },
+          "tarball": {
+            "url": "https://registry.npmjs.org/degenerator/-/degenerator-5.0.1.tgz",
+            "sha256": "4b930c5a740d8affd077e7873d2482fb79097e48b9abc821bc16eccfc88039d3",
+            "sizeBytes": 8197,
+            "distIntegrity": "sha512-TllpMR/t0M5sqCXfj85i4XaAzxmS5tVA16dqvdkMwGmzI+dXLXnw3J+3Vdv7VKw+ThlTMboK6i9rnZ6Nntj5CQ=="
+          },
+          "verificationQualification": "Retained registry/tarball identities and integrity were previously reviewed independently. This assembler reads notices/current owner metadata only; no archive acquisition or fresh rehash. Electron-pruned ASAR package JSON is bound separately."
+        },
+        "evidenceSources": {
+          "notice": {
+            "commit": "d5cdaa1b774c699c75b543eb4b112290d261e321",
+            "sourcePath": "packages/degenerator/README.md",
+            "url": "https://raw.githubusercontent.com/TooTallNate/proxy-agents/d5cdaa1b774c699c75b543eb4b112290d261e321/packages/degenerator/README.md"
+          }
+        },
+        "associationQualification": "Previously reviewed exact current-owner/retained-source notice association. Full original README with embedded MIT grant bytes preserved; no licensing scope, corresponding-source or release completion."
+      },
+      "files": [
+        {
+          "kind": "source-readme-full-text",
+          "file": "retained-upstream/72da4948a54a285c3f6d2bc398147dc21ca082316919653dc7c1198dc55a271c.txt",
+          "sha256": "72da4948a54a285c3f6d2bc398147dc21ca082316919653dc7c1198dc55a271c",
+          "sizeBytes": 3486
+        }
+      ]
+    },
+    {
+      "name": "mj-context-menu",
+      "version": "0.6.1",
+      "declaredLicense": "Apache-2.0",
+      "packageJsonPath": "node_modules/mj-context-menu/package.json",
+      "packageJsonSha256": "f53538dc52884ad822cd53f22940f29103b6872c02a2bfa5fc5eb27c8dd865eb",
+      "packageJsonSizeBytes": 807,
+      "evidenceType": "license-text-with-source-application-notices",
+      "provenance": {
+        "sourceRepository": "https://github.com/mathjax/context-menu",
+        "revisionBinding": {
+          "kind": "published-git-head",
+          "publishedGitHead": "8ddd26a41f834cd23b9bb20737dfae5fa9b05eb4",
+          "commit": "8ddd26a41f834cd23b9bb20737dfae5fa9b05eb4"
+        },
+        "package": {
+          "registryMetadata": {
+            "url": "https://registry.npmjs.org/mj-context-menu/0.6.1",
+            "sha256": "484957a982db225b768f2d1910eaa71847d78864679b67bbdfee56413cbdb7c5",
+            "publishedGitHead": "8ddd26a41f834cd23b9bb20737dfae5fa9b05eb4"
+          },
+          "tarball": {
+            "url": "https://registry.npmjs.org/mj-context-menu/-/mj-context-menu-0.6.1.tgz",
+            "sha256": "60cad298c944909f8c424e69dadca8a028d0aa4e8606eebfae37bc82eea8af6d",
+            "sizeBytes": 51260,
+            "distIntegrity": "sha512-7NO5s6n10TIV96d4g2uDpG7ZDpIhMh0QNfGdJw/W47JswFcosz457wqz/b5sAKvl12sxINGFCn80NZHKwxQEXA=="
+          },
+          "verificationQualification": "Retained registry/tarball identities and integrity were previously reviewed independently. This assembler reads notices/current owner metadata only; no archive acquisition or fresh rehash. Electron-pruned ASAR package JSON is bound separately."
+        },
+        "evidenceSources": {
+          "terms": {
+            "commit": "72e16a5713cf30b390776c89bb6c1428747472f1",
+            "sourcePath": "LICENSE",
+            "url": "https://raw.githubusercontent.com/mathjax/context-menu/72e16a5713cf30b390776c89bb6c1428747472f1/LICENSE",
+            "gitBlob": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64"
+          },
+          "applicationNotices": {
+            "commit": "8ddd26a41f834cd23b9bb20737dfae5fa9b05eb4",
+            "sourcePath": "ts",
+            "url": "https://github.com/mathjax/context-menu/tree/8ddd26a41f834cd23b9bb20737dfae5fa9b05eb4/ts"
+          },
+          "maintainerExplanationUrl": "https://github.com/mathjax/context-menu/issues/32#issuecomment-1629273186"
+        },
+        "associationQualification": "Complete terms at their actual later revision paired with pre-existing exact-version source application notices (38 source headers; headerless index export aggregator). No fictional root LICENSE at published gitHead or retroactive grant assumption. Final source/release completeness remains open."
+      },
+      "files": [
+        {
+          "kind": "complete-license-text",
+          "file": "mj-context-menu-0.6.1/LICENSE.txt",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+          "sizeBytes": 11357
+        },
+        {
+          "kind": "source-application-notices",
+          "file": "mj-context-menu-0.6.1/SOURCE_NOTICES.txt",
+          "sha256": "0ade54512e46ca05aceba269eca88668da9254091bec7ed9e9628730f8a59f99",
+          "sizeBytes": 3253
+        }
+      ]
+    },
+    {
+      "name": "posthog-node",
+      "version": "4.18.0",
+      "declaredLicense": "MIT",
+      "packageJsonPath": "node_modules/posthog-node/package.json",
+      "packageJsonSha256": "558b008a26ae55335584e50d73731dea3777bd51b223b83605bf35951c2f604d",
+      "packageJsonSizeBytes": 1424,
+      "evidenceType": "source-license-file",
+      "provenance": {
+        "sourceRepository": "https://github.com/PostHog/posthog-js-lite",
+        "revisionBinding": {
+          "kind": "published-git-head",
+          "publishedGitHead": "6a0a47a0968c01514cebd283cc0eb960d7bf8692",
+          "commit": "6a0a47a0968c01514cebd283cc0eb960d7bf8692"
+        },
+        "package": {
+          "registryMetadata": {
+            "url": "https://registry.npmjs.org/posthog-node/4.18.0",
+            "sha256": "f8d4f7da74ac34b6b53f5f5162d629c125327fc9e186dee17ae6de11d891786f",
+            "publishedGitHead": "6a0a47a0968c01514cebd283cc0eb960d7bf8692"
+          },
+          "tarball": {
+            "url": "https://registry.npmjs.org/posthog-node/-/posthog-node-4.18.0.tgz",
+            "sha256": "c519831b2b78ee9a9853437da6ccb70984660fb2d3dfed306c20e5011bb23db5",
+            "sizeBytes": 492434,
+            "distIntegrity": "sha512-XROs1h+DNatgKh/AlIlCtDxWzwrKdYDb2mOs58n4yN8BkGN9ewqeQwG5ApS4/IzwCb7HPttUkOVulkYatd2PIw=="
+          },
+          "verificationQualification": "Retained registry/tarball identities and integrity were previously reviewed independently. This assembler reads notices/current owner metadata only; no archive acquisition or fresh rehash. Electron-pruned ASAR package JSON is bound separately."
+        },
+        "evidenceSources": {
+          "notice": {
+            "commit": "6a0a47a0968c01514cebd283cc0eb960d7bf8692",
+            "sourcePath": "LICENSE",
+            "url": "https://raw.githubusercontent.com/PostHog/posthog-js-lite/6a0a47a0968c01514cebd283cc0eb960d7bf8692/LICENSE"
+          }
+        },
+        "associationQualification": "Previously reviewed exact current-owner/retained-source notice association. Full original upstream license bytes preserved; no licensing scope, corresponding-source or release completion."
+      },
+      "files": [
+        {
+          "kind": "source-license-file",
+          "file": "retained-upstream/b08927da328cf38196ae429678d7feeb94328b0bc1f43ad51c59713f79260dde.txt",
+          "sha256": "b08927da328cf38196ae429678d7feeb94328b0bc1f43ad51c59713f79260dde",
+          "sizeBytes": 2273
+        }
+      ]
+    },
+    {
+      "name": "puppeteer-core",
+      "version": "23.11.1",
+      "declaredLicense": "Apache-2.0",
+      "packageJsonPath": "node_modules/puppeteer-core/package.json",
+      "packageJsonSha256": "74218da70b619d5f5084013dde9ef6e7600ac2e4df1ddd083ea2574df29f2f8f",
+      "packageJsonSizeBytes": 3489,
+      "evidenceType": "source-license-file",
+      "provenance": {
+        "sourceRepository": "https://github.com/puppeteer/puppeteer",
+        "revisionBinding": {
+          "kind": "published-git-head",
+          "publishedGitHead": "893f5eccbab8e983f8765a3e4ef936bdf99cb35e",
+          "commit": "893f5eccbab8e983f8765a3e4ef936bdf99cb35e"
+        },
+        "package": {
+          "registryMetadata": {
+            "url": "https://registry.npmjs.org/puppeteer-core/23.11.1",
+            "sha256": "d77bfee4c6aaaebc0eaa31973de2e1a08043facca8a652265690e963f1865658",
+            "publishedGitHead": "893f5eccbab8e983f8765a3e4ef936bdf99cb35e"
+          },
+          "tarball": {
+            "url": "https://registry.npmjs.org/puppeteer-core/-/puppeteer-core-23.11.1.tgz",
+            "sha256": "b595d1bfa3350329b90b791663ab12f7a52b4637d1ee5bfdc0b09df6d525dcd7",
+            "sizeBytes": 1250138,
+            "distIntegrity": "sha512-3HZ2/7hdDKZvZQ7dhhITOUg4/wOrDRjyK2ZBllRB0ZCOi9u0cwq1ACHDjBB+nX+7+kltHjQvBRdeY7+W0T+7Gg=="
+          },
+          "verificationQualification": "Retained registry/tarball identities and integrity were previously reviewed independently. This assembler reads notices/current owner metadata only; no archive acquisition or fresh rehash. Electron-pruned ASAR package JSON is bound separately."
+        },
+        "evidenceSources": {
+          "notice": {
+            "commit": "893f5eccbab8e983f8765a3e4ef936bdf99cb35e",
+            "sourcePath": "LICENSE",
+            "url": "https://raw.githubusercontent.com/puppeteer/puppeteer/893f5eccbab8e983f8765a3e4ef936bdf99cb35e/LICENSE"
+          }
+        },
+        "associationQualification": "Previously reviewed exact current-owner/retained-source notice association. Full original upstream license bytes preserved; no licensing scope, corresponding-source or release completion."
+      },
+      "files": [
+        {
+          "kind": "source-license-file",
+          "file": "retained-upstream/a27ca07269b3518550b2e83aed13eadd7d14d924b5864e14889b40cf227530ca.txt",
+          "sha256": "a27ca07269b3518550b2e83aed13eadd7d14d924b5864e14889b40cf227530ca",
+          "sizeBytes": 11344
+        }
+      ]
+    },
+    {
+      "name": "puppeteer",
+      "version": "23.11.1",
+      "declaredLicense": "Apache-2.0",
+      "packageJsonPath": "node_modules/puppeteer/package.json",
+      "packageJsonSha256": "b55d4a3072d6b59aaf095fae8e054786187f452a2a5591de883c90e1a872807f",
+      "packageJsonSizeBytes": 3110,
+      "evidenceType": "source-license-file",
+      "provenance": {
+        "sourceRepository": "https://github.com/puppeteer/puppeteer",
+        "revisionBinding": {
+          "kind": "published-git-head",
+          "publishedGitHead": "893f5eccbab8e983f8765a3e4ef936bdf99cb35e",
+          "commit": "893f5eccbab8e983f8765a3e4ef936bdf99cb35e"
+        },
+        "package": {
+          "registryMetadata": {
+            "url": "https://registry.npmjs.org/puppeteer/23.11.1",
+            "sha256": "647eb3227a46732b267698c4e843f36e701010d934749244b4f63a24c8f2ac0c",
+            "publishedGitHead": "893f5eccbab8e983f8765a3e4ef936bdf99cb35e"
+          },
+          "tarball": {
+            "url": "https://registry.npmjs.org/puppeteer/-/puppeteer-23.11.1.tgz",
+            "sha256": "1c702caf05e8fe95f690d3d744aacce2980119ecf397298b0402d82c0fd3e4e8",
+            "sizeBytes": 73289,
+            "distIntegrity": "sha512-53uIX3KR5en8l7Vd8n5DUv90Ae9QDQsyIthaUFVzwV6yU750RjqRznEtNMBT20VthqAdemnJN+hxVdmMHKt7Zw=="
+          },
+          "verificationQualification": "Retained registry/tarball identities and integrity were previously reviewed independently. This assembler reads notices/current owner metadata only; no archive acquisition or fresh rehash. Electron-pruned ASAR package JSON is bound separately."
+        },
+        "evidenceSources": {
+          "notice": {
+            "commit": "893f5eccbab8e983f8765a3e4ef936bdf99cb35e",
+            "sourcePath": "LICENSE",
+            "url": "https://raw.githubusercontent.com/puppeteer/puppeteer/893f5eccbab8e983f8765a3e4ef936bdf99cb35e/LICENSE"
+          }
+        },
+        "associationQualification": "Previously reviewed exact current-owner/retained-source notice association. Full original upstream license bytes preserved; no licensing scope, corresponding-source or release completion."
+      },
+      "files": [
+        {
+          "kind": "source-license-file",
+          "file": "retained-upstream/a27ca07269b3518550b2e83aed13eadd7d14d924b5864e14889b40cf227530ca.txt",
+          "sha256": "a27ca07269b3518550b2e83aed13eadd7d14d924b5864e14889b40cf227530ca",
+          "sizeBytes": 11344
+        }
+      ]
+    }
+  ]
+}
