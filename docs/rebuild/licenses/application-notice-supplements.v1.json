@@ -1,0 +1,36 @@
+{
+  "schema": "aive.application-notice-supplements.v1",
+  "packages": [
+    {
+      "name": "mj-context-menu",
+      "version": "0.6.1",
+      "declaredLicense": "Apache-2.0",
+      "packageJsonPath": "node_modules/mj-context-menu/package.json",
+      "packageJsonSha256": "f53538dc52884ad822cd53f22940f29103b6872c02a2bfa5fc5eb27c8dd865eb",
+      "packageJsonSizeBytes": 807,
+      "provenance": {
+        "packageGitHead": "8ddd26a41f834cd23b9bb20737dfae5fa9b05eb4",
+        "tarballSha256": "60cad298c944909f8c424e69dadca8a028d0aa4e8606eebfae37bc82eea8af6d",
+        "fullTermsUrl": "https://github.com/mathjax/context-menu/blob/72e16a5713cf30b390776c89bb6c1428747472f1/LICENSE",
+        "fullTermsGitBlob": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+        "sourceNoticesUrl": "https://github.com/mathjax/context-menu/tree/8ddd26a41f834cd23b9bb20737dfae5fa9b05eb4/ts",
+        "maintainerExplanationUrl": "https://github.com/mathjax/context-menu/issues/32#issuecomment-1629273186",
+        "association": "MAIN accepts full terms and pre-existing exact-version notices as matched license inputs; no final inventory/source/release completion."
+      },
+      "files": [
+        {
+          "kind": "full-license",
+          "file": "mj-context-menu-0.6.1/LICENSE.txt",
+          "sizeBytes": 11357,
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+        },
+        {
+          "kind": "attribution",
+          "file": "mj-context-menu-0.6.1/SOURCE_NOTICES.txt",
+          "sizeBytes": 3253,
+          "sha256": "0ade54512e46ca05aceba269eca88668da9254091bec7ed9e9628730f8a59f99"
+        }
+      ]
+    }
+  ]
+}

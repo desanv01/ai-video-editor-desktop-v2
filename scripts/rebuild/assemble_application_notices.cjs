@@ -55,10 +55,10 @@ const json = value => JSON.stringify(stable(value));
 function argsFrom(argv) {
   const args={};
   for(let i=0;i<argv.length;i+=2) {
-    if (!['--inventory','--output-dir'].includes(argv[i]) || args[argv[i]] || !argv[i+1] || argv[i+1].startsWith('--')) throw Error('Usage: node assemble_application_notices.cjs --inventory PATH --output-dir FRESH_PATH');
+    if (!['--inventory','--output-dir','--supplements'].includes(argv[i]) || args[argv[i]] || !argv[i+1] || argv[i+1].startsWith('--')) throw Error('Usage: node assemble_application_notices.cjs --inventory PATH --output-dir FRESH_PATH [--supplements MANIFEST]');
     args[argv[i]]=argv[i+1];
   }
-  if(Object.keys(args).length!==2) throw Error('Both --inventory and --output-dir are required');
+  if(!args['--inventory'] || !args['--output-dir']) throw Error('Both --inventory and --output-dir are required');
   return args;
 }
 function main() {
@@ -103,14 +103,62 @@ function main() {
   }
   const recordedMissing=[...inventory.missingCapturedNotices].sort((a,b)=>cmp(a.packageJsonPath,b.packageJsonPath));
   if(json(recordedMissing)!==json(missing) || blobs.size!==inventory.capturedNoticeBlobs) throw Error('Missing-list/blob-count disagreement');
+  // Supplements are separate upstream evidence, never fictional ASAR capture.
+  const supplementInputs=[], supplementalBlobs=new Map(), supplemented=new Map();
+  let supplementIdentity;
+  if(args['--supplements']) {
+    const manifestPath=guarded(args['--supplements'],'file');
+    const base=guarded(path.dirname(manifestPath),'directory');
+    if(inside(base,output) || inside(output,base)) throw Error('Supplement/output overlap rejected');
+    const bytes=readBounded(manifestPath), manifest=JSON.parse(bytes.toString('utf8'));
+    if(manifest.schema!=='aive.application-notice-supplements.v1' || !Array.isArray(manifest.packages) || !manifest.packages.length) throw Error('Invalid supplement manifest');
+    supplementInputs.push({file:manifestPath,bytes});
+    supplementIdentity={sizeBytes:bytes.length,sha256:hash(bytes)};
+    for(const item of [...manifest.packages].sort((a,b)=>cmp(a.packageJsonPath,b.packageJsonPath))) {
+      const pkg=packages.find(p=>p.packageJsonPath===item.packageJsonPath);
+      if(!pkg || pkg.notices.length || supplemented.has(item.packageJsonPath) ||
+         pkg.name!==item.name || pkg.version!==item.version || pkg.license!==item.declaredLicense ||
+         pkg.packageJsonSha256!==item.packageJsonSha256 || pkg.packageJsonSizeBytes!==item.packageJsonSizeBytes ||
+         !validHash(item.packageJsonSha256) || !validSize(item.packageJsonSizeBytes)) throw Error('Supplement package identity mismatch/duplicate');
+      if(!item.provenance || typeof item.provenance!=='object' ||
+         !/^[a-f0-9]{40}$/.test(item.provenance.packageGitHead || '') ||
+         !/^[a-f0-9]{40}$/.test(item.provenance.fullTermsGitBlob || '') ||
+         !validHash(item.provenance.tarballSha256) ||
+         !['fullTermsUrl','sourceNoticesUrl','maintainerExplanationUrl'].every(key=>
+           typeof item.provenance[key]==='string' && item.provenance[key].startsWith('https://github.com/')) ||
+         typeof item.provenance.association!=='string' || !item.provenance.association.trim() ||
+         !Array.isArray(item.files) || item.files.length!==2 ||
+         new Set(item.files.map(f=>f.file)).size!==2 ||
+         !['attribution','full-license'].every(kind=>item.files.filter(f=>f.kind===kind).length===1)) throw Error('Supplement requires full terms, attribution and provenance');
+      const notices=[];
+      for(const notice of [...item.files].sort((a,b)=>cmp(a.file,b.file))) {
+        if(typeof notice.file!=='string' || !/^[A-Za-z0-9._/-]+$/.test(notice.file) || path.isAbsolute(notice.file) ||
+           notice.file.split(/[\\/]/).some(part=>!part || part==='.' || part==='..') ||
+           !validHash(notice.sha256) || !validSize(notice.sizeBytes) || notice.sizeBytes===0 || notice.sizeBytes>LIMIT) throw Error('Invalid supplemental file identity/path');
+        const file=guarded(path.resolve(base,notice.file),'file');
+        if(!inside(base,file)) throw Error('Supplement escapes manifest folder');
+        const raw=readBounded(file);
+        if(raw.length!==notice.sizeBytes || hash(raw)!==notice.sha256) throw Error('Supplement bytes/SHA mismatch');
+        supplementInputs.push({file,bytes:raw});
+        supplementalBlobs.set(notice.sha256,raw);
+        notices.push({kind:notice.kind,file:notice.file,sizeBytes:raw.length,sha256:notice.sha256});
+      }
+      supplemented.set(item.packageJsonPath,{name:pkg.name,version:pkg.version,packageJsonPath:pkg.packageJsonPath,
+        packageJsonSha256:pkg.packageJsonSha256,packageJsonSizeBytes:pkg.packageJsonSizeBytes,
+        provenance:item.provenance,notices});
+    }
+  }
+  const unresolvedNoticeInputs=missing.filter(p=>!supplemented.has(p.packageJsonPath));
   const chunks=[];
   const append=text=>chunks.push(Buffer.from(text,'utf8'));
-  append('THIRD-PARTY APPLICATION NOTICES\n\nCaptured actual selected application payload only. Release approved: false.\nMissing notices remain unresolved. This assembly does not determine license compliance or corresponding-source completeness.\n\n');
+  if(supplementIdentity) append('THIRD-PARTY APPLICATION NOTICES\n\nActual ASAR-captured notices and separately matched upstream supplements. Release approved: false.\nNo license compliance or corresponding-source completeness determination.\n\n');
+  else append('THIRD-PARTY APPLICATION NOTICES\n\nCaptured actual selected application payload only. Release approved: false.\nMissing notices remain unresolved. This assembly does not determine license compliance or corresponding-source completeness.\n\n');
   append('PACKAGE INVENTORY INDEX\n');
   for(const pkg of packages) {
-    append(json({name:pkg.name,version:pkg.version,packagePath:pkg.packagePath,declaredLicense:pkg.license??null,noticeStatus:pkg.notices.length?'captured':'UNRESOLVED: no captured notice',noticeSha256:[...new Set(pkg.notices.map(n=>n.sha256))].sort(cmp)})+'\n');
+    append(json({name:pkg.name,version:pkg.version,packagePath:pkg.packagePath,declaredLicense:pkg.license??null,noticeStatus:pkg.notices.length?'captured':supplemented.has(pkg.packageJsonPath)?'upstream-supplemented; no ASAR-captured notice':'UNRESOLVED: no captured notice',noticeSha256:[...new Set(pkg.notices.map(n=>n.sha256))].sort(cmp)})+'\n');
   }
-  append('\nUNRESOLVED MISSING NOTICES\n');
+  if(supplementIdentity) append('\nASAR-CAPTURE MISSING NOTICES (historical capture gaps)\n');
+  else append('\nUNRESOLVED MISSING NOTICES\n');
   if(!missing.length) append('None reported by the selected captured inventory; no compliance approval inferred.\n');
   for(const entry of missing) append(json(entry)+'\n');
   for(const digest of [...blobs.keys()].sort(cmp)) {
@@ -121,6 +169,19 @@ function main() {
     chunks.push(bytes); // No decoding, newline normalization or replacement of captured bytes.
     append('\nEND EXACT CAPTURED BYTES\n');
   }
+  if(supplementIdentity) {
+    append('\nUPSTREAM SUPPLEMENTAL NOTICES (not captured from ASAR)\n');
+    for(const entry of supplemented.values()) append('MATCHED PACKAGE '+json(entry)+'\n');
+    for(const digest of [...supplementalBlobs.keys()].sort(cmp)) {
+      const bytes=supplementalBlobs.get(digest);
+      append('\n=== UPSTREAM SUPPLEMENT '+digest+' ('+bytes.length+' raw bytes) ===\nBEGIN EXACT UPSTREAM BYTES\n');
+      chunks.push(bytes);
+      append('\nEND EXACT UPSTREAM BYTES\n');
+    }
+    append('\nUNRESOLVED NOTICE INPUTS AFTER MATCHED SUPPLEMENTS\n');
+    for(const entry of unresolvedNoticeInputs) append(json(entry)+'\n');
+    if(!unresolvedNoticeInputs.length) append('None reported by this input set; no compliance approval inferred.\n');
+  }
   const noticeBytes=Buffer.concat(chunks);
   const nameVersions=[...new Set(packages.map(p=>json({name:p.name,version:p.version})))].sort(cmp).map(s=>JSON.parse(s));
   const record={schema:'aive.application-notices-assembly.v1',status:'assembled-captured-evidence',releaseApproved:false,
@@ -130,6 +191,15 @@ function main() {
     capturedNoticeBlobs:blobs.size,missingCapturedNotices:missing,
     outputs:{thirdPartyApplicationNotices:{file:'THIRD_PARTY_APPLICATION_NOTICES.txt',sizeBytes:noticeBytes.length,sha256:hash(noticeBytes)}},
     qualification:'Assembly JSON does not include its own hash; immutable identity of the assembled notice text is recorded. Main owns final review and release acceptance.'};
+  if(supplementIdentity) {
+    record.schema='aive.application-notices-assembly.v2';
+    record.scope='Selected captured inventory plus exact package-matched upstream supplements; captured inventory gaps retained; no compliance/source/release approval.';
+    record.inputs.upstreamSupplements=supplementIdentity;
+    record.supplementalNoticeBlobs=supplementalBlobs.size;
+    record.supplementedPackages=[...supplemented.values()];
+    record.unresolvedNoticeInputs=unresolvedNoticeInputs;
+  }
+  for(const selected of supplementInputs) if(!readBounded(selected.file).equals(selected.bytes)) throw Error('Supplement input changed during assembly');
   if(!fs.readFileSync(guarded(input,'file')).equals(inventoryBytes)) throw Error('Inventory changed during assembly');
   guarded(output,undefined,true);
   fs.mkdirSync(output);

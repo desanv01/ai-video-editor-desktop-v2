@@ -27,4 +27,6 @@ notice.write_bytes(blob+b'tamper');run('tampered-rejected-before-output',False);
 bad=copy.deepcopy(inventory);bad['inventory'][0]['notices'][0]['captured']='../../outside.txt';write(bad);run('escaping-reference-rejected-before-output',False)
 bad=copy.deepcopy(inventory);bad['packageRecords']=4;write(bad);run('count-mismatch-rejected-before-output',False);write(inventory)
 proc=subprocess.run([node,str(script),'--inventory',str(file),'--output-dir',str(folder/'overlap')],capture_output=True,text=True);assert proc.returncode!=0 and not(folder/'overlap').exists();cases.append({'name':'input-output-overlap-rejected','status':'PASS'})
+from test_application_notice_supplements import verify_supplements
+cases.extend(verify_supplements(node,script,out,inventory))
 receipt={'status':'PASS','scope':__doc__,'cases':cases,'exactRawDeduplicatedBlob':True,'deterministicOutputs':True,'unresolvedReleaseApprovalFalse':True};(out/'receipt.json').write_text(json.dumps(receipt,indent=2));print(json.dumps(receipt))
