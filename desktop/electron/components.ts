@@ -7,6 +7,7 @@ import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
 import https from 'node:https';
 import yauzl from 'yauzl';
+import { resolveEngineLaunch } from './engineLaunch';
 import type { ComponentManifest, ReleaseManifest, DesktopState, SetupPhase } from '../../contracts/rebuild/desktop';
 import { atomic, confined, relative, readJson, RELEASE, type Paths } from './util';
 const kinds=new Set(['engine-self-test','ffmpeg-version','ffprobe-version','filter-codec-check','whisper-runtime','whisper-model','document-tool-version']);
@@ -193,10 +194,10 @@ export function extract(archive:string,root:string,expandedBytes:number,signal:A
   zip.on('entry',entry => { void(async()=>{signal.throwIfAborted();if(++count>100000)throw new Error('ARCHIVE_ENTRY_LIMIT');const name=entry.fileName; const isDir=name.endsWith('/'); const safe=isDir?name.slice(0,-1):name; const mode=(entry.externalFileAttributes>>>16)&0xf000; if(!relative(safe)||mode===0xa000||(mode!==0&&mode!==0x8000&&mode!==0x4000)||safe==='.verified.json')throw new Error('ARCHIVE_UNSAFE_ENTRY');const file=confined(root,safe);expanded+=entry.uncompressedSize;if(expanded>expandedBytes)throw new Error('ARCHIVE_EXPANSION_LIMIT');if(isDir){await fs.mkdir(file,{recursive:true});zip.readEntry();return;}await fs.mkdir(path.dirname(file),{recursive:true});const stream=await new Promise<import('node:stream').Readable>((resolve,reject)=>zip.openReadStream(entry,(err,stream)=>err||!stream?reject(err):resolve(stream)));await pipeline(stream,createWriteStream(file,{flags:'wx'}),{signal});zip.readEntry();})().catch(fail); });zip.readEntry();
  }); });
 }
-async function command(executable:string,args:string[],signal:AbortSignal,stdoutOnly=false,deadlineMs=20000):Promise<string> {
+async function command(executable:string,args:string[],signal:AbortSignal,stdoutOnly=false,deadlineMs=20000,cwd=path.dirname(executable)):Promise<string> {
  signal.throwIfAborted();
  return new Promise((resolve,reject)=>{
-  const child=spawn(executable,args,{cwd:path.dirname(executable),shell:false,windowsHide:true,stdio:['ignore','pipe','pipe']});
+  const child=spawn(executable,args,{cwd,shell:false,windowsHide:true,stdio:['ignore','pipe','pipe']});
   let output='';let received=0;let failure:Error|null=null;let settled=false;
   const cleanup=()=>{clearTimeout(timer);signal.removeEventListener('abort',abort);};
   const stop=(error:Error)=>{if(settled||failure)return;failure=error;if(child.pid&&child.exitCode===null&&child.signalCode===null){try{child.kill('SIGKILL');}catch{/* Retain ownership until close even if termination fails. */}}};
@@ -227,7 +228,7 @@ async function probe(c:ComponentManifest,root:string,signal:AbortSignal):Promise
  for(const p of c.probes) {
   const executable=confined(root,c.entrypoints[p.entrypoint]);const stat=await fs.lstat(executable);if(!stat.isFile()||stat.isSymbolicLink())throw new Error('PROBE_ENTRY_INVALID');
   if(p.kind==='whisper-model') { const runtime=confined(root,c.entrypoints[p.runtimeEntrypoint!]); const audio=confined(root,c.entrypoints[p.audioEntrypoint!]); for(const file of [runtime,audio]) { const item=await fs.lstat(file); if(!item.isFile()||item.isSymbolicLink()) throw new Error('WHISPER_PROBE_ENTRY_INVALID'); } const output=await command(runtime,['-ng','-t','4','-l','en','-m',executable,'-f',audio,'-nt','-np'],signal,true,300000); const normalize=(text:string)=>text.toLowerCase().replace(/[^a-z0-9]+/g,' ').trim(); if(!normalize(output).includes(normalize(p.expectedText!))) throw new Error('WHISPER_TRANSCRIPTION_PROBE_FAILED'); continue; }
-  if(p.kind==='engine-self-test'){const result=JSON.parse(await command(executable,['--self-test'],signal));if(result.schemaVersion!=='desktop.engine-self-test.v1'||result.status!=='ok'||result.component!==c.id||result.version!==c.version||result.frozen!==true)throw new Error('ENGINE_PROBE_IDENTITY');}
+  if(p.kind==='engine-self-test'){const launch=await resolveEngineLaunch(executable,path.dirname(executable),signal);const result=JSON.parse(await command(launch.executable,['--self-test'],signal,false,20000,launch.cwd));if(result.schemaVersion!=='desktop.engine-self-test.v1'||result.status!=='ok'||result.component!==c.id||result.version!==c.version||result.frozen!==true)throw new Error('ENGINE_PROBE_IDENTITY');}
   else if(p.kind==='filter-codec-check'){const filters=await command(executable,['-hide_banner','-filters'],signal);const encoders=await command(executable,['-hide_banner','-encoders'],signal);if(!['ass','drawtext','scale','crop','overlay','concat','amix'].every(f=>new RegExp('\\b'+f+'\\b').test(filters))||!['libx264','aac'].every(f=>new RegExp('\\b'+f+'\\b').test(encoders)))throw new Error('FFMPEG_CAPABILITY_MISSING');}
   else {const args=p.kind==='whisper-runtime'?['--help']:p.kind==='document-tool-version'?['--version']:['-version'];const output=await command(executable,args,signal);const expected=p.kind==='ffmpeg-version'?'ffmpeg version':p.kind==='ffprobe-version'?'ffprobe version':p.kind==='document-tool-version'?'LibreOffice':'whisper';if(!output.toLowerCase().includes(expected.toLowerCase()))throw new Error('PROBE_UNEXPECTED_OUTPUT');}
  }
