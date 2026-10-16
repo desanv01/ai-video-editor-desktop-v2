@@ -14,7 +14,7 @@ export const STAGES = ['start.enter','timer.armed','deadline.fire','start.cancel
 export type ReceiverStage = typeof STAGES[number];
 export const OUTCOMES = ['observed','begin','returned','pass','fail','closed','timeout'] as const;
 export type ReceiverOutcome = typeof OUTCOMES[number];
-type Boundary = 'start-final'|'stop-final';
+type Boundary = 'start-final'|'stop-final'|'review';
 type Event = {sequence:number; elapsedNs:string; stage:ReceiverStage; outcome:ReceiverOutcome; previousStage:ReceiverStage|null};
 export interface ReceiverTrace {
  readonly traceId:string;
@@ -79,7 +79,7 @@ export function createReceiverTrace(directory:string,options:Options={}):Receive
    },
    flush(nextBoundary) {
     try {
-     if(nextBoundary!=='start-final'&&nextBoundary!=='stop-final'){rejected=increment(rejected);dirty();return;}
+     if(nextBoundary!=='start-final'&&nextBoundary!=='stop-final'&&nextBoundary!=='review'){rejected=increment(rejected);dirty();return;}
      if(flushAttempts>=FLUSH_LIMIT){flushSuppressed=increment(flushSuppressed);dirty();return;}
      boundary=nextBoundary;dirty();
      const attempt=++flushAttempts;pending++;
@@ -123,4 +123,22 @@ export function receiverDiagnosticsStatus():Record<string,unknown> {
 }
 export function drainReceiverDiagnosticsForReview():Promise<void> {
  try{return Promise.all(registry.map(trace=>trace.drainForReview())).then(()=>{},()=>{});}catch{return Promise.resolve();}
+}
+// Explicit operator checkpoint only: no startup/stop caller or lifecycle wait is added.
+export async function checkpointReceiverDiagnosticsForReview():Promise<Record<string,unknown>> {
+ try {
+  const targets=Object.freeze([...registry]);
+  const registryAtRequest={registryOverflow,initializationFailures};
+  for(const trace of targets)trace.flush('review');
+  // Capture only these target queues; later traces/events are not silently included.
+  const queues=targets.map(trace=>trace.drainForReview());
+  await Promise.all(queues);
+  return {schema:'aive.private-receiver-review-checkpoint.v1',configuredEnabled:RECEIVER_DIAGNOSTICS_ENABLED,
+   targetTraceIds:targets.map(trace=>trace.traceId),registryAtRequest,
+   registryAtReturn:{registryOverflow,initializationFailures},traces:targets.map(trace=>trace.status()),
+   senderStages:'UNOBSERVED',evidenceAvailable:false,acceptance:'NONE_REQUIRES_MAIN_POSTFLUSH_STATUS_AND_OWNERSHIP'};
+ }catch{
+  return {schema:'aive.private-receiver-review-checkpoint.v1',reviewCheckpointFailed:true,
+   senderStages:'UNOBSERVED',evidenceAvailable:false,acceptance:'NONE_REVIEW_CHECKPOINT_FAILED'};
+ }
 }
