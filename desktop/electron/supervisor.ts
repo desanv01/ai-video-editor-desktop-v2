@@ -3,6 +3,7 @@ import { createServer, type Socket } from 'node:net';
 import { randomBytes, randomUUID, createHmac, timingSafeEqual } from 'node:crypto';
 import { net } from 'electron';
 import { confined, type Paths } from './util';
+import { resolveEngineLaunch } from './engineLaunch';
 import type { CredentialSnapshot } from './credentials';
 import type { ComponentManifest } from '../../contracts/rebuild/desktop';
 export interface Endpoint { url: string; token: string; signal: AbortSignal }
@@ -42,9 +43,10 @@ export class Supervisor {
    const address=server.address(); if(!address || typeof address==='string') throw new Error('CONTROL_BIND_FAILED');
    abort.signal.throwIfAborted();
    const executable=confined(root,engine.entrypoints.engine);
+   const launch=await resolveEngineLaunch(executable,root,abort.signal); abort.signal.throwIfAborted();
    const childEnv={...process.env};
    for(const name of Object.keys(childEnv)) if(['MISTRAL_API_KEY','OPENAI_API_KEY','DEEPSEEK_API_KEY','ALIBABA_API_KEY'].includes(name.toUpperCase())) delete childEnv[name];
-   this.child=spawn(executable,[],{cwd:root,windowsHide:true,shell:false,stdio:'ignore',env:{...childEnv,AIVE_DESKTOP_DATA_ROOT:this.paths.data,AIVE_DESKTOP_COMPONENT_ROOT:this.paths.components,AIVE_FFMPEG_COMPONENT_ROOT:ffmpegRoot,AIVE_DOCUMENTS_COMPONENT_ROOT:documentsRoot,AIVE_LIBREOFFICE_BINARY_PATH:libreofficeBinary,LIBREOFFICE_COMPONENT_ROOT:documentsRoot,LIBREOFFICE_BINARY_PATH:libreofficeBinary,AIVE_WHISPER_COMPONENT_ROOT:whisperRoot,AIVE_WHISPER_BINARY_PATH:whisperBinary,AIVE_WHISPER_MODEL_PATH:whisperModel,WHISPER_CPP_COMPONENT_ROOT:whisperRoot,WHISPER_CPP_BINARY_PATH:whisperBinary,WHISPER_CPP_MODEL_PATH:whisperModel,LOCAL_TRANSCRIPTION_MODEL_PATH:whisperModel,WHISPER_CPP_MODEL_ID:'small',LOCAL_TRANSCRIPTION_MODEL_ID:'small',WHISPER_CPP_MODELS_DIR:'',LOCAL_TRANSCRIPTION_MODELS_DIR:'',AIVE_ENGINE_PORT:'0',AIVE_ENGINE_BEARER_TOKEN:token,AIVE_ENGINE_SESSION_ID:sessionId,AIVE_ENGINE_CONTROL_ADDRESS:`127.0.0.1:${address.port}`,AIVE_ENGINE_CONTROL_NONCE:nonce}});
+   this.child=spawn(launch.executable,[],{cwd:launch.cwd,windowsHide:true,shell:false,stdio:'ignore',env:{...childEnv,AIVE_DESKTOP_DATA_ROOT:this.paths.data,AIVE_DESKTOP_COMPONENT_ROOT:this.paths.components,AIVE_FFMPEG_COMPONENT_ROOT:ffmpegRoot,AIVE_DOCUMENTS_COMPONENT_ROOT:documentsRoot,AIVE_LIBREOFFICE_BINARY_PATH:libreofficeBinary,LIBREOFFICE_COMPONENT_ROOT:documentsRoot,LIBREOFFICE_BINARY_PATH:libreofficeBinary,AIVE_WHISPER_COMPONENT_ROOT:whisperRoot,AIVE_WHISPER_BINARY_PATH:whisperBinary,AIVE_WHISPER_MODEL_PATH:whisperModel,WHISPER_CPP_COMPONENT_ROOT:whisperRoot,WHISPER_CPP_BINARY_PATH:whisperBinary,WHISPER_CPP_MODEL_PATH:whisperModel,LOCAL_TRANSCRIPTION_MODEL_PATH:whisperModel,WHISPER_CPP_MODEL_ID:'small',LOCAL_TRANSCRIPTION_MODEL_ID:'small',WHISPER_CPP_MODELS_DIR:'',LOCAL_TRANSCRIPTION_MODELS_DIR:'',AIVE_ENGINE_PORT:'0',AIVE_ENGINE_BEARER_TOKEN:token,AIVE_ENGINE_SESSION_ID:sessionId,AIVE_ENGINE_CONTROL_ADDRESS:`127.0.0.1:${address.port}`,AIVE_ENGINE_CONTROL_NONCE:nonce}});
    const child=this.child;
    // Observe termination immediately after spawn, before handshake or readiness awaits.
    let resolveClosed!: () => void, rejectExited!: (error: Error) => void;

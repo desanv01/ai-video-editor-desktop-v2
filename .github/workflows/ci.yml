@@ -38,6 +38,8 @@ jobs:
         run: npm run build
       - name: Run focused controller boundary checks
         run: npm run test:rebuild
+      - name: Verify same-file Windows engine launch representations
+        run: node ../scripts/rebuild/test_engine_launch_path.cjs .. ../.test-output/engine-launch-path
       - name: Verify current teacher-reviewed export summary
         run: node ../scripts/rebuild/test_export_duration.cjs .. ../.test-output/export-duration
       - name: Verify generated educational cards stay inside chapter and lecture boundaries
