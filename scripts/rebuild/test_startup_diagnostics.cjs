@@ -155,5 +155,61 @@ async function immutableCoverageRegressions(){
  failed.mark('ready.publish');failed.flush('start-final');await failed.drainForReview();
  assert.equal(failed.status().successfullyPersistedCoverage,null);
  assert.equal(failed.status().currentObservationPersisted,false);
+ // The explicit review API checkpoints a late tail without manufacturing lifecycle events.
+ const review=recorder(),reviewPackets=[];
+ const tail=review.createReceiverTrace('unused',{enabled:true,sink:async text=>reviewPackets.push(JSON.parse(text))});
+ tail.mark('ready.publish');tail.flush('start-final');await tail.drainForReview();
+ tail.mark('socket.close');assert.equal(tail.status().currentObservationPersisted,false);
+ const tailReview=await review.checkpointReceiverDiagnosticsForReview();
+ assert.deepEqual(Array.from(tailReview.targetTraceIds),[tail.traceId]);
+ assert.equal(reviewPackets.at(-1).boundary,'review');assert.equal(reviewPackets.at(-1).events.at(-1).stage,'socket.close');
+ assert.equal(tailReview.traces[0].currentObservationPersisted,true);
+ assert.equal(tailReview.traces[0].successfullyPersistedCoverage.boundary,'review');
+ assert.equal(tailReview.traces[0].flushAttempts,2);assert.equal(tailReview.evidenceAvailable,false);
+ const early=recorder(),earlyPackets=[];
+ const beforeReady=early.createReceiverTrace('unused',{enabled:true,sink:async text=>earlyPackets.push(JSON.parse(text))});
+ beforeReady.mark('start.enter');const earlyReview=await early.checkpointReceiverDiagnosticsForReview();
+ assert.equal(earlyReview.traces[0].terminalObserved,false);assert.equal(earlyReview.traces[0].currentObservationPersisted,true);
+ assert.equal(earlyPackets[0].boundary,'review');assert.equal(earlyPackets[0].capturedObservation.coverage.terminalObserved,false);
+ assert.deepEqual(Array.from(earlyPackets[0].events,event=>event.stage),['start.enter']);
+ // A frozen target list drains only requested queues, even if registry loss/new events occur meanwhile.
+ const moving=recorder(),movingPackets=[];let releaseReview;
+ const movingTrace=moving.createReceiverTrace('unused',{enabled:true,sink:async text=>{
+  movingPackets.push(JSON.parse(text));await new Promise(resolve=>{releaseReview=resolve;});
+ }});
+ movingTrace.mark('start.enter');const pendingReview=moving.checkpointReceiverDiagnosticsForReview();
+ for(let i=0;i<20&&!releaseReview;i++)await Promise.resolve();assert.equal(typeof releaseReview,'function');
+ assert.equal(movingTrace.status().pendingFlushes,1);assert.equal(movingTrace.status().currentObservationPersisted,false);
+ movingTrace.mark('child.exit');const newer=[];
+ for(let i=0;i<4;i++)newer.push(moving.createReceiverTrace('unused',{enabled:true,sink:async()=>{throw Error('UNREQUESTED_TRACE_WRITE');}}));
+ releaseReview();const movingReview=await pendingReview;
+ assert.deepEqual(Array.from(movingReview.targetTraceIds),[movingTrace.traceId]);
+ assert.equal(movingReview.registryAtRequest.registryOverflow,false);assert.equal(movingReview.registryAtReturn.registryOverflow,true);
+ assert.equal(movingReview.traces[0].currentObservationPersisted,false);
+ assert.equal(movingPackets[0].events.at(-1).stage,'start.enter');assert.ok(movingReview.traces[0].currentCoverage.revision>movingReview.traces[0].successfullyPersistedCoverage.revision);
+ for(const value of newer)assert.equal(value.status().flushAttempts,0);
+ const exhausted=recorder();let boundedWrites=0;
+ const full=exhausted.createReceiverTrace('unused',{enabled:true,sink:async()=>{boundedWrites++;}});
+ full.mark('start.failure','fail');for(let i=0;i<4;i++){full.flush('start-final');await full.drainForReview();}
+ full.mark('socket.close');const exhaustedReview=await exhausted.checkpointReceiverDiagnosticsForReview();
+ assert.equal(boundedWrites,4);assert.equal(exhaustedReview.traces[0].flushAttempts,4);
+ assert.equal(exhaustedReview.traces[0].flushSuppressed,1);assert.equal(exhaustedReview.traces[0].currentObservationPersisted,false);
+ const failing=recorder(),failedReviewTrace=failing.createReceiverTrace('unused',{enabled:true,sink:async()=>{throw Error('SECRET_REVIEW_SINK_FAILURE');}});
+ failedReviewTrace.mark('start.failure','fail');const failedReview=await failing.checkpointReceiverDiagnosticsForReview();
+ assert.equal(failedReview.traces[0].flushFailed,1);assert.equal(failedReview.traces[0].successfullyPersistedCoverage,null);
+ assert.equal(failedReview.traces[0].currentObservationPersisted,false);assert.ok(!JSON.stringify(failedReview).includes('SECRET_REVIEW_SINK_FAILURE'));
+ const hanging=recorder(),hung=hanging.createReceiverTrace('unused',{enabled:true,sink:()=>new Promise(()=>{})});
+ hung.mark('start.failure','fail');const hungReview=await hanging.checkpointReceiverDiagnosticsForReview();
+ assert.equal(hungReview.traces[0].flushTimeouts,1);assert.equal(hungReview.traces[0].nativeIoPending,1);
+ assert.equal(hungReview.traces[0].successfullyPersistedCoverage,null);assert.equal(hungReview.traces[0].currentObservationPersisted,false);
+ assert.equal(hungReview.evidenceAvailable,false);
+ const disabledReview=recorder();let inertWrites=0;
+ const inertTrace=disabledReview.createReceiverTrace('unused',{enabled:false,sink:async()=>{inertWrites++;}});
+ const inertResult=await disabledReview.checkpointReceiverDiagnosticsForReview();
+ assert.equal(inertWrites,0);assert.equal(inertTrace.status().enabled,false);assert.equal(inertResult.targetTraceIds.length,0);assert.equal(inertResult.evidenceAvailable,false);
+ const broken=recorder(),brokenTrace=broken.createReceiverTrace('unused',{enabled:true,sink:async()=>{}});
+ brokenTrace.status=()=>{throw Error('SECRET_STATUS_FAILURE');};const fixedFailure=await broken.checkpointReceiverDiagnosticsForReview();
+ assert.equal(fixedFailure.reviewCheckpointFailed,true);assert.equal(fixedFailure.evidenceAvailable,false);
+ assert.ok(!JSON.stringify(fixedFailure).includes('SECRET_STATUS_FAILURE'));
 }
 (async()=>{await redactionAndBounds();await recorderFailureAndMissingEvidence();await boundedCheckpointDecision();await actualOrderingAndFailureSafety();await immutableCoverageRegressions();console.log('RECEIVER_DIAGNOSTIC_CASES_PASS_NO_NATIVE_APP_ENGINE');})().catch(error=>{console.error(error);process.exitCode=1;});
