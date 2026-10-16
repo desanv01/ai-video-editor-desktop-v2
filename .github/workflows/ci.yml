@@ -40,6 +40,8 @@ jobs:
         run: npm run test:rebuild
       - name: Verify same-file Windows engine launch representations
         run: node ../scripts/rebuild/test_engine_launch_path.cjs .. ../.test-output/engine-launch-path
+      - name: Verify bounded startup receiver diagnostics and original outcomes
+        run: node ../scripts/rebuild/test_startup_diagnostics.cjs ..
       - name: Verify current teacher-reviewed export summary
         run: node ../scripts/rebuild/test_export_duration.cjs .. ../.test-output/export-duration
       - name: Verify generated educational cards stay inside chapter and lecture boundaries
