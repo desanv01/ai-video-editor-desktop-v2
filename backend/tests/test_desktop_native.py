@@ -18,7 +18,8 @@ import unittest
 import uuid
 from pathlib import Path
 from threading import Barrier, Lock
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 
@@ -322,3 +323,135 @@ class NativeDesktopTests(unittest.TestCase):
                 self.assertNotIn('"type":"aive-engine-startup"', output)
                 self.assertNotIn(token, output)
             control.close()
+
+class NativeStartupProbeOverlapTests(unittest.IsolatedAsyncioTestCase):
+    def _startup(self, *, database_error=None, block_database=False, probe_error=None):
+        from desktop_native import runtime as module
+
+        entered, release, finished, prefix = (asyncio.Event() for _ in range(4))
+        cleanup = asyncio.Event()
+        owned_probe_tasks = []
+        paths = SimpleNamespace(
+            database=Path("unused/native.sqlite3"),
+            ffmpeg_component=Path("unused/components/ffmpeg"),
+            temp=Path("unused/temp"), ensure_directories=Mock(),
+        )
+        settings = SimpleNamespace(FFMPEG_BINARY_PATH="before-ffmpeg", FFPROBE_BINARY_PATH="before-ffprobe")
+        result = SimpleNamespace(ffmpeg_path="component-ffmpeg", ffprobe_path="component-ffprobe", ready=True)
+        probe = Mock(return_value=result, side_effect=probe_error)
+        job_store = SimpleNamespace(recover_inflight=Mock(return_value=0))
+        rag = SimpleNamespace(capability=VectorCapability("lancedb", "available", "fixture"), ensure_collection=AsyncMock())
+        models = SimpleNamespace(
+            get_native_model_store=Mock(return_value=object()),
+            verify_native_selection=Mock(return_value={"ready": True}),
+            apply_native_selection=Mock(), shutdown_native_model_store=Mock(side_effect=cleanup.set),
+        )
+
+        async def init_database():
+            await entered.wait()  # Fails to progress if probes remain behind DB initialization.
+            if database_error is not None or block_database:
+                prefix.set()
+            if database_error is not None:
+                raise database_error
+            if block_database:
+                await asyncio.Event().wait()
+
+        def recover_imports(_settings):
+            job_store.recover_inflight.assert_called_once_with()
+            prefix.set()
+            return 0
+
+        async def to_thread(function, *args, **kwargs):
+            if function is probe:
+                owned_probe_tasks.append(asyncio.current_task())
+                entered.set()
+                await release.wait()
+                try:
+                    return function(*args, **kwargs)
+                finally:
+                    finished.set()
+            return function(*args, **kwargs)
+
+        self.enterContext(patch.multiple(module, settings=settings, init_db=init_database,
+                                         discover_ffmpeg=probe, DurableJobStore=Mock(return_value=job_store)))
+        self.enterContext(patch.object(module.asyncio, "to_thread", side_effect=to_thread))
+        self.enterContext(patch.dict(sys.modules, {
+            "services.native_imports": SimpleNamespace(recover_native_import_sessions=recover_imports),
+            "rag.vector_store": SimpleNamespace(rag_service=rag),
+            "desktop_native.model_manager": models,
+        }))
+        self.addCleanup(release.set)
+        runtime = module.NativeDesktopRuntime(paths=paths, bearer_token="t" * 32, session_id="startup_overlap")
+        task = asyncio.create_task(runtime.startup())
+        return SimpleNamespace(runtime=runtime, task=task, release=release, entered=entered,
+                               finished=finished, prefix=prefix, cleanup=cleanup,
+                               probe=probe, result=result, settings=settings, rag=rag,
+                               models=models, owned_probe_tasks=owned_probe_tasks)
+
+    async def test_startup_probe_overlaps_recovery_without_early_publication(self):
+        state = self._startup()
+        try:
+            await asyncio.wait_for(state.prefix.wait(), 2)
+            self.assertFalse(state.task.done())
+            self.assertFalse(state.runtime.api_ready)
+            self.assertIsNone(state.runtime.ffmpeg_probe)
+            self.assertEqual(state.settings.FFMPEG_BINARY_PATH, "before-ffmpeg")
+            self.assertEqual(state.settings.FFPROBE_BINARY_PATH, "before-ffprobe")
+            state.rag.ensure_collection.assert_not_awaited()
+            state.models.get_native_model_store.assert_not_called()
+        finally:
+            state.release.set()
+        await asyncio.wait_for(state.task, 2)
+        state.probe.assert_called_once_with(state.runtime.paths.ffmpeg_component,
+                                           temp_root=state.runtime.paths.temp, allow_fixture=False)
+        self.assertEqual(len(state.owned_probe_tasks), 1)
+        self.assertTrue(state.finished.is_set())
+        self.assertIs(state.runtime.ffmpeg_probe, state.result)
+        self.assertEqual(state.settings.FFMPEG_BINARY_PATH, "component-ffmpeg")
+        self.assertTrue(state.runtime.api_ready)
+        state.rag.ensure_collection.assert_awaited_once()
+
+    async def test_startup_database_failure_drains_probe_and_preserves_primary_error(self):
+        primary = RuntimeError("database failed")
+        state = self._startup(database_error=primary, probe_error=ValueError("secondary probe failure"))
+        try:
+            await asyncio.wait_for(state.prefix.wait(), 2)
+            await asyncio.sleep(0)
+            self.assertFalse(state.task.done())
+            self.assertFalse(state.runtime.api_ready)
+            self.assertFalse(state.runtime.database_ready)
+            self.assertEqual(state.settings.FFMPEG_BINARY_PATH, "before-ffmpeg")
+        finally:
+            state.release.set()
+        with self.assertRaises(RuntimeError) as raised:
+            await asyncio.wait_for(state.task, 2)
+        self.assertIs(raised.exception, primary)
+        self.assertTrue(state.finished.is_set())
+        self.assertEqual(len(state.owned_probe_tasks), 1)
+        self.assertTrue(state.owned_probe_tasks[0].done())
+        state.probe.assert_called_once()
+        state.rag.ensure_collection.assert_not_awaited()
+
+    async def test_startup_cancellation_drains_pending_probe(self):
+        state = self._startup(block_database=True)
+        try:
+            await asyncio.wait_for(state.prefix.wait(), 2)
+            state.task.cancel()
+            await asyncio.wait_for(state.cleanup.wait(), 2)
+            self.assertFalse(state.task.done())
+            self.assertFalse(state.runtime.api_ready)
+            state.task.cancel()  # Repeated cancellation must not cancel the owned probe task.
+            await asyncio.sleep(0)
+            self.assertFalse(state.task.done())
+            self.assertFalse(state.owned_probe_tasks[0].cancelled())
+        finally:
+            state.release.set()
+        with self.assertRaises(asyncio.CancelledError):
+            await asyncio.wait_for(state.task, 2)
+        self.assertTrue(state.finished.is_set())
+        self.assertEqual(len(state.owned_probe_tasks), 1)
+        self.assertFalse(state.owned_probe_tasks[0].cancelled())
+        state.models.shutdown_native_model_store.assert_called_once_with()
+        self.assertEqual(state.runtime.startup_error, "Native startup cancelled")
+        state.rag.ensure_collection.assert_not_awaited()
+

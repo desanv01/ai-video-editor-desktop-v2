@@ -83,7 +83,16 @@ class NativeDesktopRuntime:
         self.database_ready = False
         self.api_ready = False
         self.startup_error = None
+        probe_task = None
         try:
+            # Read-only tool probes can overlap ordered storage recovery. Keep
+            # their result/settings publication at the original readiness gate.
+            probe_task = asyncio.create_task(asyncio.to_thread(
+                discover_ffmpeg,
+                self.paths.ffmpeg_component,
+                temp_root=self.paths.temp,
+                allow_fixture=self.allow_tool_fixture,
+            ))
             # Revision validation/upgrade must precede helpers that create tables.
             await init_db()
             self.database_ready = True
@@ -101,12 +110,7 @@ class NativeDesktopRuntime:
             if recovered_imports:
                 logger.info("recovered %s interrupted native import operations", recovered_imports)
 
-            self.ffmpeg_probe = await asyncio.to_thread(
-                discover_ffmpeg,
-                self.paths.ffmpeg_component,
-                temp_root=self.paths.temp,
-                allow_fixture=self.allow_tool_fixture,
-            )
+            self.ffmpeg_probe = await asyncio.shield(probe_task)
             if self.ffmpeg_probe.ffmpeg_path:
                 settings.FFMPEG_BINARY_PATH = self.ffmpeg_probe.ffmpeg_path
             if self.ffmpeg_probe.ffprobe_path:
@@ -180,6 +184,22 @@ class NativeDesktopRuntime:
             self.database_detail = str(exc)
             logger.exception("native engine startup failed")
             raise
+        finally:
+            if probe_task is not None:
+                # An early storage failure/cancellation still owns the original
+                # thread and all four probes until they finish. Repeated caller
+                # cancellation must not detach them or replace the primary error.
+                while not probe_task.done():
+                    try:
+                        await asyncio.shield(probe_task)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                try:
+                    probe_task.result()
+                except (asyncio.CancelledError, Exception):
+                    pass  # Consume a secondary error; the original is propagating.
 
     async def shutdown(self) -> None:
         async with self._shutdown_lock:
