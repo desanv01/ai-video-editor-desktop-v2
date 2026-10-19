@@ -17,6 +17,8 @@ import time
 import unittest
 import uuid
 from pathlib import Path
+from threading import Barrier, Lock
+from unittest.mock import patch
 
 import httpx
 
@@ -29,7 +31,7 @@ from desktop_native.health import build_health_payload  # noqa: E402
 from desktop_native.jobs import DurableJobStore  # noqa: E402
 from desktop_native.paths import NativeDesktopPaths, NativePathError  # noqa: E402
 from desktop_native.sqlite_storage import backup_database, restore_database  # noqa: E402
-from desktop_native.tools import discover_ffmpeg  # noqa: E402
+from desktop_native.tools import ToolProbe, discover_ffmpeg  # noqa: E402
 from desktop_native.vector_store import VectorCapability  # noqa: E402
 
 
@@ -91,6 +93,54 @@ class NativeDesktopTests(unittest.TestCase):
         self.assertFalse(failure.ready)
         self.assertIn("FFMPEG_MISSING", failure.remediation_codes)
         self.assertIn("PATH", failure.ffmpeg.detail + failure.ffprobe.detail)
+
+    def test_ffmpeg_probes_overlap_collect_all_results_and_preserve_failure(self):
+        for failed_probe in (None, "encode"):
+            with self.subTest(failed_probe=failed_probe):
+                barrier = Barrier(4, timeout=5)
+                lock = Lock()
+                entered = set()
+                completed = set()
+                results = {}
+
+                def run_probe(path, args, *, allow_fixture):
+                    self.assertFalse(allow_fixture)
+                    if tuple(args) == ("-version",):
+                        name = "ffprobe" if path.stem == "ffprobe" else "ffmpeg"
+                    else:
+                        name = "encode" if "color=c=black:s=16x16:r=1" in args else "decode"
+                        self.assertEqual(tuple(args[-3:]), ("-f", "null", "-"))
+                    with lock:
+                        self.assertNotIn(name, entered)
+                        entered.add(name)
+                    # A serial implementation cannot finish this barrier.
+                    barrier.wait()
+                    result = ToolProbe(
+                        path=str(path), present=True,
+                        version="7.0.0" if name in ("ffmpeg", "ffprobe") else None,
+                        version_ok=name in ("ffmpeg", "ffprobe"),
+                        return_code=1 if name == failed_probe else 0,
+                        detail="mocked probe",
+                    )
+                    with lock:
+                        results[name] = result
+                        completed.add(name)
+                    return result
+
+                with patch("desktop_native.tools._candidate", side_effect=lambda root, name, **kwargs: root / f"{name}.exe"), patch(
+                    "desktop_native.tools._run_probe", side_effect=run_probe,
+                ) as probe:
+                    actual = discover_ffmpeg(FIXTURE_ROOT)
+
+                self.assertEqual(probe.call_count, 4)
+                self.assertEqual(entered, {"ffmpeg", "ffprobe", "encode", "decode"})
+                self.assertEqual(completed, entered)
+                self.assertIs(actual.ffmpeg, results["ffmpeg"])
+                self.assertIs(actual.ffprobe, results["ffprobe"])
+                self.assertIs(actual.encode_self_test, results["encode"])
+                self.assertIs(actual.decode_self_test, results["decode"])
+                self.assertEqual(actual.ready, failed_probe is None)
+                self.assertEqual(actual.remediation_codes, [] if failed_probe is None else ["FFMPEG_MISSING"])
 
     def test_health_payload_reports_unavailable_lancedb(self):
         payload = build_health_payload(

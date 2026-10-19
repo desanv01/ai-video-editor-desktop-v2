@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
@@ -190,21 +191,23 @@ def discover_ffmpeg(
     root = Path(component_root).expanduser().resolve(strict=False)
     ffmpeg = _candidate(root, "ffmpeg", allow_fixture=allow_fixture)
     ffprobe = _candidate(root, "ffprobe", allow_fixture=allow_fixture)
-    ffmpeg_probe = _run_probe(ffmpeg, ("-version",), allow_fixture=allow_fixture)
-    ffprobe_probe = _run_probe(ffprobe, ("-version",), allow_fixture=allow_fixture)
     temp_path = Path(temp_root).resolve(strict=False) if temp_root else None
-    encode = _self_test(
-        ffmpeg,
-        operation="encode",
-        temp_root=temp_path,
-        allow_fixture=allow_fixture,
-    )
-    decode = _self_test(
-        ffmpeg,
-        operation="decode",
-        temp_root=temp_path,
-        allow_fixture=allow_fixture,
-    )
+    # These probes share no files: both codec tests use null output. Keep all
+    # four mandatory results, but avoid four serial process-startup waits.
+    # The context waits for every probe even if reading a result raises.
+    with ThreadPoolExecutor(max_workers=4) as probes:
+        ffmpeg_version = probes.submit(_run_probe, ffmpeg, ("-version",), allow_fixture=allow_fixture)
+        ffprobe_version = probes.submit(_run_probe, ffprobe, ("-version",), allow_fixture=allow_fixture)
+        encode_test = probes.submit(
+            _self_test, ffmpeg, operation="encode", temp_root=temp_path, allow_fixture=allow_fixture,
+        )
+        decode_test = probes.submit(
+            _self_test, ffmpeg, operation="decode", temp_root=temp_path, allow_fixture=allow_fixture,
+        )
+        ffmpeg_probe = ffmpeg_version.result()
+        ffprobe_probe = ffprobe_version.result()
+        encode = encode_test.result()
+        decode = decode_test.result()
     remediation: list[str] = []
     if not ffmpeg_probe.present or not ffprobe_probe.present:
         remediation.append("FFMPEG_MISSING")
