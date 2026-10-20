@@ -256,6 +256,8 @@ async def _ensure_render_proxy(
     cancel_check: CancelCheck | None,
 ) -> str:
     """Normalize large camera sources once and reuse the editing proxy."""
+    if cancel_check:
+        cancel_check()
     if os.path.getsize(source_video_path) < 512 * 1024 * 1024:
         return source_video_path
     stat = os.stat(source_video_path)
@@ -266,44 +268,108 @@ async def _ensure_render_proxy(
     proxy_path = os.path.join(proxy_dir, f"{digest}.mp4")
     lock = _proxy_locks.setdefault(proxy_path, asyncio.Lock())
     async with lock:
+        if cancel_check:
+            cancel_check()
         if os.path.isfile(proxy_path) and os.path.getsize(proxy_path) > 1024 * 1024:
             if progress_callback:
                 progress_callback(0.0, "Using cached 1080p editing proxy")
+            if cancel_check:
+                cancel_check()
             return proxy_path
 
         temp_path = f"{proxy_path}.partial.mp4"
-        if progress_callback:
-            progress_callback(0.0, "Waiting for reusable 1080p editing proxy")
-        command = [
-            ffmpeg_binary(), "-hide_banner", "-nostdin", "-y", "-i", source_video_path,
-            "-map", "0:v:0", "-map", "0:a:0?",
-            "-vf", (
-                f"scale={output_width}:{output_height}:force_original_aspect_ratio=decrease,"
-                f"pad={output_width}:{output_height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={int(fps or 30)}"
-            ),
-            *FFmpegService._video_encoder_args("10M", "fast"),
-            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
-            "-movflags", "+faststart", temp_path,
-        ]
+        task_cancelled = False
+        callback_error: BaseException | None = None
+
+        def process_cancel_check() -> None:
+            nonlocal callback_error
+            if task_cancelled:
+                raise RuntimeError("Editing proxy generation cancelled")
+            if cancel_check:
+                try:
+                    cancel_check()
+                except BaseException as exc:
+                    # The process runner kills/drains on Exception, including
+                    # cancellation callbacks that otherwise raise BaseException.
+                    callback_error = exc
+                    raise RuntimeError("Editing proxy generation cancelled") from exc
+
         try:
-            await FFmpegService._run_process(
-                command,
-                error_prefix="Editing proxy generation failed",
-                stderr_limit=1800,
-                cancel_check=cancel_check,
-            )
-        except Exception:
-            if FFmpegService._command_uses_hardware_encoder(command):
-                await FFmpegService._run_process(
-                    FFmpegService._cpu_fallback_command(command),
-                    error_prefix="Editing proxy generation failed after hardware fallback",
-                    stderr_limit=1800,
-                    cancel_check=cancel_check,
-                )
-            else:
+            if progress_callback:
+                progress_callback(0.0, "Waiting for reusable 1080p editing proxy")
+            command = [
+                ffmpeg_binary(), "-hide_banner", "-nostdin", "-y", "-i", source_video_path,
+                "-map", "0:v:0", "-map", "0:a:0?",
+                "-vf", (
+                    f"scale={output_width}:{output_height}:force_original_aspect_ratio=decrease,"
+                    f"pad={output_width}:{output_height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={int(fps or 30)}"
+                ),
+                *FFmpegService._video_encoder_args("10M", "fast"),
+                "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+                "-movflags", "+faststart", temp_path,
+            ]
+            if cancel_check:
+                cancel_check()
+            async def generate_proxy() -> None:
+                from config import settings
+
+                current_command = command
+                for attempt in range(2):
+                    process_cancel_check()
+                    error_prefix = (
+                        "Editing proxy generation failed" if attempt == 0 else
+                        "Editing proxy generation failed after hardware fallback"
+                    )
+                    _, stderr, returncode = await FFmpegService._run_process(
+                        current_command,
+                        error_prefix=error_prefix,
+                        stderr_limit=1800,
+                        cancel_check=process_cancel_check,
+                        allow_failure=True,
+                    )
+                    process_cancel_check()
+                    if returncode == 0:
+                        return
+                    if (attempt == 0
+                            and FFmpegService._command_uses_hardware_encoder(command)
+                            and bool(getattr(settings, "FFMPEG_HARDWARE_FALLBACK_TO_CPU", True))):
+                        current_command = FFmpegService._cpu_fallback_command(command)
+                        continue
+                    message = FFmpegService._stderr_message(stderr, 1800)
+                    raise RuntimeError(f"{error_prefix}: {message}")
+
+            process_task = asyncio.create_task(generate_proxy())
+            try:
+                await asyncio.shield(process_task)
+            except asyncio.CancelledError:
+                # Keep this operation's process owner alive until its existing
+                # cooperative cancellation path has killed/drained the child.
+                task_cancelled = True
+                while not process_task.done():
+                    try:
+                        await asyncio.shield(process_task)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if not process_task.cancelled():
+                    process_task.exception()
                 raise
-        os.replace(temp_path, proxy_path)
-        return proxy_path
+            except Exception:
+                if callback_error is not None:
+                    raise callback_error
+                raise
+            if cancel_check:
+                cancel_check()
+            os.replace(temp_path, proxy_path)
+            return proxy_path
+        finally:
+            # Only this locked operation's partial is disposable; a completed
+            # proxy is replaced atomically on success and retained on failure.
+            try:
+                os.remove(temp_path)
+            except FileNotFoundError:
+                pass
 
 
 def _valid_scenes(render_plan: dict[str, Any]) -> list[dict[str, Any]]:
