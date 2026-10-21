@@ -185,9 +185,9 @@ def validate_release(record: dict, installer: dict, source: dict) -> None:
     require(isinstance(qualification, dict) and set(qualification) == QUALIFICATIONS
         and all(text(value) for value in qualification.values()), "Explicit qualification evidence/limitations required")
     commits = record.get("componentSourceCommits")
-    require(isinstance(commits, dict) and set(commits) == COMPONENTS
+    require(isinstance(commits, dict) and {"aive-engine", "whisper-small"} <= set(commits) <= COMPONENTS
         and all(isinstance(c, str) and bool(COMMIT.fullmatch(c)) for c in commits.values()),
-        "Exact source commits for all four components required")
+        "Exact bundled component source commits required; vendor claims, if present, must be explicit commits")
 
 
 def validate_acceptance(record: dict, release: dict, installer: dict) -> None:
@@ -240,12 +240,70 @@ def inspect_zip(path: Path, *, expanded_limit: int | None = None,
     return entries
 
 
+def canonical_origin(value: object) -> str:
+    require(isinstance(value, str) and not any(ord(c) <= 32 for c in value) and "*" not in value,
+        "Invalid download origin")
+    parsed = urlsplit(value)
+    host = parsed.hostname
+    require(parsed.scheme == "https" and bool(host) and not parsed.username and not parsed.password,
+        "Invalid download origin")
+    port = parsed.port
+    authority = f"[{host}]" if ":" in host else host
+    canonical = f"https://{authority}" + (f":{port}" if port is not None and port != 443 else "")
+    require(value == canonical, "Download origin must be canonical HTTPS origin only")
+    return canonical
+
+
+def validate_vendor_binding(component: dict) -> None:
+    require(component["id"] in {"ffmpeg", "documents"}, "Only media/documents may use vendor-download")
+    url = component.get("url")
+    require(text(url) and not any(ord(c) <= 32 for c in url), "Pinned vendor HTTPS URL required")
+    parsed = urlsplit(url)
+    require(parsed.scheme == "https" and bool(parsed.hostname) and not parsed.username
+        and not parsed.password and not parsed.fragment and not parsed.query,
+        "Pinned vendor HTTPS URL required")
+    require(f"/{component['version']}/" in parsed.path and "/latest/" not in parsed.path,
+        "Versioned vendor URL required")
+    origins = component.get("downloadOrigins")
+    require(isinstance(origins, list) and 0 < len(origins) <= 8, "Explicit vendor download origins required")
+    normalized = [canonical_origin(origin) for origin in origins]
+    require(len(set(normalized)) == len(normalized), "Duplicate vendor download origin")
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    initial = f"https://{host}" + (f":{parsed.port}" if parsed.port is not None and parsed.port != 443 else "")
+    require(initial in normalized, "Initial vendor origin not allowed")
+    if component["id"] == "ffmpeg":
+        require(component.get("archiveFormat", "zip") == "zip" and isinstance(component.get("archiveRoot"), str),
+            "Vendor FFmpeg requires explicit ZIP root")
+        safe_name(component["archiveRoot"])
+        require(all(p.casefold() != ".verified.json" for p in component["archiveRoot"].split("/")), "Reserved vendor ZIP root")
+        require(component["entrypoints"] == {"ffmpeg": "bin/ffmpeg.exe", "ffprobe": "bin/ffprobe.exe"},
+            "Vendor media entrypoints mismatch")
+    else:
+        require(component.get("archiveFormat") == "msi-admin" and "archiveRoot" not in component,
+            "Vendor documents require original MSI administrative image")
+
+
+def external_component_record(component: dict, release: dict) -> dict:
+    validate_vendor_binding(component)
+    return {"manifest": component, "distribution": "vendor-download",
+        "supplierArchive": {key: component[key] for key in ("version", "archive", "sha256", "sizeBytes", "url", "downloadOrigins")},
+        "sourceIdentity": None,
+        "sourceAssociation": {"status": "unverified-vendor-build",
+            "declaredSourceCommit": release["componentSourceCommits"].get(component["id"]),
+            "qualification": "Archive pins identify supplier input, not an embedded source identity or exact build association. Separate source/notices disposition required."}}
+
+
 def validate_component(component: dict) -> None:
     require(isinstance(component, dict), "Invalid component object")
     require(isinstance(component.get("id"), str) and component["id"] in COMPONENTS, "Unexpected component ID")
     require(isinstance(component.get("version"), str) and bool(VERSION.fullmatch(component["version"])), "Invalid component version")
     name = safe_name(component.get("archive"), basename=True)
-    require(name.endswith(".zip"), "Component archive must be ZIP")
+    format = component.get("archiveFormat", "zip")
+    require(isinstance(format, str) and format in {"zip", "msi-admin"}, "Invalid component archive format")
+    require(name.endswith(".msi" if format == "msi-admin" else ".zip"), "Component archive extension mismatch")
+    distribution = component.get("distribution", "bundled")
+    require(isinstance(distribution, str) and distribution in {"bundled", "vendor-download"}, "Invalid component distribution")
+    require(distribution == "vendor-download" or format == "zip", "Bundled component archive must be ZIP")
     require(isinstance(component.get("sha256"), str) and bool(SHA256.fullmatch(component["sha256"])), "Invalid component hash")
     require(integer(component.get("sizeBytes")) and integer(component.get("expandedBytes"))
         and component.get("required") is True, "Required component size/expansion/required mismatch")
@@ -267,6 +325,13 @@ def validate_component(component: dict) -> None:
                 and isinstance(probe.get("audioEntrypoint"), str) and probe["audioEntrypoint"] in entrypoints
                 and isinstance(probe.get("expectedText"), str) and 5 <= len(probe["expectedText"]) <= 200,
                 "Whisper joint probe incomplete")
+    if format == "msi-admin":
+        require(component["id"] == "documents" and "archiveRoot" not in component
+            and entrypoints == {"libreoffice": "program/soffice.com"}
+            and probes == [{"kind": "document-tool-version", "entrypoint": "libreoffice"}],
+            "MSI administrative image layout/probe mismatch")
+    if distribution == "vendor-download":
+        validate_vendor_binding(component)
     if component.get("url"):
         require(isinstance(component["url"], str), "Invalid component URL")
         url = urlsplit(component["url"])
@@ -339,6 +404,11 @@ def main() -> int:
         require(cid.casefold() not in ids and component["archive"].casefold() not in archives, "Duplicate component ID/filename")
         ids.add(cid.casefold())
         archives.add(component["archive"].casefold())
+        if component.get("distribution") == "vendor-download":
+            # No vendor binary read, copy or invented embedded source identity.
+            component_details.append(external_component_record(component, release))
+            continue
+        require(cid in release["componentSourceCommits"], f"Exact source commit required for bundled component: {cid}")
         path = input_path(component_directory / component["archive"])
         actual = identity(path)
         require(actual["sizeBytes"] == component["sizeBytes"] and actual["sha256"] == component["sha256"],

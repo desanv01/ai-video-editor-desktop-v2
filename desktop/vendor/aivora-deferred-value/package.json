@@ -1,0 +1,14 @@
+{
+  "name": "@aivora/deferred-value",
+  "version": "1.0.0",
+  "description": "Independently authored deferred value for the consumed electron-updater API",
+  "type": "commonjs",
+  "main": "index.cjs",
+  "types": "index.d.ts",
+  "license": "AGPL-3.0-only",
+  "files": [
+    "index.cjs",
+    "index.d.ts",
+    "LICENSE"
+  ]
+}

@@ -5,7 +5,7 @@ const assert=require('node:assert/strict');
 const root=path.resolve(process.argv[2]),out=path.resolve(process.argv[3]);
 const expectedManifest=require(path.join(root,'contracts/rebuild/components.json'));
 const configured=expectedManifest.components.length>0;
-if(configured){assert.deepEqual(expectedManifest.components.map(c=>c.id).sort(),['aive-engine','documents','ffmpeg','whisper-small']);assert.ok(expectedManifest.components.every(c=>c.required===true&&!c.url));}
+if(configured){assert.deepEqual(expectedManifest.components.map(c=>c.id).sort(),['aive-engine','documents','ffmpeg','whisper-small']);assert.ok(expectedManifest.components.every(c=>c.required===true));const vendor=expectedManifest.components.filter(c=>c.distribution==='vendor-download');assert.deepEqual(vendor.map(c=>c.id).sort(),['documents','ffmpeg']);assert.ok(vendor.every(c=>c.url?.startsWith('https://')&&c.downloadOrigins?.length));assert.ok(expectedManifest.components.filter(c=>!vendor.includes(c)).every(c=>!c.url));assert.equal(expectedManifest.components[0].id,'aive-engine');assert.equal(expectedManifest.components[0].url,undefined);}
 const {_electron}=require(process.env.AIVE_TEST_PLAYWRIGHT_MODULE || require.resolve('playwright',{paths:[path.join(root,'desktop')]}));
 (async()=>{
  await fs.mkdir(out,{recursive:true});

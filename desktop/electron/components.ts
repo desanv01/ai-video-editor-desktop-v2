@@ -8,6 +8,7 @@ import { Transform } from 'node:stream';
 import https from 'node:https';
 import yauzl from 'yauzl';
 import { resolveEngineLaunch } from './engineLaunch';
+import { prepareMsiAdmin, MsiAdminError } from './msiAdmin';
 import type { ComponentManifest, ReleaseManifest, DesktopState, SetupPhase } from '../../contracts/rebuild/desktop';
 import { atomic, confined, relative, readJson, RELEASE, type Paths } from './util';
 const kinds=new Set(['engine-self-test','ffmpeg-version','ffprobe-version','filter-codec-check','whisper-runtime','whisper-model','document-tool-version']);
@@ -15,7 +16,11 @@ export function validateManifest(value: unknown): ReleaseManifest {
  const m=value as ReleaseManifest; if(!m||m.schemaVersion!=='aive.components.v1'||m.releaseVersion!==RELEASE||m.platform!=='win32'||m.architecture!=='x64'||!Array.isArray(m.components)||m.components.length>30) throw new Error('MANIFEST_INCOMPATIBLE');
  const ids=new Set<string>();
  for(const c of m.components) {
-  if(!c||!/^[a-z][a-z0-9-]{1,63}$/.test(c.id)||ids.has(c.id)||typeof c.version!=='string'||!/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(c.version)||!relative(c.archive)||!c.archive.endsWith('.zip')||!/^[a-f0-9]{64}$/.test(c.sha256)||!Number.isSafeInteger(c.sizeBytes)||c.sizeBytes<=0||!Number.isSafeInteger(c.expandedBytes)||c.expandedBytes<=0||typeof c.required!=='boolean'||!c.entrypoints||!Object.keys(c.entrypoints).length||!Object.values(c.entrypoints).every(relative)||!Array.isArray(c.probes)||!c.probes.length) throw new Error('MANIFEST_COMPONENT_INVALID');
+  if(!c||!/^[a-z][a-z0-9-]{1,63}$/.test(c.id)||ids.has(c.id)||typeof c.version!=='string'||!/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(c.version)||!relative(c.archive)||!c.archive.endsWith(c.archiveFormat==='msi-admin'?'.msi':'.zip')||!/^[a-f0-9]{64}$/.test(c.sha256)||!Number.isSafeInteger(c.sizeBytes)||c.sizeBytes<=0||!Number.isSafeInteger(c.expandedBytes)||c.expandedBytes<=0||typeof c.required!=='boolean'||!c.entrypoints||!Object.keys(c.entrypoints).length||!Object.values(c.entrypoints).every(relative)||!Array.isArray(c.probes)||!c.probes.length) throw new Error('MANIFEST_COMPONENT_INVALID');
+  if(c.archiveFormat!==undefined&&c.archiveFormat!=='zip'&&c.archiveFormat!=='msi-admin') throw new Error('MANIFEST_ARCHIVE_FORMAT_INVALID');
+  if(c.archiveFormat==='msi-admin'&&(c.id!=='documents'||c.archiveRoot!==undefined||Object.keys(c.entrypoints).length!==1||c.entrypoints.libreoffice!=='program/soffice.com'||c.probes.length!==1||c.probes[0].kind!=='document-tool-version'||c.probes[0].entrypoint!=='libreoffice'||c.probes[0].args!==undefined)) throw new Error('MANIFEST_MSI_LAYOUT_INVALID');
+  if(c.distribution!==undefined&&c.distribution!=='bundled'&&c.distribution!=='vendor-download') throw new Error('MANIFEST_DISTRIBUTION_INVALID');
+  if(c.distribution==='vendor-download'&&(!['ffmpeg','documents'].includes(c.id)||!c.url||!c.downloadOrigins)) throw new Error('MANIFEST_VENDOR_SOURCE_INVALID');
   ids.add(c.id);
   if(c.url!==undefined) { let u:URL; try { if(typeof c.url!=='string') throw new Error(); u=new URL(c.url); } catch { throw new Error('MANIFEST_URL_INVALID'); } if(u.protocol!=='https:'||u.username||u.password||u.hash) throw new Error('MANIFEST_URL_INVALID'); }
   validateDownloadOrigins(c.url,c.downloadOrigins);
@@ -45,13 +50,13 @@ function archivePath(value:unknown):value is string {
 }
 interface WhisperBindings { whisperRoot:string;whisperBinary:string;whisperModel:string }
 interface Active { schemaVersion: 'aive.activation.v1'; releaseVersion: string; current: Record<string,{version:string;sha256:string}>; previous: Record<string,{version:string;sha256:string}> }
-interface Journal { operationId:string; selected:string[]; totalBytes:number; phase:SetupPhase; acquiredBytes:number; completedWork:number }
+interface Journal { operationId:string; selected:string[]; totalBytes:number; phase:SetupPhase; acquiredBytes:number; completedWork:number; retainedStaging?:string; nativeSettlement?:'in-progress'|'not-started'|'normal-close'|'ambiguous' }
 async function hash(file: string, signal: AbortSignal): Promise<string> { const result=createHash('sha256'); for await(const chunk of createReadStream(file,{signal})) result.update(chunk); return result.digest('hex'); }
 async function sizeOf(root:string):Promise<number> { let size=0; for(const entry of await fs.readdir(root,{withFileTypes:true}).catch(() => [])) { const file=path.join(root,entry.name); if(entry.isDirectory()) size+=await sizeOf(file); else if(entry.isFile()) size+=(await fs.stat(file)).size; } return size; }
 export class Components {
  private manifest: ReleaseManifest = {schemaVersion:'aive.components.v1',releaseVersion:RELEASE,platform:'win32',architecture:'x64',components:[]};
  private active:Active={schemaVersion:'aive.activation.v1',releaseVersion:RELEASE,current:{},previous:{}};
- private abort:AbortController|null=null; private busy=false;
+ private abort:AbortController|null=null; private busy=false; private nativeUncertain=false;
  private legacyRoots=new Map<string,string>();
  constructor(private paths:Paths,private manifestFile:string,private offline:string[],private publish:(patch:Partial<DesktopState>)=>void) {}
  async initialize():Promise<void> {
@@ -69,9 +74,11 @@ export class Components {
    if(marker?.sha256===c.sha256&&marker.version===c.version) this.legacyRoots.set(this.identity(c),legacy);
   }
   const journal=await readJson<Journal|null>(path.join(this.paths.state,'preparation.json'),null);
+  this.nativeUncertain=journal?.nativeSettlement==='ambiguous'||journal?.nativeSettlement==='in-progress';
   const states=await Promise.all(this.manifest.components.map(async c => ({id:c.id,version:c.version,phase:'checking' as SetupPhase,bytes:0,installed:await this.installed(c)})));
   this.publish({components:states,phase:'awaiting_confirmation',canRetry:true,error:journal && !['ready','cancelled'].includes(journal.phase)?{code:'PREPARATION_INTERRUPTED',message:'Preparation was interrupted. Retry will reuse verified downloads.',retryable:true}:null});
-  if(!this.configured()) this.publish({phase:'error',error:{code:'PACKS_UNCONFIGURED',message:'This engineering shell has no configured engine, media or document packs. A release with verified runtime packs is required.',retryable:true},canRetry:true});
+  if(this.nativeUncertain) this.publish({phase:'error',canCancel:false,canRetry:false,error:{code:'MSI_NATIVE_SETTLEMENT_AMBIGUOUS_STAGING_RETAINED',message:'A previous Windows Installer operation has uncertain ownership. Its private staging image is retained; another preparation cannot start.',retryable:false,retainedStaging:journal?.retainedStaging}});
+  else if(!this.configured()) this.publish({phase:'error',error:{code:'PACKS_UNCONFIGURED',message:'This engineering shell has no configured engine, media or document packs. A release with verified runtime packs is required.',retryable:true},canRetry:true});
  }
  configured():boolean { return ['aive-engine','ffmpeg','documents'].every(id => this.manifest.components.some(c => c.id===id&&c.required)); }
  private async installed(c:ComponentManifest):Promise<boolean> {
@@ -135,23 +142,37 @@ export class Components {
   return !!active.whisperRoot&&(!bound||(active.whisperRoot===bound.whisperRoot&&active.whisperBinary===bound.whisperBinary&&active.whisperModel===bound.whisperModel));
  }
  async markReady():Promise<void> { const file=path.join(this.paths.state,'preparation.json'); const journal=await readJson<Journal|null>(file,null); if(journal) await atomic(file,{...journal,phase:'ready'}); }
- async allRequiredInstalled():Promise<boolean> { if(!this.configured()) return false; for(const c of this.manifest.components.filter(c => c.required)) if(!await this.installed(c)) return false; return true; }
+ async allRequiredInstalled():Promise<boolean> { if(this.nativeUncertain||!this.configured()) return false; for(const c of this.manifest.components.filter(c => c.required)) if(!await this.installed(c)) return false; return true; }
  cancel():void { this.abort?.abort(); }
  async prepare():Promise<void> {
+  if(this.nativeUncertain) throw new Error('MSI_NATIVE_SETTLEMENT_AMBIGUOUS_STAGING_RETAINED');
   if(this.busy) throw new Error('PREPARATION_BUSY'); if(!this.configured()) throw new Error('PACKS_UNCONFIGURED'); this.busy=true; this.abort=new AbortController(); const signal=this.abort.signal;
   const selected=this.manifest.components.filter(c => c.required); const journal:Journal={operationId:randomUUID(),selected:selected.map(c => c.id),totalBytes:selected.reduce((n,c)=>n+c.sizeBytes,0),phase:'checking',acquiredBytes:0,completedWork:0}; const totalWork=selected.length*4;
   const states=selected.map(c => ({id:c.id,version:c.version,phase:'checking' as SetupPhase,bytes:0,installed:false}));
   const update=async(phase:SetupPhase,c?:ComponentManifest,bytes?:number) => { journal.phase=phase; if(c) { const state=states.find(s => s.id===c.id)!; state.phase=phase; if(bytes!==undefined) state.bytes=bytes; } journal.acquiredBytes=states.reduce((n,s)=>n+s.bytes,0); this.publish({phase,components:states.map(s=>({...s})),error:null,canCancel:!['activating','ready'].includes(phase),canRetry:false,progress:{...journal,totalWork}}); await atomic(path.join(this.paths.state,'preparation.json'),journal); };
-  const staging=confined(this.paths.components,'s'+Buffer.from(journal.operationId.replace(/-/g,''),'hex').toString('base64url')); const staged=new Map<string,string>(); let stagingOwned=false;
+  const staging=confined(this.paths.components,'s'+Buffer.from(journal.operationId.replace(/-/g,''),'hex').toString('base64url')); const staged=new Map<string,string>(); let stagingOwned=false; let nativeStagingUsed=false; let nativeAttempted=false; let retainStaging=false;
   try {
    await this.assertActivationRoot(staging);
    await fs.mkdir(staging); stagingOwned=true;
    for(const c of selected) {
     signal.throwIfAborted(); if(await this.installed(c)) { states.find(s=>s.id===c.id)!.installed=true; states.find(s=>s.id===c.id)!.bytes=c.sizeBytes; journal.completedWork+=4; await update('checking',c); continue; }
-    const disk=await fs.statfs(this.paths.components); const retained=await sizeOf(path.join(this.paths.components,c.id)); const need=c.sizeBytes+c.expandedBytes+retained+256*1024*1024; if(disk.bavail*disk.bsize<need) throw new Error('DISK_SPACE_LOW');
+    const disk=await fs.statfs(this.paths.components); const retained=await sizeOf(path.join(this.paths.components,c.id)); const need=(c.archiveFormat==='msi-admin'?2:1)*c.sizeBytes+c.expandedBytes+retained+256*1024*1024; if(disk.bavail*disk.bsize<need) throw new Error('DISK_SPACE_LOW');
     await update('acquiring',c); let lastProgress=0; const archive=await this.acquire(c,signal,bytes=>{ states.find(s=>s.id===c.id)!.bytes=bytes;const now=Date.now();if(now-lastProgress<100&&bytes<c.sizeBytes)return;lastProgress=now; this.publish({components:states.map(s=>({...s})),progress:{operationId:journal.operationId,selected:journal.selected,totalBytes:journal.totalBytes,acquiredBytes:states.reduce((n,s)=>n+s.bytes,0),completedWork:journal.completedWork,totalWork}}); });
     journal.completedWork++; await update('verifying',c,c.sizeBytes); if(await hash(archive,signal)!==c.sha256) { await fs.rm(archive,{force:true}); await fs.rm(archive+'.json',{force:true}); throw new Error('COMPONENT_HASH_MISMATCH'); } journal.completedWork++;
-    await update('extracting',c); const target=confined(staging,c.id); await fs.mkdir(target,{recursive:true}); await extract(archive,target,c.expandedBytes,signal,c.archiveRoot); journal.completedWork++;
+    await update('extracting',c); const target=confined(staging,c.id); await fs.mkdir(target,{recursive:true});
+    if(c.archiveFormat==='msi-admin') {
+     nativeStagingUsed=true;this.publish({canCancel:false});
+     // A durable reservation precedes the helper and therefore every native spawn.
+     // A restart cannot assume an interrupted administrative transaction stopped.
+     journal.retainedStaging=staging;journal.nativeSettlement='in-progress';
+     await atomic(path.join(this.paths.state,'preparation.json'),journal);
+     nativeAttempted=true;
+     await prepareMsiAdmin(archive,staging,c.expandedBytes,Object.values(c.entrypoints),archivePath,signal);
+     journal.nativeSettlement='normal-close';
+     await atomic(path.join(this.paths.state,'preparation.json'),journal);
+     signal.throwIfAborted();this.publish({canCancel:true});
+    } else await extract(archive,target,c.expandedBytes,signal,c.archiveRoot);
+    journal.completedWork++;
     await update('probing',c); await probe(c,target,signal); await atomic(path.join(target,'.verified.json'),{sha256:c.sha256,version:c.version}); staged.set(c.id,target);
    }
    signal.throwIfAborted(); await update('activating');
@@ -183,16 +204,16 @@ export class Components {
     next.current[c.id]={version:c.version,sha256:c.sha256}; const state=states.find(s=>s.id===c.id)!; state.installed=true; state.phase='ready';
    }
    await atomic(path.join(this.paths.state,'active.json'),next); this.active=next; journal.completedWork=totalWork; await update('starting'); this.publish({canCancel:false});
-  } catch(error) { const cancelled=signal.aborted; journal.phase=cancelled?'cancelled':'error'; await atomic(path.join(this.paths.state,'preparation.json'),journal); this.publish({phase:journal.phase,canCancel:false,canRetry:true,error:{code:cancelled?'PREPARATION_CANCELLED':error instanceof Error?error.message:'PREPARATION_FAILED',message:cancelled?'Preparation was cancelled. Verified downloads are retained for retry.':'Component preparation failed. Open diagnostics or retry. Your existing components and projects are preserved.',retryable:true}}); throw error; }
+  } catch(error) { retainStaging=nativeStagingUsed||error instanceof MsiAdminError; if(retainStaging) journal.retainedStaging=staging; const nativeSettlement=error instanceof MsiAdminError?error.nativeSettlement:journal.nativeSettlement==='in-progress'?(nativeAttempted?'ambiguous':'not-started'):journal.nativeSettlement; if(nativeStagingUsed&&nativeSettlement) journal.nativeSettlement=nativeSettlement; const ambiguous=nativeSettlement==='ambiguous'; if(ambiguous) { this.nativeUncertain=true;journal.nativeSettlement='ambiguous'; } const cancelled=signal.aborted&&!ambiguous; journal.phase=cancelled?'cancelled':'error'; await atomic(path.join(this.paths.state,'preparation.json'),journal); this.publish({phase:journal.phase,canCancel:false,canRetry:!ambiguous,error:{code:ambiguous?'MSI_NATIVE_SETTLEMENT_AMBIGUOUS_STAGING_RETAINED':cancelled?'PREPARATION_CANCELLED':error instanceof Error?error.message:'PREPARATION_FAILED',...(retainStaging?{retainedStaging:staging}:{}),message:retainStaging?'Document preparation stopped. Its private staging image and installer log are retained for diagnostics; existing components and projects are preserved.':cancelled?'Preparation was cancelled. Verified downloads are retained for retry.':'Component preparation failed. Open diagnostics or retry. Your existing components and projects are preserved.',retryable:!ambiguous}}); throw error; }
   finally {
-   try { if(stagingOwned) { await this.assertActivationRoot(staging); await fs.rm(staging,{recursive:true,force:true}); } }
+   try { if(stagingOwned&&!retainStaging) { await this.assertActivationRoot(staging); await fs.rm(staging,{recursive:true,force:true}); } }
    finally { this.busy=false; this.abort=null; }
   }
  }
  private async acquire(c:ComponentManifest,signal:AbortSignal,progress:(bytes:number)=>void):Promise<string> {
   const part=confined(this.paths.cache,c.id+'-'+c.version+'-'+c.sha256+'.part');
   const stat=await fs.stat(part).catch(()=>null); if(stat?.size===c.sizeBytes && await hash(part,signal)===c.sha256) { progress(c.sizeBytes); return part; }
-  for(const folder of this.offline) { const source=confined(folder,c.archive); const found=await fs.stat(source).catch(()=>null); if(found) { if(found.size!==c.sizeBytes) throw new Error('OFFLINE_COMPONENT_SIZE'); let bytes=0; await pipeline(createReadStream(source),new Transform({transform(chunk,_encoding,callback){bytes+=chunk.length;progress(bytes);callback(null,chunk);}}),createWriteStream(part,{flags:'w'}),{signal}); await fs.rm(part+'.json',{force:true}); return part; } }
+  for(const folder of c.distribution==='vendor-download'?[]:this.offline) { const source=confined(folder,c.archive); const found=await fs.stat(source).catch(()=>null); if(found) { if(found.size!==c.sizeBytes) throw new Error('OFFLINE_COMPONENT_SIZE'); let bytes=0; await pipeline(createReadStream(source),new Transform({transform(chunk,_encoding,callback){bytes+=chunk.length;progress(bytes);callback(null,chunk);}}),createWriteStream(part,{flags:'w'}),{signal}); await fs.rm(part+'.json',{force:true}); return part; } }
   if(!c.url) throw new Error('COMPONENT_SOURCE_UNAVAILABLE');
   const saved=await readJson<{etag?:string;url?:string}>(part+'.json',{}); let offset=stat?.size??0; if(offset>c.sizeBytes||!saved.etag||saved.url!==c.url) offset=0;
   let response=await download(c.url,offset,saved.etag,signal,c.downloadOrigins);

@@ -34,7 +34,6 @@
     "lucide-react": "^0.469.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "react-player": "^2.16.0",
     "recharts": "^2.15.0",
     "wavesurfer.js": "^7.9.0",
     "electron-updater": "6.8.9",
@@ -66,5 +65,10 @@
     "node": "24.14.1"
   },
   "description": "Aivora \u2014 AI-assisted video editing for Windows",
-  "license": "AGPL-3.0"
+  "license": "AGPL-3.0",
+  "overrides": {
+    "electron-updater@6.8.9": {
+      "lazy-val": "file:../../vendor/aivora-deferred-value"
+    }
+  }
 }
