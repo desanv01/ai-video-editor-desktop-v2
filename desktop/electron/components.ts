@@ -17,11 +17,31 @@ export function validateManifest(value: unknown): ReleaseManifest {
  for(const c of m.components) {
   if(!c||!/^[a-z][a-z0-9-]{1,63}$/.test(c.id)||ids.has(c.id)||typeof c.version!=='string'||!/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(c.version)||!relative(c.archive)||!c.archive.endsWith('.zip')||!/^[a-f0-9]{64}$/.test(c.sha256)||!Number.isSafeInteger(c.sizeBytes)||c.sizeBytes<=0||!Number.isSafeInteger(c.expandedBytes)||c.expandedBytes<=0||typeof c.required!=='boolean'||!c.entrypoints||!Object.keys(c.entrypoints).length||!Object.values(c.entrypoints).every(relative)||!Array.isArray(c.probes)||!c.probes.length) throw new Error('MANIFEST_COMPONENT_INVALID');
   ids.add(c.id);
-  if(c.url) { const u=new URL(c.url); if(u.protocol!=='https:'||u.username||u.password||u.hash) throw new Error('MANIFEST_URL_INVALID'); }
+  if(c.url!==undefined) { let u:URL; try { if(typeof c.url!=='string') throw new Error(); u=new URL(c.url); } catch { throw new Error('MANIFEST_URL_INVALID'); } if(u.protocol!=='https:'||u.username||u.password||u.hash) throw new Error('MANIFEST_URL_INVALID'); }
+  validateDownloadOrigins(c.url,c.downloadOrigins);
+  if(c.archiveRoot!==undefined&&!archivePath(c.archiveRoot)) throw new Error('MANIFEST_ARCHIVE_ROOT_INVALID');
   for(const p of c.probes) if(!kinds.has(p.kind)||!Object.hasOwn(c.entrypoints,p.entrypoint)||p.args && (!Array.isArray(p.args)||p.args.some(a => typeof a!=='string'||a.length>512||a.includes('\0')))) throw new Error('MANIFEST_PROBE_INVALID');
   for(const p of c.probes) if(p.kind==='whisper-model' && (!p.runtimeEntrypoint || !p.audioEntrypoint || !Object.hasOwn(c.entrypoints,p.runtimeEntrypoint) || !Object.hasOwn(c.entrypoints,p.audioEntrypoint) || typeof p.expectedText!=='string' || p.expectedText.length<5 || p.expectedText.length>200)) throw new Error('WHISPER_JOINT_PROBE_NOT_CONFIGURED');
  }
  return m;
+}
+// Keep origin policy explicit: URL normalization must not turn a path, wildcard,
+// credential, default port, or noncanonical spelling into an allowed origin.
+function validateDownloadOrigins(url:string|undefined,origins:unknown):void {
+ if(origins===undefined) return;
+ if(!url||!Array.isArray(origins)||origins.length===0||origins.length>8) throw new Error('MANIFEST_DOWNLOAD_ORIGINS_INVALID');
+ const seen=new Set<string>();
+ for(const origin of origins) {
+  let parsed:URL;
+  try { if(typeof origin!=='string'||origin.includes('*')) throw new Error(); parsed=new URL(origin); } catch { throw new Error('MANIFEST_DOWNLOAD_ORIGINS_INVALID'); }
+  if(parsed.protocol!=='https:'||parsed.username||parsed.password||parsed.origin!==origin||seen.has(origin)) throw new Error('MANIFEST_DOWNLOAD_ORIGINS_INVALID');
+  seen.add(origin);
+ }
+ if(!seen.has(new URL(url).origin)) throw new Error('MANIFEST_DOWNLOAD_ORIGINS_INVALID');
+}
+function archivePath(value:unknown):value is string {
+ // ZIPs install Windows tools even when source checks run on another platform.
+ return relative(value)&&value.split('/').every(part=>!/[<>"|?*\x00-\x1f]/.test(part)&&!/[. ]$/.test(part)&&!/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part)&&part.toLowerCase()!=='.verified.json');
 }
 interface WhisperBindings { whisperRoot:string;whisperBinary:string;whisperModel:string }
 interface Active { schemaVersion: 'aive.activation.v1'; releaseVersion: string; current: Record<string,{version:string;sha256:string}>; previous: Record<string,{version:string;sha256:string}> }
@@ -131,7 +151,7 @@ export class Components {
     const disk=await fs.statfs(this.paths.components); const retained=await sizeOf(path.join(this.paths.components,c.id)); const need=c.sizeBytes+c.expandedBytes+retained+256*1024*1024; if(disk.bavail*disk.bsize<need) throw new Error('DISK_SPACE_LOW');
     await update('acquiring',c); let lastProgress=0; const archive=await this.acquire(c,signal,bytes=>{ states.find(s=>s.id===c.id)!.bytes=bytes;const now=Date.now();if(now-lastProgress<100&&bytes<c.sizeBytes)return;lastProgress=now; this.publish({components:states.map(s=>({...s})),progress:{operationId:journal.operationId,selected:journal.selected,totalBytes:journal.totalBytes,acquiredBytes:states.reduce((n,s)=>n+s.bytes,0),completedWork:journal.completedWork,totalWork}}); });
     journal.completedWork++; await update('verifying',c,c.sizeBytes); if(await hash(archive,signal)!==c.sha256) { await fs.rm(archive,{force:true}); await fs.rm(archive+'.json',{force:true}); throw new Error('COMPONENT_HASH_MISMATCH'); } journal.completedWork++;
-    await update('extracting',c); const target=confined(staging,c.id); await fs.mkdir(target,{recursive:true}); await extract(archive,target,c.expandedBytes,signal); journal.completedWork++;
+    await update('extracting',c); const target=confined(staging,c.id); await fs.mkdir(target,{recursive:true}); await extract(archive,target,c.expandedBytes,signal,c.archiveRoot); journal.completedWork++;
     await update('probing',c); await probe(c,target,signal); await atomic(path.join(target,'.verified.json'),{sha256:c.sha256,version:c.version}); staged.set(c.id,target);
    }
    signal.throwIfAborted(); await update('activating');
@@ -175,24 +195,68 @@ export class Components {
   for(const folder of this.offline) { const source=confined(folder,c.archive); const found=await fs.stat(source).catch(()=>null); if(found) { if(found.size!==c.sizeBytes) throw new Error('OFFLINE_COMPONENT_SIZE'); let bytes=0; await pipeline(createReadStream(source),new Transform({transform(chunk,_encoding,callback){bytes+=chunk.length;progress(bytes);callback(null,chunk);}}),createWriteStream(part,{flags:'w'}),{signal}); await fs.rm(part+'.json',{force:true}); return part; } }
   if(!c.url) throw new Error('COMPONENT_SOURCE_UNAVAILABLE');
   const saved=await readJson<{etag?:string;url?:string}>(part+'.json',{}); let offset=stat?.size??0; if(offset>c.sizeBytes||!saved.etag||saved.url!==c.url) offset=0;
-  let response=await download(c.url,offset,saved.etag,signal);
+  let response=await download(c.url,offset,saved.etag,signal,c.downloadOrigins);
   const range=response.headers['content-range']; const etag=response.headers.etag;
-  if(offset>0 && (response.statusCode!==206||typeof range!=='string'||!new RegExp('^bytes '+offset+'-'+(c.sizeBytes-1)+'/'+c.sizeBytes+'$').test(range)||etag!==saved.etag)) { response.destroy(); offset=0; response=await download(c.url,0,undefined,signal); }
+  if(offset>0 && (response.statusCode!==206||typeof range!=='string'||!new RegExp('^bytes '+offset+'-'+(c.sizeBytes-1)+'/'+c.sizeBytes+'$').test(range)||etag!==saved.etag)) { response.destroy(); offset=0; response=await download(c.url,0,undefined,signal,c.downloadOrigins); }
   if(response.statusCode!==200 && !(offset>0&&response.statusCode===206)) { response.destroy(); throw new Error('COMPONENT_HTTP_STATUS'); }
   const expected=c.sizeBytes-offset; const length=response.headers['content-length']; if(length!==undefined && Number(length)!==expected) {response.destroy();throw new Error('COMPONENT_HTTP_LENGTH');}
   await atomic(part+'.json',{etag:response.headers.etag,url:c.url}); let bytes=offset; progress(bytes);
   await pipeline(response,new Transform({transform(chunk,_encoding,callback){bytes+=chunk.length;if(bytes>c.sizeBytes)callback(new Error('COMPONENT_SIZE_EXCEEDED'));else{progress(bytes);callback(null,chunk);}}}),createWriteStream(part,{flags:offset?'a':'w'}),{signal}); if(bytes!==c.sizeBytes) throw new Error('COMPONENT_INCOMPLETE'); return part;
  }
 }
-function download(url:string,offset:number,etag:string|undefined,signal:AbortSignal,redirects=0,origin=new URL(url).origin):Promise<import('node:http').IncomingMessage> {
- return new Promise((resolve,reject) => { const target=new URL(url); if(target.protocol!=='https:'||target.origin!==origin||target.username||target.password||redirects>3) return reject(new Error('DOWNLOAD_REDIRECT_REJECTED'));
-  const request=https.get(target,{headers:offset?{Range:`bytes=${offset}-`,'If-Range':etag!}: {},signal},response => { if([301,302,303,307,308].includes(response.statusCode??0)) {response.resume();if(!response.headers.location)return reject(new Error('DOWNLOAD_REDIRECT_INVALID'));download(new URL(response.headers.location,target).href,offset,etag,signal,redirects+1,origin).then(resolve,reject);}else resolve(response); }); request.setTimeout(30000,()=>request.destroy(new Error('DOWNLOAD_TIMEOUT')));request.on('error',reject);
+function download(url:string,offset:number,etag:string|undefined,signal:AbortSignal,origins:readonly string[]=[new URL(url).origin],redirects=0):Promise<import('node:http').IncomingMessage> {
+ return new Promise((resolve,reject) => { const target=new URL(url); if(target.protocol!=='https:'||!origins.includes(target.origin)||target.username||target.password||target.hash||redirects>3) return reject(new Error('DOWNLOAD_REDIRECT_REJECTED'));
+  const request=https.get(target,{headers:offset?{Range:`bytes=${offset}-`,'If-Range':etag!}: {},signal},response => {
+   if([301,302,303,307,308].includes(response.statusCode??0)) {
+    response.resume(); if(!response.headers.location) return reject(new Error('DOWNLOAD_REDIRECT_INVALID'));
+    try { download(new URL(response.headers.location,target).href,offset,etag,signal,origins,redirects+1).then(resolve,reject); } catch { reject(new Error('DOWNLOAD_REDIRECT_INVALID')); }
+   } else resolve(response);
+  }); request.setTimeout(30000,()=>request.destroy(new Error('DOWNLOAD_TIMEOUT')));request.on('error',reject);
  });
 }
-export function extract(archive:string,root:string,expandedBytes:number,signal:AbortSignal):Promise<void> {
- return new Promise((resolve,reject) => { yauzl.open(archive,{lazyEntries:true,autoClose:true,validateEntrySizes:true},(error,zip) => { if(error||!zip)return reject(error??new Error('ZIP_OPEN_FAILED')); let expanded=0;let count=0; const abort=()=>{zip.close();reject(new Error('EXTRACTION_CANCELLED'));};signal.addEventListener('abort',abort,{once:true});const fail=(error:unknown)=>{zip.close();signal.removeEventListener('abort',abort);reject(error);};zip.on('error',fail);zip.on('end',()=>{signal.removeEventListener('abort',abort);resolve();});
-  zip.on('entry',entry => { void(async()=>{signal.throwIfAborted();if(++count>100000)throw new Error('ARCHIVE_ENTRY_LIMIT');const name=entry.fileName; const isDir=name.endsWith('/'); const safe=isDir?name.slice(0,-1):name; const mode=(entry.externalFileAttributes>>>16)&0xf000; if(!relative(safe)||mode===0xa000||(mode!==0&&mode!==0x8000&&mode!==0x4000)||safe==='.verified.json')throw new Error('ARCHIVE_UNSAFE_ENTRY');const file=confined(root,safe);expanded+=entry.uncompressedSize;if(expanded>expandedBytes)throw new Error('ARCHIVE_EXPANSION_LIMIT');if(isDir){await fs.mkdir(file,{recursive:true});zip.readEntry();return;}await fs.mkdir(path.dirname(file),{recursive:true});const stream=await new Promise<import('node:stream').Readable>((resolve,reject)=>zip.openReadStream(entry,(err,stream)=>err||!stream?reject(err):resolve(stream)));await pipeline(stream,createWriteStream(file,{flags:'wx'}),{signal});zip.readEntry();})().catch(fail); });zip.readEntry();
- }); });
+export function extract(archive:string,root:string,expandedBytes:number,signal:AbortSignal,archiveRoot?:string):Promise<void> {
+ return new Promise((resolve,reject) => {
+  if(archiveRoot!==undefined&&!archivePath(archiveRoot)) return reject(new Error('MANIFEST_ARCHIVE_ROOT_INVALID'));
+  signal.throwIfAborted();
+  yauzl.open(archive,{lazyEntries:true,autoClose:true,validateEntrySizes:true},(error,zip) => {
+   if(error||!zip) return reject(error??new Error('ZIP_OPEN_FAILED'));
+   let expanded=0; let count=0; let rootSeen=false;
+   const destinations=new Map<string,boolean>(); const explicit=new Set<string>();
+   const abort=()=>{zip.close();reject(new Error('EXTRACTION_CANCELLED'));};
+   signal.addEventListener('abort',abort,{once:true});
+   const fail=(error:unknown)=>{zip.close();signal.removeEventListener('abort',abort);reject(error);};
+   zip.on('error',fail);zip.on('end',()=>{signal.removeEventListener('abort',abort);resolve();});
+   zip.on('entry',entry => { void(async()=>{
+    signal.throwIfAborted(); if(++count>100000) throw new Error('ARCHIVE_ENTRY_LIMIT');
+    const name=entry.fileName; const isDir=name.endsWith('/'); const original=isDir?name.slice(0,-1):name;
+    const mode=(entry.externalFileAttributes>>>16)&0xf000;
+    if(!archivePath(original)||(mode!==0&&mode!==0x8000&&mode!==0x4000)||(mode===0x4000&&!isDir)||(mode===0x8000&&isDir)) throw new Error('ARCHIVE_UNSAFE_ENTRY');
+    // Count and bound every original entry, including the discarded root sentinel.
+    if(!Number.isSafeInteger(entry.uncompressedSize)||entry.uncompressedSize<0) throw new Error('ARCHIVE_UNSAFE_ENTRY');
+    expanded+=entry.uncompressedSize; if(!Number.isSafeInteger(expanded)||expanded>expandedBytes) throw new Error('ARCHIVE_EXPANSION_LIMIT');
+    let safe=original;
+    if(archiveRoot!==undefined) {
+     if(original===archiveRoot&&isDir) { if(rootSeen) throw new Error('ARCHIVE_DUPLICATE_ENTRY'); rootSeen=true;zip.readEntry();return; }
+     if(!original.startsWith(archiveRoot+'/')) throw new Error('ARCHIVE_ROOT_MISMATCH');
+     safe=original.slice(archiveRoot.length+1);
+    }
+    if(!archivePath(safe)) throw new Error('ARCHIVE_UNSAFE_ENTRY');
+    const key=safe.toLowerCase();
+    if(explicit.has(key)||(destinations.has(key)&&destinations.get(key)!==isDir)) throw new Error('ARCHIVE_DUPLICATE_ENTRY');
+    const parts=key.split('/');
+    for(let i=1;i<parts.length;i++) {
+     const parent=parts.slice(0,i).join('/'); if(destinations.get(parent)===false) throw new Error('ARCHIVE_DUPLICATE_ENTRY');
+     destinations.set(parent,true);
+    }
+    destinations.set(key,isDir);explicit.add(key);
+    const file=confined(root,safe);
+    if(isDir) { await fs.mkdir(file,{recursive:true});zip.readEntry();return; }
+    await fs.mkdir(path.dirname(file),{recursive:true});
+    const stream=await new Promise<import('node:stream').Readable>((resolve,reject)=>zip.openReadStream(entry,(err,stream)=>err||!stream?reject(err):resolve(stream)));
+    await pipeline(stream,createWriteStream(file,{flags:'wx'}),{signal});zip.readEntry();
+   })().catch(fail); });zip.readEntry();
+  });
+ });
 }
 async function command(executable:string,args:string[],signal:AbortSignal,stdoutOnly=false,deadlineMs=20000,cwd=path.dirname(executable)):Promise<string> {
  signal.throwIfAborted();
