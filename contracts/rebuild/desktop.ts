@@ -18,6 +18,6 @@ export interface DesktopBridge {
   removeCredential(provider: string): Promise<void>; openExternal(url: string): Promise<void>;
 }
 export type ProbeKind = 'engine-self-test' | 'ffmpeg-version' | 'ffprobe-version' | 'filter-codec-check' | 'whisper-runtime' | 'whisper-model' | 'document-tool-version';
-export interface ComponentManifest { id: string; version: string; archive: string; sha256: string; sizeBytes: number; expandedBytes: number; required: boolean; entrypoints: Record<string,string>; probes: { kind: ProbeKind; entrypoint: string; args?: string[]; runtimeEntrypoint?: string; audioEntrypoint?: string; expectedText?: string }[]; url?: string }
+export interface ComponentManifest { id: string; version: string; archive: string; sha256: string; sizeBytes: number; expandedBytes: number; required: boolean; entrypoints: Record<string,string>; probes: { kind: ProbeKind; entrypoint: string; args?: string[]; runtimeEntrypoint?: string; audioEntrypoint?: string; expectedText?: string }[]; url?: string; /** Canonical HTTPS origins, including the initial URL origin; default: initial origin only. Maximum eight. */ downloadOrigins?: string[]; /** Safe ZIP directory prefix without a trailing slash, removed after original entry validation. */ archiveRoot?: string }
 export interface ReleaseManifest { schemaVersion: 'aive.components.v1'; releaseVersion: string; platform: 'win32'; architecture: 'x64'; components: ComponentManifest[] }
 

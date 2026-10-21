@@ -56,6 +56,8 @@ jobs:
         run: node ../scripts/rebuild/test_native_model_ui.cjs .. ../.test-output/native-model-ui
       - name: Verify source synchronization controls and stale project boundaries
         run: node ../scripts/rebuild/test_source_sync_ui.cjs .. ../.test-output/source-sync-ui ./node_modules
+      - name: Verify vendor download origins and ZIP layout boundaries
+        run: node ../scripts/rebuild/test_vendor_zip_policy.cjs ..
       - name: Run immutable component update and legacy activation checks
         run: node ../scripts/rebuild/test_component_updates.cjs ..
       - name: Run native and browser transcript download boundary checks
