@@ -144,7 +144,7 @@ export async function prepareMsvcSupplier(archive:string,target:string,signal:Ab
  need((await fs.stat(archive)).size===b.packageBytes,'MSVC_PACKAGE_SIZE');const input=await fs.readFile(archive);need(digest(input)===b.packageSha256,'MSVC_PACKAGE_HASH');
  await fs.mkdir(path.join(target,'runtime'));const cache=new Map<string,Buffer>();let cachedBytes=0;
  for(const f of b.files) {
-  signal.throwIfAborted();let data=input,key='';
+  signal.throwIfAborted();let data:Buffer=input,key='';
   for(const step of f.steps){key+=JSON.stringify(step);const prior=cache.get(key);if(prior)data=prior;else {data=readMszipMember(data,step.offset,step.bytes,step.member,step.memberBytes,signal);cachedBytes+=data.length;need(cachedBytes<=MAX,'MSVC_CACHE_LIMIT');cache.set(key,data);}}
   need(data.length===f.bytes&&digest(data)===f.sha256,'MSVC_FILE_HASH');await fs.writeFile(path.join(target,'runtime',f.name),data,{flag:'wx'});
  }
