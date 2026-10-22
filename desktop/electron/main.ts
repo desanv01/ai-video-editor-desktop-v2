@@ -60,8 +60,12 @@ async function prepare():Promise<void> {
    requirePreparation(); await supervisor.stop(); requirePreparation();
    await components.prepare(); requirePreparation(); await startEngine();
   });
- } catch(error) { if(!quitting&&state.phase!=='cancelled') failure(error instanceof Error?error.message:'PREPARATION_FAILED'); }
+ } catch(error) { if(!quitting&&state.phase!=='cancelled'&&state.error?.code!=='MSI_NATIVE_SETTLEMENT_AMBIGUOUS_STAGING_RETAINED') failure(error instanceof Error?error.message:'PREPARATION_FAILED'); }
  finally { preparing=false; preparationCancelled=false; publish({canCancel:false}); }
+}
+async function completeInstallerSetup():Promise<void> {
+ if(!app.isPackaged||!process.argv.includes('--aive-complete-setup')||quitting||preparing||restarting||state.setupComplete||state.engineState==='ready'||state.phase!=='awaiting_confirmation'||state.error) return;
+ await prepare();
 }
 async function restartEngine():Promise<void> {
  requireActive(); if(preparing||restarting) throw new Error('ENGINE_RESTART_BUSY'); restarting=true;
@@ -114,7 +118,7 @@ if(!app.requestSingleInstanceLock())app.quit();else{
   components=new Components(owned,manifestFile,[path.join(process.resourcesPath,'offline-components'),path.join(path.dirname(app.getPath('exe')),'offline-components')],publish);
   protocol.handle('aive',request=>handle(request,path.resolve(__dirname,'../../../dist'),()=>supervisor.getEndpoint()));ipc();createWindow();
   try{requireActive();publish({credentials:await credentials.metadata()});requireActive();await components.initialize();requireActive();if(await components.allRequiredInstalled())await startEngine();}catch(error){if(!quitting)failure(error instanceof Error?error.message:'DESKTOP_INITIALIZATION_FAILED');}
- })).catch(()=>{if(!quitting)app.quit();});
+ })).then(()=>completeInstallerSetup()).catch(()=>{if(!quitting)app.quit();});
 }
 
 

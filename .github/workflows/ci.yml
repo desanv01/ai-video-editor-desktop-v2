@@ -34,6 +34,8 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
       - name: Install pinned desktop dependencies
         run: npm ci --no-audit --no-fund
+      - name: Verify independent deferred helper and production dependency exclusion
+        run: node ../scripts/rebuild/test_js_dependency_remedy.cjs ..
       - name: Build frontend and Electron controller
         run: npm run build
       - name: Run focused controller boundary checks
@@ -58,6 +60,10 @@ jobs:
         run: node ../scripts/rebuild/test_source_sync_ui.cjs .. ../.test-output/source-sync-ui ./node_modules
       - name: Verify vendor download origins and ZIP layout boundaries
         run: node ../scripts/rebuild/test_vendor_zip_policy.cjs ..
+      - name: Verify owned MSI administrative preparation and retained staging boundaries
+        run: node ../scripts/rebuild/test_msi_admin_policy.cjs ..
+      - name: Verify integrated vendor setup and mixed delivery source boundaries
+        run: python ../scripts/rebuild/test_integrated_setup_source.py ..
       - name: Run immutable component update and legacy activation checks
         run: node ../scripts/rebuild/test_component_updates.cjs ..
       - name: Run native and browser transcript download boundary checks

@@ -9,7 +9,7 @@
       "entrypoints": {
         "engine": "bin/aive-engine.exe"
       },
-      "expandedBytes": 702330391,
+      "expandedBytes": 702321755,
       "id": "aive-engine",
       "probes": [
         {
@@ -18,17 +18,17 @@
         }
       ],
       "required": true,
-      "sha256": "50f28b8e26dbb24a6d290b0e294f4b6d5a391051d06b3dd10c8d63bef1004a1b",
-      "sizeBytes": 254125793,
+      "sha256": "f379e3f0018911258d875520a1e7bf8ed267619693dcf376b151f886133f5136",
+      "sizeBytes": 254125047,
       "version": "2.1.0-rebuild.2"
     },
     {
-      "archive": "ffmpeg-8.1.1-win32-x64.zip",
+      "archive": "ffmpeg-8.1.1-full_build.zip",
       "entrypoints": {
         "ffmpeg": "bin/ffmpeg.exe",
         "ffprobe": "bin/ffprobe.exe"
       },
-      "expandedBytes": 454637827,
+      "expandedBytes": 695132454,
       "id": "ffmpeg",
       "probes": [
         {
@@ -45,16 +45,23 @@
         }
       ],
       "required": true,
-      "sha256": "45286b26d0b97334e59afef73e1736e71742b6203b1ead997e4089fa689cb812",
-      "sizeBytes": 172864795,
-      "version": "8.1.1"
+      "sha256": "49b28c5f16addd40239a66949973458769b7056fb7752c30ac0d53389d09a552",
+      "sizeBytes": 252194496,
+      "version": "8.1.1",
+      "url": "https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/ffmpeg-8.1.1-full_build.zip",
+      "downloadOrigins": [
+        "https://github.com",
+        "https://release-assets.githubusercontent.com"
+      ],
+      "distribution": "vendor-download",
+      "archiveRoot": "ffmpeg-8.1.1-full_build"
     },
     {
-      "archive": "documents-26.2.6-tdf.3-win32-x64.zip",
+      "archive": "LibreOffice_26.2.6_Win_x86-64.msi",
       "entrypoints": {
         "libreoffice": "program/soffice.com"
       },
-      "expandedBytes": 1578940493,
+      "expandedBytes": 1613546210,
       "id": "documents",
       "probes": [
         {
@@ -63,9 +70,15 @@
         }
       ],
       "required": true,
-      "sha256": "4914bf7d08a768cb67f915600da509078759c0c8b0bb6bd6355c1e75644b765b",
-      "sizeBytes": 508813810,
-      "version": "26.2.6-tdf.3"
+      "sha256": "f9877032fd908beb9c0ddf06df4af5c2e85f419c42e14876c4cce5aae5fb2660",
+      "sizeBytes": 373252096,
+      "version": "26.2.6",
+      "url": "https://buaya.klas.or.id/tdf/libreoffice/stable/26.2.6/win/x86_64/LibreOffice_26.2.6_Win_x86-64.msi",
+      "downloadOrigins": [
+        "https://buaya.klas.or.id"
+      ],
+      "distribution": "vendor-download",
+      "archiveFormat": "msi-admin"
     },
     {
       "archive": "whisper-small-1.9.4-b5130-small-win32-x64.zip",

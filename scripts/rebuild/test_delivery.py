@@ -54,6 +54,22 @@ class DeliverySafety(unittest.TestCase):
    for line in hashes:
     digest,name=line.split('  ',1);self.assertEqual(digest,hashlib.sha256(archive.read(name)).hexdigest())
    record=json.loads(archive.read('DELIVERY.json'));self.assertEqual(record['sourceCommit'],self.commit);self.assertEqual(len(record['components']),4)
+ def vendor_rows(self):
+  current=json.loads((scripts.parents[1]/'contracts/rebuild/components.json').read_text(encoding='utf8'))
+  rows={r['id']:copy.deepcopy(r) for r in current['components'] if r.get('distribution')=='vendor-download'}
+  for i,row in enumerate(self.manifest['components']):
+   if row['id'] in rows:
+    self.manifest['components'][i]=rows[row['id']];(self.packs/row['archive']).unlink();self.release['componentSourceCommits'].pop(row['id'])
+ def test_mixed_delivery_excludes_supplier_binaries_without_inventing_source_identity(self):
+  self.vendor_rows();self.persist();output=self.run_pack()
+  with zipfile.ZipFile(output) as archive:
+   record=json.loads(archive.read('DELIVERY.json'));external=[r for r in record['components'] if r.get('distribution')=='vendor-download']
+   self.assertEqual({r['manifest']['id'] for r in external},{'ffmpeg','documents'})
+   for row in external:
+    self.assertIsNone(row['sourceIdentity']);self.assertEqual(row['sourceAssociation']['status'],'unverified-vendor-build');self.assertNotIn('offline-components/'+row['manifest']['archive'],archive.namelist())
+   self.assertEqual(len(record['acceptance']['gates']),11)
+ def test_mixed_delivery_still_requires_bundled_source_commit(self):
+  self.vendor_rows();self.release['componentSourceCommits'].pop('whisper-small');self.rejected('bundled component source commits')
  def test_every_required_gate_is_enforced(self):
   for gate in sorted(delivery.GATES):
    with self.subTest(gate=gate):
