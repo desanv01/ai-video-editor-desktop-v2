@@ -5,7 +5,12 @@ const assert=require('node:assert/strict');
 const root=path.resolve(process.argv[2]),out=path.resolve(process.argv[3]);
 const expectedManifest=require(path.join(root,'contracts/rebuild/components.json'));
 const configured=expectedManifest.components.length>0;
-if(configured){assert.deepEqual(expectedManifest.components.map(c=>c.id).sort(),['aive-engine','documents','ffmpeg','whisper-small']);assert.ok(expectedManifest.components.every(c=>c.required===true));const vendor=expectedManifest.components.filter(c=>c.distribution==='vendor-download');assert.deepEqual(vendor.map(c=>c.id).sort(),['documents','ffmpeg']);assert.ok(vendor.every(c=>c.url?.startsWith('https://')&&c.downloadOrigins?.length));assert.ok(expectedManifest.components.filter(c=>!vendor.includes(c)).every(c=>!c.url));assert.equal(expectedManifest.components[0].id,'aive-engine');assert.equal(expectedManifest.components[0].url,undefined);}
+if(configured){
+ assert.deepEqual(expectedManifest.components.map(c=>c.id).sort(),['aive-engine','documents','ffmpeg','msvc-runtime','whisper-small']);assert.ok(expectedManifest.components.every(c=>c.required===true));
+ const vendor=expectedManifest.components.filter(c=>c.distribution==='vendor-download');assert.deepEqual(vendor.map(c=>c.id).sort(),['documents','ffmpeg','msvc-runtime']);assert.ok(vendor.every(c=>c.url?.startsWith('https://')&&c.downloadOrigins?.length));
+ assert.ok(expectedManifest.components.filter(c=>!vendor.includes(c)).every(c=>!c.url));const engine=expectedManifest.components.find(c=>c.id==='aive-engine');assert.ok(engine);assert.equal(engine.url,undefined);
+ assert.equal(engine.requiresMsvcSupplier,true);assert.equal(expectedManifest.components.find(c=>c.id==='whisper-small').requiresMsvcSupplier,true);assert.equal(expectedManifest.components.find(c=>c.id==='msvc-runtime').archiveFormat,'msvc-burn-private');
+}
 const {_electron}=require(process.env.AIVE_TEST_PLAYWRIGHT_MODULE || require.resolve('playwright',{paths:[path.join(root,'desktop')]}));
 (async()=>{
  await fs.mkdir(out,{recursive:true});
@@ -30,6 +35,7 @@ const {_electron}=require(process.env.AIVE_TEST_PLAYWRIGHT_MODULE || require.res
   await page.getByRole('alert').filter({hasText:expectedError}).waitFor({timeout:20000});
   const afterPreparation=await page.evaluate(()=>window.aiveDesktop.getState());
   assert.equal(afterPreparation.error.code,expectedError);assert.equal(afterPreparation.setupComplete,false);assert.equal(afterPreparation.engineState,'stopped');assert.equal(afterPreparation.components.some(c=>c.installed),false);
+  if(configured){assert.equal(afterPreparation.progress.acquiredBytes,0,'Missing bundled consumers must fail before any supplier acquisition');assert.ok(afterPreparation.components.every(c=>c.bytes===0));}
   await page.screenshot({path:path.join(out,'setup-1280.png')});
   await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(2));
   await page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));

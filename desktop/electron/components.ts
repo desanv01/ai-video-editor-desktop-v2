@@ -9,18 +9,22 @@ import https from 'node:https';
 import yauzl from 'yauzl';
 import { resolveEngineLaunch } from './engineLaunch';
 import { prepareMsiAdmin, MsiAdminError } from './msiAdmin';
+import { msvcSupplierConfigured, msvcSupplierSignature, prepareMsvcSupplier, verifyPreparedMsvc, composeSupplierRuntime, verifyMsvcComposition, MSVC_PACKAGE_SHA256 } from './msvcSupplier';
 import type { ComponentManifest, ReleaseManifest, DesktopState, SetupPhase } from '../../contracts/rebuild/desktop';
 import { atomic, confined, relative, readJson, RELEASE, type Paths } from './util';
-const kinds=new Set(['engine-self-test','ffmpeg-version','ffprobe-version','filter-codec-check','whisper-runtime','whisper-model','document-tool-version']);
+const kinds=new Set(['engine-self-test','ffmpeg-version','ffprobe-version','filter-codec-check','whisper-runtime','whisper-model','document-tool-version','msvc-runtime-files']);
 export function validateManifest(value: unknown): ReleaseManifest {
  const m=value as ReleaseManifest; if(!m||m.schemaVersion!=='aive.components.v1'||m.releaseVersion!==RELEASE||m.platform!=='win32'||m.architecture!=='x64'||!Array.isArray(m.components)||m.components.length>30) throw new Error('MANIFEST_INCOMPATIBLE');
  const ids=new Set<string>();
  for(const c of m.components) {
-  if(!c||!/^[a-z][a-z0-9-]{1,63}$/.test(c.id)||ids.has(c.id)||typeof c.version!=='string'||!/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(c.version)||!relative(c.archive)||!c.archive.endsWith(c.archiveFormat==='msi-admin'?'.msi':'.zip')||!/^[a-f0-9]{64}$/.test(c.sha256)||!Number.isSafeInteger(c.sizeBytes)||c.sizeBytes<=0||!Number.isSafeInteger(c.expandedBytes)||c.expandedBytes<=0||typeof c.required!=='boolean'||!c.entrypoints||!Object.keys(c.entrypoints).length||!Object.values(c.entrypoints).every(relative)||!Array.isArray(c.probes)||!c.probes.length) throw new Error('MANIFEST_COMPONENT_INVALID');
-  if(c.archiveFormat!==undefined&&c.archiveFormat!=='zip'&&c.archiveFormat!=='msi-admin') throw new Error('MANIFEST_ARCHIVE_FORMAT_INVALID');
+  if(!c||!/^[a-z][a-z0-9-]{1,63}$/.test(c.id)||ids.has(c.id)||typeof c.version!=='string'||!/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(c.version)||!relative(c.archive)||!c.archive.endsWith(c.archiveFormat==='msi-admin'?'.msi':c.archiveFormat==='msvc-burn-private'?'.exe':'.zip')||!/^[a-f0-9]{64}$/.test(c.sha256)||!Number.isSafeInteger(c.sizeBytes)||c.sizeBytes<=0||!Number.isSafeInteger(c.expandedBytes)||c.expandedBytes<=0||typeof c.required!=='boolean'||!c.entrypoints||!Object.keys(c.entrypoints).length||!Object.values(c.entrypoints).every(relative)||!Array.isArray(c.probes)||!c.probes.length) throw new Error('MANIFEST_COMPONENT_INVALID');
+  if(c.archiveFormat!==undefined&&c.archiveFormat!=='zip'&&c.archiveFormat!=='msi-admin'&&c.archiveFormat!=='msvc-burn-private') throw new Error('MANIFEST_ARCHIVE_FORMAT_INVALID');
   if(c.archiveFormat==='msi-admin'&&(c.id!=='documents'||c.archiveRoot!==undefined||Object.keys(c.entrypoints).length!==1||c.entrypoints.libreoffice!=='program/soffice.com'||c.probes.length!==1||c.probes[0].kind!=='document-tool-version'||c.probes[0].entrypoint!=='libreoffice'||c.probes[0].args!==undefined)) throw new Error('MANIFEST_MSI_LAYOUT_INVALID');
   if(c.distribution!==undefined&&c.distribution!=='bundled'&&c.distribution!=='vendor-download') throw new Error('MANIFEST_DISTRIBUTION_INVALID');
-  if(c.distribution==='vendor-download'&&(!['ffmpeg','documents'].includes(c.id)||!c.url||!c.downloadOrigins)) throw new Error('MANIFEST_VENDOR_SOURCE_INVALID');
+  if(c.distribution==='vendor-download'&&(!['ffmpeg','documents','msvc-runtime'].includes(c.id)||!c.url||!c.downloadOrigins)) throw new Error('MANIFEST_VENDOR_SOURCE_INVALID');
+  if(c.id==='msvc-runtime'&&c.archiveFormat!=='msvc-burn-private') throw new Error('MANIFEST_MSVC_FORMAT_REQUIRED');
+  if(c.requiresMsvcSupplier!==undefined&&(c.requiresMsvcSupplier!==true||!['aive-engine','whisper-small'].includes(c.id))) throw new Error('MANIFEST_MSVC_DEPENDENCY_INVALID');
+  if(c.archiveFormat==='msvc-burn-private'&&(c.id!=='msvc-runtime'||c.sha256!==MSVC_PACKAGE_SHA256||c.sizeBytes!==18731856||c.distribution!=='vendor-download'||c.archiveRoot!==undefined||c.probes.length!==1||c.probes[0].kind!=='msvc-runtime-files'||c.probes[0].args!==undefined||(Object.keys(c.entrypoints).length!==5||!Object.entries({msvcp140:'runtime/MSVCP140.dll',vcruntime140:'runtime/VCRUNTIME140.dll',vcruntime140_1:'runtime/VCRUNTIME140_1.dll',msvcp140_atomic_wait:'runtime/MSVCP140_ATOMIC_WAIT.dll',vcomp140:'runtime/VCOMP140.dll'}).every(([key,value])=>Object.hasOwn(c.entrypoints,key)&&c.entrypoints[key]===value)))) throw new Error('MANIFEST_MSVC_SUPPLIER_INVALID');
   ids.add(c.id);
   if(c.url!==undefined) { let u:URL; try { if(typeof c.url!=='string') throw new Error(); u=new URL(c.url); } catch { throw new Error('MANIFEST_URL_INVALID'); } if(u.protocol!=='https:'||u.username||u.password||u.hash) throw new Error('MANIFEST_URL_INVALID'); }
   validateDownloadOrigins(c.url,c.downloadOrigins);
@@ -70,8 +74,8 @@ export class Components {
    if(!current||current.version!==c.version||current.sha256!==c.sha256) continue;
    const legacy=confined(this.paths.components,c.id+'/'+c.version);
    if(!await this.normalRoot(legacy)) continue;
-   const marker=await readJson<{sha256?:string;version?:string}|null>(path.join(legacy,'.verified.json'),null);
-   if(marker?.sha256===c.sha256&&marker.version===c.version) this.legacyRoots.set(this.identity(c),legacy);
+   const marker=await readJson<{sha256?:string;version?:string;supplierComposition?:string|null}|null>(path.join(legacy,'.verified.json'),null);
+   if(marker?.sha256===c.sha256&&marker.version===c.version&&(!this.composed(c)||marker.supplierComposition===msvcSupplierSignature())) this.legacyRoots.set(this.identity(c),legacy);
   }
   const journal=await readJson<Journal|null>(path.join(this.paths.state,'preparation.json'),null);
   this.nativeUncertain=journal?.nativeSettlement==='ambiguous'||journal?.nativeSettlement==='in-progress';
@@ -80,14 +84,19 @@ export class Components {
   if(this.nativeUncertain) this.publish({phase:'error',canCancel:false,canRetry:false,error:{code:'MSI_NATIVE_SETTLEMENT_AMBIGUOUS_STAGING_RETAINED',message:'A previous Windows Installer operation has uncertain ownership. Its private staging image is retained; another preparation cannot start.',retryable:false,retainedStaging:journal?.retainedStaging}});
   else if(!this.configured()) this.publish({phase:'error',error:{code:'PACKS_UNCONFIGURED',message:'This engineering shell has no configured engine, media or document packs. A release with verified runtime packs is required.',retryable:true},canRetry:true});
  }
- configured():boolean { return ['aive-engine','ffmpeg','documents'].every(id => this.manifest.components.some(c => c.id===id&&c.required)); }
+ private composed(c:ComponentManifest):boolean { return c.id==='msvc-runtime'||c.requiresMsvcSupplier===true; }
+ private compositionRoot(c:ComponentManifest,root:string):string { return c.id==='aive-engine'?path.join(root,'bin'):root; }
+ configured():boolean { return ['aive-engine','ffmpeg','documents'].every(id => this.manifest.components.some(c => c.id===id&&c.required))&&(!this.manifest.components.some(c=>c.requiresMsvcSupplier)||(this.manifest.components.some(c=>c.id==='msvc-runtime'&&c.required)&&msvcSupplierConfigured())); }
  private async installed(c:ComponentManifest):Promise<boolean> {
   const current=Object.hasOwn(this.active.current,c.id)?this.active.current[c.id]:undefined; if(!current||current.version!==c.version||current.sha256!==c.sha256) return false;
-  const root=this.root(c); if(!await this.normalRoot(root)) return false; const marker=await readJson<{sha256?:string;version?:string}|null>(path.join(root,'.verified.json'),null); if(marker?.sha256!==c.sha256||marker.version!==c.version) return false;
-  for(const entry of Object.values(c.entrypoints)) { try { const stat=await fs.lstat(confined(root,entry)); if(!stat.isFile()||stat.isSymbolicLink()) return false; } catch { return false; } } return true;
+  const root=this.root(c); if(!await this.normalRoot(root)) return false; const marker=await readJson<{sha256?:string;version?:string;supplierComposition?:string|null}|null>(path.join(root,'.verified.json'),null); if(marker?.sha256!==c.sha256||marker.version!==c.version||(this.composed(c)&&marker.supplierComposition!==msvcSupplierSignature())) return false;
+  for(const entry of Object.values(c.entrypoints)) { try { const stat=await fs.lstat(confined(root,entry)); if(!stat.isFile()||stat.isSymbolicLink()) return false; } catch { return false; } }
+  if(c.id==='msvc-runtime')return verifyPreparedMsvc(root);
+  if(c.requiresMsvcSupplier){const supplier=this.manifest.components.find(x=>x.id==='msvc-runtime');return !!supplier&&await this.installed(supplier)&&await verifyMsvcComposition(c.id,this.compositionRoot(c,root),this.root(supplier));}
+  return true;
  }
  private identity(c:ComponentManifest):string { return c.id+'/'+c.version+'/'+c.sha256; }
- private canonicalRoot(c:ComponentManifest):string { return confined(this.paths.components,c.id+'/'+c.sha256.slice(0,16)); }
+ private canonicalRoot(c:ComponentManifest):string { return confined(this.paths.components,c.id+'/'+c.sha256.slice(0,16)+(this.composed(c)?'-'+(msvcSupplierSignature()??'mapping-pending').slice(0,16):'')); }
  private async normalRoot(root:string):Promise<boolean> {
   try {
    const info=await fs.lstat(root); if(!info.isDirectory()||info.isSymbolicLink()) return false;
@@ -147,11 +156,12 @@ export class Components {
  async prepare():Promise<void> {
   if(this.nativeUncertain) throw new Error('MSI_NATIVE_SETTLEMENT_AMBIGUOUS_STAGING_RETAINED');
   if(this.busy) throw new Error('PREPARATION_BUSY'); if(!this.configured()) throw new Error('PACKS_UNCONFIGURED'); this.busy=true; this.abort=new AbortController(); const signal=this.abort.signal;
-  const selected=this.manifest.components.filter(c => c.required); const journal:Journal={operationId:randomUUID(),selected:selected.map(c => c.id),totalBytes:selected.reduce((n,c)=>n+c.sizeBytes,0),phase:'checking',acquiredBytes:0,completedWork:0}; const totalWork=selected.length*4;
+  const selected=this.manifest.components.filter(c => c.required).sort((a,b)=>Number(b.id==='msvc-runtime')-Number(a.id==='msvc-runtime')); const journal:Journal={operationId:randomUUID(),selected:selected.map(c => c.id),totalBytes:selected.reduce((n,c)=>n+c.sizeBytes,0),phase:'checking',acquiredBytes:0,completedWork:0}; const totalWork=selected.length*4;
   const states=selected.map(c => ({id:c.id,version:c.version,phase:'checking' as SetupPhase,bytes:0,installed:false}));
   const update=async(phase:SetupPhase,c?:ComponentManifest,bytes?:number) => { journal.phase=phase; if(c) { const state=states.find(s => s.id===c.id)!; state.phase=phase; if(bytes!==undefined) state.bytes=bytes; } journal.acquiredBytes=states.reduce((n,s)=>n+s.bytes,0); this.publish({phase,components:states.map(s=>({...s})),error:null,canCancel:!['activating','ready'].includes(phase),canRetry:false,progress:{...journal,totalWork}}); await atomic(path.join(this.paths.state,'preparation.json'),journal); };
   const staging=confined(this.paths.components,'s'+Buffer.from(journal.operationId.replace(/-/g,''),'hex').toString('base64url')); const staged=new Map<string,string>(); let stagingOwned=false; let nativeStagingUsed=false; let nativeAttempted=false; let retainStaging=false;
   try {
+   if(selected.some(c=>c.requiresMsvcSupplier))await this.requireBundledSourcesBeforeSupplier(selected,signal);
    await this.assertActivationRoot(staging);
    await fs.mkdir(staging); stagingOwned=true;
    for(const c of selected) {
@@ -171,9 +181,11 @@ export class Components {
      journal.nativeSettlement='normal-close';
      await atomic(path.join(this.paths.state,'preparation.json'),journal);
      signal.throwIfAborted();this.publish({canCancel:true});
-    } else await extract(archive,target,c.expandedBytes,signal,c.archiveRoot);
+    } else if(c.archiveFormat==='msvc-burn-private') await prepareMsvcSupplier(archive,target,signal);
+    else await extract(archive,target,c.expandedBytes,signal,c.archiveRoot);
+    if(c.requiresMsvcSupplier){const supplier=this.manifest.components.find(x=>x.id==='msvc-runtime');if(!supplier)throw new Error('MSVC_SUPPLIER_REQUIRED');const supplierRoot=staged.get(supplier.id)??this.root(supplier);await composeSupplierRuntime(c.id,this.compositionRoot(c,target),supplierRoot,signal);}
     journal.completedWork++;
-    await update('probing',c); await probe(c,target,signal); await atomic(path.join(target,'.verified.json'),{sha256:c.sha256,version:c.version}); staged.set(c.id,target);
+    await update('probing',c); await probe(c,target,signal); await atomic(path.join(target,'.verified.json'),{sha256:c.sha256,version:c.version,...(this.composed(c)?{supplierComposition:msvcSupplierSignature()}: {})}); staged.set(c.id,target);
    }
    signal.throwIfAborted(); await update('activating');
    const identitiesUnchanged=selected.every(c => {
@@ -196,8 +208,10 @@ export class Components {
        if(!occupied) throw error;
       } else if(code!=='EEXIST'&&code!=='ENOTEMPTY') throw error;
       if(!await this.normalRoot(target)) throw new Error('IMMUTABLE_VERSION_CONFLICT');
-      const marker=await readJson<{sha256?:string;version?:string}|null>(path.join(target,'.verified.json'),null);
-      if(marker?.sha256!==c.sha256||marker.version!==c.version) throw new Error('IMMUTABLE_VERSION_CONFLICT');
+      const marker=await readJson<{sha256?:string;version?:string;supplierComposition?:string|null}|null>(path.join(target,'.verified.json'),null);
+      if(marker?.sha256!==c.sha256||marker.version!==c.version||(this.composed(c)&&marker.supplierComposition!==msvcSupplierSignature())) throw new Error('IMMUTABLE_VERSION_CONFLICT');
+      if(c.id==='msvc-runtime'&&!await verifyPreparedMsvc(target))throw new Error('IMMUTABLE_VERSION_CONFLICT');
+      if(c.requiresMsvcSupplier){const supplier=this.manifest.components.find(x=>x.id==='msvc-runtime');if(!supplier||!await verifyMsvcComposition(c.id,this.compositionRoot(c,target),this.root(supplier)))throw new Error('IMMUTABLE_VERSION_CONFLICT');}
      }
      this.legacyRoots.delete(this.identity(c));
     }
@@ -208,6 +222,16 @@ export class Components {
   finally {
    try { if(stagingOwned&&!retainStaging) { await this.assertActivationRoot(staging); await fs.rm(staging,{recursive:true,force:true}); } }
    finally { this.busy=false; this.abort=null; }
+  }
+ }
+ private async requireBundledSourcesBeforeSupplier(selected:ComponentManifest[],signal:AbortSignal):Promise<void> {
+  // Availability only, never verification. Preserve offline-CI failure before a
+  // supplier request when a release omits its required bundled engine/Whisper.
+  for(const c of selected.filter(c=>c.requiresMsvcSupplier&&c.distribution!=='vendor-download'&&!c.url)) {
+   signal.throwIfAborted();if(await this.installed(c))continue;
+   const candidates=[confined(this.paths.cache,c.id+'-'+c.version+'-'+c.sha256+'.part'),...this.offline.map(folder=>confined(folder,c.archive))];let found=false;
+   for(const candidate of candidates) {try {const st=await fs.lstat(candidate);if(st.isFile()&&!st.isSymbolicLink()&&st.size===c.sizeBytes){found=true;break;}}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}}
+   if(!found)throw new Error('COMPONENT_SOURCE_UNAVAILABLE');
   }
  }
  private async acquire(c:ComponentManifest,signal:AbortSignal,progress:(bytes:number)=>void):Promise<string> {
@@ -310,6 +334,7 @@ async function command(executable:string,args:string[],signal:AbortSignal,stdout
  });
 }
 async function probe(c:ComponentManifest,root:string,signal:AbortSignal):Promise<void> {
+ if(c.id==='msvc-runtime'){if(!await verifyPreparedMsvc(root,signal))throw new Error('MSVC_SUPPLIER_PROBE_FAILED');return;}
  for(const p of c.probes) {
   const executable=confined(root,c.entrypoints[p.entrypoint]);const stat=await fs.lstat(executable);if(!stat.isFile()||stat.isSymbolicLink())throw new Error('PROBE_ENTRY_INVALID');
   if(p.kind==='whisper-model') { const runtime=confined(root,c.entrypoints[p.runtimeEntrypoint!]); const audio=confined(root,c.entrypoints[p.audioEntrypoint!]); for(const file of [runtime,audio]) { const item=await fs.lstat(file); if(!item.isFile()||item.isSymbolicLink()) throw new Error('WHISPER_PROBE_ENTRY_INVALID'); } const output=await command(runtime,['-ng','-t','4','-l','en','-m',executable,'-f',audio,'-nt','-np'],signal,true,300000); const normalize=(text:string)=>text.toLowerCase().replace(/[^a-z0-9]+/g,' ').trim(); if(!normalize(output).includes(normalize(p.expectedText!))) throw new Error('WHISPER_TRANSCRIPTION_PROBE_FAILED'); continue; }

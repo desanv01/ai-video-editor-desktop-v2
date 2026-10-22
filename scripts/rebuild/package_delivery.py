@@ -24,13 +24,15 @@ from build_engine import AUTHORIZED_ROOT, validate_output
 from package_engine import regular
 
 REPOSITORY = "desanv01/ai-video-editor-desktop-v2"
-COMPONENTS = frozenset(("aive-engine", "ffmpeg", "documents", "whisper-small"))
+COMPONENTS = frozenset(("msvc-runtime", "aive-engine", "ffmpeg", "documents", "whisper-small"))
+# Sole permitted executable supplier input; excluded from delivery binary payload.
+MSVC_SUPPLIER = {'id': 'msvc-runtime', 'version': '14.51.36247', 'archive': 'VC_redist.x64.exe', 'archiveFormat': 'msvc-burn-private', 'distribution': 'vendor-download', 'sha256': '843068991daaa1f73ad9f6239bce4d0f6a07a51f18c37ea2a867e9beca71295c', 'sizeBytes': 18731856, 'expandedBytes': 1145455, 'required': True, 'url': 'https://download.visualstudio.microsoft.com/download/pr/ebdab8e5-1d7b-4d9f-a11b-cbb1720c3b12/843068991DAAA1F73AD9F6239BCE4D0F6A07A51F18C37EA2A867E9BECA71295C/VC_redist.x64.exe', 'downloadOrigins': ['https://download.visualstudio.microsoft.com'], 'entrypoints': {'msvcp140': 'runtime/MSVCP140.dll', 'vcruntime140': 'runtime/VCRUNTIME140.dll', 'vcruntime140_1': 'runtime/VCRUNTIME140_1.dll', 'msvcp140_atomic_wait': 'runtime/MSVCP140_ATOMIC_WAIT.dll', 'vcomp140': 'runtime/VCOMP140.dll'}, 'probes': [{'kind': 'msvc-runtime-files', 'entrypoint': 'msvcp140'}]}
 GATES = frozenset(("frozenEngine", "managedMediaExport", "managedDocumentConversion",
     "managedWhisperCpu", "installedSixStages", "installedExport", "installedReopen",
     "installedRecovery", "installedRestart", "installedShutdown", "installedUninstall"))
 QUALIFICATIONS = frozenset(("liveProviders", "otherLaptop", "GPU", "signing"))
 PROBES = frozenset(("engine-self-test", "ffmpeg-version", "ffprobe-version",
-    "filter-codec-check", "whisper-runtime", "whisper-model", "document-tool-version"))
+    "filter-codec-check", "whisper-runtime", "whisper-model", "document-tool-version", "msvc-runtime-files"))
 VERSION = re.compile(r"\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?")
 COMMIT = re.compile(r"[a-fA-F0-9]{40}")
 SHA256 = re.compile(r"[a-f0-9]{64}")
@@ -255,7 +257,10 @@ def canonical_origin(value: object) -> str:
 
 
 def validate_vendor_binding(component: dict) -> None:
-    require(component["id"] in {"ffmpeg", "documents"}, "Only media/documents may use vendor-download")
+    require(component["id"] in {"ffmpeg", "documents", "msvc-runtime"}, "Only explicit supplier components may use vendor-download")
+    if component["id"] == "msvc-runtime":
+        require(component == MSVC_SUPPLIER, "Exact pinned official Microsoft supplier row required")
+        return
     url = component.get("url")
     require(text(url) and not any(ord(c) <= 32 for c in url), "Pinned vendor HTTPS URL required")
     parsed = urlsplit(url)
@@ -290,7 +295,8 @@ def external_component_record(component: dict, release: dict) -> dict:
         "sourceIdentity": None,
         "sourceAssociation": {"status": "unverified-vendor-build",
             "declaredSourceCommit": release["componentSourceCommits"].get(component["id"]),
-            "qualification": "Archive pins identify supplier input, not an embedded source identity or exact build association. Separate source/notices disposition required."}}
+            "qualification": "Archive pins identify supplier input, not an embedded source identity or exact build association. Separate source/notices disposition required.",
+            "scope": "external-official-Microsoft-runtime" if component["id"] == "msvc-runtime" else "external-vendor-tool"}}
 
 
 def validate_component(component: dict) -> None:
@@ -299,8 +305,8 @@ def validate_component(component: dict) -> None:
     require(isinstance(component.get("version"), str) and bool(VERSION.fullmatch(component["version"])), "Invalid component version")
     name = safe_name(component.get("archive"), basename=True)
     format = component.get("archiveFormat", "zip")
-    require(isinstance(format, str) and format in {"zip", "msi-admin"}, "Invalid component archive format")
-    require(name.endswith(".msi" if format == "msi-admin" else ".zip"), "Component archive extension mismatch")
+    require(isinstance(format, str) and format in {"zip", "msi-admin", "msvc-burn-private"}, "Invalid component archive format")
+    require(name.endswith(".msi" if format == "msi-admin" else ".exe" if format == "msvc-burn-private" else ".zip"), "Component archive extension mismatch")
     distribution = component.get("distribution", "bundled")
     require(isinstance(distribution, str) and distribution in {"bundled", "vendor-download"}, "Invalid component distribution")
     require(distribution == "vendor-download" or format == "zip", "Bundled component archive must be ZIP")
@@ -330,6 +336,12 @@ def validate_component(component: dict) -> None:
             and entrypoints == {"libreoffice": "program/soffice.com"}
             and probes == [{"kind": "document-tool-version", "entrypoint": "libreoffice"}],
             "MSI administrative image layout/probe mismatch")
+    if component["id"] == "msvc-runtime" or format == "msvc-burn-private":
+        require(component == MSVC_SUPPLIER, "Executable format is restricted to exact Microsoft supplier row")
+    if component["id"] in {"aive-engine", "whisper-small"}:
+        require(component.get("requiresMsvcSupplier") is True, "Consumer requires external Microsoft supplier policy")
+    else:
+        require("requiresMsvcSupplier" not in component, "Unexpected Microsoft supplier dependency")
     if distribution == "vendor-download":
         validate_vendor_binding(component)
     if component.get("url"):
@@ -337,6 +349,15 @@ def validate_component(component: dict) -> None:
         url = urlsplit(component["url"])
         require(url.scheme == "https" and bool(url.hostname) and not url.username and not url.password and not url.fragment,
             "Invalid component HTTPS URL")
+
+
+def validate_runtime_policy(component: dict, policy: dict) -> None:
+    require(component["id"] in {"aive-engine", "whisper-small"}
+        and component.get("requiresMsvcSupplier") is True, "Supplier policy requires declared consumer")
+    require(isinstance(policy, dict) and policy.get("schema") == "aive.external-msvc.v1"
+        and policy.get("component") == component["id"]
+        and type(policy.get("minimumWindowsMajor")) is int and policy["minimumWindowsMajor"] == 10
+        and policy.get("packageSha256") == MSVC_SUPPLIER["sha256"], "Component supplier policy mismatch")
 
 
 def require_installer_pe(path: Path, size: int) -> None:
@@ -387,7 +408,7 @@ def main() -> int:
     require(manifest.get("schemaVersion") == "aive.components.v1"
         and all(manifest.get(k) == release[k] for k in ("releaseVersion", "platform", "architecture")), "Component manifest release mismatch")
     components = manifest.get("components")
-    require(isinstance(components, list) and len(components) == 4, "Exactly four components required")
+    require(isinstance(components, list) and len(components) == 5, "Exactly five components required")
     files = {"installer/" + paths["installer"].name: paths["installer"],
         "offline-components/" + paths["component_manifest"].name: paths["component_manifest"],
         "source/" + paths["source_archive"].name: paths["source_archive"],
@@ -422,9 +443,27 @@ def main() -> int:
         item = entries.get("source-identity.json")
         require(item is not None and not item.is_dir() and 0 < item.file_size <= METADATA_LIMIT,
             f"Component source-identity.json required: {cid}")
+        runtime_policy = None
+        if component.get("requiresMsvcSupplier") is True:
+            policy_name = "bin/.msvc-supplier-required.json" if cid == "aive-engine" else ".msvc-supplier-required.json"
+            policy_item = entries.get(policy_name)
+            require(policy_item is not None and not policy_item.is_dir() and policy_item.filename == policy_name
+                and 0 < policy_item.file_size <= METADATA_LIMIT, f"Actual external supplier policy required: {cid}")
+            # A policy marker cannot excuse carrying the old Microsoft runtime copies.
+            for name in entries:
+                leaf = name.rsplit("/", 1)[-1]
+                require(leaf != MSVC_SUPPLIER["archive"].casefold(), "Supplier EXE must remain external")
+                require(not (leaf.endswith(".dll") and leaf.startswith(
+                    ("msvcp", "vcruntime", "concrt", "vcomp", "ucrtbase", "api-ms-win-crt-"))),
+                    f"Bundled Microsoft runtime remains in consumer archive: {cid}/{name}")
         with zipfile.ZipFile(path) as archive:
             with archive.open(item) as stream:
                 embedded = parse_json(stream.read(METADATA_LIMIT + 1), f"{cid}/source-identity.json")
+            if component.get("requiresMsvcSupplier") is True:
+                with archive.open(policy_item) as stream:
+                    runtime_policy = parse_json(stream.read(METADATA_LIMIT + 1), f"{cid}/{policy_name}")
+        if component.get("requiresMsvcSupplier") is True:
+            validate_runtime_policy(component, runtime_policy)
         require(embedded.get("component") == cid and embedded.get("version") == component["version"],
             f"Embedded component identity mismatch: {cid}")
         if "releaseVersion" in embedded:
@@ -437,7 +476,10 @@ def main() -> int:
             embedded_commits.append(metadata['runtimeSourceCommit'])
         require(bool(embedded_commits) and all(commit == declared_commit for commit in embedded_commits),
             f"Component source commit absent/unmatched (Whisper also permits metadata.runtimeSourceCommit): {cid}")
-        component_details.append({"manifest": component, "sourceCommit": declared_commit, "sourceIdentity": embedded})
+        component_details.append({"manifest": component, "sourceCommit": declared_commit, "sourceIdentity": embedded,
+            **({"runtimeSupplierPolicy": runtime_policy,
+                "sourceNoticeScope": "Consumer source/notices apply to this actual archive; external Microsoft supplier input requires a separate pinned source/notices disposition."}
+                if component.get("requiresMsvcSupplier") is True else {})})
         files["offline-components/" + component["archive"]] = path
         known[path] = actual
     require(ids == COMPONENTS, "Missing required component ID")

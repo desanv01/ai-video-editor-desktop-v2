@@ -1,4 +1,6 @@
-"""Main-owned synthetic delivery safety checks; no installed acceptance claim."""
+"""Main-owned TEST-ONLY synthetic delivery safety checks.
+Fixture ZIP/policy bytes are never actual release or installed acceptance evidence.
+"""
 from pathlib import Path
 import contextlib,copy,hashlib,importlib,json,os,struct,sys,tempfile,unittest,zipfile,io
 scripts=Path(sys.argv.pop(1)).resolve() if len(sys.argv)>1 else Path(__file__).resolve().parent
@@ -18,14 +20,20 @@ class DeliverySafety(unittest.TestCase):
   source=self.root/'fixture-source.zip';zipfiles(source,{'README.txt':b'Synthetic source fixture only'})
   self.manifest={'schemaVersion':'aive.components.v1','releaseVersion':self.version,'platform':'win32','architecture':'x64','components':[]}
   for cid in sorted(delivery.COMPONENTS):
+   if cid=='msvc-runtime':
+    self.manifest['components'].append(copy.deepcopy(delivery.MSVC_SUPPLIER))
+    continue  # External supplier: no local EXE, ZIP or invented source identity.
    embedded={'component':cid,'version':self.version,'metadata':{('runtimeSourceCommit' if cid=='whisper-small' else 'sourceCommit'):self.commit}}
    members={'bin/tool.exe':b'Synthetic executable fixture','source-identity.json':json.dumps(embedded).encode()}
+   if cid in {'aive-engine','whisper-small'}:
+    policy={'schema':'aive.external-msvc.v1','component':cid,'minimumWindowsMajor':10,'packageSha256':delivery.MSVC_SUPPLIER['sha256']}
+    members['bin/.msvc-supplier-required.json' if cid=='aive-engine' else '.msvc-supplier-required.json']=json.dumps(policy).encode()
    if cid=='aive-engine':members['bin/_internal/certifi/cacert.pem']=b'Public CA fixture'
    if cid=='aive-engine':members['bin/_internal/grpc/_cython/_credentials/roots.pem']=b'Public grpc CA fixture'
    if cid=='documents':members['program/python-core-3.12.14/lib/pip/_vendor/certifi/cacert.pem']=b'Public document CA fixture'
    zipfiles(self.packs/(cid+'.zip'),members)
-   self.manifest['components'].append({'id':cid,'version':self.version,'archive':cid+'.zip','sizeBytes':(self.packs/(cid+'.zip')).stat().st_size,'sha256':sha(self.packs/(cid+'.zip')),'expandedBytes':sum(map(len,members.values())),'required':True,'entrypoints':{'tool':'bin/tool.exe'},'probes':[{'kind':'engine-self-test','entrypoint':'tool'}]})
-  self.release={'schemaVersion':'aive.delivery-inputs.v1','releaseVersion':self.version,'platform':'win32','architecture':'x64','sourceCommit':self.commit,'githubRepository':delivery.REPOSITORY,'githubReleaseTag':'v'+self.version,'ci':{'runId':1,'runUrl':f'https://github.com/{delivery.REPOSITORY}/actions/runs/1','commit':self.commit,'status':'success'},'qualification':{q:'Synthetic fixture only, not a verified capability' for q in delivery.QUALIFICATIONS},'componentSourceCommits':{c:self.commit for c in delivery.COMPONENTS},'installer':delivery.public_identity(delivery.identity(installer)),'sourceArchive':delivery.public_identity(delivery.identity(source))}
+   self.manifest['components'].append({'id':cid,'version':self.version,'archive':cid+'.zip','sizeBytes':(self.packs/(cid+'.zip')).stat().st_size,'sha256':sha(self.packs/(cid+'.zip')),'expandedBytes':sum(map(len,members.values())),'required':True,'entrypoints':{'tool':'bin/tool.exe'},'probes':[{'kind':'engine-self-test','entrypoint':'tool'}],**({'requiresMsvcSupplier':True} if cid in {'aive-engine','whisper-small'} else {})})
+  self.release={'schemaVersion':'aive.delivery-inputs.v1','releaseVersion':self.version,'platform':'win32','architecture':'x64','sourceCommit':self.commit,'githubRepository':delivery.REPOSITORY,'githubReleaseTag':'v'+self.version,'ci':{'runId':1,'runUrl':f'https://github.com/{delivery.REPOSITORY}/actions/runs/1','commit':self.commit,'status':'success'},'qualification':{q:'Synthetic fixture only, not a verified capability' for q in delivery.QUALIFICATIONS},'componentSourceCommits':{c:self.commit for c in delivery.COMPONENTS if c!='msvc-runtime'},'installer':delivery.public_identity(delivery.identity(installer)),'sourceArchive':delivery.public_identity(delivery.identity(source))}
   self.acceptance={'schemaVersion':'aive.delivery-acceptance.v1','releaseVersion':self.version,'sourceCommit':self.commit,'installerSha256':sha(installer),'status':'passed','gates':{g:{'status':'passed','evidence':'Synthetic schema fixture only; no installed execution'} for g in delivery.GATES}}
   self.paths={'installer':installer,'component-manifest':self.root/'manifest.json','source-archive':source,'release-record':self.root/'release.json','acceptance-record':self.root/'acceptance.json','guide':self.root/'guide.txt','notice':self.root/'NOTICE.txt','component-directory':self.packs}
   self.paths['guide'].write_text('Synthetic brief guide',encoding='utf8');self.paths['notice'].write_text('Synthetic notice',encoding='utf8');self.persist()
@@ -53,18 +61,18 @@ class DeliverySafety(unittest.TestCase):
    hashes=archive.read('SHA256SUMS.txt').decode().splitlines();self.assertEqual(len(hashes),12)
    for line in hashes:
     digest,name=line.split('  ',1);self.assertEqual(digest,hashlib.sha256(archive.read(name)).hexdigest())
-   record=json.loads(archive.read('DELIVERY.json'));self.assertEqual(record['sourceCommit'],self.commit);self.assertEqual(len(record['components']),4)
+   record=json.loads(archive.read('DELIVERY.json'));self.assertEqual(record['sourceCommit'],self.commit);self.assertEqual(len(record['components']),5)
  def vendor_rows(self):
   current=json.loads((scripts.parents[1]/'contracts/rebuild/components.json').read_text(encoding='utf8'))
   rows={r['id']:copy.deepcopy(r) for r in current['components'] if r.get('distribution')=='vendor-download'}
   for i,row in enumerate(self.manifest['components']):
-   if row['id'] in rows:
+   if row['id'] in rows and row.get('distribution')!='vendor-download':
     self.manifest['components'][i]=rows[row['id']];(self.packs/row['archive']).unlink();self.release['componentSourceCommits'].pop(row['id'])
  def test_mixed_delivery_excludes_supplier_binaries_without_inventing_source_identity(self):
   self.vendor_rows();self.persist();output=self.run_pack()
   with zipfile.ZipFile(output) as archive:
    record=json.loads(archive.read('DELIVERY.json'));external=[r for r in record['components'] if r.get('distribution')=='vendor-download']
-   self.assertEqual({r['manifest']['id'] for r in external},{'ffmpeg','documents'})
+   self.assertEqual({r['manifest']['id'] for r in external},{'ffmpeg','documents','msvc-runtime'})
    for row in external:
     self.assertIsNone(row['sourceIdentity']);self.assertEqual(row['sourceAssociation']['status'],'unverified-vendor-build');self.assertNotIn('offline-components/'+row['manifest']['archive'],archive.namelist())
    self.assertEqual(len(record['acceptance']['gates']),11)
