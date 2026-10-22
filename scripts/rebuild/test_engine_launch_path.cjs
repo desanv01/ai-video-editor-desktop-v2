@@ -116,7 +116,7 @@ await test('output-limit-drains-before-rejection',async()=>{
 });
 await test('actual-components-engine-probe-uses-resolver-and-direct-child-cwd',async()=>{
   const resolutions=[],launches=[];const result={schemaVersion:'desktop.engine-self-test.v1',status:'ok',component:'aive-engine',version:'1.0.0',frozen:true};
-  const t=load('components',{'./engineLaunch':{resolveEngineLaunch:async(exe,cwd,signal)=>{resolutions.push({exe,cwd,signal});return{executable:'selected-engine',cwd:'selected-probe-cwd'};}},
+  const t=load('components',{'./msvcSupplier':{},'./engineLaunch':{resolveEngineLaunch:async(exe,cwd,signal)=>{resolutions.push({exe,cwd,signal});return{executable:'selected-engine',cwd:'selected-probe-cwd'};}},
     'node:fs/promises':{lstat:async()=>({isFile:()=>true,isSymbolicLink:()=>false})},
     'node:child_process':{spawn:(exe,args,opts)=>{launches.push({exe,args,opts});const c=child();queueMicrotask(()=>{c.stdout.emit('data',Buffer.from(JSON.stringify(result)));c.close(0);});return c;}}},process,'\nmodule.exports.testProbe=probe;');
   const signal=new AbortController().signal;await t.api.testProbe({id:'aive-engine',version:'1.0.0',entrypoints:{engine:'bin/aive-engine.exe'},probes:[{kind:'engine-self-test',entrypoint:'engine'}]},String.raw`C:\owned`,signal);
@@ -124,7 +124,7 @@ await test('actual-components-engine-probe-uses-resolver-and-direct-child-cwd',a
   assert.equal(launches.length,1);assert.equal(launches[0].exe,'selected-engine');assert.equal(launches[0].opts.cwd,'selected-probe-cwd');assert.equal(launches[0].opts.shell,false);
 });
 await test('other-component-probe-does-not-use-engine-resolver',async()=>{
-  let calls=0;const t=load('components',{'./engineLaunch':{resolveEngineLaunch:async()=>{calls++;throw Error('wrong component');}},
+  let calls=0;const t=load('components',{'./msvcSupplier':{},'./engineLaunch':{resolveEngineLaunch:async()=>{calls++;throw Error('wrong component');}},
     'node:fs/promises':{lstat:async()=>({isFile:()=>true,isSymbolicLink:()=>false})},
     'node:child_process':{spawn:()=>{const c=child();queueMicrotask(()=>{c.stdout.emit('data',Buffer.from('ffmpeg version fixture'));c.close(0);});return c;}}},process,'\nmodule.exports.testProbe=probe;');
   await t.api.testProbe({id:'ffmpeg',version:'1',entrypoints:{ffmpeg:'bin/ffmpeg.exe'},probes:[{kind:'ffmpeg-version',entrypoint:'ffmpeg'}]},String.raw`C:\owned`,new AbortController().signal);assert.equal(calls,0);

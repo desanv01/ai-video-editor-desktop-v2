@@ -56,3 +56,9 @@ test('cancellation waits for the owned probe before staging cleanup and releases
 test('owned cleanup failure still releases busy and abort without touching existing activation',async t=>{
  const f=await fixture(t),stage=path.join(f.paths.components,stageName),realRm=fs.rm;const {c}=await stagingController(f,{fs:{...fs,rm:async(target,options)=>{if(target===stage)throw new Error('owned cleanup unavailable');return realRm(target,options);}}});await assert.rejects(c.prepare(),/owned cleanup unavailable/);assert.equal(c.busy,false);assert.equal(c.abort,null);assert.deepEqual(JSON.parse(await fs.readFile(path.join(f.paths.state,'active.json'))),f.old);
 });
+
+test('a supplier-dependent consumer cannot reuse an old marker without a required supplier',async t=>{
+ const f=await fixture(t);f.m.components.find(c=>c.id==='aive-engine').requiresMsvcSupplier=true;await fs.writeFile(f.file,JSON.stringify(f.m));
+ const {c,probes}=await controller(f);assert.equal(await c.allRequiredInstalled(),false);await assert.rejects(c.prepare(),/PACKS_UNCONFIGURED/);assert.equal(probes.length,0);
+ assert.equal(await fs.readFile(path.join(f.paths.data,'teacher.json'),'utf8'),'retained CUT and note');
+});

@@ -7,6 +7,7 @@ const root=path.resolve(process.argv[2]||path.join(__dirname,'../..'));
 const ts=process.argv[3]?require(path.resolve(process.argv[3])):createRequire(path.join(root,'desktop/package.json'))('typescript');
 const source=fs.readFileSync(path.join(root,'desktop/electron/components.ts'),'utf8');
 const util=fs.readFileSync(path.join(root,'desktop/electron/util.ts'),'utf8');
+const supplierHash=/export const MSVC_PACKAGE_SHA256='([a-f0-9]{64})'/.exec(fs.readFileSync(path.join(root,'desktop/electron/msvcSupplier.ts'),'utf8'))[1];
 function select(text,file,names) {
  const tree=ts.createSourceFile(file,text,ts.ScriptTarget.Latest,true);
  assert.equal(tree.parseDiagnostics.length,0,'TypeScript parse errors: '+file);
@@ -19,7 +20,7 @@ const compiled=ts.transpileModule(utilCode+'\n'+componentCode+'\nglobalThis.api=
 assert.equal(compiled.diagnostics.length,0);
 function harness({responses=[],entries=[]}={}) {
  const requests=[],writes=new Map(),directories=[],zipStats={closed:false,opened:false};let responseIndex=0;
- const sandbox={exports:{},URL,AbortController,AbortSignal,Set,Map,Number,Error,RELEASE:'2.1.0-rebuild.2',path:path.win32,
+ const sandbox={exports:{},URL,AbortController,AbortSignal,Set,Map,Number,Error,RELEASE:'2.1.0-rebuild.2',MSVC_PACKAGE_SHA256:supplierHash,path:path.win32,
   https:{get(url,options,callback){requests.push({url:url.href,headers:options.headers,signal:options.signal});const request=new EventEmitter();request.setTimeout=()=>{};request.destroy=()=>{};queueMicrotask(()=>callback({statusCode:200,headers:{},resume(){},...responses[responseIndex++]}));return request;}},
   fs:{async mkdir(file){directories.push(file);}},
   createWriteStream(file,options){assert.equal(options.flags,'wx');return {file};},
@@ -39,6 +40,10 @@ async function run(name,action){await action();cases++;}
  for(const origins of [null,[],['http://vendor.example'],['https://vendor.example/'],['https://vendor.example/path'],['https://vendor.example?'],['https://vendor.example#'],['https://user:pass@vendor.example'],['https://*.example'],['https://VENDOR.example'],['https://vendor.example:443'],['https://vendor.example','https://vendor.example'],['https://cdn.example'],Array(9).fill('https://vendor.example'),'https://vendor.example',[123]]) {
   await run('invalid origin policy '+JSON.stringify(origins),()=>assert.throws(()=>harness().validateManifest(manifest({downloadOrigins:origins})),/MANIFEST_DOWNLOAD_ORIGINS_INVALID/));
  }
+ const supplier=JSON.parse(fs.readFileSync(path.join(root,'contracts/rebuild/components.json'),'utf8')).components.find(c=>c.id==='msvc-runtime');
+ await run('exact supplier EXE manifest source is a data-only component',()=>harness().validateManifest(manifest(supplier)));
+ await run('supplier ID cannot select generic ZIP route',()=>assert.throws(()=>harness().validateManifest(manifest({...supplier,archive:'runtime.zip',archiveFormat:'zip'})),/MANIFEST_MSVC_FORMAT_REQUIRED/));
+ await run('supplier cannot create its own composition dependency',()=>assert.throws(()=>harness().validateManifest(manifest({...supplier,requiresMsvcSupplier:true})),/MANIFEST_MSVC_DEPENDENCY_INVALID/));
  await run('origin policy without source URL',()=>assert.throws(()=>harness().validateManifest(manifest({url:undefined,downloadOrigins:['https://vendor.example']})),/MANIFEST_DOWNLOAD_ORIGINS_INVALID/));
  for(const prefix of ['',null,'../vendor','vendor/','/vendor','vendor\\root','vendor/.','vendor//root','vendor/.VERIFIED.JSON','vendor/CON','vendor/trailing.','vendor/name?']) {
   await run('invalid prefix '+JSON.stringify(prefix),()=>assert.throws(()=>harness().validateManifest(manifest({archiveRoot:prefix})),/MANIFEST_ARCHIVE_ROOT_INVALID/));

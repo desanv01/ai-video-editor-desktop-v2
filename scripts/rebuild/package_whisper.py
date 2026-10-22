@@ -91,7 +91,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--version", required=True)
     parser.add_argument("--release-version", required=True)
     parser.add_argument("--runtime-root", required=True, type=Path)
-    parser.add_argument("--vc-runtime-root", required=True, type=Path)
+    runtime_mode = parser.add_mutually_exclusive_group(required=True)
+    runtime_mode.add_argument("--vc-runtime-root", type=Path)
+    runtime_mode.add_argument(
+        "--external-microsoft-runtime", action="store_true",
+        help="Omit Microsoft VC files; integrated official supplier setup must compose them before Whisper probes",
+    )
     parser.add_argument("--model", required=True, type=Path)
     parser.add_argument("--probe-audio", required=True, type=Path)
     parser.add_argument("--expected-text", required=True)
@@ -115,10 +120,10 @@ def main() -> int:
         raise ValueError("Output must be an absolute owned path")
     output = validate_output(args.output_dir)
     runtime = approved_input(args.runtime_root, directory=True)
-    vc_root = approved_input(args.vc_runtime_root, directory=True)
+    vc_root = None if args.external_microsoft_runtime else approved_input(args.vc_runtime_root, directory=True)
     if output == runtime or output.is_relative_to(runtime) or runtime.is_relative_to(output):
         raise ValueError("Output and verified runtime root must not overlap")
-    if output == vc_root or output.is_relative_to(vc_root) or vc_root.is_relative_to(output):
+    if vc_root is not None and (output == vc_root or output.is_relative_to(vc_root) or vc_root.is_relative_to(output)):
         raise ValueError("Output and approved VC runtime root must not overlap")
     model = approved_input(args.model)
     audio = approved_input(args.probe_audio)
@@ -146,7 +151,7 @@ def main() -> int:
     ):
         raise ValueError("Approved inventory requires nonempty name/version objects")
     runtime_files = collect_runtime(runtime)
-    vc_files = collect_vc_runtime(vc_root)
+    vc_files = {} if args.external_microsoft_runtime else collect_vc_runtime(vc_root)
     if {name.casefold() for name in runtime_files} & {name.casefold() for name in vc_files}:
         raise ValueError('Whisper and Microsoft VC runtime archive files collide')
     files = dict(runtime_files)
@@ -154,16 +159,34 @@ def main() -> int:
     files["models/ggml-small.bin"] = model
     files["probes/jfk.wav"] = audio
     hashes = {name: digest(path) for name, path in files.items()}
+    source_identity = {"component": COMPONENT, "version": args.version,
+        "releaseVersion": args.release_version, "metadata": metadata,
+        "includedRuntimeInputFiles": [{"inputFile": path.name, "archivePath": name,
+            "originGroup": 'whisper' if name in runtime_files else 'MicrosoftVC',
+            "sizeBytes": regular(path).st_size, "sha256": hashes[name]}
+            for name, path in sorted((runtime_files | vc_files).items())]}
+    if args.external_microsoft_runtime:
+        source_identity["externalMicrosoftRuntime"] = {
+            "distribution": "official-supplier-download",
+            "bundled": False,
+            "requiredBeforeWhisperProbes": True,
+            "setupOwner": "shared-integrated-setup-runtime-provider",
+            "compositionDirectory": "bin",
+            "requiredFiles": list(VC_RUNTIME),
+            "readiness": "not-established-by-packaging",
+        }
     data = {
         "NOTICE.txt": notice.read_bytes(),
         "dependency-inventory.json": encode(inventory),
-        "source-identity.json": encode({"component": COMPONENT, "version": args.version,
-            "releaseVersion": args.release_version, "metadata": metadata,
-            "includedRuntimeInputFiles": [{"inputFile": path.name, "archivePath": name,
-                "originGroup": 'whisper' if name in runtime_files else 'MicrosoftVC',
-                "sizeBytes": regular(path).st_size, "sha256": hashes[name]}
-                for name, path in sorted((runtime_files | vc_files).items())]}),
+        "source-identity.json": encode(source_identity),
     }
+    if args.external_microsoft_runtime:
+        data[".msvc-supplier-required.json"] = encode({
+            "schema": "aive.external-msvc.v1",
+            "component": COMPONENT,
+            "minimumWindowsMajor": 10,
+            "packageSha256": "843068991daaa1f73ad9f6239bce4d0f6a07a51f18c37ea2a867e9beca71295c",
+        })
     hashes.update({name: hashlib.sha256(value).hexdigest() for name, value in data.items()})
     data["SHA256SUMS.txt"] = "".join(f"{hashes[name]}  {name}\n" for name in sorted(hashes)).encode("utf-8")
     archive_name = f"{COMPONENT}-{args.version}-win32-x64.zip"
@@ -217,6 +240,8 @@ def main() -> int:
         "probes": [{"kind": "whisper-runtime", "entrypoint": "whisper"},
             {"kind": "whisper-model", "entrypoint": "model", "runtimeEntrypoint": "whisper",
                 "audioEntrypoint": "audio", "expectedText": args.expected_text}]}
+    if args.external_microsoft_runtime:
+        component["requiresMsvcSupplier"] = True
     descriptor = {"schemaVersion": "aive.components.v1", "releaseVersion": args.release_version,
         "platform": "win32", "architecture": "x64", "components": [component]}
     with descriptor_path.open("xb") as stream:
