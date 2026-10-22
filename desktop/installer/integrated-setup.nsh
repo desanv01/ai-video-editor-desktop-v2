@@ -1,3 +1,24 @@
+# Keep a registered custom installation directory when updating it interactively.
+# The default callback still sanitizes every new or unregistered destination.
+!macro customPageAfterChangeDir
+  !ifdef allowToChangeInstallationDirectory
+    Function AiveInstFilesPre
+      Push $0
+      ReadRegStr $0 SHELL_CONTEXT "${INSTALL_REGISTRY_KEY}" InstallLocation
+      ${If} $0 != ""
+      ${AndIf} $INSTDIR == $0
+      ${AndIf} ${FileExists} "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
+        Pop $0
+        Return
+      ${EndIf}
+      Call instFilesPre
+      Pop $0
+    FunctionEnd
+    !undef MUI_PAGE_CUSTOMFUNCTION_PRE
+    !define MUI_PAGE_CUSTOMFUNCTION_PRE AiveInstFilesPre
+  !endif
+!macroend
+
 # Interactive finish-page handoff only. Silent/update launch macros remain owned
 # by electron-builder and do not receive the acquisition flag.
 !macro customFinishPage

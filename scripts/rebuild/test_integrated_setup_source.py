@@ -14,6 +14,64 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 root = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parents[2]
+def check_registered_install_directory(installer):
+ """Exercise the real callback's small control flow with inert NSIS primitives.
+ This is source-level coverage, not a compiler or installed Windows proof.
+ """
+ hook=re.search(r'!macro customPageAfterChangeDir\n(.*?)!macroend',installer,re.S)
+ assert hook and '!ifdef allowToChangeInstallationDirectory' in hook[1]
+ assert re.search(r'!undef MUI_PAGE_CUSTOMFUNCTION_PRE\s+!define MUI_PAGE_CUSTOMFUNCTION_PRE AiveInstFilesPre',hook[1])
+ callback=re.search(r'Function AiveInstFilesPre\n(.*?)FunctionEnd',hook[1],re.S)
+ assert callback,'Install Files PRE callback is wired to the registered-path wrapper'
+ def run(current,registered,executable_exists):
+  values={'$INSTDIR':current,'$0':'caller-register-sentinel'};stack=[];inside=False;enabled=True;calls=[]
+  def expand(value):
+   value=value.strip('"').replace('${APP_EXECUTABLE_FILENAME}','Aivora.exe')
+   for key,item in values.items():value=value.replace(key,item)
+   return value
+  def condition(text):
+   match=re.fullmatch(r'(\$\w+) (==|!=) (\$\w+|"")',text)
+   if match:
+    equal=values[match[1]]==expand(match[3]);return equal if match[2]=='==' else not equal
+   match=re.fullmatch(r'\$\{FileExists\} "(.+)"',text)
+   assert match,'Unsupported callback condition: '+text
+   return executable_exists and expand(match[1])==current+'\\Aivora.exe'
+  for raw in callback[1].splitlines():
+   line=raw.strip()
+   if not line or line.startswith('#'):continue
+   if line.startswith('${If} '):
+    assert not inside;inside=True;enabled=condition(line[6:]);continue
+   if line.startswith('${AndIf} '):
+    assert inside;enabled=enabled and condition(line[9:]);continue
+   if line=='${EndIf}':inside=False;enabled=True;continue
+   if not enabled:continue
+   if line.startswith('Push '):stack.append(values[line[5:]])
+   elif line.startswith('Pop '):values[line[4:]]=stack.pop()
+   elif line.startswith('ReadRegStr '):
+    match=re.fullmatch(r'ReadRegStr (\$\w+) SHELL_CONTEXT "\$\{INSTALL_REGISTRY_KEY\}" InstallLocation',line)
+    assert match,'Read the current shell-context install location only';values[match[1]]=registered
+   elif line=='Return':assert not stack;return values,calls
+   elif line=='Call instFilesPre':
+    calls.append('instFilesPre');values['$0']='default-callback-scratch'
+    if 'Aivora' not in values['$INSTDIR']:values['$INSTDIR']+='\\Aivora'
+   else:raise AssertionError('Unsupported callback instruction: '+line)
+  assert not stack and not inside
+  return values,calls
+ # Existing custom path stays exact; new destination keeps the default sanitizer.
+ for current,registered,exists,expected,calls in [
+  (r'C:\Private\app',r'C:\Private\app',True,r'C:\Private\app',[]),
+  (r'C:\Fresh\chosen',r'C:\Private\app',False,r'C:\Fresh\chosen\Aivora',['instFilesPre']),
+  (r'C:\Private\app',r'C:\Private\app',False,r'C:\Private\app\Aivora',['instFilesPre']),
+ ]:
+  actual,delegated=run(current,registered,exists)
+  assert actual['$INSTDIR']==expected and delegated==calls and actual['$0']=='caller-register-sentinel'
+ return 3
+
+if '--registered-installer-path-only' in sys.argv:
+ cases=check_registered_install_directory((root/'desktop/installer/integrated-setup.nsh').read_text(encoding='utf-8'))
+ print(json.dumps({'status':'PASS','sourceCallbackCases':cases,'scope':'registered-path preserve/new-path fallback/register restoration','nativeOrInstallerExecution':False,'targetModuleImported':False}))
+ raise SystemExit(0)
+
 node = sys.argv[2] if len(sys.argv) > 2 else 'node'
 ts = str(Path(sys.argv[3]).resolve()) if len(sys.argv) > 3 else str(root/'desktop/node_modules/typescript/lib/typescript.js')
 manifest = json.loads((root/'contracts/rebuild/components.json').read_text(encoding='utf-8'))
@@ -84,6 +142,7 @@ config=(root/'desktop/electron-builder.yml').read_text(encoding='utf-8')
 check('offline-components/**' not in config and all('offline-components/'+rows[c]['archive'] in config for c in ['aive-engine','whisper-small']),'resource whitelist bundles only exact engine/Whisper archives')
 check(all(rows[c]['archive'] not in config for c in ['ffmpeg','documents']),'vendor binaries excluded from installer resources')
 installer=(root/'desktop/installer/integrated-setup.nsh').read_text(encoding='utf-8')
+checks += check_registered_install_directory(installer)
 direct_launch = 'Exec \'"$INSTDIR\\${APP_EXECUTABLE_FILENAME}" $1\''
 check(direct_launch in installer and '--updated --aive-complete-setup' in installer,'interactive direct launch preserves exact executable and update/setup flags')
 check('${If} ${UAC_IsAdmin}' in installer and installer.index('${If} ${UAC_IsAdmin}') < installer.index(direct_launch),'elevated current installer guard precedes every direct launch')
