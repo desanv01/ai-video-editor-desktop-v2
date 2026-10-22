@@ -431,6 +431,16 @@ async def run_edit_planner_agent(video_id: str, db: AsyncSession) -> dict:
 
         plan_id = str(plan.id)
         if native:
+            # Capture persisted defaults while our existing writer reservation still
+            # excludes teacher writes; batched client defaults can leave ORM values stale.
+            plan = (await db.execute(
+                select(EditPlan).where(EditPlan.video_id == video_id)
+                .execution_options(populate_existing=True)
+            )).scalar_one()
+            current_segments = list((await db.execute(
+                select(Segment).where(Segment.video_id == video_id)
+                .order_by(Segment.segment_index).execution_options(populate_existing=True)
+            )).scalars().all())
             committed_guard = _capture_native_plan_guard(plan, current_segments)
             await commit_native(db)
             _store_native_plan_guard(db, video_id, committed_guard)

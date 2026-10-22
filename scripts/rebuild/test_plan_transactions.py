@@ -6,7 +6,7 @@ import json
 import platform
 from contextlib import AsyncExitStack, closing
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 from pathlib import Path
 import sqlite3
@@ -196,6 +196,14 @@ async def exercise(case,root):
         return 3
     try:
         async with AsyncExitStack() as mocks:
+            if case in ('clean','clean-during'):
+                # Distinct client defaults expose stale ORM postfetch state deterministically.
+                updated_at_calls=0
+                def distinct_updated_at(context):
+                    nonlocal updated_at_calls
+                    updated_at_calls+=1
+                    return datetime(2026,1,1)+timedelta(microseconds=updated_at_calls)
+                mocks.enter_context(patch.object(Segment.__table__.c.updated_at.onupdate,'arg',distinct_updated_at))
             if case=='clean-during':
                 original_matches=planner._matches_snapshot
                 def diagnosed_matches(row,saved,fields):
@@ -282,6 +290,7 @@ async def exercise(case,root):
                         result=await planner.run_edit_planner_agent(str(vid),db)
                         assert result['status']=='success' and result['segments_total']==16 and calls.count('chat')==2
                         assert result['chat_provider']=='offline-fixture' and len(result['chapters'])==1
+                        if case in ('clean','clean-during'):assert updated_at_calls>=16
                         if case=='guard-after-plan':
                             await teacher()
                             with unittest.TestCase().assertRaises(planner.StaleEditPlanningError):await planner._read_guarded_native_plan(db,str(vid))
