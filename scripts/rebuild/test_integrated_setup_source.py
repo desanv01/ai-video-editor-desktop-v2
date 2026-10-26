@@ -74,6 +74,64 @@ if '--registered-installer-path-only' in sys.argv:
 
 node = sys.argv[2] if len(sys.argv) > 2 else 'node'
 ts = str(Path(sys.argv[3]).resolve()) if len(sys.argv) > 3 else str(root/'desktop/node_modules/typescript/lib/typescript.js')
+if '--msvc-alias-directories-only' in sys.argv:
+ # Exercise the selected production composer/parent/guard functions with an
+ # in-memory Windows filesystem. No supplier binary, module import or disk I/O.
+ focused = r"""
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),path=require('node:path').win32,crypto=require('node:crypto');
+const root=process.argv[1],ts=require(process.argv[2]);
+const source=fs.readFileSync(root+'/desktop/electron/msvcSupplier.ts','utf8');
+const tree=ts.createSourceFile('msvcSupplier.ts',source,ts.ScriptTarget.Latest,true);assert.equal(tree.parseDiagnostics.length,0);
+const wanted=new Set(['need','normal','compositionParent','composeSupplierRuntime','aliases','policy','noUcrt','ENGINE','WHISPER']);
+const selected=tree.statements.filter(n=>ts.isFunctionDeclaration(n)&&wanted.has(n.name?.text)||ts.isVariableStatement(n)&&n.declarationList.declarations.some(d=>wanted.has(d.name.getText(tree)))).map(n=>n.getText(tree)).join('\n');
+const js=ts.transpileModule(selected+'\nglobalThis.api={composeSupplierRuntime,compositionParent};',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS},reportDiagnostics:true});assert.equal(js.diagnostics.length,0);
+const hash=b=>crypto.createHash('sha256').update(b).digest('hex');
+const base='C:\\owned\\component',supplier='C:\\owned\\supplier',packageHash='supplier-package';
+const runtimeNames=['MSVCP140.dll','VCRUNTIME140.dll','VCRUNTIME140_1.dll','MSVCP140_ATOMIC_WAIT.dll','VCOMP140.dll'];
+async function scenario(unsafe) {
+ const nodes=new Map(),copies=[],created=[];
+ const key=p=>path.resolve(p).toLowerCase();
+ const dir=p=>nodes.set(key(p),{kind:'dir'});
+ for(const p of ['C:\\','C:\\owned',base,path.join(base,'_internal'),supplier,path.join(supplier,'runtime')])dir(p);
+ const data=new Map(runtimeNames.map(n=>[n,Buffer.from('verified-fixture-'+n)]));
+ for(const [name,b] of data)nodes.set(key(path.join(supplier,'runtime',name)),{kind:'file',data:b});
+ nodes.set(key(path.join(base,'.msvc-supplier-required.json')),{kind:'file',data:Buffer.from(JSON.stringify({schema:'aive.external-msvc.v1',component:'aive-engine',minimumWindowsMajor:10,packageSha256:packageHash}))});
+ const arrow=path.join(base,'_internal','pyarrow.libs');
+ if(unsafe==='file')nodes.set(key(arrow),{kind:'file',data:Buffer.from('occupied-parent')});
+ if(unsafe==='junction')nodes.set(key(arrow),{kind:'link',target:'C:\\outside'});
+ if(unsafe==='realpath')nodes.set(key(arrow),{kind:'dir',target:'C:\\outside'});
+ const error=(code)=>Object.assign(new Error(code),{code});
+ const get=p=>{const n=nodes.get(key(p));if(!n)throw error('ENOENT');return n;};
+ const mock={
+  lstat:async p=>{const n=get(p);return {isSymbolicLink:()=>n.kind==='link',isDirectory:()=>n.kind==='dir',isFile:()=>n.kind==='file',nlink:1};},
+  realpath:async p=>get(p).target??path.resolve(p),
+  mkdir:async p=>{assert.equal(get(path.dirname(p)).kind,'dir');if(nodes.has(key(p)))throw error('EEXIST');dir(p);created.push(path.resolve(p));},
+  readdir:async p=>{get(p);return [...nodes.keys()].filter(n=>key(path.dirname(n))===key(p)).map(n=>path.basename(n));},
+  readFile:async(p,encoding)=>{const n=get(p);assert.equal(n.kind,'file');return encoding?n.data.toString(encoding):n.data;},
+  copyFile:async(from,to,flags)=>{assert.equal(flags,1,'COPYFILE_EXCL retained');assert.equal(get(path.dirname(to)).kind,'dir');if(nodes.has(key(to)))throw error('EEXIST');nodes.set(key(to),{kind:'file',data:Buffer.from(get(from).data)});copies.push({from,to});},
+  writeFile:async(p,value,options)=>{assert.equal(options.flag,'wx');assert.ok(!nodes.has(key(p)));nodes.set(key(p),{kind:'file',data:Buffer.from(value)});}
+ };
+ const files=[...data].map(([name,b])=>({name,bytes:b.length,sha256:hash(b)}));
+ const sandbox={exports:{},fs:mock,path,constants:{COPYFILE_EXCL:1},binding:()=>({files}),digest:hash,supported:()=>{},verifyPreparedMsvc:async()=>true,msvcSupplierSignature:()=> 'fixture-binding',MSVC_PACKAGE_SHA256:packageHash};
+ vm.runInNewContext(js.outputText,sandbox);
+ const signal={throwIfAborted(){}};
+ if(unsafe){await assert.rejects(()=>sandbox.api.composeSupplierRuntime('aive-engine',base,supplier,signal),/MSVC_PATH_TYPE|MSVC_PATH_LINK/);assert.equal(copies.length,4);assert.ok(!nodes.has(key(path.join(base,'.msvc-composition.json'))));assert.equal(get(arrow).kind,unsafe==='file'?'file':unsafe==='junction'?'link':'dir');return;}
+ assert.ok(!nodes.has(key(arrow)),'Regression precondition: pyarrow.libs entirely absent');
+ await sandbox.api.composeSupplierRuntime('aive-engine',base,supplier,signal);
+ assert.equal(copies.length,6);assert.equal(get(arrow).kind,'dir');assert.ok(created.includes(arrow));
+ const expected=[['MSVCP140.dll','_internal/MSVCP140.dll'],['VCRUNTIME140.dll','_internal/VCRUNTIME140.dll'],['VCRUNTIME140_1.dll','_internal/VCRUNTIME140_1.dll'],['MSVCP140.dll','_internal/numpy.libs/msvcp140-a4c2229bdc2a2a630acdc095b4d86008.dll'],['MSVCP140.dll','_internal/pyarrow.libs/msvcp140-6e7bcb4ffac2ac140bf7bcc6de529ee1.dll'],['MSVCP140_ATOMIC_WAIT.dll','_internal/pyarrow.libs/msvcp140_atomic_wait-4325193497a3e8a7f3eeff01c806f206.dll']];
+ for(const [name,relative] of expected)assert.equal(hash(get(path.join(base,...relative.split('/'))).data),hash(data.get(name)));
+ const marker=JSON.parse(get(path.join(base,'.msvc-composition.json')).data.toString());assert.equal(marker.schema,'aive.msvc-composition.v1');assert.equal(marker.component,'aive-engine');assert.equal(marker.bindingSha256,'fixture-binding');
+ await assert.rejects(()=>sandbox.api.compositionParent(base,'C:\\outside',signal),/MSVC_COMPOSITION_PARENT_ESCAPE/);
+ await assert.rejects(()=>sandbox.api.composeSupplierRuntime('aive-engine',base,supplier,signal),/EEXIST/,'Occupied alias is never overwritten');
+}
+(async()=>{for(const unsafe of [null,'file','junction','realpath'])await scenario(unsafe);console.log(JSON.stringify({status:'PASS',cases:4,absentAliasParentCreated:true,allSixAliasHashesVerified:true,occupiedParentAndLinkRejected:true,exclusiveCopiesRetained:true,filesystem:'in-memory Windows model',targetModuleImported:false,build:false,network:false,supplierOrEngineExecution:false}));})().catch(e=>{console.error(e);process.exitCode=1;});
+"""
+ result=subprocess.run([node,'-e',focused,str(root),ts],capture_output=True,text=True,timeout=15)
+ assert result.returncode==0,result.stderr
+ print(result.stdout.strip())
+ raise SystemExit(0)
+
 manifest = json.loads((root/'contracts/rebuild/components.json').read_text(encoding='utf-8'))
 source = (root/'scripts/rebuild/package_delivery.py').read_text(encoding='utf-8')
 tree = ast.parse(source)

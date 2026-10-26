@@ -171,10 +171,24 @@ async function policy(root:string,id:string):Promise<void> {
  const p=path.join(root,'.msvc-supplier-required.json');await normal(p);const j=JSON.parse(await fs.readFile(p,'utf8'));
  need(j.schema==='aive.external-msvc.v1'&&j.component===id&&j.minimumWindowsMajor===10&&j.packageSha256===MSVC_PACKAGE_SHA256,'MSVC_PACKAGE_REQUIRES_REPACK');
 }
+async function compositionParent(root:string,directory:string,signal:AbortSignal):Promise<void> {
+ const base=path.resolve(root),relative=path.relative(base,path.resolve(directory));
+ need(relative!==''&&relative!=='..'&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative),'MSVC_COMPOSITION_PARENT_ESCAPE');
+ await normal(base,true);let current=base;
+ for(const part of relative.split(path.sep)) {
+  signal.throwIfAborted();const next=path.join(current,part);
+  try {await fs.lstat(next);} catch(error) {
+   if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;
+   // Validate the existing owned parent before creating exactly one child.
+   await normal(current,true);await fs.mkdir(next);
+  }
+  await normal(next,true);current=next;
+ }
+}
 export async function composeSupplierRuntime(id:string,root:string,supplier:string,signal:AbortSignal):Promise<void> {
  supported();const b=binding();need(await verifyPreparedMsvc(supplier,signal),'MSVC_SUPPLIER_UNVERIFIED');await normal(root,true);await policy(root,id);await noUcrt(root,id);
  for(const [name,relative] of aliases(id)) {
-  signal.throwIfAborted();const source=path.join(supplier,'runtime',name),destination=path.join(root,...relative.split('/'));await normal(path.dirname(destination),true);
+  signal.throwIfAborted();const source=path.join(supplier,'runtime',name),destination=path.join(root,...relative.split('/'));await compositionParent(root,path.dirname(destination),signal);
   await fs.copyFile(source,destination,constants.COPYFILE_EXCL);await normal(destination);need(digest(await fs.readFile(destination))===b.files.find(f=>f.name===name)!.sha256,'MSVC_COMPOSITION_HASH');
  }
  await fs.writeFile(path.join(root,'.msvc-composition.json'),JSON.stringify({schema:'aive.msvc-composition.v1',component:id,packageSha256:b.packageSha256,bindingSha256:msvcSupplierSignature()},null,2)+'\n',{flag:'wx'});
