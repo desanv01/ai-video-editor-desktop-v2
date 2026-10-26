@@ -64,6 +64,8 @@ jobs:
         run: node ../scripts/rebuild/test_msi_admin_policy.cjs ..
       - name: Verify integrated vendor setup and mixed delivery source boundaries
         run: python ../scripts/rebuild/test_integrated_setup_source.py ..
+      - name: Verify missing MSVC alias directories and unsafe-parent rejection
+        run: python ../scripts/rebuild/test_integrated_setup_source.py .. node node_modules/typescript/lib/typescript.js --msvc-alias-directories-only
       - name: Run immutable component update and legacy activation checks
         run: node ../scripts/rebuild/test_component_updates.cjs ..
       - name: Run native and browser transcript download boundary checks
