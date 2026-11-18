@@ -3,8 +3,17 @@
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const {EventEmitter}=require('node:events'),{createRequire}=require('node:module');
+const {createHash}=require('node:crypto');
 const root=path.resolve(process.argv[2]||path.join(__dirname,'../..'));
+const result={status:'RUNNING',counts:{original:{PASS:0,FAIL:0},'prior-added':{PASS:0,FAIL:0},new:{PASS:0,FAIL:0}},actualWorkflow:{status:'NOT-RUN',path:'.github/workflows/ci.yml'},nativeInvocations:0,candidateModuleImports:0,environment:{nodeVersion:process.version,platform:process.platform,cwd:process.cwd(),execPath:process.execPath}};
+let summaryEmitted=false;
+function recordFailure(error){if(!result.firstFailure)result.firstFailure={message:String(error?.message||error),stack:error?.stack};if(result.actualWorkflow.status==='PENDING')result.actualWorkflow.status='FAIL';result.status='FAIL';process.exitCode=1;}
+function emitSummary(){if(summaryEmitted)return;summaryEmitted=true;console.log(JSON.stringify({type:'summary',...result,exitStatus:result.status==='PASS'?0:1,scope:'selected actual source declarations/prepare method with virtual fs and owned-child mocks',targetModuleImported:false,nativeOrAppExecution:false,network:false,realExtraction:false,build:false,allReparseTagCertification:false}));}
+process.once('uncaughtException',error=>{recordFailure(error);console.error(error);emitSummary();process.exit(1);});
+process.once('unhandledRejection',error=>{recordFailure(error);console.error(error);emitSummary();process.exit(1);});
+result.parser={path:process.argv[3]?path.resolve(process.argv[3]):createRequire(path.join(root,'desktop/package.json')).resolve('typescript')};
 const ts=process.argv[3]?require(path.resolve(process.argv[3])):createRequire(path.join(root,'desktop/package.json'))('typescript');
+result.parser.version=ts.version;
 const read=n=>fs.readFileSync(path.join(root,n),'utf8');
 const componentSource=read('desktop/electron/components.ts'),helperSource=read('desktop/electron/msiAdmin.ts');
 function parsed(text,name){const tree=ts.createSourceFile(name,text,ts.ScriptTarget.Latest,true);assert.equal(tree.parseDiagnostics.length,0,name+' parse');return tree;}
@@ -16,35 +25,40 @@ function compile(code){const c=ts.transpileModule(code,{compilerOptions:{target:
 const utility=declarations(read('desktop/electron/util.ts'),'util.ts',['relative','confined']);
 const policy=declarations(componentSource,'components.ts',['kinds','validateManifest','validateDownloadOrigins','archivePath']);
 const mainPrepare=declarations(read('desktop/electron/main.ts'),'main.ts',['prepare']);
-const helper=declarations(helperSource,'msiAdmin.ts',['MsiAdminError','samePath','normalPath','runMsiAdmin','validateMsiTree','prepareMsiAdmin']);
-const code=compile(utility+'\n'+policy+'\n'+helper+'\n'+mainPrepare+'\nclass Preparation { '+prepareMethod+' }\nglobalThis.mainPrepare=prepare;globalThis.api={validateManifest,archivePath,prepareMsiAdmin,runMsiAdmin,validateMsiTree,MsiAdminError,Preparation};');
+const helper=declarations(helperSource,'msiAdmin.ts',['MSI_LINEAGE_CLAIM','MsiAdminError','samePath','normalPath','usableMsiIdentity','observeMsiIdentity','sameMsiObject','sameMsiSnapshot','runMsiAdmin','validateMsiTree','prepareMsiAdmin']);
+const code=compile(utility+'\n'+policy+'\n'+helper+'\n'+mainPrepare+'\nclass Preparation { '+prepareMethod+' }\nglobalThis.mainPrepare=prepare;globalThis.api={validateManifest,archivePath,prepareMsiAdmin,runMsiAdmin,validateMsiTree,MsiAdminError,Preparation,MSI_LINEAGE_CLAIM,usableMsiIdentity,observeMsiIdentity,sameMsiObject,sameMsiSnapshot};');
 const stage='C:\\private\\stage',target=path.win32.join(stage,'documents'),work=path.win32.join(stage,'.msi-documents'),exe='C:\\Windows\\System32\\msiexec.exe';
 const key=p=>path.win32.resolve(p).toLowerCase();
 function fixture(options={}){
- const tree=new Map(),operations=[],requests=[];let spawnedResolve;const spawned=new Promise(r=>spawnedResolve=r);
- function add(file,kind='file',size=10,extra={}){tree.set(key(file),{file:path.win32.resolve(file),kind,size,...extra});}
+ const tree=new Map(),operations=[],requests=[],receipts=[];let spawnedResolve,identity=100;const spawned=new Promise(r=>spawnedResolve=r);
+ function add(file,kind='file',size=10,extra={}){tree.set(key(file),{file:path.win32.resolve(file),kind,size,dev:1n,ino:BigInt(++identity),mtimeNs:1000n,ctimeNs:2000n,...extra});}
  function directory(file){file=path.win32.resolve(file);if(path.win32.dirname(file)!==file&&!tree.has(key(path.win32.dirname(file))))directory(path.win32.dirname(file));add(file,'directory',0);}
  directory(target);directory(path.win32.dirname(exe));add(exe);directory('C:\\cache');add('C:\\cache\\verified.part', 'file',32);
  const mockFs={
-  async lstat(file){const item=tree.get(key(file));if(!item)throw new Error('ENOENT '+file);return {size:item.size,nlink:item.nlink??1,isDirectory:()=>item.kind==='directory',isFile:()=>item.kind==='file',isSymbolicLink:()=>item.kind==='link'};},
+  async lstat(file,options){const item=tree.get(key(file));if(!item)throw new Error('ENOENT '+file);return {size:options?.bigint?BigInt(item.size):item.size,nlink:item.nlink??1,dev:item.dev,ino:item.ino,mtimeNs:item.mtimeNs,ctimeNs:item.ctimeNs,isDirectory:()=>item.kind==='directory',isFile:()=>item.kind==='file',isSymbolicLink:()=>item.kind==='link'};},
   async realpath(file){const item=tree.get(key(file));if(!item)throw new Error('ENOENT '+file);return item.realpath||path.win32.resolve(file);},
   async readdir(dir){const result=[];for(const item of tree.values())if(key(path.win32.dirname(item.file))===key(dir)&&key(item.file)!==key(dir))result.push(path.win32.basename(item.file));return result;},
   async mkdir(dir){operations.push(['mkdir',dir]);if(tree.has(key(dir)))throw new Error('EEXIST');if(!tree.has(key(path.win32.dirname(dir))))throw new Error('ENOENT');directory(dir);},
   async copyFile(source,dest,flags){operations.push(['copy',source,dest,flags]);assert.equal(flags,1);assert.equal(tree.has(key(dest)),false);add(dest,'file',tree.get(key(source)).size);}
  };
  let child;
- const sandbox={exports:{},URL,AbortController,AbortSignal,Set,Map,Number,Error,process:{platform:'win32',env:{SystemRoot:'C:\\Windows'}},path:path.win32,fs:mockFs,constants:{COPYFILE_EXCL:1},RELEASE:'2.1.0-rebuild.2',
+ const sandbox={exports:{},createHash,URL,AbortController,AbortSignal,Set,Map,Number,Error,process:{platform:'win32',env:{SystemRoot:'C:\\Windows'}},path:path.win32,fs:mockFs,constants:{COPYFILE_EXCL:1},RELEASE:'2.1.0-rebuild.2',
   spawn(executable,args,config){requests.push({executable,args,config});if(options.spawnThrows)throw new Error('spawn');child=new EventEmitter();child.pid=options.noPid?undefined:1234;child.kill=()=>assert.fail('MUST NOT KILL MSI');spawnedResolve(child);return child;}
  };
  vm.runInNewContext(code,sandbox,{filename:'selected-msi-policy-only.js'});
  const api=sandbox.api;
  function image(){directory(path.win32.join(target,'program'));add(path.win32.join(target,'program/soffice.com'),'file',11);add(path.win32.join(target,'LibreOffice.msi'),'file',20);add(path.win32.join(target,'LICENSE.txt'),'file',5);add(path.win32.join(work,'administrative-image.log'),'file',8);}
- return {...api,tree,add,directory,image,operations,requests,spawned,sandbox,prepare:(signal=new AbortController().signal,limit=100)=>api.prepareMsiAdmin('C:\\cache\\verified.part',stage,limit,['program/soffice.com'],api.archivePath,signal),close:(code=0,signal=null)=>child.emit('close',code,signal)};
+ return {...api,tree,add,directory,image,operations,requests,spawned,sandbox,receipts,prepare:async(signal=new AbortController().signal,limit=100)=>{
+   if(signal.aborted)return api.prepareMsiAdmin('C:\\cache\\verified.part',stage,limit,['program/soffice.com'],api.archivePath,signal);
+   const selectedArchive={sha256:'a'.repeat(64),identity:await api.observeMsiIdentity('C:\\cache\\verified.part','file')};
+   return api.prepareMsiAdmin('C:\\cache\\verified.part',stage,limit,['program/soffice.com'],api.archivePath,signal,{operationId:'fixture-original-operation',selectedArchive,persist:async evidence=>{if(options.persist)await options.persist(evidence);receipts.push(JSON.parse(JSON.stringify(evidence)));}});
+  },close:(code=0,signal=null)=>child.emit('close',code,signal)};
 }
 const base={id:'documents',version:'1.2.3',archive:'supplier.msi',archiveFormat:'msi-admin',sha256:'a'.repeat(64),sizeBytes:10,expandedBytes:100,required:true,entrypoints:{libreoffice:'program/soffice.com'},probes:[{kind:'document-tool-version',entrypoint:'libreoffice'}]};
 const manifest=c=>({schemaVersion:'aive.components.v1',releaseVersion:'2.1.0-rebuild.2',platform:'win32',architecture:'x64',components:[{...base,...c}]});
 const flush=()=>new Promise(r=>setImmediate(r));let cases=0;
-async function check(name,action){try{await action();cases++;}catch(e){e.message=name+': '+e.message;throw e;}}
+let group='original';
+async function check(name,action){try{await action();cases++;result.counts[group].PASS++;console.log(JSON.stringify({type:'case',name,group,status:'PASS'}));}catch(e){e.message=name+': '+e.message;result.counts[group].FAIL++;console.log(JSON.stringify({type:'case',name,group,status:'FAIL',message:e.message}));throw e;}}
 async function complete(f,code=0,signal=null){await f.spawned;f.image();f.close(code,signal);}
 (async()=>{
  await check('strict MSI manifest and unchanged ZIP defaults',()=>{const f=fixture();f.validateManifest(manifest({}));f.validateManifest(manifest({archive:'legacy.zip',archiveFormat:undefined}));});
@@ -67,9 +81,9 @@ async function complete(f,code=0,signal=null){await f.spawned;f.image();f.close(
  await check('entry bound covers whole output image',async()=>{const f=fixture();for(let i=0;i<100001;i++)f.add(path.win32.join(target,'entry'+i),'file',0);await assert.rejects(f.validateMsiTree(target,100,['program/soffice.com'],f.archivePath,new AbortController().signal),/MSI_OUTPUT_ENTRY_LIMIT/);});
  function preparationFixture(mode){
   const f=fixture(),events=[],journals=[],cleanup=[],activation=[];let release,begin;const started=new Promise(r=>begin=r),held=new Promise(r=>release=r);
-  Object.assign(f.sandbox,{randomUUID:()=> '11223344-5566-4788-99aa-bbccddeeff00',Buffer,sizeOf:async()=>0,hash:async()=>base.sha256,probe:async()=>{events.push('probe');},atomic:async(file,value)=>{journals.push({file,value:JSON.parse(JSON.stringify(value))});if(file.endsWith('active.json'))activation.push(value);},prepareMsiAdmin:async()=>{begin();await held;if(mode==='ambiguous')throw new f.MsiAdminError('MSI_NATIVE_SETTLEMENT_AMBIGUOUS',stage,'ambiguous');}});
-  f.sandbox.fs={...f.sandbox.fs,statfs:async()=>({bavail:1e9,bsize:1}),mkdir:async()=>{},rename:async()=>{},rm:async file=>cleanup.push(file)};
-  const c=new f.Preparation();Object.assign(c,{composed:()=>false,busy:false,nativeUncertain:false,abort:null,manifestFile:'virtual-manifest.json',manifest:manifest({}),paths:{components:'C:\\components',state:'C:\\state'},active:{schemaVersion:'aive.activation.v1',current:{old:{version:'0.0.1',sha256:'b'.repeat(64)}},previous:{}},legacyRoots:new Map(),publish:event=>events.push(event),configured:()=>true,assertActivationRoot:async()=>{},installed:async()=>false,acquire:async()=> 'C:\\cache\\verified.part',canonicalRoot:()=> 'C:\\components\\documents\\identity',normalRoot:async()=>true});
+  Object.assign(f.sandbox,{randomUUID:()=> '11223344-5566-4788-99aa-bbccddeeff00',Buffer,sizeOf:async()=>0,hash:async()=>base.sha256,probe:async()=>{events.push('probe');},atomic:async(file,value)=>{journals.push({file,value:JSON.parse(JSON.stringify(value))});if(file.endsWith('active.json'))activation.push(value);},prepareMsiAdmin:async(archive,staging,expandedBytes,entrypoints,safeRelative,signal,capture)=>{begin();await held;if(mode==='ambiguous')throw new f.MsiAdminError('MSI_NATIVE_SETTLEMENT_AMBIGUOUS',stage,'ambiguous');const image=path.win32.join(staging,'documents');f.directory(image);const root=await f.sandbox.observeMsiIdentity(image,'directory');const evidence={operationId:capture.operationId,componentId:'documents',claim:f.MSI_LINEAGE_CLAIM,boundary:'validated-layout',lineage:'qualified',selectedArchive:capture.selectedArchive,layout:{claim:'validated-relative-name-byte-size-only',root,rows:[['program/soffice.com',11]],sha256:'c'.repeat(64)},native:{closeObserved:true,code:0,signal:null,cancelled:false,settlement:'normal-close'}};await capture.persist(evidence);return evidence;}});
+  f.sandbox.fs={...f.sandbox.fs,statfs:async()=>({bavail:1e9,bsize:1}),mkdir:async file=>{f.directory(file);},rename:async(source,target)=>{for(const [k,item]of [...f.tree])if(k===key(source)||k.startsWith(key(source)+'\\')){f.tree.delete(k);item.file=path.win32.join(target,path.win32.relative(source,item.file));f.tree.set(key(item.file),item);}},rm:async file=>cleanup.push(file)};
+  const c=new f.Preparation();Object.assign(c,{composed:()=>false,busy:false,nativeUncertain:false,abort:null,manifestFile:'virtual-manifest.json',manifest:manifest({}),paths:{components:'C:\\components',state:'C:\\state'},active:{schemaVersion:'aive.activation.v1',current:{old:{version:'0.0.1',sha256:'b'.repeat(64)}},previous:{}},legacyRoots:new Map(),publish:event=>events.push(event),configured:()=>true,assertActivationRoot:async()=>{},installed:async()=>false,acquire:async()=> 'C:\\cache\\verified.part',root:()=> 'C:\\components\\documents\\identity',canonicalRoot:()=> 'C:\\components\\documents\\identity',normalRoot:async()=>true});
   return {...f,c,events,journals,cleanup,activation,started,release:()=>release()};
  }
  await check('actual prepare waits native window, suppresses cancellation UI, then probes/activates only on success',async()=>{const f=preparationFixture('success'),p=f.c.prepare();await f.started;assert.ok(f.events.some(e=>e.canCancel===false));assert.equal(f.activation.length,0);assert.equal(f.events.includes('probe'),false);f.release();await p;assert.equal(f.events.includes('probe'),true);assert.equal(f.activation.length,1);assert.equal(f.cleanup.length,1);});
@@ -85,6 +99,98 @@ async function complete(f,code=0,signal=null){await f.spawned;f.image();f.close(
  await check('tree rejection after native return0 carries normal-close settlement',async()=>{const f=fixture(),p=f.prepare(),r=assert.rejects(p,e=>e instanceof f.MsiAdminError&&e.message==='MSI_OUTPUT_ENTRYPOINT_MISSING'&&e.nativeSettlement==='normal-close');await f.spawned;f.close();await r;});
  for(const settlement of ['not-started','normal-close'])await check('known helper settlement clears reservation without inventing restart hold '+settlement,async()=>{const f=preparationFixture('success');f.sandbox.prepareMsiAdmin=async()=>{throw new f.MsiAdminError('KNOWN_FAILURE',stage,settlement);};await assert.rejects(f.c.prepare(),/KNOWN_FAILURE/);const saved=f.journals.at(-1).value;assert.equal(saved.nativeSettlement,settlement);assert.ok(saved.retainedStaging);assert.equal(f.c.nativeUncertain,false);assert.ok(f.events.some(e=>e.canRetry===true));const restarted=preparationFixture('success');restarted.sandbox.fs.readFile=async()=>JSON.stringify(manifest({}));restarted.sandbox.readJson=async(file,fallback)=>file.endsWith('preparation.json')?saved:fallback;await restarted.c.initialize();assert.equal(restarted.c.nativeUncertain,false);});
  await check('unexpected untyped helper failure cannot clear an attempted native reservation',async()=>{const f=preparationFixture('success');f.sandbox.prepareMsiAdmin=async()=>{throw new Error('UNKNOWN_NATIVE_FAILURE');};await assert.rejects(f.c.prepare(),/UNKNOWN_NATIVE_FAILURE/);assert.equal(f.journals.at(-1).value.nativeSettlement,'ambiguous');assert.equal(f.c.nativeUncertain,true);assert.equal(f.cleanup.length,0);await assert.rejects(f.c.prepare(),/MSI_NATIVE_SETTLEMENT_AMBIGUOUS_STAGING_RETAINED/);});
+ group='prior-added';
+ await check('every frozen original assertion remains text-identical including original CI assertion',()=>{
+  // Self-contained frozen original 48-case region; line endings are portable.
+  const source=fs.readFileSync(__filename,'utf8').replace(/\r\n/g,'\n');
+  const begin=source.indexOf("await check('strict MSI manifest and unchanged ZIP defaults'"),end=source.indexOf("group='prior-added';",begin);
+  assert.ok(begin>=0&&end>begin,'original case region markers');
+  assert.equal(createHash('sha256').update(source.slice(begin,end),'utf8').digest('hex'),'ebd97447bcc8a64280d00a1006e9c95e5f433dd6b0f381012f5ffcaeb335f8be','frozen original48 case and lifecycle fixture region');
+  const candidate=parsed(source,'candidate-harness.cjs'),calls=[];
+  function walk(n){if(ts.isCallExpression(n)&&n.expression.getText(candidate).startsWith('assert.'))calls.push(n.getText(candidate));ts.forEachChild(n,walk);}walk(candidate);
+  for(const assertion of ["assert.equal(tree.parseDiagnostics.length,0,name+' parse')","assert.equal(c.diagnostics.length,0)",'assert.equal(flags,1)','assert.equal(tree.has(key(dest)),false)',"assert.fail('MUST NOT KILL MSI')","assert.ok(ci.includes('run: node ../scripts/rebuild/test_msi_admin_policy.cjs ..'))"])assert.ok(calls.includes(assertion),'preserved fixture/compiler/workflow assertion: '+assertion);
+  result.originalAssertionCount=102;
+ });
+ await check('exact bigint identity observation and same-object/snapshot helpers',async()=>{
+  const f=fixture(),file='C:\\cache\\verified.part',raw=f.tree.get(key(file));raw.ino=900719925474099312345n;
+  const a=await f.observeMsiIdentity(file,'file'),b=JSON.parse(JSON.stringify(a));assert.equal(a.ino,'900719925474099312345');assert.equal(a.bytes,'32');assert.equal(a.mtimeNs,'1000');assert.equal(a.ctimeNs,'2000');assert.equal(f.usableMsiIdentity(a),true);assert.equal(f.sameMsiObject(a,b),true);assert.equal(f.sameMsiSnapshot(a,b),true);assert.equal(f.sameMsiSnapshot(a,{...b,bytes:'33'}),false);assert.equal(f.sameMsiSnapshot(a,{...b,ctimeNs:'2001'}),false);assert.equal(f.sameMsiObject(a,{...b,ino:'900719925474099312346'}),false);
+ });
+ for(const [field,value]of [['ino',undefined],['dev',0n],['ino',0n],['ino',9007199254740992],['mtimeNs',undefined],['ctimeNs',1.25],['size',-1]])await check('missing/zero/lossy observed identity '+field+' '+String(value),async()=>{
+  const f=fixture(),raw=f.tree.get(key('C:\\cache\\verified.part'));raw[field]=value;await assert.rejects(f.observeMsiIdentity('C:\\cache\\verified.part','file'));assert.equal(f.requests.length,0);
+ });
+ await check('safe integer metadata converts exactly; serialized missing/zero/lossy identities fail usability',async()=>{
+  const f=fixture(),raw=f.tree.get(key('C:\\cache\\verified.part'));raw.dev=1;raw.ino=42;raw.mtimeNs=1000;raw.ctimeNs=2000;const a=await f.observeMsiIdentity('C:\\cache\\verified.part','file');assert.equal(a.ino,'42');for(const bad of [{...a,ino:'0'},{...a,dev:'0'},{...a,ino:42},{...a,mtimeNs:undefined},{...a,bytes:'1.5'}])assert.equal(f.usableMsiIdentity(bad),false);
+ });
+ await check('capture missing fails not-started before any native invocation',async()=>{
+  const f=fixture();await assert.rejects(f.prepareMsiAdmin('C:\\cache\\verified.part',stage,100,['program/soffice.com'],f.archivePath,new AbortController().signal),e=>{assert.equal(e.nativeSettlement,'not-started');return true;});assert.equal(f.requests.length,0);assert.equal(f.operations.length,0);
+ });
+ await check('failed pre-spawn capture prevents original child invocation',async()=>{
+  const f=fixture({persist:async e=>{if(e.boundary==='pre-spawn')throw new Error('PRE_SPAWN_CAPTURE_FAILURE');}});await assert.rejects(f.prepare(),e=>{assert.equal(e.nativeSettlement,'not-started');return true;});assert.equal(f.requests.length,0);assert.equal(f.receipts.some(e=>e.lineage==='qualified'),false);
+ });
+ for(const fault of ['same-object','missing-ino','zero-ino','lossy-ino'])await check('invalid staged copy '+fault+' never reaches original spawn',async()=>{
+  const f=fixture(),copy=f.sandbox.fs.copyFile;f.sandbox.fs.copyFile=async(...args)=>{await copy(...args);const staged=f.tree.get(key(args[1])),source=f.tree.get(key(args[0]));if(fault==='same-object'){staged.dev=source.dev;staged.ino=source.ino;}else staged.ino=fault==='missing-ino'?undefined:fault==='zero-ino'?0n:9007199254740992;};await assert.rejects(f.prepare(),e=>{assert.equal(e.nativeSettlement,'not-started');return true;});assert.equal(f.requests.length,0);assert.equal(f.receipts.some(e=>e.lineage==='qualified'),false);
+ });
+ for(const fault of ['ctime','ino','unavailable'])await check(fault+' post-close staged endpoint remains unknown',async()=>{
+  const f=fixture(),p=f.prepare(),r=assert.rejects(p);await f.spawned;f.image();f.close();const staged=key(path.win32.join(work,'supplier.msi'));if(fault==='unavailable')f.tree.delete(staged);else if(fault==='ino')f.tree.get(staged).ino+=1n;else f.tree.get(staged).ctimeNs+=1n;await r;const e=f.receipts.at(-1);assert.equal(e.lineage,'unknown');assert.equal(e.native.closeObserved,true);assert.equal(e.native.code,0);assert.equal(e.native.settlement,'normal-close');assert.equal(e.native.cancelled,false);assert.equal(e.layout,undefined);
+ });
+ await check('terminal nonzero keeps original failure priority when endpoint unavailable',async()=>{
+  const f=fixture(),p=f.prepare(),r=assert.rejects(p,/MSI_ADMIN_EXIT_1603/);await f.spawned;f.image();f.close(1603);f.tree.delete(key(path.win32.join(work,'supplier.msi')));await r;const e=f.receipts.at(-1);assert.equal(e.native.settlement,'normal-close');assert.equal(e.native.code,1603);assert.equal(e.lineage,'unknown');
+ });
+ await check('late cancellation in async terminal persist does not rewrite original native cancellation',async()=>{
+  const ac=new AbortController();let injected=false;const f=fixture({persist:async e=>{if(e.native?.closeObserved&&!injected){injected=true;await Promise.resolve();ac.abort();}}}),p=f.prepare(ac.signal),r=assert.rejects(p);await complete(f);await r;const e=f.receipts.at(-1);assert.equal(injected,true);assert.equal(e.native.closeObserved,true);assert.equal(e.native.cancelled,false);assert.equal(e.preparationCancelled,true);assert.equal(e.lineage,'unknown');assert.equal(e.layout,undefined);
+ });
+ await check('late cancellation in final validated-layout save prevents successful helper return',async()=>{
+  const ac=new AbortController();let injected=false;const f=fixture({persist:async e=>{if(e.boundary==='validated-layout'&&!injected){injected=true;await Promise.resolve();ac.abort();}}}),p=f.prepare(ac.signal),r=assert.rejects(p);await complete(f);await r;const e=f.receipts.at(-1);assert.equal(injected,true);assert.equal(e.lineage,'unknown');assert.equal(e.preparationCancelled,true);assert.equal(e.native.cancelled,false);assert.ok(e.layout);
+ });
+ await check('normal close failure also records observed endpoint',async()=>{
+  const f=fixture(),p=f.prepare(),r=assert.rejects(p,/MSI_ADMIN_EXIT_1603/);await complete(f,1603);await r;const e=f.receipts.at(-1);assert.ok(e.endpoint);assert.equal(e.endpoint.path,path.win32.join(work,'supplier.msi'));assert.equal(e.lineage,'unknown');assert.equal(e.native.code,1603);
+ });
+ await check('successful rename then identity failure retains renamed branch with unknown activation',async()=>{
+  const f=preparationFixture('success'),oldActivation=JSON.stringify(f.c.active),priorRename=f.sandbox.fs.rename,priorLstat=f.sandbox.fs.lstat;let moved=false;f.sandbox.fs.rename=async(...args)=>{await priorRename(...args);moved=true;};f.sandbox.fs.lstat=async(file,options)=>{if(moved&&key(file)===key(f.c.root()))throw new Error('POST_RENAME_IDENTITY_FAILURE');return priorLstat(file,options);};const p=f.c.prepare(),r=assert.rejects(p);await f.started;f.release();await r;assert.equal(moved,true);const e=f.journals.at(-1).value.documentsEvidence;assert.equal(e.activation.branch,'renamed');assert.equal(e.activation.status,'unknown');assert.equal(f.journals.at(-1).value.nativeSettlement,'normal-close');assert.equal(f.c.nativeUncertain,false);assert.equal(JSON.stringify(f.c.active),oldActivation);assert.equal(f.activation.length,0);assert.equal(f.cleanup.length,0);
+ });
+ await check('qualified mocked helper feeds actual production activation and exact safe progress',async()=>{
+  const f=preparationFixture('success'),p=f.c.prepare();await f.started;f.release();await p;const e=f.journals.at(-1).value.documentsEvidence;assert.equal(e.lineage,'qualified');assert.equal(e.activation.status,'qualified-active-layout');for(const event of f.events)if(event?.progress)assert.deepEqual(Object.keys(event.progress).sort(),['operationId','selected','totalBytes','acquiredBytes','completedWork','totalWork'].sort());
+ });
+ await check('both actual progress declarations satisfy supplied DesktopState contract semantically',()=>{
+  const progress=[];function visit(n){if(ts.isVariableDeclaration(n)&&n.name.getText(componentTree)==='progress'&&n.type?.getText(componentTree)==="DesktopState['progress']")progress.push(n);ts.forEachChild(n,visit);}visit(componentTree);assert.equal(progress.length,2,'both update and acquire typed projections');
+  const ambient=`interface Array<T>{readonly length:number;[index:number]:T;reduce(callback:(sum:number,item:T)=>number,initial:number):number;} interface ReadonlyArray<T>{readonly length:number;readonly [index:number]:T;} interface Boolean{} interface CallableFunction{} interface Function{} interface IArguments{} interface NewableFunction{} interface Number{} interface Object{} interface RegExp{} interface String{} interface Promise<T>{} type Record<K extends keyof any,T>={[P in K]:T};type Readonly<T>={readonly [P in keyof T]:T[P]};`;
+  for(const [index,node]of progress.entries()){
+   assert.deepEqual(node.initializer.properties.map(p=>p.name.getText(componentTree)).sort(),['operationId','selected','totalBytes','acquiredBytes','completedWork','totalWork'].sort());
+   const prefix='declare global {'+ambient+'}\n'+read('contracts/rebuild/desktop.ts')+`\ndeclare const journal:{operationId:string;selected:string[];totalBytes:number;acquiredBytes:number;completedWork:number};declare const totalWork:number;declare const states:{bytes:number}[];\nconst progress:DesktopState['progress']=`,projection=node.initializer.getText(componentTree);
+   for(const field of [null,'phase','documentsEvidence']){
+    const text=prefix+(field?projection.slice(0,-1)+','+field+':undefined}':projection)+';',name='/typed-progress-'+index+'-'+field+'.ts',source=ts.createSourceFile(name,text,ts.ScriptTarget.ES2022,true);const host={getSourceFile:f=>f===name?source:undefined,getDefaultLibFileName:()=>'/no-lib.d.ts',writeFile:()=>assert.fail('NO SEMANTIC EMIT'),getCurrentDirectory:()=> '/',getDirectories:()=>[],fileExists:f=>f===name,readFile:f=>f===name?text:undefined,getCanonicalFileName:f=>f,useCaseSensitiveFileNames:()=>true,getNewLine:()=> '\n'};
+    const program=ts.createProgram([name],{noLib:true,noEmit:true,strict:true,target:ts.ScriptTarget.ES2022},host),diagnostics=ts.getPreEmitDiagnostics(program),messages=diagnostics.map(d=>ts.flattenDiagnosticMessageText(d.messageText,'\n'));
+    if(field)assert.ok(diagnostics.some(d=>d.code===2353&&ts.flattenDiagnosticMessageText(d.messageText,'\n').includes(field)),'negative projection control rejects '+field+': '+messages.join(';'));else assert.deepEqual(messages,[],'typed progress '+index);
+   }
+  }
+ });
+ group='new';
+ for(const site of ['before-rename','after-root-observation'])await check('activation private atomic error is redacted '+site,async()=>{
+  const f=preparationFixture('success'),oldActivation=JSON.stringify(f.c.active),atomic=f.sandbox.atomic,rename=f.sandbox.fs.rename;
+  const privatePath='C:\\fake-private\\msi-activation-'+site+'-unique\\preparation.json',order=[];
+  let injected=false,recovered=false,failures=0,renames=0;
+  f.sandbox.fs.rename=async(...args)=>{renames++;return rename(...args);};
+  f.sandbox.atomic=async(file,value)=>{
+   const a=value.documentsEvidence?.activation,isJournal=file.endsWith('preparation.json');
+   const selected=isJournal&&a&&value.phase==='activating'&&(site==='before-rename'?a.branch===undefined:a.branch==='renamed'&&!!a.after);
+   if(selected&&!injected){injected=true;failures++;order.push('injected-failure');throw new Error('INJECTED_ATOMIC_WRITE at '+privatePath);}
+   await atomic(file,value);
+   if(injected){assert.equal(isJournal,true);assert.equal(value.phase,'error');recovered=true;order.push('successful-recovery');}
+  };
+  const pending=f.c.prepare(),rejection=assert.rejects(pending,error=>{assert.equal(error.message,'MSI_ACTIVATION_JOURNAL_WRITE_FAILED');assert.equal(Object.hasOwn(error,'cause'),false);return true;});
+  await f.started;f.release();await rejection;
+  assert.equal(injected,true);assert.equal(failures,1);assert.equal(recovered,true);assert.deepEqual(order,['injected-failure','successful-recovery']);
+  const last=f.journals.at(-1).value,e=last.documentsEvidence,a=e.activation;
+  assert.equal(last.phase,'error');assert.equal(last.nativeSettlement,'normal-close');assert.equal(e.native.settlement,'normal-close');assert.equal(e.native.closeObserved,true);assert.equal(e.native.code,0);assert.equal(e.native.cancelled,false);assert.equal(e.preparationCancelled,false);assert.equal(f.c.nativeUncertain,false);
+  assert.equal(a.status,'unknown');assert.notEqual(a.activeStatePersisted,true);assert.equal(JSON.stringify(f.c.active),oldActivation);assert.equal(f.activation.length,0);assert.ok(last.retainedStaging);assert.equal(f.cleanup.length,0);
+  assert.equal(renames,site==='before-rename'?0:1);
+  if(site==='before-rename'){assert.equal(a.branch,undefined);assert.equal(a.after,undefined);}else{assert.equal(a.branch,'renamed');assert.ok(a.after);assert.equal(f.usableMsiIdentity(a.after),true);assert.ok(f.tree.has(key(f.c.root())));}
+  const failure=f.events.find(event=>event?.error?.code==='MSI_ACTIVATION_JOURNAL_WRITE_FAILED');assert.ok(failure);assert.equal(failure.phase,'error');assert.equal(failure.error.retryable,true);assert.deepEqual(Object.keys(failure.error).sort(),['code','message','retryable','retainedStaging'].sort());
+  for(const event of f.events){const exposed=JSON.stringify({error:event?.error??null,progress:event?.progress??null});assert.equal(exposed.includes('fake-private'),false);assert.equal(exposed.includes('INJECTED_ATOMIC_WRITE'),false);assert.equal(exposed.includes('msi-activation-'+site+'-unique'),false);if(event?.progress)assert.deepEqual(Object.keys(event.progress).sort(),['operationId','selected','totalBytes','acquiredBytes','completedWork','totalWork'].sort());}
+ });
+ assert.deepEqual(result.counts,{original:{PASS:48,FAIL:0},'prior-added':{PASS:26,FAIL:0},new:{PASS:2,FAIL:0}});
+ result.actualWorkflow.status='PENDING';
  const ci=read('.github/workflows/ci.yml');assert.ok(ci.includes('run: node ../scripts/rebuild/test_msi_admin_policy.cjs ..'));
- console.log(JSON.stringify({status:'PASS',cases,scope:'selected actual source declarations/prepare method with virtual fs and owned-child mocks',targetModuleImported:false,nativeOrAppExecution:false,network:false,realExtraction:false,build:false,allReparseTagCertification:false}));
-})().catch(e=>{console.error(e);process.exitCode=1;});
+ result.actualWorkflow.status='PASS';
+ result.status='PASS';
+})().catch(e=>{recordFailure(e);console.error(e);}).finally(()=>{emitSummary();});

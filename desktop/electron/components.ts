@@ -8,7 +8,7 @@ import { Transform } from 'node:stream';
 import https from 'node:https';
 import yauzl from 'yauzl';
 import { resolveEngineLaunch } from './engineLaunch';
-import { prepareMsiAdmin, MsiAdminError } from './msiAdmin';
+import { prepareMsiAdmin, MsiAdminError, observeMsiIdentity, sameMsiObject, MSI_LINEAGE_CLAIM, type MsiEvidence } from './msiAdmin';
 import { msvcSupplierConfigured, msvcSupplierSignature, prepareMsvcSupplier, verifyPreparedMsvc, composeSupplierRuntime, verifyMsvcComposition, MSVC_PACKAGE_SHA256 } from './msvcSupplier';
 import type { ComponentManifest, ReleaseManifest, DesktopState, SetupPhase } from '../../contracts/rebuild/desktop';
 import { atomic, confined, relative, readJson, RELEASE, type Paths } from './util';
@@ -54,7 +54,7 @@ function archivePath(value:unknown):value is string {
 }
 interface WhisperBindings { whisperRoot:string;whisperBinary:string;whisperModel:string }
 interface Active { schemaVersion: 'aive.activation.v1'; releaseVersion: string; current: Record<string,{version:string;sha256:string}>; previous: Record<string,{version:string;sha256:string}> }
-interface Journal { operationId:string; selected:string[]; totalBytes:number; phase:SetupPhase; acquiredBytes:number; completedWork:number; retainedStaging?:string; nativeSettlement?:'in-progress'|'not-started'|'normal-close'|'ambiguous' }
+interface Journal { documentsEvidence?:MsiEvidence; operationId:string; selected:string[]; totalBytes:number; phase:SetupPhase; acquiredBytes:number; completedWork:number; retainedStaging?:string; nativeSettlement?:'in-progress'|'not-started'|'normal-close'|'ambiguous' }
 async function hash(file: string, signal: AbortSignal): Promise<string> { const result=createHash('sha256'); for await(const chunk of createReadStream(file,{signal})) result.update(chunk); return result.digest('hex'); }
 async function sizeOf(root:string):Promise<number> { let size=0; for(const entry of await fs.readdir(root,{withFileTypes:true}).catch(() => [])) { const file=path.join(root,entry.name); if(entry.isDirectory()) size+=await sizeOf(file); else if(entry.isFile()) size+=(await fs.stat(file)).size; } return size; }
 export class Components {
@@ -158,17 +158,17 @@ export class Components {
   if(this.busy) throw new Error('PREPARATION_BUSY'); if(!this.configured()) throw new Error('PACKS_UNCONFIGURED'); this.busy=true; this.abort=new AbortController(); const signal=this.abort.signal;
   const selected=this.manifest.components.filter(c => c.required).sort((a,b)=>Number(b.id==='msvc-runtime')-Number(a.id==='msvc-runtime')); const journal:Journal={operationId:randomUUID(),selected:selected.map(c => c.id),totalBytes:selected.reduce((n,c)=>n+c.sizeBytes,0),phase:'checking',acquiredBytes:0,completedWork:0}; const totalWork=selected.length*4;
   const states=selected.map(c => ({id:c.id,version:c.version,phase:'checking' as SetupPhase,bytes:0,installed:false}));
-  const update=async(phase:SetupPhase,c?:ComponentManifest,bytes?:number) => { journal.phase=phase; if(c) { const state=states.find(s => s.id===c.id)!; state.phase=phase; if(bytes!==undefined) state.bytes=bytes; } journal.acquiredBytes=states.reduce((n,s)=>n+s.bytes,0); this.publish({phase,components:states.map(s=>({...s})),error:null,canCancel:!['activating','ready'].includes(phase),canRetry:false,progress:{...journal,totalWork}}); await atomic(path.join(this.paths.state,'preparation.json'),journal); };
+  const update=async(phase:SetupPhase,c?:ComponentManifest,bytes?:number) => { journal.phase=phase; if(c) { const state=states.find(s => s.id===c.id)!; state.phase=phase; if(bytes!==undefined) state.bytes=bytes; } journal.acquiredBytes=states.reduce((n,s)=>n+s.bytes,0); const progress:DesktopState['progress']={operationId:journal.operationId,selected:journal.selected,totalBytes:journal.totalBytes,acquiredBytes:journal.acquiredBytes,completedWork:journal.completedWork,totalWork}; this.publish({phase,components:states.map(s=>({...s})),error:null,canCancel:!['activating','ready'].includes(phase),canRetry:false,progress}); await atomic(path.join(this.paths.state,'preparation.json'),journal); };
   const staging=confined(this.paths.components,'s'+Buffer.from(journal.operationId.replace(/-/g,''),'hex').toString('base64url')); const staged=new Map<string,string>(); let stagingOwned=false; let nativeStagingUsed=false; let nativeAttempted=false; let retainStaging=false;
   try {
    if(selected.some(c=>c.requiresMsvcSupplier))await this.requireBundledSourcesBeforeSupplier(selected,signal);
    await this.assertActivationRoot(staging);
    await fs.mkdir(staging); stagingOwned=true;
    for(const c of selected) {
-    signal.throwIfAborted(); if(await this.installed(c)) { states.find(s=>s.id===c.id)!.installed=true; states.find(s=>s.id===c.id)!.bytes=c.sizeBytes; journal.completedWork+=4; await update('checking',c); continue; }
+    signal.throwIfAborted(); if(await this.installed(c)) { if(c.archiveFormat==='msi-admin')journal.documentsEvidence={operationId:journal.operationId,componentId:'documents',claim:MSI_LINEAGE_CLAIM,boundary:'reuse',lineage:'unknown',activation:{status:'unknown',reason:'already-installed-reuse',selectedRoot:this.root(c)}}; states.find(s=>s.id===c.id)!.installed=true; states.find(s=>s.id===c.id)!.bytes=c.sizeBytes; journal.completedWork+=4; await update('checking',c); continue; }
     const disk=await fs.statfs(this.paths.components); const retained=await sizeOf(path.join(this.paths.components,c.id)); const need=(c.archiveFormat==='msi-admin'?2:1)*c.sizeBytes+c.expandedBytes+retained+256*1024*1024; if(disk.bavail*disk.bsize<need) throw new Error('DISK_SPACE_LOW');
-    await update('acquiring',c); let lastProgress=0; const archive=await this.acquire(c,signal,bytes=>{ states.find(s=>s.id===c.id)!.bytes=bytes;const now=Date.now();if(now-lastProgress<100&&bytes<c.sizeBytes)return;lastProgress=now; this.publish({components:states.map(s=>({...s})),progress:{operationId:journal.operationId,selected:journal.selected,totalBytes:journal.totalBytes,acquiredBytes:states.reduce((n,s)=>n+s.bytes,0),completedWork:journal.completedWork,totalWork}}); });
-    journal.completedWork++; await update('verifying',c,c.sizeBytes); if(await hash(archive,signal)!==c.sha256) { await fs.rm(archive,{force:true}); await fs.rm(archive+'.json',{force:true}); throw new Error('COMPONENT_HASH_MISMATCH'); } journal.completedWork++;
+    await update('acquiring',c); let lastProgress=0; const archive=await this.acquire(c,signal,bytes=>{ states.find(s=>s.id===c.id)!.bytes=bytes;const now=Date.now();if(now-lastProgress<100&&bytes<c.sizeBytes)return;lastProgress=now; const progress:DesktopState['progress']={operationId:journal.operationId,selected:journal.selected,totalBytes:journal.totalBytes,acquiredBytes:states.reduce((n,s)=>n+s.bytes,0),completedWork:journal.completedWork,totalWork}; this.publish({components:states.map(s=>({...s})),progress}); });
+    journal.completedWork++; await update('verifying',c,c.sizeBytes); const archiveIdentity=c.archiveFormat==='msi-admin'?await observeMsiIdentity(archive,'file'):undefined; const verifiedArchiveSha256=await hash(archive,signal); if(verifiedArchiveSha256!==c.sha256) { await fs.rm(archive,{force:true}); await fs.rm(archive+'.json',{force:true}); throw new Error('COMPONENT_HASH_MISMATCH'); } journal.completedWork++;
     await update('extracting',c); const target=confined(staging,c.id); await fs.mkdir(target,{recursive:true});
     if(c.archiveFormat==='msi-admin') {
      nativeStagingUsed=true;this.publish({canCancel:false});
@@ -177,7 +177,7 @@ export class Components {
      journal.retainedStaging=staging;journal.nativeSettlement='in-progress';
      await atomic(path.join(this.paths.state,'preparation.json'),journal);
      nativeAttempted=true;
-     await prepareMsiAdmin(archive,staging,c.expandedBytes,Object.values(c.entrypoints),archivePath,signal);
+     await prepareMsiAdmin(archive,staging,c.expandedBytes,Object.values(c.entrypoints),archivePath,signal,{operationId:journal.operationId,selectedArchive:{sha256:verifiedArchiveSha256,identity:archiveIdentity!},persist:async evidence=>{if(evidence.operationId!==journal.operationId||evidence.componentId!=='documents')throw new Error('MSI_EVIDENCE_OPERATION_MISMATCH');journal.documentsEvidence=evidence;await atomic(path.join(this.paths.state,'preparation.json'),journal);}});
      journal.nativeSettlement='normal-close';
      await atomic(path.join(this.paths.state,'preparation.json'),journal);
      signal.throwIfAborted();this.publish({canCancel:true});
@@ -198,7 +198,9 @@ export class Components {
      // Newly prepared bytes always use the canonical root, never an old binding.
      const target=this.canonicalRoot(c); await this.assertActivationRoot(target); await fs.mkdir(path.dirname(target),{recursive:true});
      if(!await this.normalRoot(path.dirname(target))) throw new Error('IMMUTABLE_VERSION_CONFLICT');
-     try { await fs.rename(source,target); }
+     let renamed=false;
+     if(c.archiveFormat==='msi-admin'&&journal.documentsEvidence){journal.documentsEvidence.activation={status:'pending',before:await observeMsiIdentity(source,'directory'),selectedRoot:target};try { await atomic(path.join(this.paths.state,'preparation.json'),journal); } catch { throw new Error('MSI_ACTIVATION_JOURNAL_WRITE_FAILED'); }}
+     try { await fs.rename(source,target); renamed=true;if(c.archiveFormat==='msi-admin'&&journal.documentsEvidence?.activation)journal.documentsEvidence.activation.branch='renamed'; }
      catch(error) {
       const code=(error as NodeJS.ErrnoException).code;
       if(process.platform==='win32'&&code==='EPERM') {
@@ -207,6 +209,7 @@ export class Components {
        const occupied=await fs.lstat(target).then(()=>true,cause=>{if((cause as NodeJS.ErrnoException).code==='ENOENT') return false;throw cause;});
        if(!occupied) throw error;
       } else if(code!=='EEXIST'&&code!=='ENOTEMPTY') throw error;
+      if(c.archiveFormat==='msi-admin'&&journal.documentsEvidence?.activation)journal.documentsEvidence.activation.branch='collision';
       if(!await this.normalRoot(target)) throw new Error('IMMUTABLE_VERSION_CONFLICT');
       const marker=await readJson<{sha256?:string;version?:string;supplierComposition?:string|null}|null>(path.join(target,'.verified.json'),null);
       if(marker?.sha256!==c.sha256||marker.version!==c.version||(this.composed(c)&&marker.supplierComposition!==msvcSupplierSignature())) throw new Error('IMMUTABLE_VERSION_CONFLICT');
@@ -214,11 +217,19 @@ export class Components {
       if(c.requiresMsvcSupplier){const supplier=this.manifest.components.find(x=>x.id==='msvc-runtime');if(!supplier||!await verifyMsvcComposition(c.id,this.compositionRoot(c,target),this.root(supplier)))throw new Error('IMMUTABLE_VERSION_CONFLICT');}
      }
      this.legacyRoots.delete(this.identity(c));
+     if(c.archiveFormat==='msi-admin'&&journal.documentsEvidence){
+      const e=journal.documentsEvidence,a=e.activation!,after=await observeMsiIdentity(this.root(c),'directory');
+      const linked=renamed&&e.lineage==='qualified'&&!!e.layout&&sameMsiObject(e.layout.root,a.before!)&&sameMsiObject(a.before!,after);
+      e.activation={...a,status:'pending',branch:renamed?'renamed':'collision',after,selectedRoot:this.root(c),linked,reason:linked?undefined:renamed?'root-identity-unavailable-or-changed':'existing-root-layout-unknown'};
+      try { await atomic(path.join(this.paths.state,'preparation.json'),journal); } catch { throw new Error('MSI_ACTIVATION_JOURNAL_WRITE_FAILED'); }
+     }
     }
     next.current[c.id]={version:c.version,sha256:c.sha256}; const state=states.find(s=>s.id===c.id)!; state.installed=true; state.phase='ready';
    }
-   await atomic(path.join(this.paths.state,'active.json'),next); this.active=next; journal.completedWork=totalWork; await update('starting'); this.publish({canCancel:false});
-  } catch(error) { retainStaging=nativeStagingUsed||error instanceof MsiAdminError; if(retainStaging) journal.retainedStaging=staging; const nativeSettlement=error instanceof MsiAdminError?error.nativeSettlement:journal.nativeSettlement==='in-progress'?(nativeAttempted?'ambiguous':'not-started'):journal.nativeSettlement; if(nativeStagingUsed&&nativeSettlement) journal.nativeSettlement=nativeSettlement; const ambiguous=nativeSettlement==='ambiguous'; if(ambiguous) { this.nativeUncertain=true;journal.nativeSettlement='ambiguous'; } const cancelled=signal.aborted&&!ambiguous; journal.phase=cancelled?'cancelled':'error'; await atomic(path.join(this.paths.state,'preparation.json'),journal); this.publish({phase:journal.phase,canCancel:false,canRetry:!ambiguous,error:{code:ambiguous?'MSI_NATIVE_SETTLEMENT_AMBIGUOUS_STAGING_RETAINED':cancelled?'PREPARATION_CANCELLED':error instanceof Error?error.message:'PREPARATION_FAILED',...(retainStaging?{retainedStaging:staging}:{}),message:retainStaging?'Document preparation stopped. Its private staging image and installer log are retained for diagnostics; existing components and projects are preserved.':cancelled?'Preparation was cancelled. Verified downloads are retained for retry.':'Component preparation failed. Open diagnostics or retry. Your existing components and projects are preserved.',retryable:!ambiguous}}); throw error; }
+   await atomic(path.join(this.paths.state,'active.json'),next); this.active=next;
+   if(journal.documentsEvidence?.activation){const a=journal.documentsEvidence.activation;a.activeStatePersisted=true;a.status=a.linked?'qualified-active-layout':'unknown';}
+   journal.completedWork=totalWork; await update('starting'); this.publish({canCancel:false});
+  } catch(error) { if(error instanceof MsiAdminError&&error.evidence)journal.documentsEvidence=error.evidence; if(journal.documentsEvidence)journal.documentsEvidence.preparationCancelled=signal.aborted; if(journal.documentsEvidence?.activation){journal.documentsEvidence.activation.status='unknown';journal.documentsEvidence.activation.reason='preparation-not-complete';} retainStaging=nativeStagingUsed||error instanceof MsiAdminError; if(retainStaging) journal.retainedStaging=staging; const nativeSettlement=error instanceof MsiAdminError?error.nativeSettlement:journal.nativeSettlement==='in-progress'?(nativeAttempted?'ambiguous':'not-started'):journal.nativeSettlement; if(nativeStagingUsed&&nativeSettlement) journal.nativeSettlement=nativeSettlement; const ambiguous=nativeSettlement==='ambiguous'; if(ambiguous) { this.nativeUncertain=true;journal.nativeSettlement='ambiguous'; } const cancelled=signal.aborted&&!ambiguous; journal.phase=cancelled?'cancelled':'error'; await atomic(path.join(this.paths.state,'preparation.json'),journal); this.publish({phase:journal.phase,canCancel:false,canRetry:!ambiguous,error:{code:ambiguous?'MSI_NATIVE_SETTLEMENT_AMBIGUOUS_STAGING_RETAINED':cancelled?'PREPARATION_CANCELLED':error instanceof Error?error.message:'PREPARATION_FAILED',...(retainStaging?{retainedStaging:staging}:{}),message:retainStaging?'Document preparation stopped. Its private staging image and installer log are retained for diagnostics; existing components and projects are preserved.':cancelled?'Preparation was cancelled. Verified downloads are retained for retry.':'Component preparation failed. Open diagnostics or retry. Your existing components and projects are preserved.',retryable:!ambiguous}}); throw error; }
   finally {
    try { if(stagingOwned&&!retainStaging) { await this.assertActivationRoot(staging); await fs.rm(staging,{recursive:true,force:true}); } }
    finally { this.busy=false; this.abort=null; }
