@@ -33,7 +33,7 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
       - name: Install pinned desktop dependencies
-        run: npm ci --no-audit --no-fund
+        run: npm ci --install-links --no-audit --no-fund
       - name: Verify independent deferred helper and production dependency exclusion
         run: node ../scripts/rebuild/test_js_dependency_remedy.cjs ..
       - name: Build frontend and Electron controller
