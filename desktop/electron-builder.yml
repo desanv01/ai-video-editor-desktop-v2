@@ -1,6 +1,9 @@
 appId: com.aive.desktop.rebuild
 productName: Aivora
 asar: true
+extraMetadata:
+  dependencies:
+    electron-updater: '6.8.9'
 # Keep appId stable so upgrades retain the installed application identity.
 directories:
   output: release-electron
