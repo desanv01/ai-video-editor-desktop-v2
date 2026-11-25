@@ -31,7 +31,7 @@ Use Node.js **24.14.1** and npm. Backend development uses Python **3.12** and th
 ```powershell
 git clone https://github.com/desanv01/ai-video-editor-desktop-v2.git
 Set-Location ai-video-editor-desktop-v2
-npm ci --prefix desktop
+npm ci --prefix desktop --install-links
 npm run build --prefix desktop
 npm run dev:electron --prefix desktop
 ```

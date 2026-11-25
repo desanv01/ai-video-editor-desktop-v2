@@ -11,7 +11,7 @@ Read the [setup guide](docs/getting-started.md) and [runtime architecture](docs/
 Use Node.js 24.14.1 and Python 3.12. Build before running tests that load the compiled Electron controller:
 
 ```powershell
-npm ci --prefix desktop
+npm ci --prefix desktop --install-links
 npm run build --prefix desktop
 npm test --prefix desktop
 

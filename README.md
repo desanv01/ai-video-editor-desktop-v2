@@ -72,7 +72,7 @@ Use Windows x64, **Node.js `24.14.1`**, npm, and **Python 3.12** for backend dev
 ```powershell
 git clone https://github.com/desanv01/ai-video-editor-desktop-v2.git
 Set-Location ai-video-editor-desktop-v2
-npm ci --prefix desktop
+npm ci --prefix desktop --install-links
 npm run build --prefix desktop
 npm run dev:electron --prefix desktop
 ```
